@@ -73,3 +73,7 @@ path = "src/bin/compare.rs"
 [[bin]]
 name = "extract"
 path = "src/bin/extract.rs"
+
+[[bin]]
+name = "count"
+path = "src/bin/count.rs"
