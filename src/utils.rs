@@ -8,31 +8,13 @@ use hashbrown::HashSet;
 /// Notably, insert/pop operations have O(1) expected amortized runtime complexity.
 ///
 /// Thanks @Bastacyclop for the implementation!
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub(crate) struct UniqueQueue<T>
-where
-    T: Eq + Hash + Clone,
-{
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub(crate) struct UniqueQueue<T: Eq + Hash + Clone> {
     set: HashSet<T>, // hashbrown::
     queue: VecDeque<T>,
 }
 
-impl<T> Default for UniqueQueue<T>
-where
-    T: Eq + Hash + Clone,
-{
-    fn default() -> Self {
-        UniqueQueue {
-            set: HashSet::default(),
-            queue: VecDeque::default(),
-        }
-    }
-}
-
-impl<U> FromIterator<U> for UniqueQueue<U>
-where
-    U: Eq + Hash + Clone,
-{
+impl<U: Eq + Hash + Clone + Default> FromIterator<U> for UniqueQueue<U> {
     fn from_iter<T: IntoIterator<Item = U>>(iter: T) -> Self {
         let mut queue = Self::default();
         for t in iter {
@@ -42,10 +24,7 @@ where
     }
 }
 
-impl<T> UniqueQueue<T>
-where
-    T: Eq + Hash + Clone,
-{
+impl<T: Eq + Hash + Clone> UniqueQueue<T> {
     pub fn insert(&mut self, t: T) {
         if self.set.insert(t.clone()) {
             self.queue.push_back(t);
