@@ -55,7 +55,7 @@ impl TermCount {
         let type_cache = TypeSizeCache::build(egraph);
 
         // Find leaf classes (classes with at least one leaf node)
-        let leaves: UniqueQueue<EClassId> = egraph
+        let leaves = egraph
             .class_ids()
             .filter(|&id| {
                 egraph
@@ -64,6 +64,7 @@ impl TermCount {
                     .iter()
                     .any(|n| n.children().is_empty())
             })
+            .map(|id| egraph.canonicalize(id))
             .collect();
 
         let analysis_pending = Arc::new(Mutex::new(leaves));
@@ -72,13 +73,13 @@ impl TermCount {
         // Run parallel analysis
         thread::scope(|scope| {
             for i in 0..thread::available_parallelism().map_or(1, |p| p.get()) {
-                let thread_pending = analysis_pending.clone();
-                let adf = &data;
-                let asaa = &parents;
+                let tap = analysis_pending.clone();
+                let td = &data;
+                let tp = &parents;
                 let tc = &type_cache;
                 scope.spawn(move || {
                     debug!("Thread #{i} started!");
-                    self.resolve_pending_analysis(egraph, adf, &thread_pending, tc, asaa);
+                    self.resolve_pending_analysis(egraph, td, &tap, tc, tp);
                     debug!("Thread #{i} finished!");
                 });
             }
@@ -96,22 +97,17 @@ impl TermCount {
         type_cache: &TypeSizeCache,
         parents: &HashMap<EClassId, HashSet<EClassId>>,
     ) {
-        // Mirrors the structure of CommutativeSemigroupAnalysis::one_shot_analysis
+        // Potentially, this might lead to a situation where only one thread is working on the queue.
+        // This has not been observed in practice, but it is a potential bottleneck.
+        // Drop lock at the end of the scope
         while let Some(id) = { analysis_pending.lock().unwrap().pop() } {
-            let canonical_id = egraph.canonicalize(id);
-            let eclass = egraph.class(canonical_id);
-
-            // Get the type overhead for this e-class
-            let type_overhead = if self.with_types {
-                let ty_size = type_cache.get_type_size(eclass.ty());
-                1 + ty_size
-            } else {
-                0
-            };
+            // let canonical_id = egraph.canonicalize(id); // Only canonical ids are ever in here
+            debug_assert_eq!(egraph.canonicalize(id), id);
+            let eclass = egraph.class(id);
 
             // Check if we can calculate the analysis for any enode
             let available_data = eclass.nodes().iter().filter_map(|node| {
-                // If all the eclass children have data, we can calculate it
+                // If all the childs eclass_children have data, we can calculate it!
                 let all_ready = node.children().iter().all(|child_id| match child_id {
                     ExprChildId::Nat(_) | ExprChildId::Data(_) => true,
                     ExprChildId::EClass(eclass_id) => {
@@ -119,30 +115,38 @@ impl TermCount {
                     }
                 });
                 all_ready.then(|| {
+                    // Get the type overhead for this e-class
+                    let type_overhead = if self.with_types {
+                        1 + type_cache.get_type_size(eclass.ty())
+                    } else {
+                        0
+                    };
                     self.make_node_data(egraph, node.children(), data, type_cache, type_overhead)
                 })
             });
 
             // If we have some info, we add that info to our storage.
-            // Otherwise put back onto the queue.
+            // Otherwise we have absolutely no info about the nodes so we can only put them back onto the queue.
+            // and hope for a better time later.
             if let Some(computed_data) = available_data.reduce(|mut a, b| {
                 Self::merge(&mut a, b);
                 a
             }) {
                 // If we have gained new information, put the parents onto the queue.
+                // They need to be re-evaluated.
                 // Only once we have reached a fixpoint we can stop updating the parents.
-                if !(data.get(&canonical_id).is_some_and(|v| *v == computed_data)) {
-                    if let Some(parent_set) = parents.get(&canonical_id) {
+                if !(data.get(&id).is_some_and(|v| *v == computed_data)) {
+                    if let Some(parent_set) = parents.get(&id) {
                         analysis_pending
                             .lock()
                             .unwrap()
                             .extend(parent_set.iter().copied());
                     }
-                    data.insert(canonical_id, computed_data);
+                    data.insert(id, computed_data);
                 }
             } else {
                 assert!(!eclass.nodes().is_empty());
-                analysis_pending.lock().unwrap().insert(canonical_id);
+                analysis_pending.lock().unwrap().insert(id);
             }
         }
     }
@@ -214,16 +218,12 @@ impl TermCount {
             ExprChildId::Nat(nat_id) => {
                 // Nat nodes have a fixed size (no choices)
                 let size = type_cache.get_nat_size(nat_id);
-                let mut result = HashMap::new();
-                result.insert(size, C::one());
-                result
+                HashMap::from([(size, C::one())])
             }
             ExprChildId::Data(data_id) => {
                 // Data type nodes have a fixed size (no choices)
                 let size = type_cache.get_data_size(data_id);
-                let mut result = HashMap::new();
-                result.insert(size, C::one());
-                result
+                HashMap::from([(size, C::one())])
             }
             ExprChildId::EClass(eclass_id) => {
                 // E-class children use the precomputed data
