@@ -2,7 +2,7 @@
 //!
 //! Counts the number of terms up to a given size that can be extracted from each e-class.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use dashmap::DashMap;
@@ -52,7 +52,7 @@ impl TermCount {
     ) -> HashMap<EClassId, HashMap<usize, C>> {
         // Build parent map and type size cache
         let parents = build_parent_map(egraph);
-        let type_cache = Arc::new(RwLock::new(TypeSizeCache::default()));
+        let type_cache = TypeSizeCache::build(egraph);
 
         // Find leaf classes (classes with at least one leaf node)
         let leaves: UniqueQueue<EClassId> = egraph
@@ -67,44 +67,33 @@ impl TermCount {
             .collect();
 
         let analysis_pending = Arc::new(Mutex::new(leaves));
-        let data: Arc<DashMap<EClassId, HashMap<usize, C>>> = Arc::new(DashMap::new());
+        let data = DashMap::new();
 
         // Run parallel analysis
-        let result_data = thread::scope(|scope| {
+        thread::scope(|scope| {
             for i in 0..thread::available_parallelism().map_or(1, |p| p.get()) {
-                let thread_data = data.clone();
                 let thread_pending = analysis_pending.clone();
-                let thread_type_cache = type_cache.clone();
-                let thread_parents = &parents;
-
+                let adf = &data;
+                let asaa = &parents;
+                let tc = &type_cache;
                 scope.spawn(move || {
                     debug!("Thread #{i} started!");
-                    self.resolve_pending_analysis(
-                        egraph,
-                        &thread_data,
-                        &thread_pending,
-                        &thread_type_cache,
-                        thread_parents,
-                    );
+                    self.resolve_pending_analysis(egraph, adf, &thread_pending, tc, asaa);
                     debug!("Thread #{i} finished!");
                 });
             }
-            data
         });
 
-        Arc::into_inner(result_data)
-            .unwrap()
-            .into_par_iter()
-            .collect()
+        data.into_par_iter().collect()
     }
 
     /// Process pending e-classes from the work queue.
     fn resolve_pending_analysis<L: Label, C: Counter>(
         &self,
         egraph: &EGraph<L>,
-        data: &Arc<DashMap<EClassId, HashMap<usize, C>>>,
+        data: &DashMap<EClassId, HashMap<usize, C>>,
         analysis_pending: &Arc<Mutex<UniqueQueue<EClassId>>>,
-        type_cache: &Arc<RwLock<TypeSizeCache>>,
+        type_cache: &TypeSizeCache,
         parents: &HashMap<EClassId, HashSet<EClassId>>,
     ) {
         // Mirrors the structure of CommutativeSemigroupAnalysis::one_shot_analysis
@@ -114,7 +103,7 @@ impl TermCount {
 
             // Get the type overhead for this e-class
             let type_overhead = if self.with_types {
-                let ty_size = TypeSizeCache::get_type_size(type_cache, egraph, eclass.ty());
+                let ty_size = type_cache.get_type_size(eclass.ty());
                 1 + ty_size
             } else {
                 0
@@ -170,8 +159,8 @@ impl TermCount {
         &self,
         egraph: &EGraph<L>,
         children: &[ExprChildId],
-        data: &Arc<DashMap<EClassId, HashMap<usize, C>>>,
-        type_cache: &Arc<RwLock<TypeSizeCache>>,
+        data: &DashMap<EClassId, HashMap<usize, C>>,
+        type_cache: &TypeSizeCache,
         type_overhead: usize,
     ) -> HashMap<usize, C> {
         // Base size: 1 for the node itself + type overhead
@@ -218,20 +207,20 @@ impl TermCount {
     fn get_child_data<L: Label, C: Counter>(
         egraph: &EGraph<L>,
         child_id: ExprChildId,
-        data: &Arc<DashMap<EClassId, HashMap<usize, C>>>,
-        type_cache: &Arc<RwLock<TypeSizeCache>>,
+        data: &DashMap<EClassId, HashMap<usize, C>>,
+        type_cache: &TypeSizeCache,
     ) -> HashMap<usize, C> {
         match child_id {
             ExprChildId::Nat(nat_id) => {
                 // Nat nodes have a fixed size (no choices)
-                let size = TypeSizeCache::get_nat_size(type_cache, egraph, nat_id);
+                let size = type_cache.get_nat_size(nat_id);
                 let mut result = HashMap::new();
                 result.insert(size, C::one());
                 result
             }
             ExprChildId::Data(data_id) => {
                 // Data type nodes have a fixed size (no choices)
-                let size = TypeSizeCache::get_data_size(type_cache, egraph, data_id);
+                let size = type_cache.get_data_size(data_id);
                 let mut result = HashMap::new();
                 result.insert(size, C::one());
                 result
@@ -270,6 +259,9 @@ fn build_parent_map<L: Label>(egraph: &EGraph<L>) -> HashMap<EClassId, HashSet<E
 }
 
 /// Cache for type node sizes to avoid repeated computation.
+///
+/// Built eagerly before parallelism via [`TypeSizeCache::build`] so that
+/// the parallel phase only needs a shared `&TypeSizeCache` (no locking).
 #[derive(Debug, Default)]
 struct TypeSizeCache {
     nats: HashMap<NatId, usize>,
@@ -278,85 +270,99 @@ struct TypeSizeCache {
 }
 
 impl TypeSizeCache {
-    /// Get the size of a type (`TypeChildId`), dispatching to the appropriate cache.
-    fn get_type_size<L: Label>(cache: &RwLock<Self>, egraph: &EGraph<L>, id: TypeChildId) -> usize {
+    /// Pre-compute sizes for every nat, data, and fun type node in the e-graph.
+    fn build<L: Label>(egraph: &EGraph<L>) -> Self {
+        let mut cache = Self::default();
+        for id in egraph.nat_ids() {
+            cache.ensure_nat(egraph, id);
+        }
+        for id in egraph.data_ids() {
+            cache.ensure_data(egraph, id);
+        }
+        for id in egraph.fun_ids() {
+            cache.ensure_fun(egraph, id);
+        }
+        cache
+    }
+
+    fn get_type_size(&self, id: TypeChildId) -> usize {
         match id {
-            TypeChildId::Nat(nat_id) => Self::get_nat_size(cache, egraph, nat_id),
-            TypeChildId::Type(fun_id) => Self::get_fun_size(cache, egraph, fun_id),
-            TypeChildId::Data(data_id) => Self::get_data_size(cache, egraph, data_id),
+            TypeChildId::Nat(nat_id) => self.nats[&nat_id],
+            TypeChildId::Type(fun_id) => self.funs[&fun_id],
+            TypeChildId::Data(data_id) => self.data[&data_id],
         }
     }
 
-    /// Get the size of a nat node, using cache with read-preferring access.
-    fn get_nat_size<L: Label>(cache: &RwLock<Self>, egraph: &EGraph<L>, id: NatId) -> usize {
-        // Try read lock first (fast path for cache hits)
-        if let Some(&size) = cache.read().unwrap().nats.get(&id) {
-            return size;
-        }
-
-        // Cache miss: compute and insert with write lock
-        let size = Self::compute_nat_size(cache, egraph, id);
-        cache.write().unwrap().nats.insert(id, size);
-        size
+    fn get_nat_size(&self, id: NatId) -> usize {
+        self.nats[&id]
     }
 
-    /// Get the size of a data type node, using cache with read-preferring access.
-    fn get_data_size<L: Label>(cache: &RwLock<Self>, egraph: &EGraph<L>, id: DataId) -> usize {
-        // Try read lock first (fast path for cache hits)
-        if let Some(&size) = cache.read().unwrap().data.get(&id) {
-            return size;
-        }
-
-        // Cache miss: compute and insert with write lock
-        let size = Self::compute_data_size(cache, egraph, id);
-        cache.write().unwrap().data.insert(id, size);
-        size
+    fn get_data_size(&self, id: DataId) -> usize {
+        self.data[&id]
     }
 
-    /// Get the size of a fun type node, using cache with read-preferring access.
-    fn get_fun_size<L: Label>(cache: &RwLock<Self>, egraph: &EGraph<L>, id: FunId) -> usize {
-        // Try read lock first (fast path for cache hits)
-        if let Some(&size) = cache.read().unwrap().funs.get(&id) {
-            return size;
+    // -- eager population helpers (called only during `new`) --
+
+    fn ensure_nat<L: Label>(&mut self, egraph: &EGraph<L>, id: NatId) {
+        if self.nats.contains_key(&id) {
+            return;
         }
-
-        // Cache miss: compute and insert with write lock
-        let size = Self::compute_fun_size(cache, egraph, id);
-        cache.write().unwrap().funs.insert(id, size);
-        size
-    }
-
-    fn compute_nat_size<L: Label>(cache: &RwLock<Self>, egraph: &EGraph<L>, id: NatId) -> usize {
         let node = egraph.nat(id);
-        let children_size: usize = node
+        for &child_id in node.children() {
+            self.ensure_nat(egraph, child_id);
+        }
+        let size = 1 + node
             .children()
             .iter()
-            .map(|&child_id| Self::get_nat_size(cache, egraph, child_id))
-            .sum();
-        1 + children_size
+            .map(|&c| self.nats[&c])
+            .sum::<usize>();
+        self.nats.insert(id, size);
     }
 
-    fn compute_data_size<L: Label>(cache: &RwLock<Self>, egraph: &EGraph<L>, id: DataId) -> usize {
+    fn ensure_data<L: Label>(&mut self, egraph: &EGraph<L>, id: DataId) {
+        if self.data.contains_key(&id) {
+            return;
+        }
         let node = egraph.data_ty(id);
-        let children_size: usize = node
+        for &child_id in node.children() {
+            match child_id {
+                DataChildId::Nat(nat_id) => self.ensure_nat(egraph, nat_id),
+                DataChildId::DataType(data_id) => self.ensure_data(egraph, data_id),
+            }
+        }
+        let size = 1 + node
             .children()
             .iter()
-            .map(|&child_id| match child_id {
-                DataChildId::Nat(nat_id) => Self::get_nat_size(cache, egraph, nat_id),
-                DataChildId::DataType(data_id) => Self::get_data_size(cache, egraph, data_id),
+            .map(|&c| match c {
+                DataChildId::Nat(nat_id) => self.nats[&nat_id],
+                DataChildId::DataType(data_id) => self.data[&data_id],
             })
-            .sum();
-        1 + children_size
+            .sum::<usize>();
+        self.data.insert(id, size);
     }
 
-    fn compute_fun_size<L: Label>(cache: &RwLock<Self>, egraph: &EGraph<L>, id: FunId) -> usize {
+    fn ensure_fun<L: Label>(&mut self, egraph: &EGraph<L>, id: FunId) {
+        if self.funs.contains_key(&id) {
+            return;
+        }
         let node = egraph.fun_ty(id);
-        let children_size: usize = node
+        for &child_id in node.children() {
+            match child_id {
+                TypeChildId::Nat(nat_id) => self.ensure_nat(egraph, nat_id),
+                TypeChildId::Data(data_id) => self.ensure_data(egraph, data_id),
+                TypeChildId::Type(fun_id) => self.ensure_fun(egraph, fun_id),
+            }
+        }
+        let size = 1 + node
             .children()
             .iter()
-            .map(|&child_id| Self::get_type_size(cache, egraph, child_id))
-            .sum();
-        1 + children_size
+            .map(|&c| match c {
+                TypeChildId::Nat(nat_id) => self.nats[&nat_id],
+                TypeChildId::Data(data_id) => self.data[&data_id],
+                TypeChildId::Type(fun_id) => self.funs[&fun_id],
+            })
+            .sum::<usize>();
+        self.funs.insert(id, size);
     }
 }
 

@@ -155,6 +155,18 @@ impl<L: Label> EGraph<L> {
         self.classes.keys().map(|k| self.canonicalize(*k))
     }
 
+    pub fn nat_ids(&self) -> impl Iterator<Item = NatId> + '_ {
+        self.nat_nodes.keys().copied()
+    }
+
+    pub fn fun_ids(&self) -> impl Iterator<Item = FunId> + '_ {
+        self.fun_ty_nodes.keys().copied()
+    }
+
+    pub fn data_ids(&self) -> impl Iterator<Item = DataId> + '_ {
+        self.data_ty_nodes.keys().copied()
+    }
+
     #[must_use]
     pub fn tree_from_choices(
         &self,
