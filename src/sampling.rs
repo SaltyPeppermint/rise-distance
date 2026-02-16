@@ -42,7 +42,7 @@ pub trait Sampler: Sized {
     /// when the sampler returns `None`. Use `.take(n)` to limit samples.
     ///
     /// # Example
-    /// ```
+    /// ```text
     /// let sampler = FixpointSampler::new(&graph, &config, rng).unwrap();
     /// for tree in sampler.into_sample_iter(true).take(100) {
     ///     println!("{:?}", tree);
@@ -602,7 +602,7 @@ fn collect_features<L: Label>(tree: &TreeNode<L>, features: &mut HashSet<(L, usi
 /// use methods like `.take(n)` to limit the number of samples.
 ///
 /// # Example
-/// ```ignore
+/// ```
 /// let sampler = FixpointSampler::new(&graph, &config, rng).unwrap();
 /// let iter = SamplingIter::new(sampler);
 /// for tree in iter.take(100) {

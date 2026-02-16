@@ -40,7 +40,7 @@ impl Label for Cow<'_, str> {
 /// Macro to generate node types with configurable ID types
 ///
 /// # Example
-/// ```
+/// ```text
 /// define_node!(
 ///     /// A node for natural numbers
 ///     NatNode, NatId

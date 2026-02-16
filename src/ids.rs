@@ -13,7 +13,7 @@ pub trait NumericId: Sized + Copy + Eq + std::hash::Hash {
 /// Macro to generate newtype ID wrappers around `usize`
 ///
 /// # Example
-/// ```
+/// ```text
 /// define_id!(EClassId, "EClassId");
 /// define_id!(NatId, "n");
 /// ```
