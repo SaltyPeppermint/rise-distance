@@ -1,6 +1,6 @@
 mod boltzmann;
+mod choices;
 mod count;
-mod extract;
 mod graph;
 mod ids;
 mod min;
@@ -19,8 +19,8 @@ pub use boltzmann::{
     DiverseSampler, DiverseSamplerConfig, FixpointSampler, FixpointSamplerConfig, Sampler,
     SamplingIter, structural_hash,
 };
+pub use choices::ChoiceIter;
 pub use count::TermCount;
-pub use extract::ChoiceIter;
 pub use graph::{EClass, EGraph};
 pub use ids::EClassId;
 pub use min::{

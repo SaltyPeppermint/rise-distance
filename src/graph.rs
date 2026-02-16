@@ -10,7 +10,7 @@ use std::path::Path;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
-use super::extract::ChoiceIter;
+use super::choices::ChoiceIter;
 use super::ids::{
     DataId, EClassId, ExprChildId, FunId, NatId, NumericId, TypeChildId, eclass_id_vec,
     numeric_key_map,
@@ -216,7 +216,7 @@ impl<L: Label> EGraph<L> {
 
     #[must_use]
     pub fn count_trees(&self, max_revisits: usize) -> usize {
-        super::extract::count_trees(self, max_revisits)
+        super::choices::count_trees(self, max_revisits)
     }
 
     #[must_use]
