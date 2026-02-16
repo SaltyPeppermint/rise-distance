@@ -65,10 +65,9 @@ fn main() {
     println!("  Limit: {}", args.limit);
     println!("  With types: {}", args.with_types);
 
-    let counter = TermCount::new(args.limit, args.with_types);
-
     let start = Instant::now();
-    let data = counter.analyze::<_, BigUint>(&graph);
+    let term_count = TermCount::<BigUint>::new(args.limit, args.with_types, &graph);
+
     println!("  Analysis completed in {:.2?}", start.elapsed());
 
     let fmt = DisplayConfig {
@@ -77,10 +76,15 @@ fn main() {
         bar_width: args.bar_width,
     };
 
-    print_histogram("Root", root, &data, &fmt);
+    print_histogram("Root", root, &term_count, &fmt);
 
     for &id in &args.eclass_ids {
-        print_histogram(&format!("EClassId({id})"), EClassId::new(id), &data, &fmt);
+        print_histogram(
+            &format!("EClassId({id})"),
+            EClassId::new(id),
+            &term_count,
+            &fmt,
+        );
     }
 }
 
@@ -107,14 +111,9 @@ fn format_count(n: &BigUint, scientific: bool) -> String {
     format!("{mantissa}e{exponent}")
 }
 
-fn print_histogram(
-    label: &str,
-    id: EClassId,
-    data: &hashbrown::HashMap<EClassId, hashbrown::HashMap<usize, BigUint>>,
-    fmt: &DisplayConfig,
-) {
+fn print_histogram(label: &str, id: EClassId, data: &TermCount<BigUint>, fmt: &DisplayConfig) {
     println!("\n--- {label} ---");
-    let Some(histogram) = data.get(&id) else {
+    let Some(histogram) = data.of_eclass(id) else {
         println!("  (no data)");
         return;
     };

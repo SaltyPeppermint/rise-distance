@@ -21,35 +21,24 @@ pub trait Counter: Clone + Send + Sync + NumRef + NumAssignRef + Default + std::
 
 impl<T: Clone + Send + Sync + NumRef + NumAssignRef + Default + std::fmt::Debug> Counter for T {}
 
-/// Configuration for the term counting analysis.
+/// Map from e-class ID to a map of (size -> count) (histogram).
 #[derive(Debug, Clone)]
-pub struct TermCount {
-    limit: usize,
-    with_types: bool,
+pub struct TermCount<C: Counter> {
+    data: HashMap<EClassId, HashMap<usize, C>>,
 }
 
-impl TermCount {
-    /// Create a new term counting configuration.
+impl<C: Counter> TermCount<C> {
+    /// Run the term counting analysis on an e-graph.
+    ///
+    ///
     ///
     /// # Arguments
     /// * `limit` - Maximum term size to count
     /// * `with_types` - If true, include type annotations in size calculations
-    #[must_use]
-    pub fn new(limit: usize, with_types: bool) -> Self {
-        Self { limit, with_types }
-    }
-
-    /// Run the term counting analysis on an e-graph.
-    ///
-    /// Returns a map from e-class ID to a map of (size -> count).
-    ///
     /// # Panics
     /// Panics if threads fail to join (should not happen in practice).
     #[must_use]
-    pub fn analyze<L: Label, C: Counter>(
-        &self,
-        egraph: &EGraph<L>,
-    ) -> HashMap<EClassId, HashMap<usize, C>> {
+    pub fn new<L: Label>(limit: usize, with_types: bool, egraph: &EGraph<L>) -> TermCount<C> {
         // Build parent map and type size cache
         let parents = build_parent_map(egraph);
         let type_cache = TypeSizeCache::build(egraph);
@@ -79,18 +68,23 @@ impl TermCount {
                 let tc = &type_cache;
                 scope.spawn(move || {
                     debug!("Thread #{i} started!");
-                    self.resolve_pending_analysis(egraph, td, &tap, tc, tp);
+                    TermCount::resolve_pending_analysis(
+                        limit, with_types, egraph, td, &tap, tc, tp,
+                    );
                     debug!("Thread #{i} finished!");
                 });
             }
         });
 
-        data.into_par_iter().collect()
+        TermCount {
+            data: data.into_par_iter().collect(),
+        }
     }
 
     /// Process pending e-classes from the work queue.
-    fn resolve_pending_analysis<L: Label, C: Counter>(
-        &self,
+    fn resolve_pending_analysis<L: Label>(
+        limit: usize,
+        with_types: bool,
         egraph: &EGraph<L>,
         data: &DashMap<EClassId, HashMap<usize, C>>,
         analysis_pending: &Arc<Mutex<UniqueQueue<EClassId>>>,
@@ -116,12 +110,19 @@ impl TermCount {
                 });
                 all_ready.then(|| {
                     // Get the type overhead for this e-class
-                    let type_overhead = if self.with_types {
+                    let type_overhead = if with_types {
                         1 + type_cache.get_type_size(eclass.ty())
                     } else {
                         0
                     };
-                    self.make_node_data(egraph, node.children(), data, type_cache, type_overhead)
+                    TermCount::make_node_data(
+                        limit,
+                        egraph,
+                        node.children(),
+                        data,
+                        type_cache,
+                        type_overhead,
+                    )
                 })
             });
 
@@ -152,15 +153,15 @@ impl TermCount {
     }
 
     /// Merge two term count data maps.
-    fn merge<C: Counter>(a: &mut HashMap<usize, C>, b: HashMap<usize, C>) {
+    fn merge(a: &mut HashMap<usize, C>, b: HashMap<usize, C>) {
         for (size, count) in b {
             a.entry(size).and_modify(|c| *c += &count).or_insert(count);
         }
     }
 
     /// Compute term counts for a single e-node.
-    fn make_node_data<L: Label, C: Counter>(
-        &self,
+    fn make_node_data<L: Label>(
+        limit: usize,
         egraph: &EGraph<L>,
         children: &[ExprChildId],
         data: &DashMap<EClassId, HashMap<usize, C>>,
@@ -172,7 +173,7 @@ impl TermCount {
 
         if children.is_empty() {
             // Leaf node
-            if base_size <= self.limit {
+            if base_size <= limit {
                 return HashMap::from([(base_size, C::one())]);
             }
             return HashMap::new();
@@ -184,14 +185,14 @@ impl TermCount {
         children.iter().fold(
             HashMap::from([(base_size, C::one())]),
             |mut acc, child_id| {
-                let child_data = Self::get_child_data::<L, C>(egraph, *child_id, data, type_cache);
+                let child_data = TermCount::get_child_data(egraph, *child_id, data, type_cache);
 
                 tmp.extend(acc.drain());
 
                 for (acc_size, acc_count) in &tmp {
                     for (child_size, child_count) in &child_data {
                         let combined_size = acc_size + child_size;
-                        if combined_size > self.limit {
+                        if combined_size > limit {
                             continue;
                         }
                         let combined_count = acc_count.to_owned() * child_count;
@@ -208,7 +209,7 @@ impl TermCount {
     }
 
     /// Get the count data for a child, handling Nat/Data/EClass variants.
-    fn get_child_data<L: Label, C: Counter>(
+    fn get_child_data<L: Label>(
         egraph: &EGraph<L>,
         child_id: ExprChildId,
         data: &DashMap<EClassId, HashMap<usize, C>>,
@@ -233,6 +234,11 @@ impl TermCount {
                     .unwrap_or_default()
             }
         }
+    }
+
+    #[must_use]
+    pub fn of_eclass(&self, id: EClassId) -> Option<&HashMap<usize, C>> {
+        self.data.get(&id)
     }
 }
 
@@ -409,10 +415,9 @@ mod tests {
             HashMap::new(),
         );
 
-        let counter = TermCount::new(10, false);
-        let data: HashMap<EClassId, HashMap<usize, BigUint>> = counter.analyze(&graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
-        let root_data = &data[&EClassId::new(0)];
+        let root_data = &term_count.data[&EClassId::new(0)];
         assert_eq!(root_data.len(), 1);
         assert_eq!(root_data[&1], BigUint::from(1u32));
     }
@@ -431,10 +436,9 @@ mod tests {
             HashMap::new(),
         );
 
-        let counter = TermCount::new(10, true);
-        let data: HashMap<EClassId, HashMap<usize, BigUint>> = counter.analyze(&graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
-        let root_data = &data[&EClassId::new(0)];
+        let root_data = &term_count.data[&EClassId::new(0)];
         // Size = 1 (node) + 1 (typeOf) + 1 (type "0") = 3
         assert_eq!(root_data.len(), 1);
         assert_eq!(root_data[&3], BigUint::from(1u32));
@@ -453,11 +457,9 @@ mod tests {
             dummy_nat_nodes(),
             HashMap::new(),
         );
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
-        let counter = TermCount::new(10, false);
-        let data: HashMap<EClassId, HashMap<usize, BigUint>> = counter.analyze(&graph);
-
-        let root_data = &data[&EClassId::new(0)];
+        let root_data = &term_count.data[&EClassId::new(0)];
         // Two terms of size 1
         assert_eq!(root_data[&1], BigUint::from(2u32));
     }
@@ -478,14 +480,13 @@ mod tests {
             HashMap::new(),
         );
 
-        let counter = TermCount::new(10, false);
-        let data: HashMap<EClassId, HashMap<usize, BigUint>> = counter.analyze(&graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         // Class 1: one term of size 1
-        assert_eq!(data[&EClassId::new(1)][&1], BigUint::from(1u32));
+        assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(1u32));
 
         // Class 0: one term of size 2 (f + a)
-        assert_eq!(data[&EClassId::new(0)][&2], BigUint::from(1u32));
+        assert_eq!(term_count.data[&EClassId::new(0)][&2], BigUint::from(1u32));
     }
 
     #[test]
@@ -507,14 +508,13 @@ mod tests {
             HashMap::new(),
         );
 
-        let counter = TermCount::new(10, false);
-        let data: HashMap<EClassId, HashMap<usize, BigUint>> = counter.analyze(&graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         // Class 1: two terms of size 1
-        assert_eq!(data[&EClassId::new(1)][&1], BigUint::from(2u32));
+        assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(2u32));
 
         // Class 0: two terms of size 2 (f(a), f(b))
-        assert_eq!(data[&EClassId::new(0)][&2], BigUint::from(2u32));
+        assert_eq!(term_count.data[&EClassId::new(0)][&2], BigUint::from(2u32));
     }
 
     #[test]
@@ -538,11 +538,10 @@ mod tests {
             HashMap::new(),
         );
 
-        let counter = TermCount::new(10, false);
-        let data: HashMap<EClassId, HashMap<usize, BigUint>> = counter.analyze(&graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         // Class 0: one term of size 3 (f + a + b)
-        assert_eq!(data[&EClassId::new(0)][&3], BigUint::from(1u32));
+        assert_eq!(term_count.data[&EClassId::new(0)][&3], BigUint::from(1u32));
     }
 
     #[test]
@@ -575,12 +574,10 @@ mod tests {
             dummy_nat_nodes(),
             HashMap::new(),
         );
-
-        let counter = TermCount::new(10, false);
-        let data: HashMap<EClassId, HashMap<usize, BigUint>> = counter.analyze(&graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         // Class 0: 2 * 3 = 6 terms of size 3
-        assert_eq!(data[&EClassId::new(0)][&3], BigUint::from(6u32));
+        assert_eq!(term_count.data[&EClassId::new(0)][&3], BigUint::from(6u32));
     }
 
     #[test]
@@ -600,14 +597,18 @@ mod tests {
         );
 
         // Limit = 1, so f(a) with size 2 should be filtered out
-        let counter = TermCount::new(1, false);
-        let data: HashMap<EClassId, HashMap<usize, BigUint>> = counter.analyze(&graph);
+        let term_count = TermCount::<BigUint>::new(1, false, &graph);
 
         // Class 1 should have data (size 1)
-        assert!(data.contains_key(&EClassId::new(1)));
-        assert_eq!(data[&EClassId::new(1)][&1], BigUint::from(1u32));
+        assert!(term_count.data.contains_key(&EClassId::new(1)));
+        assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(1u32));
 
         // Class 0 should be empty (size 2 exceeds limit)
-        assert!(data.get(&EClassId::new(0)).is_none_or(|d| d.is_empty()));
+        assert!(
+            term_count
+                .data
+                .get(&EClassId::new(0))
+                .is_none_or(|d| d.is_empty())
+        );
     }
 }
