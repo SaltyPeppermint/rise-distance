@@ -602,7 +602,7 @@ fn collect_features<L: Label>(tree: &TreeNode<L>, features: &mut HashSet<(L, usi
 /// use methods like `.take(n)` to limit the number of samples.
 ///
 /// # Example
-/// ```
+/// ```text
 /// let sampler = FixpointSampler::new(&graph, &config, rng).unwrap();
 /// let iter = SamplingIter::new(sampler);
 /// for tree in iter.take(100) {

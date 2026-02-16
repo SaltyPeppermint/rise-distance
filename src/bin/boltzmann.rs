@@ -5,26 +5,24 @@ use std::time::Instant;
 
 use clap::{Args as ClapArgs, Parser};
 
-use serde::de::DeserializeOwned;
-
-use rise_distance::{EGraph, Expr, Label, TreeNode, UnitCost, find_min_sampling_zs};
+use rise_distance::{EGraph, Expr, Label, TreeNode, UnitCost, find_min_boltzmann_zs};
 
 #[derive(Parser)]
 #[command(about = "Find the closest tree in an e-graph to a reference tree")]
 #[command(after_help = "\
 Examples:
   # Reference tree from file
-  extract graph.json -f trees.txt -n blocking_goal
+  boltzmann graph.json -f trees.txt -n blocking_goal
 
   # Reference tree from command line
-  extract graph.json -e '(+ 1 2)'
+  boltzmann graph.json -e '(+ 1 2)'
 
   # With revisits and quiet mode
-  extract graph.json -e '(foo bar)' -r 2 -q
+  boltzmann graph.json -e '(foo bar)' -r 2 -q
 ")]
 struct Args {
     /// Path to the serialized e-graph JSON file
-    egraph: String,
+    graph: String,
 
     #[command(flatten)]
     reference: RefSource,
@@ -87,12 +85,12 @@ fn main() {
 
 fn run<L, F>(args: &Args, parse_tree: F)
 where
-    L: Label + std::fmt::Display + DeserializeOwned,
+    L: Label,
     F: Fn(&str) -> TreeNode<L>,
 {
-    println!("Loading e-graph from: {}", args.egraph);
+    println!("Loading e-graph from: {}", args.graph);
 
-    let graph: EGraph<L> = EGraph::parse_from_file(Path::new(&args.egraph));
+    let graph: EGraph<L> = EGraph::parse_from_file(Path::new(&args.graph));
 
     println!("  Root e-class: {:?}", graph.root());
 
@@ -103,7 +101,7 @@ where
 
 fn parse_ref<L, F>(args: &Args, parse_tree: F) -> TreeNode<L>
 where
-    L: Label + std::fmt::Display + DeserializeOwned,
+    L: Label,
     F: Fn(&str) -> TreeNode<L>,
 {
     let ref_tree: TreeNode<L> = if let Some(expr) = &args.reference.expr {
@@ -139,7 +137,7 @@ fn run_extraction<L: Label>(graph: &EGraph<L>, ref_tree: &TreeNode<L>, args: &Ar
 
     let start = Instant::now();
     println!("\n--- Zhang-Shasha extraction (with lower-bound pruning) ---");
-    if let (Some(result), stats) = find_min_sampling_zs(
+    if let (Some(result), stats) = find_min_boltzmann_zs(
         graph,
         ref_tree,
         &UnitCost,

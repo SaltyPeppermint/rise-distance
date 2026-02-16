@@ -2,6 +2,8 @@
 //!
 //! Counts the number of terms up to a given size that can be extracted from each e-class.
 
+use std::borrow::{Borrow, Cow};
+use std::iter::Product;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -9,25 +11,61 @@ use dashmap::DashMap;
 use hashbrown::{HashMap, HashSet};
 use log::debug;
 use num_traits::{NumAssignRef, NumRef};
+use rand::distributions::WeightedIndex;
+use rand::distributions::uniform::SampleUniform;
+use rand::prelude::*;
+use rand_chacha::ChaCha12Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use super::graph::EGraph;
 use super::ids::{DataChildId, DataId, EClassId, ExprChildId, FunId, NatId, TypeChildId};
 use super::nodes::Label;
+use crate::TreeNode;
 use crate::utils::UniqueQueue;
 
 /// Counter trait for counting terms.
-pub trait Counter: Clone + Send + Sync + NumRef + NumAssignRef + Default + std::fmt::Debug {}
+pub trait Counter:
+    Clone
+    + Send
+    + Sync
+    + NumRef
+    + NumAssignRef
+    + Default
+    + std::fmt::Debug
+    + SampleUniform
+    + PartialEq
+    + PartialOrd
+    + From<usize>
+    + Product // + Weight
+{
+}
 
-impl<T: Clone + Send + Sync + NumRef + NumAssignRef + Default + std::fmt::Debug> Counter for T {}
+impl<
+    T: Clone
+        + Send
+        + Sync
+        + NumRef
+        + NumAssignRef
+        + Default
+        + std::fmt::Debug
+        + SampleUniform
+        + PartialEq
+        + PartialOrd
+        + From<usize>
+        + Product, // + Weight,
+> Counter for T
+{
+}
 
 /// Map from e-class ID to a map of (size -> count) (histogram).
 #[derive(Debug, Clone)]
-pub struct TermCount<C: Counter> {
+pub struct TermCount<'a, C: Counter, L: Label> {
     data: HashMap<EClassId, HashMap<usize, C>>,
+    graph: &'a EGraph<L>,
+    type_sizes: TypeSizeCache,
 }
 
-impl<C: Counter> TermCount<C> {
+impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// Run the term counting analysis on an e-graph.
     ///
     ///
@@ -38,22 +76,22 @@ impl<C: Counter> TermCount<C> {
     /// # Panics
     /// Panics if threads fail to join (should not happen in practice).
     #[must_use]
-    pub fn new<L: Label>(limit: usize, with_types: bool, egraph: &EGraph<L>) -> TermCount<C> {
+    pub fn new(limit: usize, with_types: bool, graph: &EGraph<L>) -> TermCount<'_, C, L> {
         // Build parent map and type size cache
-        let parents = build_parent_map(egraph);
-        let type_cache = TypeSizeCache::build(egraph);
+        let parents = build_parent_map(graph);
+        let type_cache = TypeSizeCache::build(graph);
 
         // Find leaf classes (classes with at least one leaf node)
-        let leaves = egraph
+        let leaves = graph
             .class_ids()
             .filter(|&id| {
-                egraph
+                graph
                     .class(id)
                     .nodes()
                     .iter()
                     .any(|n| n.children().is_empty())
             })
-            .map(|id| egraph.canonicalize(id))
+            .map(|id| graph.canonicalize(id))
             .collect();
 
         let analysis_pending = Arc::new(Mutex::new(leaves));
@@ -68,9 +106,7 @@ impl<C: Counter> TermCount<C> {
                 let tc = &type_cache;
                 scope.spawn(move || {
                     debug!("Thread #{i} started!");
-                    TermCount::resolve_pending_analysis(
-                        limit, with_types, egraph, td, &tap, tc, tp,
-                    );
+                    TermCount::resolve_pending_analysis(limit, with_types, graph, td, &tap, tc, tp);
                     debug!("Thread #{i} finished!");
                 });
             }
@@ -78,14 +114,16 @@ impl<C: Counter> TermCount<C> {
 
         TermCount {
             data: data.into_par_iter().collect(),
+            graph,
+            type_sizes: type_cache,
         }
     }
 
     /// Process pending e-classes from the work queue.
-    fn resolve_pending_analysis<L: Label>(
+    fn resolve_pending_analysis(
         limit: usize,
         with_types: bool,
-        egraph: &EGraph<L>,
+        graph: &EGraph<L>,
         data: &DashMap<EClassId, HashMap<usize, C>>,
         analysis_pending: &Arc<Mutex<UniqueQueue<EClassId>>>,
         type_cache: &TypeSizeCache,
@@ -95,9 +133,9 @@ impl<C: Counter> TermCount<C> {
         // This has not been observed in practice, but it is a potential bottleneck.
         // Drop lock at the end of the scope
         while let Some(id) = { analysis_pending.lock().unwrap().pop() } {
-            // let canonical_id = egraph.canonicalize(id); // Only canonical ids are ever in here
-            debug_assert_eq!(egraph.canonicalize(id), id);
-            let eclass = egraph.class(id);
+            // let canonical_id = graph.canonicalize(id); // Only canonical ids are ever in here
+            debug_assert_eq!(graph.canonicalize(id), id);
+            let eclass = graph.class(id);
 
             // Check if we can calculate the analysis for any enode
             let available_data = eclass.nodes().iter().filter_map(|node| {
@@ -105,7 +143,7 @@ impl<C: Counter> TermCount<C> {
                 let all_ready = node.children().iter().all(|child_id| match child_id {
                     ExprChildId::Nat(_) | ExprChildId::Data(_) => true,
                     ExprChildId::EClass(eclass_id) => {
-                        data.contains_key(&egraph.canonicalize(*eclass_id))
+                        data.contains_key(&graph.canonicalize(*eclass_id))
                     }
                 });
                 all_ready.then(|| {
@@ -117,7 +155,7 @@ impl<C: Counter> TermCount<C> {
                     };
                     TermCount::make_node_data(
                         limit,
-                        egraph,
+                        graph,
                         node.children(),
                         data,
                         type_cache,
@@ -136,7 +174,7 @@ impl<C: Counter> TermCount<C> {
                 // If we have gained new information, put the parents onto the queue.
                 // They need to be re-evaluated.
                 // Only once we have reached a fixpoint we can stop updating the parents.
-                if !(data.get(&id).is_some_and(|v| *v == computed_data)) {
+                if data.get(&id).is_none_or(|v| *v != computed_data) {
                     if let Some(parent_set) = parents.get(&id) {
                         analysis_pending
                             .lock()
@@ -160,9 +198,9 @@ impl<C: Counter> TermCount<C> {
     }
 
     /// Compute term counts for a single e-node.
-    fn make_node_data<L: Label>(
+    fn make_node_data(
         limit: usize,
-        egraph: &EGraph<L>,
+        graph: &EGraph<L>,
         children: &[ExprChildId],
         data: &DashMap<EClassId, HashMap<usize, C>>,
         type_cache: &TypeSizeCache,
@@ -172,45 +210,36 @@ impl<C: Counter> TermCount<C> {
         let base_size = 1 + type_overhead;
 
         if children.is_empty() {
-            // Leaf node
             if base_size <= limit {
                 return HashMap::from([(base_size, C::one())]);
             }
             return HashMap::new();
         }
 
-        // For nodes with children, combine their counts
-        let mut tmp = Vec::new();
+        let Some(budget) = limit.checked_sub(base_size) else {
+            return HashMap::new();
+        };
 
-        children.iter().fold(
-            HashMap::from([(base_size, C::one())]),
-            |mut acc, child_id| {
-                let child_data = TermCount::get_child_data(egraph, *child_id, data, type_cache);
+        let histograms: Vec<_> = children
+            .iter()
+            .map(|c| TermCount::get_child_data(graph, *c, data, type_cache))
+            .collect();
+        let mut result = Self::convolve(&histograms, budget);
 
-                tmp.extend(acc.drain());
+        // Offset all keys by base_size
+        if base_size > 0 {
+            result = result
+                .into_iter()
+                .map(|(size, count)| (size + base_size, count))
+                .collect();
+        }
 
-                for (acc_size, acc_count) in &tmp {
-                    for (child_size, child_count) in &child_data {
-                        let combined_size = acc_size + child_size;
-                        if combined_size > limit {
-                            continue;
-                        }
-                        let combined_count = acc_count.to_owned() * child_count;
-                        acc.entry(combined_size)
-                            .and_modify(|c| *c += &combined_count)
-                            .or_insert(combined_count);
-                    }
-                }
-
-                tmp.clear();
-                acc
-            },
-        )
+        result
     }
 
     /// Get the count data for a child, handling Nat/Data/EClass variants.
-    fn get_child_data<L: Label>(
-        egraph: &EGraph<L>,
+    fn get_child_data(
+        graph: &EGraph<L>,
         child_id: ExprChildId,
         data: &DashMap<EClassId, HashMap<usize, C>>,
         type_cache: &TypeSizeCache,
@@ -228,7 +257,7 @@ impl<C: Counter> TermCount<C> {
             }
             ExprChildId::EClass(eclass_id) => {
                 // E-class children use the precomputed data
-                let canonical_id = egraph.canonicalize(eclass_id);
+                let canonical_id = graph.canonicalize(eclass_id);
                 data.get(&canonical_id)
                     .map(|r| r.clone())
                     .unwrap_or_default()
@@ -236,22 +265,204 @@ impl<C: Counter> TermCount<C> {
         }
     }
 
+    /// Convolve all child histograms into a single result (left-to-right).
+    fn convolve<H: Borrow<HashMap<usize, C>>>(
+        histograms: &[H],
+        budget: usize,
+    ) -> HashMap<usize, C> {
+        let mut acc = HashMap::from([(0, C::one())]);
+        let mut prev = HashMap::new();
+
+        for h in histograms {
+            std::mem::swap(&mut acc, &mut prev);
+            for (&s_acc, c_acc) in &prev {
+                for (&s_h, c_h) in h.borrow() {
+                    let total = s_acc + s_h;
+                    if total > budget {
+                        continue;
+                    }
+                    let product = c_acc.to_owned() * c_h;
+                    acc.entry(total)
+                        .and_modify(|c| *c += &product)
+                        .or_insert(product);
+                }
+            }
+            prev.clear();
+        }
+
+        acc
+    }
+
     #[must_use]
     pub fn of_eclass(&self, id: EClassId) -> Option<&HashMap<usize, C>> {
-        self.data.get(&id)
+        self.data.get(&self.graph.canonicalize(id))
+    }
+
+    // TODO : WITH TYPES
+    #[must_use]
+    pub fn sample_root<R: Rng>(
+        &self,
+        size: usize,
+        samples: usize,
+        seed: u64,
+    ) -> HashSet<TreeNode<L>> {
+        let mut rng = ChaCha12Rng::seed_from_u64(seed);
+        (0..samples)
+            .map(|_| self.sample(self.graph.root(), size, &mut rng))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn sample_class<R: Rng>(
+        &self,
+        id: EClassId,
+        size: usize,
+        samples: usize,
+        seed: u64,
+    ) -> HashSet<TreeNode<L>> {
+        let mut rng = ChaCha12Rng::seed_from_u64(seed);
+        (0..samples)
+            .map(|_| self.sample(id, size, &mut rng))
+            .collect()
+    }
+
+    /// Get the histogram for a child (size -> count).
+    fn child_histogram(&self, child_id: ExprChildId) -> Cow<'_, HashMap<usize, C>> {
+        match child_id {
+            ExprChildId::Nat(nat_id) => Cow::Owned(HashMap::from([(
+                self.type_sizes.get_nat_size(nat_id),
+                C::one(),
+            )])),
+            ExprChildId::Data(data_id) => Cow::Owned(HashMap::from([(
+                self.type_sizes.get_data_size(data_id),
+                C::one(),
+            )])),
+            ExprChildId::EClass(eclass_id) => match self.of_eclass(eclass_id) {
+                Some(h) => Cow::Borrowed(h),
+                None => Cow::Owned(HashMap::default()),
+            },
+        }
+    }
+
+    #[must_use]
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
+        let nodes = self.graph.class(id).nodes();
+
+        // Precompute per-node histograms and suffix convolutions.
+        // suffix[0] at budget `size - 1` gives the node's weight (= number of
+        // size-`size` terms it can produce), and the rest is reused for sampling.
+        let child_budget = size - 1;
+        let per_node = nodes
+            .iter()
+            .map(|n| {
+                let histograms = n
+                    .children()
+                    .iter()
+                    .map(|&c_id| self.child_histogram(c_id))
+                    .collect::<Vec<_>>();
+                let suffix = Self::suffix_convolutions(&histograms, child_budget);
+                (histograms, suffix)
+            })
+            .collect::<Vec<_>>();
+
+        // Pick a node weighted by how many terms of the target size it produces.
+        let weights: Vec<C> = per_node
+            .iter()
+            .map(|(_, suffix)| {
+                suffix[0]
+                    .get(&child_budget)
+                    .cloned()
+                    .unwrap_or_else(C::zero)
+            })
+            .collect();
+        let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
+
+        let pick = &nodes[pick_idx];
+        let children = pick.children();
+        let (ref histograms, ref suffix) = per_node[pick_idx];
+
+        if children.is_empty() {
+            return TreeNode::new(pick.label().clone(), vec![]);
+        }
+
+        // Sequentially sample a size for each child, weighting by:
+        //   count(child_i, s) * suffix_count(i+1, remaining - s)
+        let mut remaining = child_budget;
+        let mut child_sizes = Vec::with_capacity(children.len());
+
+        for i in 0..children.len() {
+            let candidates = histograms[i]
+                .iter()
+                .filter_map(|(&s, count)| {
+                    remaining
+                        .checked_sub(s)
+                        .and_then(|r| suffix[i + 1].get(&r))
+                        .map(|rest_count| (s, count.to_owned() * rest_count))
+                })
+                .collect::<Vec<_>>();
+
+            let dist = WeightedIndex::new(candidates.iter().map(|(_, w)| w)).unwrap();
+            let chosen_size = candidates[dist.sample(rng)].0;
+
+            child_sizes.push(chosen_size);
+            remaining -= chosen_size;
+        }
+
+        TreeNode::new(
+            pick.label().clone(),
+            children
+                .iter()
+                .zip(child_sizes)
+                .map(|(c_id, s)| match c_id {
+                    ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.graph, *nat_id),
+                    ExprChildId::Data(data_id) => TreeNode::from_data(self.graph, *data_id),
+                    ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
+                })
+                .collect(),
+        )
+    }
+
+    /// Convolve child histograms right-to-left, returning suffix intermediates.
+    /// `suffix[i]` = convolution of children `i..n`, mapping budget -> count.
+    fn suffix_convolutions<H: Borrow<HashMap<usize, C>>>(
+        histograms: &[H],
+        budget: usize,
+    ) -> Vec<HashMap<usize, C>> {
+        let n = histograms.len();
+        let mut suffix = vec![HashMap::new(); n + 1];
+        suffix[n] = HashMap::from([(0, C::one())]);
+
+        for i in (0..n).rev() {
+            let (left, right) = suffix.split_at_mut(i + 1);
+            for (&s_i, c_i) in histograms[i].borrow() {
+                for (&s_rest, c_rest) in &right[0] {
+                    let total = s_i + s_rest;
+                    if total > budget {
+                        continue;
+                    }
+                    let product = c_i.to_owned() * c_rest;
+                    left[i]
+                        .entry(total)
+                        .and_modify(|c: &mut C| *c += &product)
+                        .or_insert(product);
+                }
+            }
+        }
+
+        suffix
     }
 }
 
 /// Build a map from child e-class to parent e-classes.
-fn build_parent_map<L: Label>(egraph: &EGraph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
+fn build_parent_map<L: Label>(graph: &EGraph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
     let mut parents: HashMap<EClassId, HashSet<EClassId>> = HashMap::new();
 
-    for class_id in egraph.class_ids() {
-        let canonical_id = egraph.canonicalize(class_id);
-        for node in egraph.class(canonical_id).nodes() {
+    for class_id in graph.class_ids() {
+        let canonical_id = graph.canonicalize(class_id);
+        for node in graph.class(canonical_id).nodes() {
             for child_id in node.children() {
                 if let ExprChildId::EClass(child_eclass_id) = child_id {
-                    let canonical_child = egraph.canonicalize(*child_eclass_id);
+                    let canonical_child = graph.canonicalize(*child_eclass_id);
                     parents
                         .entry(canonical_child)
                         .or_default()
@@ -268,7 +479,7 @@ fn build_parent_map<L: Label>(egraph: &EGraph<L>) -> HashMap<EClassId, HashSet<E
 ///
 /// Built eagerly before parallelism via [`TypeSizeCache::build`] so that
 /// the parallel phase only needs a shared `&TypeSizeCache` (no locking).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct TypeSizeCache {
     nats: HashMap<NatId, usize>,
     data: HashMap<DataId, usize>,
@@ -277,16 +488,16 @@ struct TypeSizeCache {
 
 impl TypeSizeCache {
     /// Pre-compute sizes for every nat, data, and fun type node in the e-graph.
-    fn build<L: Label>(egraph: &EGraph<L>) -> Self {
+    fn build<L: Label>(graph: &EGraph<L>) -> Self {
         let mut cache = Self::default();
-        for id in egraph.nat_ids() {
-            cache.ensure_nat(egraph, id);
+        for id in graph.nat_ids() {
+            cache.ensure_nat(graph, id);
         }
-        for id in egraph.data_ids() {
-            cache.ensure_data(egraph, id);
+        for id in graph.data_ids() {
+            cache.ensure_data(graph, id);
         }
-        for id in egraph.fun_ids() {
-            cache.ensure_fun(egraph, id);
+        for id in graph.fun_ids() {
+            cache.ensure_fun(graph, id);
         }
         cache
     }
@@ -309,13 +520,13 @@ impl TypeSizeCache {
 
     // -- eager population helpers (called only during `new`) --
 
-    fn ensure_nat<L: Label>(&mut self, egraph: &EGraph<L>, id: NatId) {
+    fn ensure_nat<L: Label>(&mut self, graph: &EGraph<L>, id: NatId) {
         if self.nats.contains_key(&id) {
             return;
         }
-        let node = egraph.nat(id);
+        let node = graph.nat(id);
         for &child_id in node.children() {
-            self.ensure_nat(egraph, child_id);
+            self.ensure_nat(graph, child_id);
         }
         let size = 1 + node
             .children()
@@ -325,15 +536,15 @@ impl TypeSizeCache {
         self.nats.insert(id, size);
     }
 
-    fn ensure_data<L: Label>(&mut self, egraph: &EGraph<L>, id: DataId) {
+    fn ensure_data<L: Label>(&mut self, graph: &EGraph<L>, id: DataId) {
         if self.data.contains_key(&id) {
             return;
         }
-        let node = egraph.data_ty(id);
+        let node = graph.data_ty(id);
         for &child_id in node.children() {
             match child_id {
-                DataChildId::Nat(nat_id) => self.ensure_nat(egraph, nat_id),
-                DataChildId::DataType(data_id) => self.ensure_data(egraph, data_id),
+                DataChildId::Nat(nat_id) => self.ensure_nat(graph, nat_id),
+                DataChildId::DataType(data_id) => self.ensure_data(graph, data_id),
             }
         }
         let size = 1 + node
@@ -347,16 +558,16 @@ impl TypeSizeCache {
         self.data.insert(id, size);
     }
 
-    fn ensure_fun<L: Label>(&mut self, egraph: &EGraph<L>, id: FunId) {
+    fn ensure_fun<L: Label>(&mut self, graph: &EGraph<L>, id: FunId) {
         if self.funs.contains_key(&id) {
             return;
         }
-        let node = egraph.fun_ty(id);
+        let node = graph.fun_ty(id);
         for &child_id in node.children() {
             match child_id {
-                TypeChildId::Nat(nat_id) => self.ensure_nat(egraph, nat_id),
-                TypeChildId::Data(data_id) => self.ensure_data(egraph, data_id),
-                TypeChildId::Type(fun_id) => self.ensure_fun(egraph, fun_id),
+                TypeChildId::Nat(nat_id) => self.ensure_nat(graph, nat_id),
+                TypeChildId::Data(data_id) => self.ensure_data(graph, data_id),
+                TypeChildId::Type(fun_id) => self.ensure_fun(graph, fun_id),
             }
         }
         let size = 1 + node
@@ -415,7 +626,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
 
         let root_data = &term_count.data[&EClassId::new(0)];
         assert_eq!(root_data.len(), 1);
@@ -436,7 +647,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint, _>::new(10, true, &graph);
 
         let root_data = &term_count.data[&EClassId::new(0)];
         // Size = 1 (node) + 1 (typeOf) + 1 (type "0") = 3
@@ -457,7 +668,7 @@ mod tests {
             dummy_nat_nodes(),
             HashMap::new(),
         );
-        let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
 
         let root_data = &term_count.data[&EClassId::new(0)];
         // Two terms of size 1
@@ -480,7 +691,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
 
         // Class 1: one term of size 1
         assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(1u32));
@@ -508,7 +719,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
 
         // Class 1: two terms of size 1
         assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(2u32));
@@ -538,7 +749,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
 
         // Class 0: one term of size 3 (f + a + b)
         assert_eq!(term_count.data[&EClassId::new(0)][&3], BigUint::from(1u32));
@@ -574,7 +785,7 @@ mod tests {
             dummy_nat_nodes(),
             HashMap::new(),
         );
-        let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
 
         // Class 0: 2 * 3 = 6 terms of size 3
         assert_eq!(term_count.data[&EClassId::new(0)][&3], BigUint::from(6u32));
@@ -597,7 +808,7 @@ mod tests {
         );
 
         // Limit = 1, so f(a) with size 2 should be filtered out
-        let term_count = TermCount::<BigUint>::new(1, false, &graph);
+        let term_count = TermCount::<BigUint, _>::new(1, false, &graph);
 
         // Class 1 should have data (size 1)
         assert!(term_count.data.contains_key(&EClassId::new(1)));

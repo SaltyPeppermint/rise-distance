@@ -5,11 +5,14 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use indicatif::ParallelProgressIterator;
+use num::BigUint;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rand_chacha::ChaCha20Rng;
+use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 
-use crate::sampling::find_lambda_for_target_size;
+use crate::boltzmann::find_lambda_for_target_size;
+use crate::count::TermCount;
 use crate::{FixpointSampler, FixpointSamplerConfig, Sampler};
 
 use super::graph::EGraph;
@@ -72,6 +75,63 @@ impl std::ops::Add for Stats {
             full_comparisons: self.full_comparisons + rhs.full_comparisons,
         }
     }
+}
+
+/// Core Zhang-Shasha minimum distance search over a parallel iterator of candidate trees.
+///
+/// Applies size-difference and Euler-string lower-bound pruning before computing
+/// the full edit distance.
+fn find_min_zs_par<L, C, I>(
+    candidates: I,
+    reference: &TreeNode<L>,
+    costs: &C,
+    with_types: bool,
+) -> (Option<(TreeNode<L>, usize)>, Stats)
+where
+    L: Label,
+    C: EditCosts<L>,
+    I: ParallelIterator<Item = TreeNode<L>>,
+{
+    let ref_tree = if with_types {
+        reference
+    } else {
+        &reference.strip_types()
+    };
+
+    let ref_size = ref_tree.size();
+    let ref_euler = EulerString::new(ref_tree);
+    let ref_pp = PreprocessedTree::new(ref_tree);
+    let running_best = AtomicUsize::new(usize::MAX);
+
+    candidates
+        .map(|candidate| {
+            let candidate_tree = if with_types {
+                &candidate
+            } else {
+                &candidate.strip_types()
+            };
+            let best = running_best.load(Ordering::Relaxed);
+
+            if candidate_tree.size().abs_diff(ref_size) > best {
+                return (None, Stats::size_pruned());
+            }
+
+            if ref_euler.lower_bound(candidate_tree, costs) > best {
+                return (None, Stats::euler_pruned());
+            }
+
+            let distance = tree_distance_with_ref(candidate_tree, &ref_pp, costs);
+            running_best.fetch_min(distance, Ordering::Relaxed);
+
+            (Some((candidate, distance)), Stats::compared())
+        })
+        .reduce(
+            || (None, Stats::default()),
+            |a, b| {
+                let best = [a.0, b.0].into_iter().flatten().min_by_key(|v| v.1);
+                (best, a.1 + b.1)
+            },
+        )
 }
 
 /// Find the tree in the e-graph with minimum Zhang-Shasha edit distance to the reference.
@@ -149,37 +209,15 @@ pub fn find_min_exhaustive_zs<L: Label, C: EditCosts<L>>(
     (result, stats)
 }
 
-/// Find the tree in the e-graph with minimum Zhang-Shasha edit distance to the reference.
-///
-/// Uses fixpoint-based sampling instead of exhaustive enumeration. This is more efficient
-/// for large e-graphs where exhaustive search is infeasible. Samples are drawn according to
-/// a Boltzmann distribution that favors trees of a target weight.
-///
-/// Uses the same parallel pruning heuristics as exhaustive search:
-/// - Size difference lower bound
-/// - Euler string distance lower bound
-///
-/// # Arguments
-/// * `graph` - The e-graph to search
-/// * `reference` - The target tree to match
-/// * `costs` - Edit cost function
-/// * `with_types` - Whether to include type annotations in comparison
-/// * `n_samples` - Number of trees to sample from the e-graph
-/// * `target_weight` - Target tree size for the Boltzmann distribution (controls sampling bias)
-/// * `seed` - Random seed for reproducible sampling
-///
-/// # Returns
-/// A tuple of (`best_result`, statistics) where `best_result` is `Some((tree, distance))`
-/// if a tree was found.
+/// Find the tree in the e-graph with minimum Zhang-Shasha edit distance to the reference,
+/// using Boltzmann sampling. Samples are drawn according to a Boltzmann distribution that
+/// favors trees of a target weight.
 ///
 /// # Panics
 ///
-/// Panics if no sampler can be built
-///
-/// # Note
-/// The critical lambda parameter is automatically computed to target trees of the specified
+/// Panics if no sampler can be built.
 #[must_use]
-pub fn find_min_sampling_zs<L: Label, C: EditCosts<L>>(
+pub fn find_min_boltzmann_zs<L: Label, C: EditCosts<L>>(
     graph: &EGraph<L>,
     reference: &TreeNode<L>,
     costs: &C,
@@ -188,65 +226,51 @@ pub fn find_min_sampling_zs<L: Label, C: EditCosts<L>>(
     target_weight: usize,
     seed: u64,
 ) -> (Option<(TreeNode<L>, usize)>, Stats) {
-    let ref_tree = if with_types {
-        reference
-    } else {
-        &reference.strip_types()
-    };
-
-    let ref_size = ref_tree.size();
-    let ref_euler = EulerString::new(ref_tree);
-    let ref_pp = PreprocessedTree::new(ref_tree);
-    let running_best = AtomicUsize::new(usize::MAX);
-
     let mut rng = StdRng::seed_from_u64(seed);
     let config = FixpointSamplerConfig::builder().build();
     let (lambda, expected_size) =
         find_lambda_for_target_size(graph, target_weight, &config, with_types, &mut rng).unwrap();
     eprintln!("LAMBDA IS {lambda}");
     eprintln!("EXPECTED SIZE IS {expected_size}");
-    let (result, stats) = FixpointSampler::new(graph, lambda, &config, rng)
+
+    let iter = FixpointSampler::new(graph, lambda, &config, rng)
         .unwrap()
         .into_sample_iter(with_types)
         .take(n_samples)
         .par_bridge()
-        .progress_count(n_samples as u64)
-        .map(|candidate| {
-            {
-                let candidate_tree = if with_types {
-                    &candidate
-                } else {
-                    &candidate.strip_types()
-                };
-                let best = running_best.load(Ordering::Relaxed);
+        .progress_count(n_samples as u64);
 
-                // Fast pruning: size difference is a lower bound on edit distance
-                // (need at least |n1 - n2| insertions or deletions)
-                if candidate_tree.size().abs_diff(ref_size) > best {
-                    return (None, Stats::size_pruned());
-                }
+    find_min_zs_par(iter, reference, costs, with_types)
+}
 
-                // Euler string heuristic: EDS(s(T1), s(T2)) ≤ 2 · EDT(T1, T2)
-                // Therefore EDT ≥ EDS / 2, giving us a tighter lower bound
-                if ref_euler.lower_bound(candidate_tree, costs) > best {
-                    return (None, Stats::euler_pruned());
-                }
-
-                let distance = tree_distance_with_ref(candidate_tree, &ref_pp, costs);
-                running_best.fetch_min(distance, Ordering::Relaxed);
-
-                (Some((candidate, distance)), Stats::compared())
-            }
+/// Find the tree in the e-graph with minimum Zhang-Shasha edit distance to the reference,
+/// using count-based uniform sampling. For each size in `[min_size, max_size]`, samples
+/// `samples_per_size` terms uniformly at random.
+#[must_use]
+pub fn find_min_count_zs<L: Label, C: EditCosts<L>>(
+    term_count: &TermCount<BigUint, L>,
+    reference: &TreeNode<L>,
+    costs: &C,
+    with_types: bool,
+    min_size: usize,
+    max_size: usize,
+    samples_per_size: usize,
+) -> (Option<(TreeNode<L>, usize)>, Stats) {
+    let candidates: Vec<_> = (min_size..=max_size)
+        .flat_map(|size| {
+            term_count
+                .sample_root::<ChaCha20Rng>(size, samples_per_size, size as u64)
+                .into_iter()
         })
-        .reduce(
-            || (None, Stats::default()),
-            |a, b| {
-                let best = [a.0, b.0].into_iter().flatten().min_by_key(|v| v.1);
-                (best, a.1 + b.1)
-            },
-        );
+        .collect();
 
-    (result, stats)
+    let n_candidates = candidates.len();
+
+    let iter = candidates
+        .into_par_iter()
+        .progress_count(n_candidates as u64);
+
+    find_min_zs_par(iter, reference, costs, with_types)
 }
 
 /// Find the tree in the e-graph with minimum structural difference to the reference.

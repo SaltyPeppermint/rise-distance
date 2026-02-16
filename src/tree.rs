@@ -15,7 +15,7 @@ use super::ids::{DataChildId, DataId, EClassId, FunId, NatId, TypeChildId};
 use super::nodes::Label;
 
 /// A node in a labeled, ordered tree.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, std::hash::Hash, PartialEq, Eq)]
 #[serde(bound(deserialize = "L: Label"))]
 pub struct TreeNode<L: Label> {
     label: L,
@@ -55,53 +55,53 @@ impl<L: Label> TreeNode<L> {
 
     /// Build a type tree from an e-class's type annotation.
     #[must_use]
-    pub fn from_eclass(egraph: &EGraph<L>, id: EClassId) -> Self {
-        let ty_id = egraph.class(id).ty();
-        Self::from_type(egraph, ty_id)
+    pub fn from_eclass(graph: &EGraph<L>, id: EClassId) -> Self {
+        let ty_id = graph.class(id).ty();
+        Self::from_type(graph, ty_id)
     }
 
-    fn from_type(egraph: &EGraph<L>, id: TypeChildId) -> Self {
+    fn from_type(graph: &EGraph<L>, id: TypeChildId) -> Self {
         match id {
-            TypeChildId::Nat(nat_id) => Self::from_nat(egraph, nat_id),
-            TypeChildId::Type(fun_ty_id) => Self::from_fun(egraph, fun_ty_id),
-            TypeChildId::Data(data_ty_id) => Self::from_data(egraph, data_ty_id),
+            TypeChildId::Nat(nat_id) => Self::from_nat(graph, nat_id),
+            TypeChildId::Type(fun_ty_id) => Self::from_fun(graph, fun_ty_id),
+            TypeChildId::Data(data_ty_id) => Self::from_data(graph, data_ty_id),
         }
     }
 
-    fn from_fun(egraph: &EGraph<L>, id: FunId) -> Self {
-        let node = egraph.fun_ty(id).label().to_owned();
-        let children = egraph
+    fn from_fun(graph: &EGraph<L>, id: FunId) -> Self {
+        let node = graph.fun_ty(id).label().to_owned();
+        let children = graph
             .fun_ty(id)
             .children()
             .iter()
-            .map(|&c_id| Self::from_type(egraph, c_id))
+            .map(|&c_id| Self::from_type(graph, c_id))
             .collect();
         TreeNode::new(node, children)
     }
 
     #[must_use]
-    pub fn from_data(egraph: &EGraph<L>, id: DataId) -> Self {
-        let node = egraph.data_ty(id).label().to_owned();
-        let children = egraph
+    pub fn from_data(graph: &EGraph<L>, id: DataId) -> Self {
+        let node = graph.data_ty(id).label().to_owned();
+        let children = graph
             .data_ty(id)
             .children()
             .iter()
             .map(|&c_id| match c_id {
-                DataChildId::Nat(nat_id) => Self::from_nat(egraph, nat_id),
-                DataChildId::DataType(data_ty_id) => Self::from_data(egraph, data_ty_id),
+                DataChildId::Nat(nat_id) => Self::from_nat(graph, nat_id),
+                DataChildId::DataType(data_ty_id) => Self::from_data(graph, data_ty_id),
             })
             .collect();
         TreeNode::new(node, children)
     }
 
     #[must_use]
-    pub fn from_nat(egraph: &EGraph<L>, id: NatId) -> Self {
-        let node = egraph.nat(id).label().to_owned();
-        let children = egraph
+    pub fn from_nat(graph: &EGraph<L>, id: NatId) -> Self {
+        let node = graph.nat(id).label().to_owned();
+        let children = graph
             .nat(id)
             .children()
             .iter()
-            .map(|&c_id| Self::from_nat(egraph, c_id))
+            .map(|&c_id| Self::from_nat(graph, c_id))
             .collect();
         TreeNode::new(node, children)
     }

@@ -14,16 +14,16 @@ use super::nodes::Label;
 pub struct ChoiceIter<'a, L: Label> {
     choices: Vec<usize>,
     path: PathTracker,
-    egraph: &'a EGraph<L>,
+    graph: &'a EGraph<L>,
 }
 
 impl<'a, L: Label> ChoiceIter<'a, L> {
     #[must_use]
-    pub fn new(egraph: &'a EGraph<L>, max_revisits: usize) -> Self {
+    pub fn new(graph: &'a EGraph<L>, max_revisits: usize) -> Self {
         Self {
             choices: Vec::new(),
             path: PathTracker::new(max_revisits),
-            egraph,
+            graph,
         }
     }
 
@@ -39,7 +39,7 @@ impl<'a, L: Label> ChoiceIter<'a, L> {
             return None;
         }
 
-        let class = self.egraph.class(id);
+        let class = self.graph.class(id);
 
         // Determine starting node and whether to advance children
         let (start_node, advance_children) = if let Some(&c) = self.choices.get(choice_idx) {
@@ -131,7 +131,7 @@ impl<L: Label> Iterator for ChoiceIter<'_, L> {
         // On subsequent calls, choices contains the previous result, so advance=true
         // finds the next tree.
         let advance = !self.choices.is_empty();
-        let root = self.egraph.root();
+        let root = self.graph.root();
 
         self.next_choices(root, 0, advance)?;
 
@@ -141,19 +141,19 @@ impl<L: Label> Iterator for ChoiceIter<'_, L> {
 
 /// Count the number of trees in an e-graph with the given revisit limit.
 #[must_use]
-pub fn count_trees<L: Label>(egraph: &EGraph<L>, max_revisits: usize) -> usize {
+pub fn count_trees<L: Label>(graph: &EGraph<L>, max_revisits: usize) -> usize {
     let mut path = PathTracker::new(max_revisits);
-    count_trees_rec(egraph, egraph.root(), &mut path)
+    count_trees_rec(graph, graph.root(), &mut path)
 }
 
-fn count_trees_rec<L: Label>(egraph: &EGraph<L>, id: EClassId, path: &mut PathTracker) -> usize {
+fn count_trees_rec<L: Label>(graph: &EGraph<L>, id: EClassId, path: &mut PathTracker) -> usize {
     // Cycle detection
     if !path.can_visit(id) {
         return 0;
     }
 
     path.enter(id);
-    let count = egraph
+    let count = graph
         .class(id)
         .nodes()
         .iter()
@@ -162,7 +162,7 @@ fn count_trees_rec<L: Label>(egraph: &EGraph<L>, id: EClassId, path: &mut PathTr
                 .iter()
                 .map(|child_id| {
                     if let ExprChildId::EClass(inner_id) = child_id {
-                        count_trees_rec(egraph, *inner_id, path)
+                        count_trees_rec(graph, *inner_id, path)
                     } else {
                         1
                     }
