@@ -792,7 +792,7 @@ mod tests {
     #[test]
     fn deserialize_json_file() {
         let graph = EGraph::<String>::parse_from_file(Path::new(
-            "data/rise/egraph_jsons/ser_egraph_vectorization_SRL_step_2_iteration_0_root_150.json",
+            "data/egraph_jsons/ser_egraph_vectorization_SRL_step_2_iteration_0_root_150.json",
         ));
 
         // Verify root is correct
