@@ -3,11 +3,13 @@ use std::path::Path;
 use std::time::Instant;
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use log::{info, warn};
 use num::BigUint;
 use num::ToPrimitive;
 
 use rise_distance::{
     EClassId, EGraph, Expr, RiseLabel, Stats, TermCount, TreeNode, UnitCost, find_min_count_zs,
+    tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -23,6 +25,10 @@ struct Args {
     /// Include type annotations in size calculations
     #[arg(short = 't', long)]
     with_types: bool,
+
+    /// Suppress log output (only warnings and errors)
+    #[arg(short, long)]
+    quiet: bool,
 
     #[command(subcommand)]
     mode: Mode,
@@ -106,17 +112,26 @@ struct RefSource {
 fn main() {
     let args = Args::parse();
 
-    println!("Loading e-graph from: {}", args.egraph);
+    env_logger::Builder::new()
+        .filter_level(if args.quiet {
+            log::LevelFilter::Warn
+        } else {
+            log::LevelFilter::Info
+        })
+        .parse_default_env()
+        .init();
+
+    info!("Loading e-graph from: {}", args.egraph);
     let graph = EGraph::parse_from_file(Path::new(&args.egraph));
 
     let root = graph.root();
-    println!("  Root e-class: {root:?}");
-    println!("  Limit: {}", args.limit);
-    println!("  With types: {}", args.with_types);
+    info!("Root e-class: {root:?}");
+    info!("Limit: {}", args.limit);
+    info!("With types: {}", args.with_types);
 
     let start = Instant::now();
     let term_count = TermCount::<BigUint, RiseLabel>::new(args.limit, args.with_types, &graph);
-    println!("  Counting completed in {:.2?}", start.elapsed());
+    info!("Counting completed in {:.2?}", start.elapsed());
 
     match args.mode {
         Mode::Hist {
@@ -166,14 +181,14 @@ fn main() {
 
 fn parse_ref(source: &RefSource) -> TreeNode<RiseLabel> {
     if let Some(expr) = &source.expr {
-        println!("Parsing reference tree from command line...");
+        info!("Parsing reference tree from command line...");
         expr.parse::<Expr>()
             .expect("Failed to parse Rise expression")
             .to_tree()
     } else {
         let file = source.file.as_ref().unwrap();
         let name = source.name.as_ref().unwrap();
-        println!("Parsing reference tree '{name}' from file...");
+        info!("Parsing reference tree '{name}' from file...");
         let content =
             fs::read_to_string(file).unwrap_or_else(|e| panic!("Failed to read '{file}': {e}"));
         content
@@ -206,11 +221,11 @@ fn run_extraction(
 ) {
     let ref_node_count = ref_tree.size_with_types();
     let ref_stripped_count = ref_tree.size();
-    println!("  Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
+    info!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();
-    println!("\n--- Zhang-Shasha extraction (count-based sampling, with lower-bound pruning) ---");
-    println!("  Sampling {samples_per_size} terms per size from {min_size} to {max_size}");
+    info!("Zhang-Shasha extraction (count-based sampling, with lower-bound pruning)");
+    info!("Sampling {samples_per_size} terms per size from {min_size} to {max_size}");
 
     if let (Some(result), stats) = find_min_count_zs(
         term_count,
@@ -220,37 +235,56 @@ fn run_extraction(
         max_size,
         samples_per_size,
     ) {
-        print_stats(&result, &stats, start.elapsed());
+        print_stats(&result, ref_tree, &stats, start.elapsed());
     } else {
-        println!("  No result found!");
+        warn!("No result found!");
     }
 }
 
-fn print_stats(result: &(TreeNode<RiseLabel>, usize), stats: &Stats, elapsed: std::time::Duration) {
-    println!("  Best distance: {}", result.1);
-    println!("  Time: {elapsed:.2?}");
-    println!("\n  Statistics:");
-    println!("    Trees enumerated:   {}", stats.trees_enumerated);
+fn print_stats(
+    result: &(TreeNode<RiseLabel>, usize),
+    ref_tree: &TreeNode<RiseLabel>,
+    stats: &Stats,
+    elapsed: std::time::Duration,
+) {
+    info!("Best distance: {}", result.1);
+    info!("Time: {elapsed:.2?}");
+    info!("Statistics:");
+    info!("  Trees enumerated:   {}", stats.trees_enumerated);
     #[expect(clippy::cast_precision_loss)]
     {
-        println!(
-            "    Trees size pruned:  {} ({:.1}%)",
+        info!(
+            "  Trees size pruned:  {} ({:.1}%)",
             stats.size_pruned,
             100.0 * stats.size_pruned as f64 / stats.trees_enumerated as f64
         );
-        println!(
-            "    Trees euler pruned: {} ({:.1}%)",
+        info!(
+            "  Trees euler pruned: {} ({:.1}%)",
             stats.euler_pruned,
             100.0 * stats.euler_pruned as f64 / stats.trees_enumerated as f64
         );
-        println!(
-            "    Full comparisons:   {} ({:.1}%)",
+        info!(
+            "  Full comparisons:   {} ({:.1}%)",
             stats.full_comparisons,
             100.0 * stats.full_comparisons as f64 / stats.trees_enumerated as f64
         );
     }
-    println!("\n  Best tree:");
-    println!("{}", result.0);
+
+    let best = &result.0;
+    let zs_dist = tree_distance_unit(&best.flatten(true), &ref_tree.flatten(true));
+    info!("ZS distance to ref: {zs_dist}");
+    info!(
+        "Best tree size: {} with types, {} without",
+        best.size_with_types(),
+        best.size()
+    );
+    info!(
+        "Ref tree size: {} with types, {} without",
+        ref_tree.size_with_types(),
+        ref_tree.size()
+    );
+
+    println!("{best}");
 }
 
 struct DisplayConfig {
@@ -282,9 +316,9 @@ fn print_histogram(
     data: &TermCount<BigUint, RiseLabel>,
     fmt: &DisplayConfig,
 ) {
-    println!("\n--- {label} ---");
+    info!("--- {label} ---");
     let Some(histogram) = data.of_eclass(id) else {
-        println!("  (no data)");
+        info!("  (no data)");
         return;
     };
 
@@ -301,13 +335,13 @@ fn print_histogram(
             .max()
             .unwrap_or(0);
         for (size, count) in &sizes {
-            println!(
+            info!(
                 "  size {size:>4}: {:>width$}",
                 format_count(count, fmt.scientific),
                 width = count_width
             );
         }
-        println!(
+        info!(
             "  total:     {:>width$}",
             format_count(&total, fmt.scientific),
             width = count_width
@@ -351,12 +385,12 @@ fn print_bar_chart(
             0
         };
         let bar = "#".repeat(bar_len);
-        println!(
+        info!(
             "  size {size:>4} | {bar:<width$} | {:>cw$}",
             format_count(count, scientific),
             width = bar_width,
             cw = count_width
         );
     }
-    println!("\n  total: {total_str}");
+    info!("  total: {total_str}");
 }
