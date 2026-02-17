@@ -159,7 +159,6 @@ fn main() {
                 }),
                 args.limit,
                 samples,
-                args.with_types,
             );
         }
     }
@@ -204,7 +203,6 @@ fn run_extraction(
     min_size: usize,
     max_size: usize,
     samples_per_size: u64,
-    with_types: bool,
 ) {
     let ref_node_count = ref_tree.size();
     let ref_stripped_count = ref_tree.strip_types().size();
@@ -218,7 +216,6 @@ fn run_extraction(
         term_count,
         ref_tree,
         &UnitCost,
-        with_types,
         min_size,
         max_size,
         samples_per_size,

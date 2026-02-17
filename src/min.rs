@@ -6,19 +6,17 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use indicatif::ParallelProgressIterator;
-use num::BigUint;
 use rand::SeedableRng;
-
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
 use crate::boltzmann::find_lambda_for_target_size;
-use crate::count::TermCount;
+use crate::count::{Counter, TermCount};
 use crate::{FixpointSampler, FixpointSamplerConfig, Sampler};
 
+use super::euler_str::EulerString;
 use super::graph::EGraph;
 use super::nodes::Label;
-use super::str::EulerString;
 use super::structural::structural_diff;
 use super::tree::TreeNode;
 use super::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
@@ -82,15 +80,15 @@ impl std::ops::Add for Stats {
 ///
 /// Applies size-difference and Euler-string lower-bound pruning before computing
 /// the full edit distance.
-fn find_min_zs_par<L, C, I>(
+fn find_min_zs_par<L, CF, I>(
     candidates: I,
     reference: &TreeNode<L>,
-    costs: &C,
+    costs: &CF,
     with_types: bool,
 ) -> (Option<(TreeNode<L>, usize)>, Stats)
 where
     L: Label,
-    C: EditCosts<L>,
+    CF: EditCosts<L>,
     I: ParallelIterator<Item = TreeNode<L>>,
 {
     let ref_tree = if with_types {
@@ -152,10 +150,10 @@ where
 /// A tuple of (`best_result`, statistics) where `best_result` is `Some((tree, distance))`
 /// if a tree was found.
 #[must_use]
-pub fn find_min_exhaustive_zs<L: Label, C: EditCosts<L>>(
+pub fn find_min_exhaustive_zs<L: Label, CF: EditCosts<L>>(
     graph: &EGraph<L>,
     reference: &TreeNode<L>,
-    costs: &C,
+    costs: &CF,
     max_revisits: usize,
     with_types: bool,
 ) -> (Option<(TreeNode<L>, usize)>, Stats) {
@@ -218,10 +216,10 @@ pub fn find_min_exhaustive_zs<L: Label, C: EditCosts<L>>(
 ///
 /// Panics if no sampler can be built.
 #[must_use]
-pub fn find_min_boltzmann_zs<L: Label, C: EditCosts<L>>(
+pub fn find_min_boltzmann_zs<L: Label, CF: EditCosts<L>>(
     graph: &EGraph<L>,
     reference: &TreeNode<L>,
-    costs: &C,
+    costs: &CF,
     with_types: bool,
     n_samples: usize,
     target_weight: usize,
@@ -248,11 +246,10 @@ pub fn find_min_boltzmann_zs<L: Label, C: EditCosts<L>>(
 /// using count-based uniform sampling. For each size in `[min_size, max_size]`, samples
 /// `samples_per_size` terms uniformly at random.
 #[must_use]
-pub fn find_min_count_zs<L: Label, C: EditCosts<L>>(
-    term_count: &TermCount<BigUint, L>,
+pub fn find_min_count_zs<L: Label, C: Counter, CF: EditCosts<L>>(
+    term_count: &TermCount<C, L>,
     reference: &TreeNode<L>,
-    costs: &C,
-    with_types: bool,
+    costs: &CF,
     min_size: usize,
     max_size: usize,
     samples_per_size: u64,
@@ -268,7 +265,7 @@ pub fn find_min_count_zs<L: Label, C: EditCosts<L>>(
         .into_par_iter()
         .progress_count(n_candidates as u64);
 
-    find_min_zs_par(iter, reference, costs, with_types)
+    find_min_zs_par(iter, reference, costs, term_count.with_types())
 }
 
 /// Find the tree in the e-graph with minimum structural difference to the reference.

@@ -35,7 +35,6 @@ pub trait Counter:
     + SampleUniform
     + PartialEq
     + PartialOrd
-    + From<usize>
     + Product // + Weight
 {
 }
@@ -51,7 +50,6 @@ impl<
         + SampleUniform
         + PartialEq
         + PartialOrd
-        + From<usize>
         + Product, // + Weight,
 > Counter for T
 {
@@ -504,6 +502,11 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         }
 
         suffix
+    }
+
+    #[must_use]
+    pub fn with_types(&self) -> bool {
+        self.with_types
     }
 }
 
