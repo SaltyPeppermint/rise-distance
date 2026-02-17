@@ -91,35 +91,27 @@ where
     CF: EditCosts<L>,
     I: ParallelIterator<Item = TreeNode<L>>,
 {
-    let ref_tree = if with_types {
-        reference
-    } else {
-        &reference.strip_types()
-    };
+    let ref_flat = reference.flatten(with_types);
 
-    let ref_size = ref_tree.size();
-    let ref_euler = EulerString::new(ref_tree);
-    let ref_pp = PreprocessedTree::new(ref_tree);
+    let ref_size = ref_flat.size();
+    let ref_euler = EulerString::new(&ref_flat);
+    let ref_pp = PreprocessedTree::new(&ref_flat);
     let running_best = AtomicUsize::new(usize::MAX);
 
     candidates
         .map(|candidate| {
-            let candidate_tree = if with_types {
-                &candidate
-            } else {
-                &candidate.strip_types()
-            };
+            let candidate_flat = candidate.flatten(with_types);
             let best = running_best.load(Ordering::Relaxed);
 
-            if candidate_tree.size().abs_diff(ref_size) > best {
+            if candidate_flat.size().abs_diff(ref_size) > best {
                 return (None, Stats::size_pruned());
             }
 
-            if ref_euler.lower_bound(candidate_tree, costs) > best {
+            if ref_euler.lower_bound(&candidate_flat, costs) > best {
                 return (None, Stats::euler_pruned());
             }
 
-            let distance = tree_distance_with_ref(candidate_tree, &ref_pp, costs);
+            let distance = tree_distance_with_ref(&candidate_flat, &ref_pp, costs);
             running_best.fetch_min(distance, Ordering::Relaxed);
 
             (Some((candidate, distance)), Stats::compared())
@@ -157,15 +149,11 @@ pub fn find_min_exhaustive_zs<L: Label, CF: EditCosts<L>>(
     max_revisits: usize,
     with_types: bool,
 ) -> (Option<(TreeNode<L>, usize)>, Stats) {
-    let ref_tree = if with_types {
-        reference
-    } else {
-        &reference.strip_types()
-    };
+    let ref_tree = reference.flatten(with_types);
 
     let ref_size = ref_tree.size();
-    let ref_euler = EulerString::new(ref_tree);
-    let ref_pp = PreprocessedTree::new(ref_tree);
+    let ref_euler = EulerString::new(&ref_tree);
+    let ref_pp = PreprocessedTree::new(&ref_tree);
     let running_best = AtomicUsize::new(usize::MAX);
 
     let (result, stats) = graph
@@ -174,27 +162,26 @@ pub fn find_min_exhaustive_zs<L: Label, CF: EditCosts<L>>(
         .progress_count(graph.count_trees(max_revisits) as u64)
         .map(|choices| {
             {
-                let stripped_candidated =
-                    graph.tree_from_choices(graph.root(), &choices, with_types);
+                let candidate = graph.tree_from_choices(graph.root(), &choices);
+                let flat_candidate = candidate.flatten(with_types);
                 let best = running_best.load(Ordering::Relaxed);
 
                 // Fast pruning: size difference is a lower bound on edit distance
                 // (need at least |n1 - n2| insertions or deletions)
-                if stripped_candidated.size().abs_diff(ref_size) > best {
+                if flat_candidate.size().abs_diff(ref_size) > best {
                     return (None, Stats::size_pruned());
                 }
 
                 // Euler string heuristic: EDS(s(T1), s(T2)) ≤ 2 · EDT(T1, T2)
                 // Therefore EDT ≥ EDS / 2, giving us a tighter lower bound
-                if ref_euler.lower_bound(&stripped_candidated, costs) > best {
+                if ref_euler.lower_bound(&flat_candidate, costs) > best {
                     return (None, Stats::euler_pruned());
                 }
 
-                let distance = tree_distance_with_ref(&stripped_candidated, &ref_pp, costs);
+                let distance = tree_distance_with_ref(&flat_candidate, &ref_pp, costs);
                 running_best.fetch_min(distance, Ordering::Relaxed);
 
-                let tree = graph.tree_from_choices(graph.root(), &choices, true);
-                (Some((tree, distance)), Stats::compared())
+                (Some((candidate, distance)), Stats::compared())
             }
         })
         .reduce(
@@ -289,20 +276,16 @@ pub fn find_min_struct<L: Label, C: EditCosts<L>>(
     with_types: bool,
     ignore_labels: bool,
 ) -> Option<(TreeNode<L>, usize)> {
-    let ref_tree = if with_types {
-        reference
-    } else {
-        &reference.strip_types()
-    };
+    let ref_tree = reference.flatten(with_types);
     graph
         .choice_iter(max_revisits)
         .par_bridge()
         .progress_count(graph.count_trees(max_revisits) as u64)
         .map(|choices| {
-            let stripped_candidated = graph.tree_from_choices(graph.root(), &choices, with_types);
-            let distance = structural_diff(ref_tree, &stripped_candidated, costs, ignore_labels);
-            let tree = graph.tree_from_choices(graph.root(), &choices, true);
-            (tree, distance)
+            let candidate = graph.tree_from_choices(graph.root(), &choices);
+            let flat_candidate = candidate.flatten(with_types);
+            let distance = structural_diff(&ref_tree, &flat_candidate, costs, ignore_labels);
+            (candidate, distance)
         })
         .min_by_key(|(_, d)| *d)
 }
@@ -318,11 +301,11 @@ mod tests {
     use crate::zs::UnitCost;
 
     fn leaf<L: Label>(label: impl Into<L>) -> TreeNode<L> {
-        TreeNode::leaf(label.into())
+        TreeNode::leaf_untyped(label.into())
     }
 
     fn node<L: Label>(label: L, children: Vec<TreeNode<L>>) -> TreeNode<L> {
-        TreeNode::new(label, children)
+        TreeNode::new_untyped(label, children)
     }
 
     fn eid(i: usize) -> ExprChildId {

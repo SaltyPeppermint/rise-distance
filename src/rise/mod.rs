@@ -67,21 +67,29 @@ mod tests {
     #[test]
     fn rise_label_works_with_zs() {
         // Create two simple trees with RiseLabel
-        let tree1 = TreeNode::new(
+        let tree1 = TreeNode::new_untyped(
             RiseLabel::App,
             vec![
-                TreeNode::leaf(RiseLabel::Primitive(Primitive::Map)),
-                TreeNode::new(RiseLabel::Lambda, vec![TreeNode::leaf(RiseLabel::Var(0))]),
+                TreeNode::leaf_untyped(RiseLabel::Primitive(Primitive::Map)),
+                TreeNode::new_untyped(
+                    RiseLabel::Lambda,
+                    vec![TreeNode::leaf_untyped(RiseLabel::Var(0))],
+                ),
             ],
-        );
+        )
+        .flatten(false);
 
-        let tree2 = TreeNode::new(
+        let tree2 = TreeNode::new_untyped(
             RiseLabel::App,
             vec![
-                TreeNode::leaf(RiseLabel::Primitive(Primitive::Map)),
-                TreeNode::new(RiseLabel::Lambda, vec![TreeNode::leaf(RiseLabel::Var(1))]),
+                TreeNode::leaf_untyped(RiseLabel::Primitive(Primitive::Map)),
+                TreeNode::new_untyped(
+                    RiseLabel::Lambda,
+                    vec![TreeNode::leaf_untyped(RiseLabel::Var(1))],
+                ),
             ],
-        );
+        )
+        .flatten(false);
 
         // Same structure, different variable index - should be distance 1
         let distance = tree_distance_unit(&tree1, &tree2);
@@ -96,9 +104,9 @@ mod tests {
     fn rise_label_with_floats_in_zs() {
         use ordered_float::OrderedFloat;
 
-        let tree1 = TreeNode::leaf(RiseLabel::FloatLit(OrderedFloat(3.11)));
-        let tree2 = TreeNode::leaf(RiseLabel::FloatLit(OrderedFloat(3.11)));
-        let tree3 = TreeNode::leaf(RiseLabel::FloatLit(OrderedFloat(2.71)));
+        let tree1 = TreeNode::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).flatten(false);
+        let tree2 = TreeNode::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).flatten(false);
+        let tree3 = TreeNode::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(2.71))).flatten(false);
 
         // Same float value - distance 0
         assert_eq!(tree_distance_unit(&tree1, &tree2), 0);
@@ -112,8 +120,8 @@ mod tests {
         let expr1: Expr = "(app map (lam $e0))".parse().unwrap();
         let expr2: Expr = "(app map (lam $e1))".parse().unwrap();
 
-        let tree1 = expr1.to_untyped_tree();
-        let tree2 = expr2.to_untyped_tree();
+        let tree1 = expr1.to_tree().flatten(false);
+        let tree2 = expr2.to_tree().flatten(false);
 
         // Different variable index - distance 1
         assert_eq!(tree_distance_unit(&tree1, &tree2), 1);

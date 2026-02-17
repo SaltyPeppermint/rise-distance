@@ -1,11 +1,13 @@
-use super::{EditCosts, Label, TreeNode};
+use crate::tree::FlattenedTreeNode;
+
+use super::{EditCosts, Label};
 
 /// Very simple structural diff.
 /// The idea is to ignore the labels and just look at how much of the goal tree,
 /// starting from the root, is already present.
 pub fn structural_diff<L: Label, C: EditCosts<L>>(
-    reference: &TreeNode<L>,
-    candidate: &TreeNode<L>,
+    reference: &FlattenedTreeNode<L>,
+    candidate: &FlattenedTreeNode<L>,
     costs: &C,
     ignore_labels: bool,
 ) -> usize {
@@ -24,7 +26,7 @@ pub fn structural_diff<L: Label, C: EditCosts<L>>(
     children_diff
 }
 
-fn cost_rec<L: Label, C: EditCosts<L>>(tree: &TreeNode<L>, costs: &C) -> usize {
+fn cost_rec<L: Label, C: EditCosts<L>>(tree: &FlattenedTreeNode<L>, costs: &C) -> usize {
     costs.insert(tree.label())
         + tree
             .children()
@@ -36,14 +38,14 @@ fn cost_rec<L: Label, C: EditCosts<L>>(tree: &TreeNode<L>, costs: &C) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::UnitCost;
+    use crate::{TreeNode, UnitCost};
 
     fn leaf<L: Label>(label: L) -> TreeNode<L> {
-        TreeNode::leaf(label)
+        TreeNode::leaf_untyped(label)
     }
 
     fn node<L: Label>(label: L, children: Vec<TreeNode<L>>) -> TreeNode<L> {
-        TreeNode::new(label, children)
+        TreeNode::new_untyped(label, children)
     }
 
     #[test]
@@ -51,29 +53,32 @@ mod tests {
         let tree1 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-        );
+        )
+        .flatten(true);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-        );
+        )
+        .flatten(true);
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 0);
     }
 
     #[test]
     fn identical_leaves() {
-        let tree1 = leaf("a".to_owned());
-        let tree2 = leaf("b".to_owned());
+        let tree1 = leaf("a".to_owned()).flatten(true);
+        let tree2 = leaf("b".to_owned()).flatten(true);
         // Labels are ignored, both are leaves with no children
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 0);
     }
 
     #[test]
     fn different_child_count_at_root() {
-        let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]);
+        let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(true);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-        );
+        )
+        .flatten(true);
         // Different number of children -> cost of entire reference tree
         // tree1 has 2 nodes: "a" and "b"
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 2);
@@ -92,7 +97,8 @@ mod tests {
                 "b".to_owned(),
                 vec![leaf("c".to_owned()), leaf("d".to_owned())],
             )],
-        );
+        )
+        .flatten(true);
         // Tree 2:    a
         //            |
         //            b
@@ -101,7 +107,8 @@ mod tests {
         let tree2 = node(
             "a".to_owned(),
             vec![node("b".to_owned(), vec![leaf("c".to_owned())])],
-        );
+        )
+        .flatten(true);
         // Root matches (1 child each), but b's children differ (2 vs 1)
         // Cost is the subtree rooted at b in reference: b, c, d = 3 nodes
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 3);
@@ -113,11 +120,13 @@ mod tests {
         let tree1 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-        );
+        )
+        .flatten(true);
         let tree2 = node(
             "x".to_owned(),
             vec![leaf("y".to_owned()), leaf("z".to_owned())],
-        );
+        )
+        .flatten(true);
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 0);
     }
 
@@ -130,14 +139,16 @@ mod tests {
                 "b".to_owned(),
                 vec![node("c".to_owned(), vec![leaf("d".to_owned())])],
             )],
-        );
+        )
+        .flatten(true);
         let tree2 = node(
             "w".to_owned(),
             vec![node(
                 "x".to_owned(),
                 vec![node("y".to_owned(), vec![leaf("z".to_owned())])],
             )],
-        );
+        )
+        .flatten(true);
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 0);
     }
 
@@ -158,7 +169,8 @@ mod tests {
                 leaf("c".to_owned()),
                 leaf("d".to_owned()),
             ],
-        );
+        )
+        .flatten(true);
 
         // Tree 2:       a
         //             / | \
@@ -172,7 +184,8 @@ mod tests {
                 leaf("c".to_owned()),
                 leaf("d".to_owned()),
             ],
-        );
+        )
+        .flatten(true);
 
         // Root has 3 children in both - match
         // b has 2 children in tree1 vs 1 in tree2 - mismatch at b
@@ -183,11 +196,12 @@ mod tests {
 
     #[test]
     fn leaf_vs_node_with_children() {
-        let tree1 = leaf("a".to_owned());
+        let tree1 = leaf("a".to_owned()).flatten(true);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-        );
+        )
+        .flatten(true);
         // tree1 (reference) is a leaf (0 children), tree2 has 2 children
         // Mismatch at root -> cost of reference = 1 node
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 1);
@@ -198,8 +212,9 @@ mod tests {
         let tree1 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-        );
-        let tree2 = leaf("a".to_owned());
+        )
+        .flatten(true);
+        let tree2 = leaf("a".to_owned()).flatten(true);
         // tree1 (reference) has 2 children, tree2 has 0
         // Mismatch at root -> cost of reference = 3 nodes
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 3);

@@ -78,7 +78,7 @@ fn main() {
             sexpr
                 .parse::<Expr>()
                 .expect("Failed to parse Rise expression")
-                .to_tree(args.with_types)
+                .to_tree()
         });
     }
 }
@@ -131,8 +131,8 @@ where
 
 #[expect(clippy::cast_precision_loss)]
 fn run_extraction<L: Label>(graph: &EGraph<L>, ref_tree: &TreeNode<L>, args: &Args) {
-    let ref_node_count = ref_tree.size();
-    let ref_stripped_count = ref_tree.strip_types().size();
+    let ref_node_count = ref_tree.size_with_types();
+    let ref_stripped_count = ref_tree.size();
     println!("  Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();

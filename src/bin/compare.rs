@@ -16,7 +16,7 @@ struct Args {
 
     /// Strip type annotations from trees before comparison
     #[arg(long)]
-    strip_types: bool,
+    with_types: bool,
 }
 
 fn main() {
@@ -25,27 +25,28 @@ fn main() {
         .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", args.file));
 
     if args.raw_strings {
-        run(&content, |sexpr| {
-            let raw_tree: TreeNode<String> = sexpr.parse().expect("Failed to parse s-expression");
-            if args.strip_types {
-                raw_tree.strip_types()
-            } else {
+        run(
+            &content,
+            |sexpr| {
+                let raw_tree: TreeNode<String> =
+                    sexpr.parse().expect("Failed to parse s-expression");
                 raw_tree
-            }
-        });
+            },
+            args.with_types,
+        );
     } else {
-        run(&content, |sexpr| {
-            let expr: Expr = sexpr.parse().expect("Failed to parse Rise expression");
-            if args.strip_types {
-                expr.to_untyped_tree()
-            } else {
-                expr.to_typed_tree()
-            }
-        });
+        run(
+            &content,
+            |sexpr| {
+                let expr: Expr = sexpr.parse().expect("Failed to parse Rise expression");
+                expr.to_tree()
+            },
+            args.with_types,
+        );
     }
 }
 
-fn run<L, F>(content: &str, parse_tree: F)
+fn run<L, F>(content: &str, parse_tree: F, with_types: bool)
 where
     L: Label,
     F: Fn(&str) -> TreeNode<L>,
@@ -59,10 +60,10 @@ where
         })
         .collect();
 
-    print_distance_matrix(&trees);
+    print_distance_matrix(&trees, with_types);
 }
 
-fn print_distance_matrix<L>(trees: &[(String, TreeNode<L>)])
+fn print_distance_matrix<L>(trees: &[(String, TreeNode<L>)], with_types: bool)
 where
     L: Label,
 {
@@ -96,7 +97,10 @@ where
     let mut distances = vec![vec![0; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let dist = tree_distance_unit(&trees[i].1, &trees[j].1);
+            let dist = tree_distance_unit(
+                &trees[i].1.flatten(with_types),
+                &trees[j].1.flatten(with_types),
+            );
             distances[i][j] = dist;
             distances[j][i] = dist;
         }

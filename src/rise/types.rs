@@ -162,12 +162,14 @@ impl DataType {
     pub fn to_tree(&self) -> TreeNode<RiseLabel> {
         match self {
             DataType::Var(_) | DataType::Scalar(_) | DataType::NatT => {
-                TreeNode::leaf(self.to_label())
+                TreeNode::leaf_untyped(self.to_label())
             }
-            DataType::Index(n) => TreeNode::new(self.to_label(), vec![n.to_tree()]),
-            DataType::Pair(a, b) => TreeNode::new(self.to_label(), vec![a.to_tree(), b.to_tree()]),
+            DataType::Index(n) => TreeNode::new_untyped(self.to_label(), vec![n.to_tree()]),
+            DataType::Pair(a, b) => {
+                TreeNode::new_untyped(self.to_label(), vec![a.to_tree(), b.to_tree()])
+            }
             DataType::Array(n, dt) | DataType::Vector(n, dt) => {
-                TreeNode::new(self.to_label(), vec![n.to_tree(), dt.to_tree()])
+                TreeNode::new_untyped(self.to_label(), vec![n.to_tree(), dt.to_tree()])
             }
         }
     }
@@ -304,9 +306,11 @@ impl Type {
     pub fn to_tree(&self) -> TreeNode<RiseLabel> {
         match self {
             Type::Data(dt) => dt.to_tree(),
-            Type::Fun(a, b) => TreeNode::new(self.to_label(), vec![a.to_tree(), b.to_tree()]),
+            Type::Fun(a, b) => {
+                TreeNode::new_untyped(self.to_label(), vec![a.to_tree(), b.to_tree()])
+            }
             Type::NatFun(t) | Type::DataFun(t) | Type::AddrFun(t) | Type::NatNatFun(t) => {
-                TreeNode::new(self.to_label(), vec![t.to_tree()])
+                TreeNode::new_untyped(self.to_label(), vec![t.to_tree()])
             }
         }
     }

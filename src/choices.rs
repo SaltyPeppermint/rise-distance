@@ -275,7 +275,7 @@ mod tests {
 
         let trees = graph
             .choice_iter(1)
-            .map(|c| graph.tree_from_choices(graph.root(), &c, false).to_string())
+            .map(|c| graph.tree_from_choices(graph.root(), &c).to_string())
             .collect::<Vec<_>>();
         assert!(trees.contains(&"(a (b d) (c d))".to_owned()));
         assert!(trees.contains(&"(a (b d) (c (rec d)))".to_owned()));

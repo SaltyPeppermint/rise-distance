@@ -58,7 +58,7 @@ impl Address {
     /// Convert this address to a `TreeNode<RiseLabel>`.
     #[must_use]
     pub fn to_tree(&self) -> TreeNode<RiseLabel> {
-        TreeNode::leaf(self.to_label())
+        TreeNode::leaf_untyped(self.to_label())
     }
 }
 

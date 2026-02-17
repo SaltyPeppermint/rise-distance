@@ -147,7 +147,7 @@ fn main() {
             samples,
             ref reference,
         } => {
-            let ref_tree = parse_ref(reference, args.with_types);
+            let ref_tree = parse_ref(reference);
             run_extraction(
                 &term_count,
                 &ref_tree,
@@ -164,12 +164,12 @@ fn main() {
     }
 }
 
-fn parse_ref(source: &RefSource, with_types: bool) -> TreeNode<RiseLabel> {
+fn parse_ref(source: &RefSource) -> TreeNode<RiseLabel> {
     if let Some(expr) = &source.expr {
         println!("Parsing reference tree from command line...");
         expr.parse::<Expr>()
             .expect("Failed to parse Rise expression")
-            .to_tree(with_types)
+            .to_tree()
     } else {
         let file = source.file.as_ref().unwrap();
         let name = source.name.as_ref().unwrap();
@@ -187,7 +187,7 @@ fn parse_ref(source: &RefSource, with_types: bool) -> TreeNode<RiseLabel> {
                             .trim()
                             .parse::<Expr>()
                             .expect("Failed to parse Rise expression")
-                            .to_tree(with_types),
+                            .to_tree(),
                     )
                 } else {
                     None
@@ -204,8 +204,8 @@ fn run_extraction(
     max_size: usize,
     samples_per_size: u64,
 ) {
-    let ref_node_count = ref_tree.size();
-    let ref_stripped_count = ref_tree.strip_types().size();
+    let ref_node_count = ref_tree.size_with_types();
+    let ref_stripped_count = ref_tree.size();
     println!("  Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();

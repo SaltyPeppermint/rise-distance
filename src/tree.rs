@@ -19,21 +19,45 @@ use super::nodes::Label;
 #[serde(bound(deserialize = "L: Label"))]
 pub struct TreeNode<L: Label> {
     label: L,
+    ty: Option<Box<TreeNode<L>>>,
     children: Vec<TreeNode<L>>,
 }
 
 impl<L: Label> TreeNode<L> {
     /// Create a leaf node with no children.
-    pub fn leaf(label: L) -> Self {
+    pub fn leaf_untyped(label: L) -> Self {
         TreeNode {
             label,
+            ty: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// Create a leaf node with no children.
+    pub fn leaf_typed(label: L, ty: Option<TreeNode<L>>) -> Self {
+        TreeNode {
+            label,
+            ty: ty.map(Box::new),
             children: Vec::new(),
         }
     }
 
     /// Create a node with the given children.
-    pub fn new(label: L, children: Vec<TreeNode<L>>) -> Self {
-        TreeNode { label, children }
+    pub fn new_untyped(label: L, children: Vec<TreeNode<L>>) -> Self {
+        TreeNode {
+            label,
+            ty: None,
+            children,
+        }
+    }
+
+    /// Create a node with the given children.
+    pub fn new_typed(label: L, children: Vec<TreeNode<L>>, ty: Option<TreeNode<L>>) -> Self {
+        TreeNode {
+            label,
+            ty: ty.map(Box::new),
+            children,
+        }
     }
 
     /// Returns true if this node has no children.
@@ -76,7 +100,7 @@ impl<L: Label> TreeNode<L> {
             .iter()
             .map(|&c_id| Self::from_type(graph, c_id))
             .collect();
-        TreeNode::new(node, children)
+        TreeNode::new_untyped(node, children)
     }
 
     #[must_use]
@@ -91,7 +115,7 @@ impl<L: Label> TreeNode<L> {
                 DataChildId::DataType(data_ty_id) => Self::from_data(graph, data_ty_id),
             })
             .collect();
-        TreeNode::new(node, children)
+        TreeNode::new_untyped(node, children)
     }
 
     #[must_use]
@@ -103,7 +127,7 @@ impl<L: Label> TreeNode<L> {
             .iter()
             .map(|&c_id| Self::from_nat(graph, c_id))
             .collect();
-        TreeNode::new(node, children)
+        TreeNode::new_untyped(node, children)
     }
 
     /// Count total number of nodes in this tree.
@@ -111,15 +135,45 @@ impl<L: Label> TreeNode<L> {
         1 + self.children.iter().map(Self::size).sum::<usize>()
     }
 
-    /// Strip the types for quicker comparison
-    #[must_use]
-    pub fn strip_types(&self) -> Self {
-        if self.label().is_type_of() {
-            self.children[0].strip_types()
-        } else {
-            TreeNode {
+    pub fn size_with_types(&self) -> usize {
+        1 + self.children.iter().map(Self::size).sum::<usize>()
+            + self.ty.as_deref().map_or(0, |t| t.size())
+    }
+
+    pub fn flatten(&self, with_types: bool) -> FlattenedTreeNode<L> {
+        if !with_types {
+            return FlattenedTreeNode {
                 label: self.label().clone(),
-                children: self.children.iter().map(|c| c.strip_types()).collect(),
+                children: self
+                    .children()
+                    .iter()
+                    .map(|c| c.flatten(with_types))
+                    .collect(),
+            };
+        }
+        if let Some(ty) = &self.ty {
+            FlattenedTreeNode {
+                label: L::type_of(),
+                children: vec![
+                    FlattenedTreeNode {
+                        label: self.label.clone(),
+                        children: self
+                            .children()
+                            .iter()
+                            .map(|c| c.flatten(with_types))
+                            .collect(),
+                    },
+                    ty.flatten(with_types),
+                ],
+            }
+        } else {
+            FlattenedTreeNode {
+                label: self.label().clone(),
+                children: self
+                    .children()
+                    .iter()
+                    .map(|c| c.flatten(with_types))
+                    .collect(),
             }
         }
     }
@@ -139,21 +193,49 @@ impl<L: Label + Display> Display for TreeNode<L> {
     }
 }
 
-impl FromStr for TreeNode<String> {
+impl<L> FromStr for TreeNode<L>
+where
+    L: Label + FromStr,
+    <L as FromStr>::Err: Display,
+{
     type Err = SexpError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         /// Parse a type tree (no typeOf wrappers).
-        fn parse_expr(sexp: Sexp) -> Result<TreeNode<String>, SexpError> {
+        fn parse_expr<L>(sexp: Sexp) -> Result<TreeNode<L>, SexpError>
+        where
+            L: Label + FromStr,
+            <L as FromStr>::Err: Display,
+        {
             match sexp {
-                Sexp::String(s) => Ok(TreeNode::leaf(s)),
-                Sexp::List(sexps) => {
+                Sexp::String(s) => Ok(TreeNode::leaf_untyped(
+                    s.parse::<L>()
+                        .map_err(|e| SexpError::Other(e.to_string()))?,
+                )),
+                Sexp::List(mut sexps) => {
+                    if sexps.len() == 3
+                        && let Some(Sexp::String(s)) = sexps.first()
+                        && s == &L::type_of().to_string()
+                    {
+                        sexps.remove(0);
+                        let expr_sexp = sexps.remove(0);
+                        let type_sexp = sexps.remove(0);
+
+                        let mut expr_node = parse_expr(expr_sexp)?;
+                        let type_node = parse_expr(type_sexp)?;
+
+                        expr_node.ty = Some(Box::new(type_node));
+                        return Ok(expr_node);
+                    }
+
                     let mut iter = sexps.into_iter();
                     let Some(Sexp::String(label)) = iter.next() else {
                         return Err(SexpError::Other("expected (label ...)".to_owned()));
                     };
-                    Ok(TreeNode::new(
-                        label,
+                    Ok(TreeNode::new_untyped(
+                        label
+                            .parse::<L>()
+                            .map_err(|e| SexpError::Other(e.to_string()))?,
                         iter.map(parse_expr).collect::<Result<_, _>>()?,
                     ))
                 }
@@ -178,6 +260,32 @@ impl IntoSexp for TreeNode<String> {
                     .collect::<Vec<_>>(),
             )
         }
+    }
+}
+
+/// A node in a labeled, ordered tree.
+#[derive(Debug, Clone, std::hash::Hash, PartialEq, Eq)]
+pub struct FlattenedTreeNode<L: Label> {
+    label: L,
+    children: Vec<FlattenedTreeNode<L>>,
+}
+
+impl<L: Label> FlattenedTreeNode<L> {
+    pub fn children(&self) -> &[FlattenedTreeNode<L>] {
+        &self.children
+    }
+
+    pub fn label(&self) -> &L {
+        &self.label
+    }
+
+    /// Returns true if this node has no children.
+    pub fn is_leaf(&self) -> bool {
+        self.children.is_empty()
+    }
+
+    pub fn size(&self) -> usize {
+        1 + self.children.iter().map(Self::size).sum::<usize>()
     }
 }
 

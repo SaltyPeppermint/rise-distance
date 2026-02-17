@@ -419,20 +419,15 @@ impl<'a, L: Label, R: Rng> FixpointSampler<'a, L, R> {
             .choose_weighted(&mut self.rng, |node| (log_weights[node] - max_log).exp())
             .expect("weights are always positive");
 
-        let expr_tree = TreeNode::new(
+        Some(TreeNode::new_typed(
             chosen_node.label().clone(),
             chosen_node
                 .children()
                 .iter()
                 .map(|c| self.sample_child(c, depth + 1, with_types))
                 .collect::<Option<_>>()?,
-        );
-        if with_types {
-            let type_tree = TreeNode::from_eclass(self.graph, id);
-            Some(TreeNode::new(L::type_of(), vec![expr_tree, type_tree]))
-        } else {
-            Some(expr_tree)
-        }
+            Some(TreeNode::from_eclass(self.graph, id)),
+        ))
     }
 
     /// Sample a child, dispatching on child type.

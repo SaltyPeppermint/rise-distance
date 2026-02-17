@@ -72,12 +72,14 @@ impl Nat {
     #[must_use]
     pub fn to_tree(&self) -> TreeNode<RiseLabel> {
         match self {
-            Nat::Var(_) | Nat::Cst(_) => TreeNode::leaf(self.to_label()),
+            Nat::Var(_) | Nat::Cst(_) => TreeNode::leaf_untyped(self.to_label()),
             Nat::Add(a, b)
             | Nat::Mul(a, b)
             | Nat::Pow(a, b)
             | Nat::Mod(a, b)
-            | Nat::FloorDiv(a, b) => TreeNode::new(self.to_label(), vec![a.to_tree(), b.to_tree()]),
+            | Nat::FloorDiv(a, b) => {
+                TreeNode::new_untyped(self.to_label(), vec![a.to_tree(), b.to_tree()])
+            }
         }
     }
 }

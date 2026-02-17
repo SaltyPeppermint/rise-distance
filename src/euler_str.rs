@@ -11,8 +11,8 @@
 //! using standard string edit distance, useful for pruning in tree distance computations.
 
 use super::nodes::Label;
-use super::tree::TreeNode;
 use super::zs::EditCosts;
+use crate::tree::FlattenedTreeNode;
 
 /// Euler string element - distinguishes entering vs leaving a node.
 ///
@@ -80,8 +80,8 @@ fn euler_string_edit_distance<L: Label, C: EditCosts<L>>(
 /// Returns `ceil(EDS(euler(t1), euler(t2)) / 2)` which is a valid lower bound
 /// on the tree edit distance between t1 and t2.
 pub fn tree_distance_euler_bound<L: Label, C: EditCosts<L>>(
-    t1: &TreeNode<L>,
-    t2: &TreeNode<L>,
+    t1: &FlattenedTreeNode<L>,
+    t2: &FlattenedTreeNode<L>,
     costs: &C,
 ) -> usize {
     EulerString::new(t1).lower_bound(t2, costs)
@@ -115,8 +115,11 @@ impl<'a, L: Label> EulerString<'a, L> {
     ///
     /// The Euler string records each node with Enter when entering the subtree
     /// and Leave when leaving. This gives a string of length 2n for a tree with n nodes.
-    pub fn new(tree: &'a TreeNode<L>) -> Self {
-        fn build<'b, LL: Label>(node: &'b TreeNode<LL>, out: &mut Vec<EulerSymbol<'b, LL>>) {
+    pub fn new(tree: &'a FlattenedTreeNode<L>) -> Self {
+        fn build<'b, LL: Label>(
+            node: &'b FlattenedTreeNode<LL>,
+            out: &mut Vec<EulerSymbol<'b, LL>>,
+        ) {
             out.push(EulerSymbol::Enter(node.label()));
             for child in node.children() {
                 build(child, out);
@@ -129,7 +132,7 @@ impl<'a, L: Label> EulerString<'a, L> {
     }
 
     /// Compute a lower bound on tree edit distance to the given tree.
-    pub fn lower_bound<C: EditCosts<L>>(&self, tree: &'a TreeNode<L>, costs: &C) -> usize {
+    pub fn lower_bound<C: EditCosts<L>>(&self, tree: &'a FlattenedTreeNode<L>, costs: &C) -> usize {
         let other = Self::new(tree);
         let eds = euler_string_edit_distance(&self.string, &other.string, costs);
         eds.div_ceil(2)
@@ -139,19 +142,20 @@ impl<'a, L: Label> EulerString<'a, L> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TreeNode;
     use crate::zs::UnitCost;
 
     fn leaf(label: &str) -> TreeNode<String> {
-        TreeNode::leaf(label.to_owned())
+        TreeNode::leaf_untyped(label.to_owned())
     }
 
     fn node(label: &str, children: Vec<TreeNode<String>>) -> TreeNode<String> {
-        TreeNode::new(label.to_owned(), children)
+        TreeNode::new_untyped(label.to_owned(), children)
     }
 
     #[test]
     fn euler_string_leaf() {
-        let tree = leaf("a");
+        let tree = leaf("a").flatten(false);
         let euler = EulerString::new(&tree);
         assert_eq!(
             euler.string,
@@ -167,7 +171,7 @@ mod tests {
         //     a
         //    / \
         //   b   c
-        let tree = node("a", vec![leaf("b"), leaf("c")]);
+        let tree = node("a", vec![leaf("b"), leaf("c")]).flatten(false);
         let euler = EulerString::new(&tree);
         let [b, c] = tree.children() else { panic!() };
         // Enter a, enter b, leave b, enter c, leave c, leave a
@@ -191,7 +195,7 @@ mod tests {
         //     b
         //     |
         //     c
-        let tree = node("a", vec![node("b", vec![leaf("c")])]);
+        let tree = node("a", vec![node("b", vec![leaf("c")])]).flatten(false);
         let euler = EulerString::new(&tree);
         let [b] = tree.children() else { panic!() };
         let [c] = b.children() else { panic!() };
@@ -252,15 +256,15 @@ mod tests {
 
     #[test]
     fn lower_bound_identical() {
-        let tree = node("a", vec![leaf("b"), leaf("c")]);
+        let tree = node("a", vec![leaf("b"), leaf("c")]).flatten(false);
         assert_eq!(tree_distance_euler_bound(&tree, &tree, &UnitCost), 0);
     }
 
     #[test]
     fn lower_bound_valid() {
         // The lower bound should always be <= actual tree edit distance
-        let t1 = node("a", vec![leaf("b"), leaf("c")]);
-        let t2 = node("a", vec![leaf("b")]);
+        let t1 = node("a", vec![leaf("b"), leaf("c")]).flatten(false);
+        let t2 = node("a", vec![leaf("b")]).flatten(false);
 
         let lb = tree_distance_euler_bound(&t1, &t2, &UnitCost);
         // Actual distance is 1 (delete c), lower bound should be <= 1
@@ -269,8 +273,8 @@ mod tests {
 
     #[test]
     fn euler_string_precomputed() {
-        let t1 = node("a", vec![leaf("b"), leaf("c")]);
-        let t2 = node("a", vec![leaf("b")]);
+        let t1 = node("a", vec![leaf("b"), leaf("c")]).flatten(false);
+        let t2 = node("a", vec![leaf("b")]).flatten(false);
 
         let euler_ref = EulerString::new(&t1);
         let lb = euler_ref.lower_bound(&t2, &UnitCost);
