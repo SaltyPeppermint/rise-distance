@@ -15,7 +15,7 @@ use rand::distributions::WeightedIndex;
 use rand::distributions::uniform::SampleUniform;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use super::graph::EGraph;
 use super::ids::{DataChildId, DataId, EClassId, ExprChildId, FunId, NatId, TypeChildId};
@@ -61,6 +61,10 @@ impl<
 #[derive(Debug, Clone)]
 pub struct TermCount<'a, C: Counter, L: Label> {
     data: HashMap<EClassId, HashMap<usize, C>>,
+    /// Per e-class, per node index: precomputed suffix convolution tables.
+    /// `suffix_cache[eclass][node_idx][i]` = convolution of children `i..n`,
+    /// mapping budget -> count. Computed once at max budget (`limit - 1`).
+    suffix_cache: HashMap<EClassId, Vec<Vec<HashMap<usize, C>>>>,
     graph: &'a EGraph<L>,
     type_sizes: TypeSizeCache,
 }
@@ -78,7 +82,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     #[must_use]
     pub fn new(limit: usize, with_types: bool, graph: &EGraph<L>) -> TermCount<'_, C, L> {
         // Build parent map and type size cache
-        let parents = build_parent_map(graph);
+        let parents = Self::build_parent_map(graph);
         let type_cache = TypeSizeCache::build(graph);
 
         // Find leaf classes (classes with at least one leaf node)
@@ -112,8 +116,10 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             }
         });
 
+        let suffix_cache = Self::build_suffix_cache(limit, graph, &data, &type_cache);
         TermCount {
             data: data.into_par_iter().collect(),
+            suffix_cache,
             graph,
             type_sizes: type_cache,
         }
@@ -237,6 +243,28 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         result
     }
 
+    /// Build a map from child e-class to parent e-classes.
+    fn build_parent_map(graph: &EGraph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
+        let mut parents: HashMap<EClassId, HashSet<EClassId>> = HashMap::new();
+
+        for class_id in graph.class_ids() {
+            let canonical_id = graph.canonicalize(class_id);
+            for node in graph.class(canonical_id).nodes() {
+                for child_id in node.children() {
+                    if let ExprChildId::EClass(child_eclass_id) = child_id {
+                        let canonical_child = graph.canonicalize(*child_eclass_id);
+                        parents
+                            .entry(canonical_child)
+                            .or_default()
+                            .insert(canonical_id);
+                    }
+                }
+            }
+        }
+
+        parents
+    }
+
     /// Get the count data for a child, handling Nat/Data/EClass variants.
     fn get_child_data(
         graph: &EGraph<L>,
@@ -342,31 +370,45 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         }
     }
 
+    /// Build suffix convolution tables for all e-classes at the maximum budget.
+    fn build_suffix_cache(
+        limit: usize,
+        graph: &EGraph<L>,
+        data: &DashMap<EClassId, HashMap<usize, C>>,
+        type_cache: &TypeSizeCache,
+    ) -> HashMap<EClassId, Vec<Vec<HashMap<usize, C>>>> {
+        let max_budget = limit.saturating_sub(1);
+        data.par_iter()
+            .map(|entry| {
+                let id = *entry.key();
+                let nodes = graph.class(id).nodes();
+                let per_node = nodes
+                    .iter()
+                    .map(|n| {
+                        let histograms: Vec<_> = n
+                            .children()
+                            .iter()
+                            .map(|&c_id| Self::get_child_data(graph, c_id, data, type_cache))
+                            .collect();
+                        Self::suffix_convolutions(&histograms, max_budget)
+                    })
+                    .collect();
+                (id, per_node)
+            })
+            .collect()
+    }
+
     #[must_use]
     fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
-        let nodes = self.graph.class(id).nodes();
-
-        // Precompute per-node histograms and suffix convolutions.
-        // suffix[0] at budget `size - 1` gives the node's weight (= number of
-        // size-`size` terms it can produce), and the rest is reused for sampling.
+        let canonical_id = self.graph.canonicalize(id);
+        let nodes = self.graph.class(canonical_id).nodes();
         let child_budget = size - 1;
-        let per_node = nodes
-            .iter()
-            .map(|n| {
-                let histograms = n
-                    .children()
-                    .iter()
-                    .map(|&c_id| self.child_histogram(c_id))
-                    .collect::<Vec<_>>();
-                let suffix = Self::suffix_convolutions(&histograms, child_budget);
-                (histograms, suffix)
-            })
-            .collect::<Vec<_>>();
+        let cached = &self.suffix_cache[&canonical_id];
 
         // Pick a node weighted by how many terms of the target size it produces.
-        let weights: Vec<C> = per_node
+        let weights: Vec<C> = cached
             .iter()
-            .map(|(_, suffix)| {
+            .map(|suffix| {
                 suffix[0]
                     .get(&child_budget)
                     .cloned()
@@ -377,7 +419,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
         let pick = &nodes[pick_idx];
         let children = pick.children();
-        let (ref histograms, ref suffix) = per_node[pick_idx];
+        let suffix = &cached[pick_idx];
 
         if children.is_empty() {
             return TreeNode::new(pick.label().clone(), vec![]);
@@ -388,8 +430,9 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         let mut remaining = child_budget;
         let mut child_sizes = Vec::with_capacity(children.len());
 
-        for i in 0..children.len() {
-            let candidates = histograms[i]
+        for (i, &c_id) in children.iter().enumerate() {
+            let histogram = self.child_histogram(c_id);
+            let candidates = histogram
                 .iter()
                 .filter_map(|(&s, count)| {
                     remaining
@@ -449,28 +492,6 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
         suffix
     }
-}
-
-/// Build a map from child e-class to parent e-classes.
-fn build_parent_map<L: Label>(graph: &EGraph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
-    let mut parents: HashMap<EClassId, HashSet<EClassId>> = HashMap::new();
-
-    for class_id in graph.class_ids() {
-        let canonical_id = graph.canonicalize(class_id);
-        for node in graph.class(canonical_id).nodes() {
-            for child_id in node.children() {
-                if let ExprChildId::EClass(child_eclass_id) = child_id {
-                    let canonical_child = graph.canonicalize(*child_eclass_id);
-                    parents
-                        .entry(canonical_child)
-                        .or_default()
-                        .insert(canonical_id);
-                }
-            }
-        }
-    }
-
-    parents
 }
 
 /// Cache for type node sizes to avoid repeated computation.
