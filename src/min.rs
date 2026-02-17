@@ -397,8 +397,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.1, 0);
-        assert_eq!(result.0.label(), "typeOf");
-        assert_eq!(result.0.children()[0].label(), "a");
+        assert_eq!(result.0.label(), "a");
     }
 
     #[test]
@@ -440,8 +439,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.1, 0);
-        assert_eq!(result.0.children().len(), 2);
-        assert_eq!(result.0.children()[0].children().len(), 1);
+        assert_eq!(result.0.label(), "a");
+        assert_eq!(result.0.children().len(), 1);
+        assert_eq!(result.0.children()[0].label(), "b");
     }
 
     #[test]
@@ -511,8 +511,7 @@ mod tests {
             .0
             .unwrap();
         assert_eq!(result.1, 0);
-        assert_eq!(result.0.label(), "typeOf");
-        assert_eq!(result.0.children()[0].label(), "a");
+        assert_eq!(result.0.label(), "a");
     }
 
     #[test]

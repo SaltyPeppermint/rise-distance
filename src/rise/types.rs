@@ -414,13 +414,13 @@ mod tests {
 
     #[test]
     fn parse_type_scalar() {
-        let ty: Type = "f32".parse().unwrap();
+        let ty = "f32".parse::<Type>().unwrap();
         assert_eq!(ty, Type::Data(DataType::Scalar(ScalarType::F32)));
     }
 
     #[test]
     fn parse_type_fun() {
-        let ty: Type = "(fun f32 f32)".parse().unwrap();
+        let ty = "(fun f32 f32)".parse::<Type>().unwrap();
         assert_eq!(
             ty,
             Type::Fun(
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn parse_type_array() {
-        let ty: Type = "(arrT 10n f32)".parse().unwrap();
+        let ty = "(arrT 10n f32)".parse::<Type>().unwrap();
         assert_eq!(
             ty,
             Type::Data(DataType::Array(
@@ -452,7 +452,7 @@ mod tests {
             )),
         );
         let sexp = ty.into_sexp().to_string();
-        let parsed: Type = sexp.parse().unwrap();
+        let parsed = sexp.parse::<Type>().unwrap();
         assert_eq!(ty, parsed);
     }
 }

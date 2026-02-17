@@ -117,8 +117,8 @@ mod tests {
 
     #[test]
     fn rise_expr_to_tree_with_zs() {
-        let expr1: Expr = "(app map (lam $e0))".parse().unwrap();
-        let expr2: Expr = "(app map (lam $e1))".parse().unwrap();
+        let expr1 = "(app map (lam $e0))".parse::<Expr>().unwrap();
+        let expr2 = "(app map (lam $e1))".parse::<Expr>().unwrap();
 
         let tree1 = expr1.to_tree().flatten(false);
         let tree2 = expr2.to_tree().flatten(false);

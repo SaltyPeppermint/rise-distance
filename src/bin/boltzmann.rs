@@ -89,13 +89,9 @@ where
     F: Fn(&str) -> TreeNode<L>,
 {
     println!("Loading e-graph from: {}", args.graph);
-
-    let graph: EGraph<L> = EGraph::parse_from_file(Path::new(&args.graph));
-
+    let graph = EGraph::<L>::parse_from_file(Path::new(&args.graph));
     println!("  Root e-class: {:?}", graph.root());
-
     let ref_tree = parse_ref(args, parse_tree);
-
     run_extraction(&graph, &ref_tree, args);
 }
 
@@ -104,29 +100,27 @@ where
     L: Label,
     F: Fn(&str) -> TreeNode<L>,
 {
-    let ref_tree: TreeNode<L> = if let Some(expr) = &args.reference.expr {
+    if let Some(expr) = &args.reference.expr {
         println!("Parsing reference tree from command line...");
-        parse_tree(expr)
-    } else {
-        let file = args.reference.file.as_ref().unwrap();
-        let name = args.reference.name.as_ref().unwrap();
-        println!("Parsing reference tree '{name}' from file...");
-        let content =
-            fs::read_to_string(file).unwrap_or_else(|e| panic!("Failed to read '{file}': {e}"));
-        content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .find_map(|line| {
-                let (n, sexpr) = line.split_once(':').expect("Line must be 'Name: sexpr'");
-                if n.trim() == name {
-                    Some(parse_tree(sexpr.trim()))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| panic!("No tree with name {name} found"))
-    };
-    ref_tree
+        return parse_tree(expr);
+    }
+    let file = args.reference.file.as_ref().unwrap();
+    let name = args.reference.name.as_ref().unwrap();
+    println!("Parsing reference tree '{name}' from file...");
+    let content =
+        fs::read_to_string(file).unwrap_or_else(|e| panic!("Failed to read '{file}': {e}"));
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .find_map(|line| {
+            let (n, sexpr) = line.split_once(':').expect("Line must be 'Name: sexpr'");
+            if n.trim() == name {
+                Some(parse_tree(sexpr.trim()))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| panic!("No tree with name {name} found"))
 }
 
 #[expect(clippy::cast_precision_loss)]

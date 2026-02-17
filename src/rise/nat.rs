@@ -222,19 +222,19 @@ mod tests {
 
     #[test]
     fn parse_nat_var() {
-        let nat: Nat = "$n0".parse().unwrap();
+        let nat = "$n0".parse::<Nat>().unwrap();
         assert_eq!(nat, Nat::Var(0));
     }
 
     #[test]
     fn parse_nat_cst() {
-        let nat: Nat = "42n".parse().unwrap();
+        let nat = "42n".parse::<Nat>().unwrap();
         assert_eq!(nat, Nat::Cst(42));
     }
 
     #[test]
     fn parse_nat_add() {
-        let nat: Nat = "(natAdd $n0 5n)".parse().unwrap();
+        let nat = "(natAdd $n0 5n)".parse::<Nat>().unwrap();
         assert_eq!(nat, Nat::Add(Box::new(Nat::Var(0)), Box::new(Nat::Cst(5))));
     }
 
@@ -242,7 +242,7 @@ mod tests {
     fn sexp_roundtrip_nat() {
         let nat = Nat::add_node(Nat::var_node(0), Nat::cst_node(5));
         let sexp = nat.into_sexp().to_string();
-        let parsed: Nat = sexp.parse().unwrap();
+        let parsed = sexp.parse::<Nat>().unwrap();
         assert_eq!(nat, parsed);
     }
 }

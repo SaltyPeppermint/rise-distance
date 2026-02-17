@@ -77,6 +77,10 @@ impl<L: Label> TreeNode<L> {
         &self.label
     }
 
+    pub fn ty(&self) -> Option<&TreeNode<L>> {
+        self.ty.as_deref()
+    }
+
     /// Build a type tree from an e-class's type annotation.
     #[must_use]
     pub fn from_eclass(graph: &EGraph<L>, id: EClassId) -> Self {
@@ -299,7 +303,7 @@ mod tests {
 
         // Parse a simple s-expression and serialize it back
         let input = "(f a b)";
-        let tree: TreeNode<String> = input.parse().unwrap();
+        let tree = input.parse::<TreeNode<String>>().unwrap();
 
         assert_eq!(tree.label(), "f");
         assert_eq!(tree.children().len(), 2);
@@ -316,7 +320,7 @@ mod tests {
 
         // Nested s-expressions
         let input = "(a (b c) (d e))";
-        let tree: TreeNode<String> = input.parse().unwrap();
+        let tree = input.parse::<TreeNode<String>>().unwrap();
 
         assert_eq!(tree.label(), "a");
         assert_eq!(tree.children().len(), 2);
@@ -335,7 +339,7 @@ mod tests {
 
         // Expression with a type-like structure
         let input = "(-> int (-> int int))";
-        let tree: TreeNode<String> = input.parse().unwrap();
+        let tree = input.parse::<TreeNode<String>>().unwrap();
 
         assert_eq!(tree.label(), "->");
         assert_eq!(tree.children().len(), 2);
@@ -351,7 +355,7 @@ mod tests {
         use symbolic_expressions::IntoSexp;
 
         let input = "(natLam (natLam (natLam (lam (lam (app (app map (lam (app (app map (lam (app (app (app reduce add) 0.0) (app (app map (lam (app (app mul (app fst $e0)) (app snd $e0)))) (app (app zip $e1) $e0))))) (app transpose $e1)))) $e1))))))";
-        let tree: TreeNode<String> = input.parse().unwrap();
+        let tree = input.parse::<TreeNode<String>>().unwrap();
 
         assert_eq!(tree.label(), "natLam");
 
@@ -364,7 +368,7 @@ mod tests {
         use symbolic_expressions::IntoSexp;
 
         let input = "x";
-        let tree: TreeNode<String> = input.parse().unwrap();
+        let tree = input.parse::<TreeNode<String>>().unwrap();
 
         assert_eq!(tree.label(), "x");
         assert!(tree.is_leaf());

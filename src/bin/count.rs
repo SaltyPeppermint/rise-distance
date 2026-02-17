@@ -288,9 +288,9 @@ fn print_histogram(
         return;
     };
 
-    let mut sizes: Vec<_> = histogram.iter().collect();
+    let mut sizes = histogram.iter().collect::<Vec<_>>();
     sizes.sort_by_key(|(size, _)| *size);
-    let total: BigUint = histogram.values().sum();
+    let total = histogram.values().sum::<BigUint>();
 
     if fmt.pretty {
         print_bar_chart(&sizes, &total, fmt.scientific, fmt.bar_width);

@@ -116,7 +116,7 @@ pub mod eclass_id_vec {
     where
         S: Serializer,
     {
-        let indices: Vec<usize> = vec.iter().map(|k| k.0).collect();
+        let indices = vec.iter().map(|k| k.0).collect::<Vec<_>>();
         indices.serialize(serializer)
     }
 
@@ -124,7 +124,7 @@ pub mod eclass_id_vec {
     where
         D: Deserializer<'de>,
     {
-        let vec: Vec<usize> = Vec::deserialize(deserializer)?;
+        let vec = Vec::<usize>::deserialize(deserializer)?;
         Ok(vec.into_iter().map(EClassId::new).collect())
     }
 }
@@ -176,7 +176,7 @@ pub mod numeric_key_map {
             {
                 let mut map = HashMap::with_capacity(access.size_hint().unwrap_or(0));
                 while let Some((key, value)) = access.next_entry::<String, V>()? {
-                    let index: usize = key.parse().map_err(serde::de::Error::custom)?;
+                    let index = key.parse::<usize>().map_err(serde::de::Error::custom)?;
                     map.insert(K::from_index(index), value);
                 }
                 Ok(map)
@@ -225,7 +225,7 @@ mod tests {
         let id = EClassId::new(99);
         let json = serde_json::to_string(&id).unwrap();
         assert_eq!(json, "\"EClassId(99)\"");
-        let parsed: EClassId = serde_json::from_str(&json).unwrap();
+        let parsed = serde_json::from_str::<EClassId>(&json).unwrap();
         assert_eq!(parsed, id);
     }
 }

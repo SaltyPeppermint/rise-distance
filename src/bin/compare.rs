@@ -28,9 +28,9 @@ fn main() {
         run(
             &content,
             |sexpr| {
-                let raw_tree: TreeNode<String> =
-                    sexpr.parse().expect("Failed to parse s-expression");
-                raw_tree
+                sexpr
+                    .parse::<TreeNode<String>>()
+                    .expect("Failed to parse s-expression")
             },
             args.with_types,
         );
@@ -38,8 +38,10 @@ fn main() {
         run(
             &content,
             |sexpr| {
-                let expr: Expr = sexpr.parse().expect("Failed to parse Rise expression");
-                expr.to_tree()
+                sexpr
+                    .parse::<Expr>()
+                    .expect("Failed to parse Rise expression")
+                    .to_tree()
             },
             args.with_types,
         );
@@ -51,14 +53,14 @@ where
     L: Label,
     F: Fn(&str) -> TreeNode<L>,
 {
-    let trees: Vec<(String, TreeNode<L>)> = content
+    let trees = content
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
             let (name, sexpr) = line.split_once(':').expect("Line must be 'Name: sexpr'");
             (name.trim().to_owned(), parse_tree(sexpr.trim()))
         })
-        .collect();
+        .collect::<Vec<_>>();
 
     print_distance_matrix(&trees, with_types);
 }

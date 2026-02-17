@@ -465,21 +465,21 @@ mod tests {
 
     #[test]
     fn parse_simple_expr() {
-        let expr: Expr = "$e0".parse().unwrap();
+        let expr = "$e0".parse::<Expr>().unwrap();
         assert_eq!(expr.node, ExprNode::Var(0));
         assert_eq!(expr.ty, None);
     }
 
     #[test]
     fn parse_typed_expr() {
-        let expr: Expr = "(typeOf $e0 f32)".parse().unwrap();
+        let expr = "(typeOf $e0 f32)".parse::<Expr>().unwrap();
         assert_eq!(expr.node, ExprNode::Var(0));
         assert_eq!(expr.ty, Some(Type::Data(DataType::Scalar(ScalarType::F32))));
     }
 
     #[test]
     fn parse_app() {
-        let expr: Expr = "(app map (lam $e0))".parse().unwrap();
+        let expr = "(app map (lam $e0))".parse::<Expr>().unwrap();
         match &expr.node {
             ExprNode::App(f, e) => {
                 assert!(matches!(f.node, ExprNode::Primitive(Primitive::Map)));
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn parse_nat_lambda() {
-        let expr: Expr = "(natLam (natLam $e0))".parse().unwrap();
+        let expr = "(natLam (natLam $e0))".parse::<Expr>().unwrap();
         match &expr.node {
             ExprNode::NatLambda(body) => match &body.node {
                 ExprNode::NatLambda(inner) => {
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn parse_complex_typed_expr() {
         let input = "(typeOf (lam (typeOf $e0 f32)) (fun f32 f32))";
-        let expr: Expr = input.parse().unwrap();
+        let expr = input.parse::<Expr>().unwrap();
 
         // Check outer type
         assert_eq!(
@@ -540,13 +540,13 @@ mod tests {
             ),
         );
         let sexp = expr.into_sexp().to_string();
-        let parsed: Expr = sexp.parse().unwrap();
+        let parsed = sexp.parse::<Expr>().unwrap();
         assert_eq!(expr, parsed);
     }
 
     #[test]
     fn to_tree_simple() {
-        let expr: Expr = "(app map (lam $e0))".parse().unwrap();
+        let expr = "(app map (lam $e0))".parse::<Expr>().unwrap();
         let tree = expr.to_tree();
 
         assert_eq!(tree.label(), &RiseLabel::App);
@@ -561,59 +561,51 @@ mod tests {
 
     #[test]
     fn to_tree_typed() {
-        let expr: Expr = "(typeOf $e0 f32)".parse().unwrap();
+        let expr = "(typeOf $e0 f32)".parse::<Expr>().unwrap();
         let tree = expr.to_tree();
 
-        assert_eq!(tree.label(), &RiseLabel::TypeOf);
-        assert_eq!(tree.children().len(), 2);
-        assert_eq!(tree.children()[0].label(), &RiseLabel::Var(0));
-        assert_eq!(
-            tree.children()[1].label(),
-            &RiseLabel::Scalar(ScalarType::F32)
-        );
+        assert_eq!(tree.label(), &RiseLabel::Var(0));
+        assert!(tree.children().is_empty());
+        let ty = tree.ty().unwrap();
+        assert_eq!(ty.label(), &RiseLabel::Scalar(ScalarType::F32));
     }
 
     #[test]
     fn to_tree_nested_types() {
-        let expr: Expr = "(typeOf (lam (typeOf $e0 f32)) (fun f32 f32))"
-            .parse()
+        let expr = "(typeOf (lam (typeOf $e0 f32)) (fun f32 f32))"
+            .parse::<Expr>()
             .unwrap();
         let tree = expr.to_tree();
 
-        assert_eq!(tree.label(), &RiseLabel::TypeOf);
-        assert_eq!(tree.children()[0].label(), &RiseLabel::Lambda);
-
-        // Inner lambda body should be typeOf
-        let lam_body = &tree.children()[0].children()[0];
-        assert_eq!(lam_body.label(), &RiseLabel::TypeOf);
-        assert_eq!(lam_body.children()[0].label(), &RiseLabel::Var(0));
+        // Root is Lambda with outer type (fun f32 f32)
+        assert_eq!(tree.label(), &RiseLabel::Lambda);
+        let outer_ty = tree.ty().unwrap();
+        assert_eq!(outer_ty.label(), &RiseLabel::Fun);
         assert_eq!(
-            lam_body.children()[1].label(),
+            outer_ty.children()[0].label(),
+            &RiseLabel::Scalar(ScalarType::F32)
+        );
+        assert_eq!(
+            outer_ty.children()[1].label(),
             &RiseLabel::Scalar(ScalarType::F32)
         );
 
-        // Outer type should be (fun f32 f32)
-        let outer_type = &tree.children()[1];
-        assert_eq!(outer_type.label(), &RiseLabel::Fun);
-        assert_eq!(
-            outer_type.children()[0].label(),
-            &RiseLabel::Scalar(ScalarType::F32)
-        );
-        assert_eq!(
-            outer_type.children()[1].label(),
-            &RiseLabel::Scalar(ScalarType::F32)
-        );
+        // Inner lambda body has type f32
+        let lam_body = &tree.children()[0];
+        assert_eq!(lam_body.label(), &RiseLabel::Var(0));
+        let inner_ty = lam_body.ty().unwrap();
+        assert_eq!(inner_ty.label(), &RiseLabel::Scalar(ScalarType::F32));
     }
 
     #[test]
     fn parse_literal_int() {
-        let expr: Expr = "42i".parse().unwrap();
+        let expr = "42i".parse::<Expr>().unwrap();
         assert_eq!(expr.node, ExprNode::Literal(LiteralData::Int(42)));
     }
 
     #[test]
     fn parse_literal_float() {
-        let expr: Expr = "3.11f".parse().unwrap();
+        let expr = "3.11f".parse::<Expr>().unwrap();
         match expr.node {
             ExprNode::Literal(LiteralData::Float(f)) => {
                 assert!((f.0 - 3.11).abs() < 0.01);
@@ -624,19 +616,19 @@ mod tests {
 
     #[test]
     fn parse_literal_bool() {
-        let expr_1: Expr = "true".parse().unwrap();
+        let expr_1 = "true".parse::<Expr>().unwrap();
         assert_eq!(expr_1.node, ExprNode::Literal(LiteralData::Bool(true)));
 
-        let expr_2: Expr = "false".parse().unwrap();
+        let expr_2 = "false".parse::<Expr>().unwrap();
         assert_eq!(expr_2.node, ExprNode::Literal(LiteralData::Bool(false)));
     }
 
     #[test]
     fn parse_primitive() {
-        let expr_1: Expr = "map".parse().unwrap();
+        let expr_1 = "map".parse::<Expr>().unwrap();
         assert_eq!(expr_1.node, ExprNode::Primitive(Primitive::Map));
 
-        let expr_2: Expr = "reduce".parse().unwrap();
+        let expr_2 = "reduce".parse::<Expr>().unwrap();
         assert_eq!(expr_2.node, ExprNode::Primitive(Primitive::Reduce));
     }
 }

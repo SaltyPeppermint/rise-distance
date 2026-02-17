@@ -286,7 +286,7 @@ impl<'a, L: Label, R: Rng> FixpointSampler<'a, L, R> {
         let mut divergence_count = 0;
 
         for _ in 0..config.max_iterations {
-            let mut max_delta: f64 = 0.0;
+            let mut max_delta = 0.0_f64;
 
             for &id in &class_ids {
                 // new_log_weight = log(sum over nodes of (λ × product of child weights))

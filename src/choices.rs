@@ -79,13 +79,13 @@ impl<'a, L: Label> ChoiceIter<'a, L> {
         parent_idx: usize,
         advance: bool,
     ) -> Option<usize> {
-        let eclass_children: Vec<_> = children
+        let eclass_children = children
             .iter()
             .filter_map(|c| match c {
                 ExprChildId::EClass(id) => Some(*id),
                 _ => None,
             })
-            .collect();
+            .collect::<Vec<_>>();
 
         match (eclass_children.is_empty(), advance) {
             (true, true) => None,              // No children to advance

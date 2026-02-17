@@ -225,10 +225,10 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             return HashMap::new();
         };
 
-        let histograms: Vec<_> = children
+        let histograms = children
             .iter()
             .map(|c| TermCount::get_child_data(graph, *c, data, type_cache))
-            .collect();
+            .collect::<Vec<_>>();
         let mut result = Self::convolve(&histograms, budget);
 
         // Offset all keys by base_size
@@ -244,7 +244,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
     /// Build a map from child e-class to parent e-classes.
     fn build_parent_map(graph: &EGraph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
-        let mut parents: HashMap<EClassId, HashSet<EClassId>> = HashMap::new();
+        let mut parents = HashMap::<EClassId, HashSet<EClassId>>::new();
 
         for class_id in graph.class_ids() {
             for node in graph.class(class_id).nodes() {
@@ -382,7 +382,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         let cached = &self.suffix_cache[&canonical_id];
 
         // Pick a node weighted by how many terms of the target size it produces.
-        let weights: Vec<C> = cached
+        let weights = cached
             .iter()
             .map(|suffix| {
                 suffix[0]
@@ -390,7 +390,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                     .cloned()
                     .unwrap_or_else(C::zero)
             })
-            .collect();
+            .collect::<Vec<_>>();
         let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
 
         let pick = &nodes[pick_idx];
@@ -458,11 +458,11 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                 let per_node = nodes
                     .iter()
                     .map(|n| {
-                        let histograms: Vec<_> = n
+                        let histograms = n
                             .children()
                             .iter()
                             .map(|&c_id| Self::get_child_data(graph, c_id, data, type_cache))
-                            .collect();
+                            .collect::<Vec<_>>();
                         Self::suffix_convolutions(&histograms, max_budget)
                     })
                     .collect();
