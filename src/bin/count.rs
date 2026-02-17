@@ -81,7 +81,7 @@ Examples:
 
         /// Number of terms to sample per size
         #[arg(short = 's', long, default_value_t = 10)]
-        samples: usize,
+        samples: u64,
 
         #[command(flatten)]
         reference: RefSource,
@@ -203,7 +203,7 @@ fn run_extraction(
     ref_tree: &TreeNode<RiseLabel>,
     min_size: usize,
     max_size: usize,
-    samples_per_size: usize,
+    samples_per_size: u64,
     with_types: bool,
 ) {
     let ref_node_count = ref_tree.size();

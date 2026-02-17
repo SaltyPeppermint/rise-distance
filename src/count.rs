@@ -300,30 +300,28 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
     // TODO : WITH TYPES
     #[must_use]
-    pub fn sample_root<R: Rng>(
+    pub fn sample_root(
         &self,
         size: usize,
-        samples: usize,
+        samples: u64,
         seed: u64,
-    ) -> HashSet<TreeNode<L>> {
-        let mut rng = ChaCha12Rng::seed_from_u64(seed);
-        (0..samples)
-            .map(|_| self.sample(self.graph.root(), size, &mut rng))
-            .collect()
+    ) -> impl ParallelIterator<Item = TreeNode<L>> {
+        self.sample_class(self.graph.root(), size, samples, seed)
     }
 
     #[must_use]
-    pub fn sample_class<R: Rng>(
+    pub fn sample_class(
         &self,
         id: EClassId,
         size: usize,
-        samples: usize,
+        samples: u64,
         seed: u64,
-    ) -> HashSet<TreeNode<L>> {
-        let mut rng = ChaCha12Rng::seed_from_u64(seed);
-        (0..samples)
-            .map(|_| self.sample(id, size, &mut rng))
-            .collect()
+    ) -> impl ParallelIterator<Item = TreeNode<L>> {
+        (0..samples).into_par_iter().map(move |sample| {
+            let mut rng = ChaCha12Rng::seed_from_u64(seed);
+            rng.set_stream(sample);
+            self.sample(id, size, &mut rng)
+        })
     }
 
     /// Get the histogram for a child (size -> count).

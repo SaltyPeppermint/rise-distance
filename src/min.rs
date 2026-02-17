@@ -2,14 +2,15 @@
 //!
 //! This module provides functions for finding the tree with minimum edit distance to a reference.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use indicatif::ParallelProgressIterator;
 use num::BigUint;
 use rand::SeedableRng;
-use rand::rngs::StdRng;
-use rand_chacha::ChaCha20Rng;
-use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
+
+use rand_chacha::ChaCha12Rng;
+use rayon::prelude::*;
 
 use crate::boltzmann::find_lambda_for_target_size;
 use crate::count::TermCount;
@@ -226,7 +227,7 @@ pub fn find_min_boltzmann_zs<L: Label, C: EditCosts<L>>(
     target_weight: usize,
     seed: u64,
 ) -> (Option<(TreeNode<L>, usize)>, Stats) {
-    let mut rng = StdRng::seed_from_u64(seed);
+    let mut rng = ChaCha12Rng::seed_from_u64(seed);
     let config = FixpointSamplerConfig::builder().build();
     let (lambda, expected_size) =
         find_lambda_for_target_size(graph, target_weight, &config, with_types, &mut rng).unwrap();
@@ -254,15 +255,12 @@ pub fn find_min_count_zs<L: Label, C: EditCosts<L>>(
     with_types: bool,
     min_size: usize,
     max_size: usize,
-    samples_per_size: usize,
+    samples_per_size: u64,
 ) -> (Option<(TreeNode<L>, usize)>, Stats) {
-    let candidates: Vec<_> = (min_size..=max_size)
-        .flat_map(|size| {
-            term_count
-                .sample_root::<ChaCha20Rng>(size, samples_per_size, size as u64)
-                .into_iter()
-        })
-        .collect();
+    let candidates = (min_size..=max_size)
+        .into_par_iter()
+        .flat_map(|size| term_count.sample_root(size, samples_per_size, size as u64))
+        .collect::<HashSet<_>>();
 
     let n_candidates = candidates.len();
 
