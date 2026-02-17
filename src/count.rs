@@ -15,9 +15,9 @@ use rand::distributions::WeightedIndex;
 use rand::distributions::uniform::SampleUniform;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::prelude::*;
 
-use super::graph::EGraph;
+use super::graph::{EClass, EGraph};
 use super::ids::{DataChildId, DataId, EClassId, ExprChildId, FunId, NatId, TypeChildId};
 use super::nodes::Label;
 use crate::TreeNode;
@@ -67,6 +67,7 @@ pub struct TermCount<'a, C: Counter, L: Label> {
     suffix_cache: HashMap<EClassId, Vec<Vec<HashMap<usize, C>>>>,
     graph: &'a EGraph<L>,
     type_sizes: TypeSizeCache,
+    with_types: bool,
 }
 
 impl<C: Counter, L: Label> TermCount<'_, C, L> {
@@ -95,7 +96,6 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                     .iter()
                     .any(|n| n.children().is_empty())
             })
-            .map(|id| graph.canonicalize(id))
             .collect();
 
         let analysis_pending = Arc::new(Mutex::new(leaves));
@@ -122,6 +122,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             suffix_cache,
             graph,
             type_sizes: type_cache,
+            with_types,
         }
     }
 
@@ -248,15 +249,11 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         let mut parents: HashMap<EClassId, HashSet<EClassId>> = HashMap::new();
 
         for class_id in graph.class_ids() {
-            let canonical_id = graph.canonicalize(class_id);
-            for node in graph.class(canonical_id).nodes() {
+            for node in graph.class(class_id).nodes() {
                 for child_id in node.children() {
                     if let ExprChildId::EClass(child_eclass_id) = child_id {
                         let canonical_child = graph.canonicalize(*child_eclass_id);
-                        parents
-                            .entry(canonical_child)
-                            .or_default()
-                            .insert(canonical_id);
+                        parents.entry(canonical_child).or_default().insert(class_id);
                     }
                 }
             }
@@ -326,7 +323,6 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         self.data.get(&self.graph.canonicalize(id))
     }
 
-    // TODO : WITH TYPES
     #[must_use]
     pub fn sample_root(
         &self,
@@ -370,6 +366,88 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         }
     }
 
+    fn type_overhead(&self, eclass: &EClass<L>) -> usize {
+        if self.with_types {
+            1 + self.type_sizes.get_type_size(eclass.ty())
+        } else {
+            0
+        }
+    }
+
+    #[must_use]
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
+        let canonical_id = self.graph.canonicalize(id);
+        let eclass = self.graph.class(canonical_id);
+        let nodes = eclass.nodes();
+        let type_overhead = self.type_overhead(eclass);
+        let child_budget = size - 1 - type_overhead;
+        let cached = &self.suffix_cache[&canonical_id];
+
+        // Pick a node weighted by how many terms of the target size it produces.
+        let weights: Vec<C> = cached
+            .iter()
+            .map(|suffix| {
+                suffix[0]
+                    .get(&child_budget)
+                    .cloned()
+                    .unwrap_or_else(C::zero)
+            })
+            .collect();
+        let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
+
+        let pick = &nodes[pick_idx];
+        let children = pick.children();
+        let suffix = &cached[pick_idx];
+
+        let expr_tree = if children.is_empty() {
+            TreeNode::new(pick.label().clone(), vec![])
+        } else {
+            // Sequentially sample a size for each child, weighting by:
+            //   count(child_i, s) * suffix_count(i+1, remaining - s)
+            let mut remaining = child_budget;
+            let mut child_sizes = Vec::with_capacity(children.len());
+
+            for (i, &c_id) in children.iter().enumerate() {
+                let histogram = self.child_histogram(c_id);
+                let candidates = histogram
+                    .iter()
+                    .filter_map(|(&s, count)| {
+                        remaining
+                            .checked_sub(s)
+                            .and_then(|r| suffix[i + 1].get(&r))
+                            .map(|rest_count| (s, count.to_owned() * rest_count))
+                    })
+                    .collect::<Vec<_>>();
+
+                let dist = WeightedIndex::new(candidates.iter().map(|(_, w)| w)).unwrap();
+                let chosen_size = candidates[dist.sample(rng)].0;
+
+                child_sizes.push(chosen_size);
+                remaining -= chosen_size;
+            }
+
+            TreeNode::new(
+                pick.label().clone(),
+                children
+                    .iter()
+                    .zip(child_sizes)
+                    .map(|(c_id, s)| match c_id {
+                        ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.graph, *nat_id),
+                        ExprChildId::Data(data_id) => TreeNode::from_data(self.graph, *data_id),
+                        ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
+                    })
+                    .collect(),
+            )
+        };
+
+        if self.with_types {
+            let type_tree = TreeNode::from_eclass(self.graph, canonical_id);
+            TreeNode::new(L::type_of(), vec![expr_tree, type_tree])
+        } else {
+            expr_tree
+        }
+    }
+
     /// Build suffix convolution tables for all e-classes at the maximum budget.
     fn build_suffix_cache(
         limit: usize,
@@ -396,71 +474,6 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                 (id, per_node)
             })
             .collect()
-    }
-
-    #[must_use]
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
-        let canonical_id = self.graph.canonicalize(id);
-        let nodes = self.graph.class(canonical_id).nodes();
-        let child_budget = size - 1;
-        let cached = &self.suffix_cache[&canonical_id];
-
-        // Pick a node weighted by how many terms of the target size it produces.
-        let weights: Vec<C> = cached
-            .iter()
-            .map(|suffix| {
-                suffix[0]
-                    .get(&child_budget)
-                    .cloned()
-                    .unwrap_or_else(C::zero)
-            })
-            .collect();
-        let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
-
-        let pick = &nodes[pick_idx];
-        let children = pick.children();
-        let suffix = &cached[pick_idx];
-
-        if children.is_empty() {
-            return TreeNode::new(pick.label().clone(), vec![]);
-        }
-
-        // Sequentially sample a size for each child, weighting by:
-        //   count(child_i, s) * suffix_count(i+1, remaining - s)
-        let mut remaining = child_budget;
-        let mut child_sizes = Vec::with_capacity(children.len());
-
-        for (i, &c_id) in children.iter().enumerate() {
-            let histogram = self.child_histogram(c_id);
-            let candidates = histogram
-                .iter()
-                .filter_map(|(&s, count)| {
-                    remaining
-                        .checked_sub(s)
-                        .and_then(|r| suffix[i + 1].get(&r))
-                        .map(|rest_count| (s, count.to_owned() * rest_count))
-                })
-                .collect::<Vec<_>>();
-
-            let dist = WeightedIndex::new(candidates.iter().map(|(_, w)| w)).unwrap();
-            let chosen_size = candidates[dist.sample(rng)].0;
-
-            child_sizes.push(chosen_size);
-            remaining -= chosen_size;
-        }
-
-        TreeNode::new(
-            pick.label().clone(),
-            children
-                .iter()
-                .zip(child_sizes)
-                .map(|(c_id, s)| match c_id {
-                    ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.graph, *nat_id),
-                    ExprChildId::Data(data_id) => TreeNode::from_data(self.graph, *data_id),
-                    ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
-                })
-                .collect(),
-        )
     }
 
     /// Convolve child histograms right-to-left, returning suffix intermediates.
