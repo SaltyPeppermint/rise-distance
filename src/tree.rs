@@ -185,6 +185,27 @@ impl<L: Label> TreeNode<L> {
 
 impl<L: Label + Display> Display for TreeNode<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.ty.is_some() {
+            write!(f, "({} ", L::type_of())?;
+        }
+        if self.is_leaf() {
+            write!(f, "{}", self.label)?;
+        } else {
+            write!(f, "({}", self.label)?;
+            for child in &self.children {
+                write!(f, " {child}")?;
+            }
+            write!(f, ")")?;
+        }
+        if let Some(ty) = &self.ty {
+            write!(f, " {ty})")?;
+        }
+        Ok(())
+    }
+}
+
+impl<L: Label + Display> Display for FlattenedTreeNode<L> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_leaf() {
             write!(f, "{}", self.label)
         } else {
