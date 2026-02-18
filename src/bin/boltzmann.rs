@@ -4,7 +4,6 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use clap::{Args as ClapArgs, Parser};
-use log::{info, warn};
 
 use rise_distance::{
     EGraph, Expr, Label, TreeNode, UnitCost, find_min_boltzmann_zs, tree_distance_unit,
@@ -45,10 +44,6 @@ struct Args {
     /// Use raw string labels instead of Rise-typed labels (for regression testing)
     #[arg(long)]
     raw_strings: bool,
-
-    /// Suppress log output (only warnings and errors)
-    #[arg(short, long)]
-    quiet: bool,
     // /// Use structural distance instead of Zhang-Shasha tree edit distance
     // #[arg(short, long)]
     // structural: bool,
@@ -76,15 +71,6 @@ struct RefSource {
 fn main() {
     let args = Args::parse();
 
-    env_logger::Builder::new()
-        .filter_level(if args.quiet {
-            log::LevelFilter::Warn
-        } else {
-            log::LevelFilter::Info
-        })
-        .parse_default_env()
-        .init();
-
     if args.raw_strings {
         run(&args, |sexpr| {
             TreeNode::<String>::from_str(sexpr).expect("Failed to parse s-expression")
@@ -104,9 +90,9 @@ where
     L: Label,
     F: Fn(&str) -> TreeNode<L>,
 {
-    info!("Loading e-graph from: {}", args.graph);
+    eprintln!("Loading e-graph from: {}", args.graph);
     let graph = EGraph::<L>::parse_from_file(Path::new(&args.graph));
-    info!("Root e-class: {:?}", graph.root());
+    eprintln!("Root e-class: {:?}", graph.root());
     let ref_tree = parse_ref(args, parse_tree);
     run_extraction(&graph, &ref_tree, args);
 }
@@ -117,12 +103,12 @@ where
     F: Fn(&str) -> TreeNode<L>,
 {
     if let Some(expr) = &args.reference.expr {
-        info!("Parsing reference tree from command line...");
+        eprintln!("Parsing reference tree from command line...");
         return parse_tree(expr);
     }
     let file = args.reference.file.as_ref().unwrap();
     let name = args.reference.name.as_ref().unwrap();
-    info!("Parsing reference tree '{name}' from file...");
+    eprintln!("Parsing reference tree '{name}' from file...");
     let content =
         fs::read_to_string(file).unwrap_or_else(|e| panic!("Failed to read '{file}': {e}"));
     content
@@ -143,10 +129,10 @@ where
 fn run_extraction<L: Label>(graph: &EGraph<L>, ref_tree: &TreeNode<L>, args: &Args) {
     let ref_node_count = ref_tree.size_with_types();
     let ref_stripped_count = ref_tree.size();
-    info!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
+    eprintln!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();
-    info!("Zhang-Shasha extraction (with lower-bound pruning)");
+    eprintln!("Zhang-Shasha extraction (with lower-bound pruning)");
     if let (Some(result), stats) = find_min_boltzmann_zs(
         graph,
         ref_tree,
@@ -157,34 +143,34 @@ fn run_extraction<L: Label>(graph: &EGraph<L>, ref_tree: &TreeNode<L>, args: &Ar
         100,
     ) {
         let best = &result.0;
-        info!("Best distance: {}", result.1);
-        info!("Time: {:.2?}", start.elapsed());
-        info!("Statistics:");
-        info!("  Trees enumerated:   {}", stats.trees_enumerated);
-        info!(
+        eprintln!("Best distance: {}", result.1);
+        eprintln!("Time: {:.2?}", start.elapsed());
+        eprintln!("Statistics:");
+        eprintln!("  Trees enumerated:   {}", stats.trees_enumerated);
+        eprintln!(
             "  Trees size pruned:  {} ({:.1}%)",
             stats.size_pruned,
             100.0 * stats.size_pruned as f64 / stats.trees_enumerated as f64
         );
-        info!(
+        eprintln!(
             "  Trees euler pruned: {} ({:.1}%)",
             stats.euler_pruned,
             100.0 * stats.euler_pruned as f64 / stats.trees_enumerated as f64
         );
-        info!(
+        eprintln!(
             "  Full comparisons:   {} ({:.1}%)",
             stats.full_comparisons,
             100.0 * stats.full_comparisons as f64 / stats.trees_enumerated as f64
         );
 
         let zs_dist = tree_distance_unit(&best.flatten(true), &ref_tree.flatten(true));
-        info!("ZS distance to ref: {zs_dist}");
-        info!(
+        eprintln!("ZS distance to ref: {zs_dist}");
+        eprintln!(
             "Best tree size: {} with types, {} without",
             best.size_with_types(),
             best.size()
         );
-        info!(
+        eprintln!(
             "Ref tree size: {} with types, {} without",
             ref_tree.size_with_types(),
             ref_tree.size()
@@ -192,6 +178,6 @@ fn run_extraction<L: Label>(graph: &EGraph<L>, ref_tree: &TreeNode<L>, args: &Ar
 
         println!("{best}");
     } else {
-        warn!("No result found!");
+        eprintln!("No result found!");
     }
 }

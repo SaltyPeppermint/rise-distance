@@ -2,8 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use clap::{Args as ClapArgs, Parser, Subcommand};
-use log::{info, warn};
+use clap::{Args as ClapArgs, Parser};
 use num::BigUint;
 use num::ToPrimitive;
 
@@ -14,6 +13,24 @@ use rise_distance::{
 
 #[derive(Parser)]
 #[command(about = "Count and sample terms per size in an e-graph")]
+#[expect(clippy::struct_excessive_bools)]
+#[command(after_help = "\
+Examples:
+  # Count terms up to size 20, print root histogram
+  count graph.json -l 20 --hist
+
+  # Also print histograms for specific e-classes
+  count graph.json -l 20 --hist 0 3 7
+
+  # Pretty-print with bar chart, then sample
+  count graph.json -l 20 --hist --pretty -s 100 -e '(+ 1 2)'
+
+  # Sample only, from sizes 5 to 20
+  count graph.json -l 20 -m 5 -s 100 -e '(+ 1 2)'
+
+  # Compare to a named tree from a file
+  count graph.json -l 20 -m 5 -s 100 -f trees.txt -n blocking_goal
+")]
 struct Args {
     /// Path to the serialized e-graph JSON file
     egraph: String,
@@ -26,72 +43,35 @@ struct Args {
     #[arg(short = 't', long)]
     with_types: bool,
 
-    /// Suppress log output (only warnings and errors)
-    #[arg(short, long)]
-    quiet: bool,
-
-    #[command(subcommand)]
-    mode: Mode,
-}
-
-#[derive(Subcommand)]
-enum Mode {
     /// Print term-count histograms
-    #[command(after_help = "\
-Examples:
-  # Count terms up to size 20, print root histogram
-  count graph.json -l 20 hist
+    #[arg(short, long)]
+    histogram: bool,
 
-  # Also print histograms for specific e-classes
-  count graph.json -l 20 hist 0 3 7
+    /// Pretty-print histograms with bar charts (requires --histogram)
+    #[arg(long, requires = "histogram")]
+    pretty: bool,
 
-  # Pretty-print with bar chart
-  count graph.json -l 20 hist --pretty
+    /// Display counts in scientific notation (requires --histogram)
+    #[arg(long, requires = "histogram")]
+    scientific: bool,
 
-  # Scientific notation for large numbers
-  count graph.json -l 50 hist --scientific
-")]
-    Hist {
-        /// Pretty-print histograms with bar charts
-        #[arg(short, long)]
-        pretty: bool,
+    /// Width of the bar chart in characters (requires --pretty)
+    #[arg(short = 'w', long, default_value_t = 40, requires = "pretty")]
+    bar_width: usize,
 
-        /// Display counts in scientific notation
-        #[arg(short, long)]
-        scientific: bool,
+    /// Additional e-class IDs (numeric) to print histograms for (requires --histogram)
+    eclass_ids: Vec<usize>,
 
-        /// Width of the bar chart (in characters)
-        #[arg(short = 'w', long, default_value_t = 40, requires = "pretty")]
-        bar_width: usize,
+    /// Minimum term size to sample (defaults to smallest size with terms)
+    #[arg(short = 'm', long)]
+    min_size: Option<usize>,
 
-        /// Additional e-class IDs (numeric) to print histograms for
-        eclass_ids: Vec<usize>,
-    },
+    /// Number of terms to sample per size
+    #[arg(short = 's', long)]
+    samples: Option<u64>,
 
-    /// Sample terms uniformly at random for each size in a range, find closest to a reference
-    #[command(after_help = "\
-Examples:
-  # Sample 100 terms per size from sizes 5 to 20, compare to expression
-  count graph.json -l 20 sample -m 5 -s 100 -e '(+ 1 2)'
-
-  # Sample from the smallest possible size
-  count graph.json -l 20 sample -s 100 -e '(+ 1 2)'
-
-  # Compare to a named tree from a file
-  count graph.json -l 20 sample -m 5 -s 100 -f trees.txt -n blocking_goal
-")]
-    Sample {
-        /// Minimum term size to sample (defaults to smallest size with terms)
-        #[arg(short = 'm', long)]
-        min_size: Option<usize>,
-
-        /// Number of terms to sample per size
-        #[arg(short = 's', long, default_value_t = 10)]
-        samples: u64,
-
-        #[command(flatten)]
-        reference: RefSource,
-    },
+    #[command(flatten)]
+    reference: RefSource,
 }
 
 #[derive(ClapArgs)]
@@ -112,83 +92,64 @@ struct RefSource {
 fn main() {
     let args = Args::parse();
 
-    env_logger::Builder::new()
-        .filter_level(if args.quiet {
-            log::LevelFilter::Warn
-        } else {
-            log::LevelFilter::Info
-        })
-        .parse_default_env()
-        .init();
-
-    info!("Loading e-graph from: {}", args.egraph);
+    eprintln!("Loading e-graph from: {}", args.egraph);
     let graph = EGraph::parse_from_file(Path::new(&args.egraph));
 
     let root = graph.root();
-    info!("Root e-class: {root:?}");
-    info!("Limit: {}", args.limit);
-    info!("With types: {}", args.with_types);
+    eprintln!("Root e-class: {root:?}");
+    eprintln!("Limit: {}", args.limit);
+    eprintln!("With types: {}", args.with_types);
 
     let start = Instant::now();
     let term_count = TermCount::<BigUint, RiseLabel>::new(args.limit, args.with_types, &graph);
-    info!("Counting completed in {:.2?}", start.elapsed());
+    eprintln!("Counting completed in {:.2?}", start.elapsed());
 
-    match args.mode {
-        Mode::Hist {
-            pretty,
-            scientific,
-            bar_width,
-            ref eclass_ids,
-        } => {
-            let fmt = DisplayConfig {
-                pretty,
-                scientific,
-                bar_width,
-            };
+    if args.histogram {
+        let fmt = DisplayConfig {
+            pretty: args.pretty,
+            scientific: args.scientific,
+            bar_width: args.bar_width,
+        };
 
-            print_histogram("Root", root, &term_count, &fmt);
+        print_histogram("Root", root, &term_count, &fmt);
 
-            for &id in eclass_ids {
-                print_histogram(
-                    &format!("EClassId({id})"),
-                    EClassId::new(id),
-                    &term_count,
-                    &fmt,
-                );
-            }
-        }
-        Mode::Sample {
-            min_size,
-            samples,
-            ref reference,
-        } => {
-            let ref_tree = parse_ref(reference);
-            run_extraction(
+        for &id in &args.eclass_ids {
+            print_histogram(
+                &format!("EClassId({id})"),
+                EClassId::new(id),
                 &term_count,
-                &ref_tree,
-                min_size.unwrap_or_else(|| {
-                    term_count
-                        .of_eclass(root)
-                        .and_then(|h| h.keys().copied().min())
-                        .expect("Root e-class has no terms")
-                }),
-                args.limit,
-                samples,
+                &fmt,
             );
         }
+    }
+
+    if let Some(samples) = args.samples {
+        let ref_tree = parse_ref(&args.reference);
+        run_extraction(
+            &term_count,
+            &ref_tree,
+            args.min_size.unwrap_or_else(|| {
+                term_count
+                    .of_eclass(root)
+                    .and_then(|h| h.keys().copied().min())
+                    .expect("Root e-class has no terms")
+            }),
+            args.limit,
+            samples,
+        );
     }
 }
 
 fn parse_ref(source: &RefSource) -> TreeNode<RiseLabel> {
     if let Some(expr) = &source.expr {
-        info!("Parsing reference tree from command line...");
+        eprintln!("Parsing reference tree from command line...");
         expr.parse::<Expr>()
             .expect("Failed to parse Rise expression")
             .to_tree()
     } else {
         let file = source.file.as_ref().unwrap();
         let name = source.name.as_ref().unwrap();
-        info!("Parsing reference tree '{name}' from file...");
+        eprintln!("Parsing reference tree '{name}' from file...");
         let content =
             fs::read_to_string(file).unwrap_or_else(|e| panic!("Failed to read '{file}': {e}"));
         content
@@ -221,11 +182,11 @@ fn run_extraction(
 ) {
     let ref_node_count = ref_tree.size_with_types();
     let ref_stripped_count = ref_tree.size();
-    info!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
+    eprintln!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();
-    info!("Zhang-Shasha extraction (count-based sampling, with lower-bound pruning)");
-    info!("Sampling {samples_per_size} terms per size from {min_size} to {max_size}");
+    eprintln!("Zhang-Shasha extraction (count-based sampling, with lower-bound pruning)");
+    eprintln!("Sampling {samples_per_size} terms per size from {min_size} to {max_size}");
 
     if let (Some(result), stats) = find_min_count_zs(
         term_count,
@@ -237,7 +198,7 @@ fn run_extraction(
     ) {
         print_stats(&result, ref_tree, &stats, start.elapsed());
     } else {
-        warn!("No result found!");
+        eprintln!("No result found!");
     }
 }
 
@@ -247,23 +208,23 @@ fn print_stats(
     stats: &Stats,
     elapsed: std::time::Duration,
 ) {
-    info!("Best distance: {}", result.1);
-    info!("Time: {elapsed:.2?}");
-    info!("Statistics:");
-    info!("  Trees enumerated:   {}", stats.trees_enumerated);
+    eprintln!("Best distance: {}", result.1);
+    eprintln!("Time: {elapsed:.2?}");
+    eprintln!("Statistics:");
+    eprintln!("  Trees enumerated:   {}", stats.trees_enumerated);
     #[expect(clippy::cast_precision_loss)]
     {
-        info!(
+        eprintln!(
             "  Trees size pruned:  {} ({:.1}%)",
             stats.size_pruned,
             100.0 * stats.size_pruned as f64 / stats.trees_enumerated as f64
         );
-        info!(
+        eprintln!(
             "  Trees euler pruned: {} ({:.1}%)",
             stats.euler_pruned,
             100.0 * stats.euler_pruned as f64 / stats.trees_enumerated as f64
         );
-        info!(
+        eprintln!(
             "  Full comparisons:   {} ({:.1}%)",
             stats.full_comparisons,
             100.0 * stats.full_comparisons as f64 / stats.trees_enumerated as f64
@@ -272,13 +233,13 @@ fn print_stats(
 
     let best = &result.0;
     let zs_dist = tree_distance_unit(&best.flatten(true), &ref_tree.flatten(true));
-    info!("ZS distance to ref: {zs_dist}");
-    info!(
+    eprintln!("ZS distance to ref: {zs_dist}");
+    eprintln!(
         "Best tree size: {} with types, {} without",
         best.size_with_types(),
         best.size()
     );
-    info!(
+    eprintln!(
         "Ref tree size: {} with types, {} without",
         ref_tree.size_with_types(),
         ref_tree.size()
@@ -316,9 +277,9 @@ fn print_histogram(
     data: &TermCount<BigUint, RiseLabel>,
     fmt: &DisplayConfig,
 ) {
-    info!("--- {label} ---");
+    eprintln!("--- {label} ---");
     let Some(histogram) = data.of_eclass(id) else {
-        info!("  (no data)");
+        eprintln!("  (no data)");
         return;
     };
 
@@ -335,13 +296,13 @@ fn print_histogram(
             .max()
             .unwrap_or(0);
         for (size, count) in &sizes {
-            info!(
+            eprintln!(
                 "  size {size:>4}: {:>width$}",
                 format_count(count, fmt.scientific),
                 width = count_width
             );
         }
-        info!(
+        eprintln!(
             "  total:     {:>width$}",
             format_count(&total, fmt.scientific),
             width = count_width
@@ -385,12 +346,12 @@ fn print_bar_chart(
             0
         };
         let bar = "#".repeat(bar_len);
-        info!(
+        eprintln!(
             "  size {size:>4} | {bar:<width$} | {:>cw$}",
             format_count(count, scientific),
             width = bar_width,
             cw = count_width
         );
     }
-    info!("  total: {total_str}");
+    eprintln!("  total: {total_str}");
 }
