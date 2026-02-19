@@ -25,7 +25,8 @@ pub use euler_str::tree_distance_euler_bound;
 pub use graph::{EClass, EGraph};
 pub use ids::EClassId;
 pub use min::{
-    Stats, find_min_boltzmann_zs, find_min_count_zs, find_min_exhaustive_zs, find_min_struct,
+    DistanceMetric, Stats, find_min_boltzmann_zs, find_min_count_zs, find_min_exhaustive_zs,
+    find_min_struct,
 };
 pub use nodes::Label;
 pub use tree::TreeNode;

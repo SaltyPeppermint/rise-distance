@@ -71,9 +71,5 @@ name = "compare"
 path = "src/bin/compare.rs"
 
 [[bin]]
-name = "boltzmann"
-path = "src/bin/boltzmann.rs"
-
-[[bin]]
-name = "count"
-path = "src/bin/count.rs"
+name = "distance"
+path = "src/bin/distance.rs"

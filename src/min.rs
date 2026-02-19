@@ -21,6 +21,21 @@ use super::structural::structural_diff;
 use super::tree::TreeNode;
 use super::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
 
+/// Available distance metrics for tree comparison.
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum DistanceMetric {
+    /// Zhang-Shasha tree edit distance
+    Zs,
+}
+
+impl std::fmt::Display for DistanceMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Zs => write!(f, "zs"),
+        }
+    }
+}
+
 /// Statistics from filtered extraction
 #[derive(Debug, Clone, Default)]
 pub struct Stats {
