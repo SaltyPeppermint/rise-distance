@@ -1,8 +1,7 @@
 //! Boltzmann Sampling for E-Graphs
 //!
-//! Provides methods for sampling terms from an e-graph with control over:
-//! - Term size distribution (via Boltzmann parameter λ)
-//! - Diversity (via structural hashing and deduplication)
+//! Provides methods for sampling terms from an e-graph with control over
+//! term size distribution (via Boltzmann parameter λ).
 //!
 //! # Boltzmann Sampling
 //!
@@ -12,10 +11,7 @@
 //! Iterative fixed-point computation handles cycles
 //! correctly by converging to stable weights.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use ordered_float::OrderedFloat;
 use rand::prelude::*;
 
@@ -23,35 +19,6 @@ use super::graph::EGraph;
 use super::ids::{DataChildId, DataId, EClassId, ExprChildId, NatId};
 use super::nodes::{ENode, Label};
 use super::tree::TreeNode;
-
-/// Trait for samplers that can draw terms from an e-graph.
-pub trait Sampler: Sized {
-    type Label: Label;
-
-    /// Sample a single term, returning `None` if sampling fails.
-    fn sample(&mut self, with_types: bool) -> Option<TreeNode<Self::Label>>;
-
-    /// Sample multiple terms.
-    fn sample_many(&mut self, count: usize, with_types: bool) -> Vec<TreeNode<Self::Label>> {
-        (0..count).filter_map(|_| self.sample(with_types)).collect()
-    }
-
-    /// Convert this sampler into an iterator that yields samples.
-    ///
-    /// The iterator will call `sample()` on each `next()` and terminate
-    /// when the sampler returns `None`. Use `.take(n)` to limit samples.
-    ///
-    /// # Example
-    /// ```text
-    /// let sampler = FixpointSampler::new(&graph, &config, rng).unwrap();
-    /// for tree in sampler.into_sample_iter(true).take(100) {
-    ///     println!("{:?}", tree);
-    /// }
-    /// ```
-    fn into_sample_iter(self, with_types: bool) -> SamplingIter<Self> {
-        SamplingIter::new(self, with_types)
-    }
-}
 
 /// Sampler using fixed-point iteration for weight computation.
 ///
@@ -61,7 +28,7 @@ pub trait Sampler: Sized {
 ///
 /// Internally uses log-space arithmetic for numerical stability when
 /// λ is small or trees are deep.
-pub struct FixpointSampler<'a, L: Label, R: Rng> {
+pub struct FixpointSampler<'a, L: Label, R: Rng + SeedableRng> {
     graph: &'a EGraph<L>,
     log_lambda: OrderedFloat<f64>,
     /// Log-weights for each e-class: log(W[id])
@@ -106,12 +73,14 @@ impl FixpointSamplerConfig {
 ///
 /// # Returns
 /// * `Ok((lambda, actual_avg_size))` - The found lambda and the actual average size achieved
-/// * `Err(FindLambdaError)` - If the search fails (e.g., target unreachable)
+/// * `Err(FindLambdaError)` - Error
+///
+/// # Errors
+/// Errors if the search fails (e.g., target unreachable)
 pub fn find_lambda_for_target_size<L: Label, R: Rng + SeedableRng>(
     graph: &EGraph<L>,
     target_size: usize,
     fixpoint_config: &FixpointSamplerConfig,
-    with_types: bool,
     rng: &mut R,
 ) -> Result<(f64, f64), FindLambdaError> {
     let mut lo = 0.001;
@@ -122,23 +91,10 @@ pub fn find_lambda_for_target_size<L: Label, R: Rng + SeedableRng>(
     eprintln!("Critical lambda found: {hi}");
 
     // First, check bounds to ensure target is achievable
-    // Use a relative epsilon for convergence that scales with expected weight magnitude
-    let size_at_min = estimate_avg_size(
-        graph,
-        fixpoint_config,
-        lo,
-        with_types,
-        R::seed_from_u64(rng.next_u64()),
-    )?;
-    // eprintln!("size_min is doable");
-    let size_at_max = estimate_avg_size(
-        graph,
-        fixpoint_config,
-        hi,
-        with_types,
-        R::seed_from_u64(rng.next_u64()),
-    )?;
-    // eprintln!("size_max is doable");
+    let size_at_min =
+        estimate_avg_size(graph, fixpoint_config, lo, R::seed_from_u64(rng.next_u64()))?;
+    let size_at_max =
+        estimate_avg_size(graph, fixpoint_config, hi, R::seed_from_u64(rng.next_u64()))?;
     eprintln!("Achievable size range: {size_at_min:.1} - {size_at_max:.1} (target: {target_size})");
 
     #[expect(clippy::cast_precision_loss)]
@@ -162,15 +118,11 @@ pub fn find_lambda_for_target_size<L: Label, R: Rng + SeedableRng>(
     let mut best_size = 0.0;
 
     while hi - lo > fixpoint_config.epsilon {
-        // eprintln!("Current best lambda: {best_lambda}");
-        // eprintln!("current best size: {best_size}");
-
         let mid = f64::midpoint(lo, hi);
         let avg_size = estimate_avg_size(
             graph,
             fixpoint_config,
             mid,
-            with_types,
             R::seed_from_u64(rng.next_u64()),
         )?;
 
@@ -219,16 +171,16 @@ fn find_critical_lambda<L: Label, R: Rng + SeedableRng>(
 }
 
 /// Estimate the average tree size for a given lambda by sampling.
-fn estimate_avg_size<L: Label, R: Rng>(
+fn estimate_avg_size<L: Label, R: Rng + SeedableRng>(
     graph: &EGraph<L>,
     config: &FixpointSamplerConfig,
     lambda: f64,
-    with_types: bool,
     rng: R,
 ) -> Result<f64, FindLambdaError> {
     let samples = FixpointSampler::new(graph, lambda, config, rng)
         .ok_or(FindLambdaError::SamplerDidNotConverge { lambda })?
-        .sample_many(1000, with_types);
+        .take(1000)
+        .collect::<Vec<_>>();
 
     if samples.is_empty() {
         return Err(FindLambdaError::SamplerDidNotConverge { lambda });
@@ -254,7 +206,7 @@ pub enum FindLambdaError {
     SamplerDidNotConverge { lambda: f64 },
 }
 
-impl<'a, L: Label, R: Rng> FixpointSampler<'a, L, R> {
+impl<'a, L: Label, R: Rng + SeedableRng> FixpointSampler<'a, L, R> {
     /// Create a new fixed-point sampler.
     ///
     /// Computes weights via fixed-point iteration until convergence.
@@ -319,7 +271,6 @@ impl<'a, L: Label, R: Rng> FixpointSampler<'a, L, R> {
                 max_delta = max_delta.max(delta);
                 log_weights.insert(id, new_log_weight);
             }
-            // eprintln!("max_delta at {max_delta}");
             if max_delta < config.epsilon {
                 return Some(Self {
                     graph,
@@ -398,7 +349,7 @@ impl<'a, L: Label, R: Rng> FixpointSampler<'a, L, R> {
     }
 
     /// Sample a term rooted at the given e-class.
-    fn sample_from(&mut self, id: EClassId, depth: usize, with_types: bool) -> Option<TreeNode<L>> {
+    fn sample_from(&mut self, id: EClassId, depth: usize) -> Option<TreeNode<L>> {
         if depth >= self.max_depth {
             return None;
         }
@@ -424,225 +375,48 @@ impl<'a, L: Label, R: Rng> FixpointSampler<'a, L, R> {
             chosen_node
                 .children()
                 .iter()
-                .map(|c| self.sample_child(c, depth + 1, with_types))
+                .map(|c| self.sample_child(c, depth + 1))
                 .collect::<Option<_>>()?,
             Some(TreeNode::from_eclass(self.graph, id)),
         ))
     }
 
     /// Sample a child, dispatching on child type.
-    fn sample_child(
-        &mut self,
-        child: &ExprChildId,
-        depth: usize,
-        with_types: bool,
-    ) -> Option<TreeNode<L>> {
+    fn sample_child(&mut self, child: &ExprChildId, depth: usize) -> Option<TreeNode<L>> {
         match child {
-            ExprChildId::EClass(eid) => self.sample_from(*eid, depth, with_types),
+            ExprChildId::EClass(eid) => self.sample_from(*eid, depth),
             ExprChildId::Nat(nid) => Some(TreeNode::from_nat(self.graph, *nid)),
             ExprChildId::Data(did) => Some(TreeNode::from_data(self.graph, *did)),
         }
     }
-}
 
-impl<L: Label, R: Rng> Sampler for FixpointSampler<'_, L, R> {
-    type Label = L;
-
-    fn sample(&mut self, with_types: bool) -> Option<TreeNode<L>> {
-        self.sample_from(self.graph.root(), 0, with_types)
+    /// Create a sampler tuned to produce trees of approximately `target_size` nodes.
+    ///
+    /// Finds the appropriate lambda via binary search, then constructs the sampler.
+    ///
+    /// # Returns
+    /// The sampler and the `(lambda, expected_size)` that were found.
+    ///
+    /// # Errors
+    /// Errors when it can't find a lambda
+    pub fn for_target_size(
+        graph: &'a EGraph<L>,
+        target_size: usize,
+        config: &FixpointSamplerConfig,
+        rng: &mut R,
+    ) -> Result<(Self, f64, f64), FindLambdaError> {
+        let (lambda, expected_size) = find_lambda_for_target_size(graph, target_size, config, rng)?;
+        let sampler = Self::new(graph, lambda, config, R::seed_from_u64(rng.next_u64()))
+            .ok_or(FindLambdaError::SamplerDidNotConverge { lambda })?;
+        Ok((sampler, lambda, expected_size))
     }
 }
 
-/// Configuration for diverse sampling.
-#[derive(Debug, Clone, bon::Builder)]
-pub struct DiverseSamplerConfig {
-    /// Maximum attempts to find a novel sample before giving up.
-    #[builder(default = 100)]
-    pub max_attempts_per_sample: usize,
-    /// Minimum novelty ratio (0, 1]. Sample accepted if this fraction of features are new.
-    #[builder(default = 0.3)]
-    pub min_novelty_ratio: f64,
-}
-
-/// Sampler that produces diverse terms using structural deduplication.
-/// Generic over any underlying sampler.
-pub struct DiverseSampler<S: Sampler> {
-    sampler: S,
-    config: DiverseSamplerConfig,
-    seen_hashes: HashSet<u64>,
-    seen_features: HashSet<(S::Label, usize, S::Label)>,
-}
-
-impl<S: Sampler> DiverseSampler<S> {
-    /// Create a new diverse sampler wrapping an existing sampler.
-    pub fn new(sampler: S, config: DiverseSamplerConfig) -> Self {
-        Self {
-            sampler,
-            config,
-            seen_hashes: HashSet::new(),
-            seen_features: HashSet::new(),
-        }
-    }
-
-    /// Check if a term is novel enough to accept.
-    #[expect(clippy::type_complexity)]
-    fn is_novel(
-        &self,
-        term: &TreeNode<S::Label>,
-    ) -> (bool, u64, HashSet<(S::Label, usize, S::Label)>) {
-        let hash = structural_hash(term);
-        let features = extract_features(term);
-
-        // Novel if we've never seen this exact structure
-        if !self.seen_hashes.contains(&hash) {
-            return (true, hash, features);
-        }
-
-        // Otherwise check feature novelty ratio
-        let novel_count = features
-            .iter()
-            .filter(|f| !self.seen_features.contains(*f))
-            .count();
-
-        #[expect(clippy::cast_precision_loss)]
-        let novelty_ratio = if features.is_empty() {
-            0.0
-        } else {
-            novel_count as f64 / features.len() as f64
-        };
-
-        (
-            novelty_ratio >= self.config.min_novelty_ratio,
-            hash,
-            features,
-        )
-    }
-
-    /// Accept a term, updating seen hashes and features.
-    fn accept(&mut self, hash: u64, features: HashSet<(S::Label, usize, S::Label)>) {
-        self.seen_hashes.insert(hash);
-        self.seen_features.extend(features);
-    }
-
-    /// Reset the diversity tracking state.
-    pub fn reset(&mut self) {
-        self.seen_hashes.clear();
-        self.seen_features.clear();
-    }
-
-    pub fn seen_hashes(&self) -> &HashSet<u64> {
-        &self.seen_hashes
-    }
-
-    pub fn seen_features(&self) -> &HashSet<(S::Label, usize, S::Label)> {
-        &self.seen_features
-    }
-}
-
-impl<S: Sampler> Sampler for DiverseSampler<S> {
-    type Label = S::Label;
-
-    fn sample(&mut self, with_types: bool) -> Option<TreeNode<Self::Label>> {
-        let this = &mut *self;
-        for _ in 0..this.config.max_attempts_per_sample {
-            let term = this.sampler.sample(with_types)?;
-            let (is_novel, hash, features) = this.is_novel(&term);
-            if is_novel {
-                this.accept(hash, features);
-                return Some(term);
-            }
-        }
-        None
-    }
-}
-
-/// Compute a structural hash of a tree for diversity checking.
-/// Trees with the same structure and labels will have the same hash.
-#[must_use]
-pub fn structural_hash<L: Label>(tree: &TreeNode<L>) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    hash_tree_rec(tree, &mut hasher);
-    hasher.finish()
-}
-
-fn hash_tree_rec<L: Label, H: Hasher>(tree: &TreeNode<L>, hasher: &mut H) {
-    tree.label().hash(hasher);
-    tree.children().len().hash(hasher);
-    for child in tree.children() {
-        hash_tree_rec(child, hasher);
-    }
-}
-
-/// Extract structural features from a tree for diversity measurement.
-/// Returns bigrams of `(parent_label, child_index, child_label)`.
-#[must_use]
-pub fn extract_features<L: Label>(tree: &TreeNode<L>) -> HashSet<(L, usize, L)> {
-    let mut features = HashSet::new();
-    collect_features(tree, &mut features);
-    features
-}
-
-fn collect_features<L: Label>(tree: &TreeNode<L>, features: &mut HashSet<(L, usize, L)>) {
-    let parent = tree.label().clone();
-    for (i, child) in tree.children().iter().enumerate() {
-        features.insert((parent.clone(), i, child.label().clone()));
-        collect_features(child, features);
-    }
-}
-
-/// Iterator adapter that yields samples from any `Sampler`.
-///
-/// This iterator wraps a sampler and calls `sample()` on each `next()`.
-/// The iterator terminates when the sampler returns `None`, or you can
-/// use methods like `.take(n)` to limit the number of samples.
-///
-/// # Example
-/// ```text
-/// let sampler = FixpointSampler::new(&graph, &config, rng).unwrap();
-/// let iter = SamplingIter::new(sampler);
-/// for tree in iter.take(100) {
-///     println!("{:?}", tree);
-/// }
-/// ```
-pub struct SamplingIter<S: Sampler> {
-    sampler: S,
-    with_types: bool,
-}
-
-impl<S: Sampler> SamplingIter<S> {
-    /// Create a new sampling iterator from a sampler.
-    pub fn new(sampler: S, with_types: bool) -> Self {
-        Self {
-            sampler,
-            with_types,
-        }
-    }
-
-    /// Consume the iterator and return the underlying sampler.
-    pub fn into_inner(self) -> S {
-        self.sampler
-    }
-
-    /// Get a reference to the underlying sampler.
-    pub fn sampler(&self) -> &S {
-        &self.sampler
-    }
-
-    /// Get a mutable reference to the underlying sampler.
-    pub fn sampler_mut(&mut self) -> &mut S {
-        &mut self.sampler
-    }
-
-    pub fn with_types(&self) -> bool {
-        self.with_types
-    }
-}
-
-impl<S: Sampler> Iterator for SamplingIter<S> {
-    type Item = TreeNode<S::Label>;
+impl<L: Label, R: Rng + SeedableRng> Iterator for FixpointSampler<'_, L, R> {
+    type Item = TreeNode<L>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.sampler.sample(self.with_types)
+        self.sample_from(self.graph.root(), 0)
     }
 }
 
@@ -707,7 +481,7 @@ mod tests {
             .expect("Should converge with λ < 1 on cyclic graph");
 
         // Should be able to sample without infinite loop
-        let terms = sampler.sample_many(100, false);
+        let terms = sampler.by_ref().take(100).collect::<Vec<_>>();
         assert!(!terms.is_empty(), "Should produce some terms");
 
         // With small lambda, most terms should be small
@@ -735,8 +509,8 @@ mod tests {
 
         // Verify the probability distribution matches theory
         let leaf_count = sampler
-            .sample_many(1000, false)
-            .iter()
+            .by_ref()
+            .take(1000)
             .filter(|t| t.label() == "x")
             .count();
 
@@ -748,17 +522,15 @@ mod tests {
     }
 
     #[test]
-    fn sampling_iter_yields_samples() {
+    fn sampling_yields_samples() {
         let graph = cyclic_graph();
         let config = FixpointSamplerConfig::for_cyclic();
         let rng = StdRng::seed_from_u64(42);
 
-        // Use the iterator interface
-        let samples = FixpointSampler::new(&graph, 0.5, &config, rng)
-            .expect("Should converge with λ < 1 on cyclic graph")
-            .into_sample_iter(false)
-            .take(50)
-            .collect::<Vec<_>>();
+        let mut fp_sampler = FixpointSampler::new(&graph, 0.5, &config, rng)
+            .expect("Should converge with λ < 1 on cyclic graph");
+
+        let samples = fp_sampler.by_ref().take(50).collect::<Vec<_>>();
 
         assert_eq!(samples.len(), 50, "Should yield exactly 50 samples");
 
@@ -773,26 +545,6 @@ mod tests {
     }
 
     #[test]
-    fn sampling_iter_can_access_sampler() {
-        let graph = cyclic_graph();
-        let config = FixpointSamplerConfig::for_cyclic();
-        let rng = StdRng::seed_from_u64(42);
-
-        let sampler = FixpointSampler::new(&graph, 0.5, &config, rng).unwrap();
-        let mut iter = SamplingIter::new(sampler, false);
-
-        // Take some samples
-        let _ = iter.next();
-        let _ = iter.next();
-
-        // We can still access the sampler through the iterator
-        let _sampler_ref = iter.sampler();
-
-        // And recover the sampler when done
-        let _sampler = iter.into_inner();
-    }
-
-    #[test]
     fn find_lambda_for_target_size_works() {
         let graph = cyclic_graph();
 
@@ -800,7 +552,7 @@ mod tests {
         let config = FixpointSamplerConfig::builder().build();
 
         // Target size of 2 (e.g., f(x) has 2 nodes)
-        let result = find_lambda_for_target_size(&graph, 2, &config, false, &mut rng);
+        let result = find_lambda_for_target_size(&graph, 2, &config, &mut rng);
         assert!(
             result.is_ok(),
             "Should find a lambda for target size 2: {:?}",

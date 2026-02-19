@@ -1,6 +1,7 @@
 mod boltzmann;
 mod choices;
 mod count;
+mod diversity;
 mod euler_str;
 mod graph;
 mod ids;
@@ -16,18 +17,15 @@ mod zs;
 pub use rise::{Expr, Nat, RiseLabel, Type};
 
 pub use boltzmann::{
-    DiverseSampler, DiverseSamplerConfig, FixpointSampler, FixpointSamplerConfig, Sampler,
-    SamplingIter, structural_hash,
+    FindLambdaError, FixpointSampler, FixpointSamplerConfig, find_lambda_for_target_size,
 };
 pub use choices::ChoiceIter;
 pub use count::TermCount;
+pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
 pub use euler_str::tree_distance_euler_bound;
 pub use graph::{EClass, EGraph};
 pub use ids::EClassId;
-pub use min::{
-    DistanceMetric, Stats, find_min_boltzmann_zs, find_min_count_zs, find_min_exhaustive_zs,
-    find_min_struct,
-};
+pub use min::{DistanceMetric, Stats, find_min_exhaustive_zs, find_min_struct, find_min_zs_par};
 pub use nodes::Label;
 pub use tree::TreeNode;
 pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};

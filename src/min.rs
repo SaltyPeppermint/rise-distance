@@ -2,17 +2,10 @@
 //!
 //! This module provides functions for finding the tree with minimum edit distance to a reference.
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use indicatif::ParallelProgressIterator;
-use rand::SeedableRng;
-use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
-
-use crate::boltzmann::find_lambda_for_target_size;
-use crate::count::{Counter, TermCount};
-use crate::{FixpointSampler, FixpointSamplerConfig, Sampler};
 
 use super::euler_str::EulerString;
 use super::graph::EGraph;
@@ -95,7 +88,7 @@ impl std::ops::Add for Stats {
 ///
 /// Applies size-difference and Euler-string lower-bound pruning before computing
 /// the full edit distance.
-fn find_min_zs_par<L, CF, I>(
+pub fn find_min_zs_par<L, CF, I>(
     candidates: I,
     reference: &TreeNode<L>,
     costs: &CF,
@@ -208,66 +201,6 @@ pub fn find_min_exhaustive_zs<L: Label, CF: EditCosts<L>>(
         );
 
     (result, stats)
-}
-
-/// Find the tree in the e-graph with minimum Zhang-Shasha edit distance to the reference,
-/// using Boltzmann sampling. Samples are drawn according to a Boltzmann distribution that
-/// favors trees of a target weight.
-///
-/// # Panics
-///
-/// Panics if no sampler can be built.
-#[must_use]
-pub fn find_min_boltzmann_zs<L: Label, CF: EditCosts<L>>(
-    graph: &EGraph<L>,
-    reference: &TreeNode<L>,
-    costs: &CF,
-    with_types: bool,
-    n_samples: usize,
-    target_weight: usize,
-    seed: u64,
-) -> (Option<(TreeNode<L>, usize)>, Stats) {
-    let mut rng = ChaCha12Rng::seed_from_u64(seed);
-    let config = FixpointSamplerConfig::builder().build();
-    let (lambda, expected_size) =
-        find_lambda_for_target_size(graph, target_weight, &config, with_types, &mut rng).unwrap();
-    eprintln!("LAMBDA IS {lambda}");
-    eprintln!("EXPECTED SIZE IS {expected_size}");
-
-    let iter = FixpointSampler::new(graph, lambda, &config, rng)
-        .unwrap()
-        .into_sample_iter(with_types)
-        .take(n_samples)
-        .par_bridge()
-        .progress_count(n_samples as u64);
-
-    find_min_zs_par(iter, reference, costs, with_types)
-}
-
-/// Find the tree in the e-graph with minimum Zhang-Shasha edit distance to the reference,
-/// using count-based uniform sampling. For each size in `[min_size, max_size]`, samples
-/// `samples_per_size` terms uniformly at random.
-#[must_use]
-pub fn find_min_count_zs<L: Label, C: Counter, CF: EditCosts<L>>(
-    term_count: &TermCount<C, L>,
-    reference: &TreeNode<L>,
-    costs: &CF,
-    min_size: usize,
-    max_size: usize,
-    samples_per_size: u64,
-) -> (Option<(TreeNode<L>, usize)>, Stats) {
-    let candidates = (min_size..=max_size)
-        .into_par_iter()
-        .flat_map(|size| term_count.sample_root(size, samples_per_size, size as u64))
-        .collect::<HashSet<_>>();
-
-    let n_candidates = candidates.len();
-
-    let iter = candidates
-        .into_par_iter()
-        .progress_count(n_candidates as u64);
-
-    find_min_zs_par(iter, reference, costs, term_count.with_types())
 }
 
 /// Find the tree in the e-graph with minimum structural difference to the reference.

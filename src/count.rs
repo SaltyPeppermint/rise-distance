@@ -346,6 +346,23 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         })
     }
 
+    /// Sample unique terms across a range of sizes.
+    ///
+    /// For each size in `[min_size, max_size]`, samples `samples_per_size` terms
+    /// and deduplicates them.
+    #[must_use]
+    pub fn sample_unique(
+        &self,
+        min_size: usize,
+        max_size: usize,
+        samples_per_size: u64,
+    ) -> HashSet<TreeNode<L>> {
+        (min_size..=max_size)
+            .into_par_iter()
+            .flat_map(|size| self.sample_root(size, samples_per_size, size as u64))
+            .collect()
+    }
+
     /// Get the histogram for a child (size -> count).
     fn child_histogram(&self, child_id: ExprChildId) -> Cow<'_, HashMap<usize, C>> {
         match child_id {

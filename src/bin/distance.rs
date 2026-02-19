@@ -4,12 +4,16 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use indicatif::ParallelProgressIterator;
 use num::BigUint;
 use num::ToPrimitive;
+use rand::SeedableRng;
+use rand_chacha::ChaCha12Rng;
+use rayon::prelude::*;
 
 use rise_distance::{
-    DistanceMetric, EClassId, EGraph, Expr, Label, RiseLabel, Stats, TermCount, TreeNode, UnitCost,
-    find_min_boltzmann_zs, find_min_count_zs, tree_distance_unit,
+    DistanceMetric, EClassId, EGraph, Expr, FixpointSampler, FixpointSamplerConfig, Label,
+    RiseLabel, Stats, TermCount, TreeNode, UnitCost, find_min_zs_par, tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -203,13 +207,7 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             samples,
         } => {
             let ref_tree = parse_ref(&cli.reference, &parse_tree);
-            run_boltzmann_extraction(
-                &graph,
-                &ref_tree,
-                cli.with_types,
-                *samples,
-                *target_weight,
-            );
+            run_boltzmann_extraction(&graph, &ref_tree, cli.with_types, *samples, *target_weight);
         }
     }
 }
@@ -258,14 +256,17 @@ fn run_count_extraction<L: Label>(
     eprintln!("Zhang-Shasha extraction (count-based sampling, with lower-bound pruning)");
     eprintln!("Sampling {samples_per_size} terms per size from {min_size} to {max_size}");
 
-    if let (Some(result), stats) = find_min_count_zs(
-        term_count,
-        ref_tree,
-        &UnitCost,
-        min_size,
-        max_size,
-        samples_per_size,
-    ) {
+    let candidates = term_count.sample_unique(min_size, max_size, samples_per_size);
+    let n_candidates = candidates.len();
+    eprintln!("{n_candidates} unique candidates");
+
+    let iter = candidates
+        .into_par_iter()
+        .progress_count(n_candidates as u64);
+
+    if let (Some(result), stats) =
+        find_min_zs_par(iter, ref_tree, &UnitCost, term_count.with_types())
+    {
         print_result(&result, ref_tree, &stats, start.elapsed());
     } else {
         eprintln!("No result found!");
@@ -288,15 +289,17 @@ fn run_boltzmann_extraction<L: Label>(
     let start = Instant::now();
     eprintln!("Zhang-Shasha extraction (Boltzmann sampling, with lower-bound pruning)");
 
-    if let (Some(result), stats) = find_min_boltzmann_zs(
-        graph,
-        ref_tree,
-        &UnitCost,
-        with_types,
-        samples,
-        target_weight,
-        100,
-    ) {
+    let mut rng = ChaCha12Rng::seed_from_u64(100);
+    let config = FixpointSamplerConfig::builder().build();
+    let (fp_sampler, lambda, expected_size) =
+        FixpointSampler::for_target_size(graph, target_weight, &config, &mut rng).unwrap();
+    eprintln!("LAMBDA IS {lambda}");
+    eprintln!("EXPECTED SIZE IS {expected_size}");
+
+    let samples_vec = fp_sampler.take(samples).collect::<Vec<_>>();
+    let iter = samples_vec.into_par_iter().progress_count(samples as u64);
+
+    if let (Some(result), stats) = find_min_zs_par(iter, ref_tree, &UnitCost, with_types) {
         print_result(&result, ref_tree, &stats, start.elapsed());
     } else {
         eprintln!("No result found!");
