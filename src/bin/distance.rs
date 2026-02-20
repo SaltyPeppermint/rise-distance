@@ -80,15 +80,21 @@ Examples:
         bar_width: usize,
 
         /// Additional e-class IDs (numeric) to print histograms for (requires --histogram)
-        eclass_ids: Vec<usize>,
+        #[arg(long, requires = "histogram")]
+        additional_histogram_ids: Vec<usize>,
 
         /// Minimum term size to sample (defaults to smallest size with terms)
         #[arg(short = 'm', long)]
         min_size: Option<usize>,
 
-        /// Number of terms to sample per size
-        #[arg(short = 's', long)]
-        samples: Option<u64>,
+        /// Number of terms in total to take
+        #[arg(short = 'b', long)]
+        budget: Option<usize>,
+
+        /// Distribute sample budget proportionally to the number of possible terms per size
+        /// (instead of uniformly across sizes). Requires min per size
+        #[arg(short = 'p', long, requires = "budget")]
+        proportional: Option<usize>,
     },
 
     /// Boltzmann sampling-based search
@@ -106,7 +112,7 @@ Examples:
         target_weight: usize,
 
         /// Number of samples
-        #[arg(short = 's', long, default_value_t = 10000)]
+        #[arg(short = 's', long, default_value_t = 1_000_000)]
         samples: usize,
     },
 }
@@ -157,9 +163,10 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             pretty,
             scientific,
             bar_width,
-            eclass_ids,
+            additional_histogram_ids,
             min_size,
-            samples,
+            budget: samples,
+            proportional,
         } => {
             eprintln!("Limit: {limit}");
 
@@ -176,7 +183,7 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
 
                 print_histogram("Root", root, &term_count, &fmt);
 
-                for &id in eclass_ids {
+                for &id in additional_histogram_ids {
                     print_histogram(
                         &format!("EClassId({id})"),
                         EClassId::new(id),
@@ -199,6 +206,7 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
                     }),
                     *limit,
                     *sample_count,
+                    *proportional,
                 );
             }
         }
@@ -246,17 +254,41 @@ fn run_count_extraction<L: Label>(
     ref_tree: &TreeNode<L>,
     min_size: usize,
     max_size: usize,
-    samples_per_size: u64,
+    total_samples: usize,
+    proportional: Option<usize>,
 ) {
     let ref_node_count = ref_tree.size_with_types();
     let ref_stripped_count = ref_tree.size();
+    let min_in_root = *term_count.of_root().unwrap().keys().min().unwrap();
+    assert!(min_size >= min_in_root);
     eprintln!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();
     eprintln!("Zhang-Shasha extraction (count-based sampling, with lower-bound pruning)");
-    eprintln!("Sampling {samples_per_size} terms per size from {min_size} to {max_size}");
 
-    let candidates = term_count.sample_unique_root(min_size, max_size, samples_per_size);
+    let candidates = if let Some(p) = proportional {
+        let histogram = term_count.of_root().expect("Root e-class has no terms");
+        let total_terms = (min_size..=max_size)
+            .filter_map(|s| histogram.get(&s))
+            .sum::<BigUint>();
+        eprintln!("Sampling {total_samples} terms proportionally from {min_size} to {max_size}");
+        let budget = BigUint::from(total_samples);
+        let samples_per_size = |size| {
+            let s = histogram.get(&size).map_or(0, |count| {
+                (count * &budget / &total_terms)
+                    .to_u64()
+                    .unwrap_or(u64::MAX)
+                    .max(p as u64)
+            });
+            eprintln!("Sampling {s} terms for size {size}");
+            s
+        };
+        term_count.sample_unique_root(min_size, max_size, samples_per_size)
+    } else {
+        eprintln!("Sampling {total_samples} terms per size from {min_size} to {max_size}");
+        let samples_per_size = (total_samples / (max_size - min_size)) as u64;
+        term_count.sample_unique_root(min_size, max_size, |_| samples_per_size)
+    };
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");
 
