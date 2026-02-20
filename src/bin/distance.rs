@@ -50,10 +50,16 @@ Examples:
   distance graph.json count -l 20 --histogram
 
   # Pretty-print with bar chart, then sample
-  distance graph.json count -l 20 --histogram --pretty -s 100 -e '(+ 1 2)'
+  distance graph.json count -l 20 --histogram --pretty -b 100 -e '(+ 1 2)'
 
   # Sample only, from sizes 5 to 20
-  distance graph.json -e '(+ 1 2)' count -l 20 -m 5 -s 100
+  distance graph.json -e '(+ 1 2)' count -l 20 -m 5 -b 100
+
+  # Proportional sampling with min 10 per size
+  distance graph.json -e '(+ 1 2)' count -l 20 -b 500 -p proportional:10
+
+  # Normal distribution sampling with sigma=2.5
+  distance graph.json -e '(+ 1 2)' count -l 20 -b 500 -p normal:2.5
 
   # Compare to a named tree from a file
   distance graph.json -f trees.txt -n blocking_goal count -l 20 -m 5 -s 100
@@ -63,38 +69,17 @@ Examples:
         #[arg(short, long, default_value_t = 10)]
         limit: usize,
 
-        /// Print term-count histograms
-        #[arg(short, long)]
-        histogram: bool,
-
-        /// Pretty-print histograms with bar charts (requires --histogram)
-        #[arg(long, requires = "histogram")]
-        pretty: bool,
-
-        /// Display counts in scientific notation (requires --histogram)
-        #[arg(long, requires = "histogram")]
-        scientific: bool,
-
-        /// Width of the bar chart in characters (requires --pretty)
-        #[arg(short = 'w', long, default_value_t = 40, requires = "pretty")]
-        bar_width: usize,
-
-        /// Additional e-class IDs (numeric) to print histograms for (requires --histogram)
-        #[arg(long, requires = "histogram")]
-        additional_histogram_ids: Vec<usize>,
-
-        /// Minimum term size to sample (defaults to smallest size with terms)
-        #[arg(short = 'm', long)]
-        min_size: Option<usize>,
+        #[command(flatten)]
+        display: DisplayConfig,
 
         /// Number of terms in total to take
         #[arg(short = 'b', long)]
         budget: Option<usize>,
 
-        /// Distribute sample budget proportionally to the number of possible terms per size
-        /// (instead of uniformly across sizes). Requires min per size
-        #[arg(short = 'p', long, requires = "budget")]
-        proportional: Option<usize>,
+        /// How to distribute the sample budget across sizes.
+        /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
+        #[arg(short = 'p', long, requires = "budget", default_value_t = SampleDistribution::Uniform)]
+        distribution: SampleDistribution,
     },
 
     /// Boltzmann sampling-based search
@@ -159,14 +144,9 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
     match &cli.command {
         Command::Count {
             limit,
-            histogram,
-            pretty,
-            scientific,
-            bar_width,
-            additional_histogram_ids,
-            min_size,
+            display,
             budget: samples,
-            proportional,
+            distribution,
         } => {
             eprintln!("Limit: {limit}");
 
@@ -174,39 +154,39 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             let term_count = TermCount::<BigUint, L>::new(*limit, cli.with_types, &graph);
             eprintln!("Counting completed in {:.2?}", start.elapsed());
 
-            if *histogram {
-                let fmt = DisplayConfig {
-                    pretty: *pretty,
-                    scientific: *scientific,
-                    bar_width: *bar_width,
-                };
+            if display.histogram {
+                print_histogram("Root", root, &term_count, display);
 
-                print_histogram("Root", root, &term_count, &fmt);
-
-                for &id in additional_histogram_ids {
+                for &id in &display.additional_histogram_ids {
                     print_histogram(
                         &format!("EClassId({id})"),
                         EClassId::new(id),
                         &term_count,
-                        &fmt,
+                        display,
                     );
                 }
             }
 
             if let Some(sample_count) = samples {
                 let ref_tree = parse_ref(&cli.reference, &parse_tree);
+                let Some(min_size) = term_count
+                    .of_eclass(root)
+                    .and_then(|h| h.keys().min().copied())
+                else {
+                    panic!(
+                        "Root e-class {root:?} has no terms up to size limit {limit}. \
+                         The smallest representable term likely exceeds this limit \
+                         (try increasing -l)."
+                    );
+                };
                 run_count_extraction(
                     &term_count,
                     &ref_tree,
-                    min_size.unwrap_or_else(|| {
-                        term_count
-                            .of_eclass(root)
-                            .and_then(|h| h.keys().copied().min())
-                            .expect("Root e-class has no terms")
-                    }),
+                    min_size,
                     *limit,
                     *sample_count,
-                    *proportional,
+                    *distribution,
+                    cli.with_types,
                 );
             }
         }
@@ -249,45 +229,132 @@ fn parse_ref<L: Label>(
 
 // --- Count-based extraction ---
 
+#[derive(Debug, Clone, Copy)]
+enum SampleDistribution {
+    /// Uniform accross the term sizes
+    Uniform,
+    /// Proportional to the number of terms of that size with a minimum number per size
+    Proportional(usize),
+    /// As a normal distribution centered in the middle between the smallest and goal term
+    /// value = sigma
+    Normal(f64),
+}
+
+impl FromStr for SampleDistribution {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "uniform" {
+            return Ok(Self::Uniform);
+        }
+        if s == "proportional" {
+            return Ok(Self::Proportional(10));
+        }
+
+        if let Some(rest) = s.strip_prefix("proportional:") {
+            let min = rest
+                .parse::<usize>()
+                .map_err(|e| format!("invalid min_per_size in 'proportional:{rest}': {e}"))?;
+            return Ok(Self::Proportional(min));
+        }
+
+        if s == "normal" {
+            return Ok(Self::Normal(2.6));
+        }
+        if let Some(rest) = s.strip_prefix("normal:") {
+            let sigma = rest
+                .parse::<f64>()
+                .map_err(|e| format!("invalid sigma in 'normal:{rest}': {e}"))?;
+            return Ok(Self::Normal(sigma));
+        }
+        Err(format!(
+            "unknown distribution '{s}': expected 'uniform', 'proportional:<min>', or 'normal:<sigma>'"
+        ))
+    }
+}
+
+impl std::fmt::Display for SampleDistribution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uniform => write!(f, "uniform"),
+            Self::Proportional(min) => write!(f, "proportional:{min}"),
+            Self::Normal(sigma) => write!(f, "normal:{sigma}"),
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn run_count_extraction<L: Label>(
     term_count: &TermCount<BigUint, L>,
     ref_tree: &TreeNode<L>,
     min_size: usize,
     max_size: usize,
     total_samples: usize,
-    proportional: Option<usize>,
+    distribution: SampleDistribution,
+    with_types: bool,
 ) {
     let ref_node_count = ref_tree.size_with_types();
-    let ref_stripped_count = ref_tree.size();
-    let min_in_root = *term_count.of_root().unwrap().keys().min().unwrap();
-    assert!(min_size >= min_in_root);
+    let ref_stripped_count = ref_tree.size_without_types();
     eprintln!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();
     eprintln!("Zhang-Shasha extraction (count-based sampling, with lower-bound pruning)");
 
-    let candidates = if let Some(p) = proportional {
-        let histogram = term_count.of_root().expect("Root e-class has no terms");
-        let total_terms = (min_size..=max_size)
-            .filter_map(|s| histogram.get(&s))
-            .sum::<BigUint>();
-        eprintln!("Sampling {total_samples} terms proportionally from {min_size} to {max_size}");
-        let budget = BigUint::from(total_samples);
-        let samples_per_size = |size| {
-            let s = histogram.get(&size).map_or(0, |count| {
-                (count * &budget / &total_terms)
-                    .to_u64()
-                    .unwrap_or(u64::MAX)
-                    .max(p as u64)
-            });
-            eprintln!("Sampling {s} terms for size {size}");
-            s
-        };
-        term_count.sample_unique_root(min_size, max_size, samples_per_size)
-    } else {
-        eprintln!("Sampling {total_samples} terms per size from {min_size} to {max_size}");
-        let samples_per_size = (total_samples / (max_size - min_size)) as u64;
-        term_count.sample_unique_root(min_size, max_size, |_| samples_per_size)
+    let candidates = match distribution {
+        SampleDistribution::Proportional(min_per_size) => {
+            let histogram = term_count.of_root().expect("Root e-class has no terms");
+            let total_terms = (min_size..=max_size)
+                .filter_map(|s| histogram.get(&s))
+                .sum::<BigUint>();
+            eprintln!(
+                "Sampling {total_samples} terms proportionally from {min_size} to {max_size}"
+            );
+            let budget = BigUint::from(total_samples);
+            let samples_per_size = |size| {
+                let s = histogram.get(&size).map_or(0, |count| {
+                    (count * &budget / &total_terms)
+                        .to_u64()
+                        .unwrap_or(u64::MAX)
+                        .max(min_per_size as u64)
+                });
+                eprintln!("Sampling {s} terms for size {size}");
+                s
+            };
+            term_count.sample_unique_root(min_size, max_size, samples_per_size)
+        }
+        SampleDistribution::Normal(sigma) => {
+            let center = (ref_tree.size(with_types) - min_size) as f64;
+            eprintln!(
+                "Sampling {total_samples} terms with normal distribution (center={center}, sigma={sigma}) from {min_size} to {max_size}"
+            );
+            // Compute unnormalized weights for each size
+            let weights = (min_size..=max_size)
+                .map(|s| {
+                    let z = (s as f64 - center) / sigma;
+                    (s, (-0.5 * z * z).exp())
+                })
+                .collect::<Vec<_>>();
+            let total_weight: f64 = weights.iter().map(|(_, w)| w).sum();
+            let samples_per_size = |size: usize| {
+                let w = weights
+                    .iter()
+                    .find(|(s, _)| *s == size)
+                    .map_or(0.0, |(_, w)| *w);
+                let s = (w / total_weight * total_samples as f64).round() as u64;
+                eprintln!("Sampling {s} terms for size {size}");
+                s
+            };
+            term_count.sample_unique_root(min_size, max_size, samples_per_size)
+        }
+        SampleDistribution::Uniform => {
+            eprintln!("Sampling {total_samples} terms per size from {min_size} to {max_size}");
+            let samples_per_size = (total_samples / (max_size - min_size)) as u64;
+            term_count.sample_unique_root(min_size, max_size, |_| samples_per_size)
+        }
     };
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");
@@ -315,7 +382,7 @@ fn run_boltzmann_extraction<L: Label>(
     target_weight: usize,
 ) {
     let ref_node_count = ref_tree.size_with_types();
-    let ref_stripped_count = ref_tree.size();
+    let ref_stripped_count = ref_tree.size_without_types();
     eprintln!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();
@@ -373,12 +440,12 @@ fn print_result<L: Label>(
     eprintln!(
         "Best tree size: {} with types, {} without",
         best.size_with_types(),
-        best.size()
+        best.size_without_types()
     );
     eprintln!(
         "Ref tree size: {} with types, {} without",
         ref_tree.size_with_types(),
-        ref_tree.size()
+        ref_tree.size_without_types()
     );
 
     println!("{best}");
@@ -386,10 +453,27 @@ fn print_result<L: Label>(
 
 // --- Histogram display (count subcommand only) ---
 
+#[derive(ClapArgs)]
 struct DisplayConfig {
+    /// Print term-count histograms
+    #[arg(short, long)]
+    histogram: bool,
+
+    /// Pretty-print histograms with bar charts (requires --histogram)
+    #[arg(long, requires = "histogram")]
     pretty: bool,
+
+    /// Display counts in scientific notation (requires --histogram)
+    #[arg(long, requires = "histogram")]
     scientific: bool,
+
+    /// Width of the bar chart in characters (requires --pretty)
+    #[arg(long, default_value_t = 40, requires = "pretty")]
     bar_width: usize,
+
+    /// Additional e-class IDs (numeric) to print histograms for (requires --histogram)
+    #[arg(long, requires = "histogram")]
+    additional_histogram_ids: Vec<usize>,
 }
 
 fn format_count(n: &BigUint, scientific: bool) -> String {

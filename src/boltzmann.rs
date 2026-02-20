@@ -187,7 +187,11 @@ fn estimate_avg_size<L: Label, R: Rng + SeedableRng>(
     }
 
     #[expect(clippy::cast_precision_loss)]
-    let avg = samples.iter().map(|t| t.size()).sum::<usize>() as f64 / samples.len() as f64;
+    let avg = samples
+        .iter()
+        .map(|t| t.size_without_types())
+        .sum::<usize>() as f64
+        / samples.len() as f64;
 
     Ok(avg)
 }

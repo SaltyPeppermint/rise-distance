@@ -134,14 +134,30 @@ impl<L: Label> TreeNode<L> {
         TreeNode::new_untyped(node, children)
     }
 
+    pub fn size(&self, with_types: bool) -> usize {
+        if with_types {
+            self.size_with_types()
+        } else {
+            self.size_without_types()
+        }
+    }
+
     /// Count total number of nodes in this tree.
-    pub fn size(&self) -> usize {
-        1 + self.children.iter().map(Self::size).sum::<usize>()
+    pub fn size_without_types(&self) -> usize {
+        1 + self
+            .children
+            .iter()
+            .map(Self::size_without_types)
+            .sum::<usize>()
     }
 
     pub fn size_with_types(&self) -> usize {
-        1 + self.children.iter().map(Self::size).sum::<usize>()
-            + self.ty.as_deref().map_or(0, |t| t.size())
+        1 + self
+            .children
+            .iter()
+            .map(Self::size_without_types)
+            .sum::<usize>()
+            + self.ty.as_deref().map_or(0, |t| t.size_without_types())
     }
 
     pub fn flatten(&self, with_types: bool) -> FlattenedTreeNode<L> {
