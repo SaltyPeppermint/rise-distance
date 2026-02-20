@@ -322,7 +322,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     #[must_use]
-    pub fn sample_root(
+    fn sample_root(
         &self,
         size: usize,
         samples: u64,
@@ -332,7 +332,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     #[must_use]
-    pub fn sample_class(
+    fn sample_class(
         &self,
         id: EClassId,
         size: usize,
@@ -346,20 +346,43 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         })
     }
 
-    /// Sample unique terms across a range of sizes.
+    /// Sample unique terms across a range of sizes from root.
     ///
-    /// For each size in `[min_size, max_size]`, samples `samples_per_size` terms
-    /// and deduplicates them.
+    /// See `sample_unique` for more info
     #[must_use]
-    pub fn sample_unique(
+    pub fn sample_unique_root(
         &self,
         min_size: usize,
         max_size: usize,
         samples_per_size: u64,
     ) -> HashSet<TreeNode<L>> {
-        (min_size..=max_size)
-            .into_par_iter()
-            .flat_map(|size| self.sample_root(size, samples_per_size, size as u64))
+        self.sample_unique(self.graph.root(), min_size, max_size, samples_per_size)
+    }
+
+    /// Sample unique terms across a range of sizes.
+    ///
+    /// For each size in `[min_size, max_size]` that the root e-class actually has
+    /// terms for, samples `samples_per_size` terms and deduplicates them.
+    ///
+    /// Only sizes present in the root's histogram are sampled. The root e-class
+    /// may have gaps in its reachable sizes (e.g. terms only at sizes 5, 7, 9),
+    /// and calling `sample` with a size that has no terms would cause all node
+    /// weights to be zero, panicking with `AllWeightsZero`.
+    #[must_use]
+    pub fn sample_unique(
+        &self,
+        id: EClassId,
+        min_size: usize,
+        max_size: usize,
+        samples_per_size: u64,
+    ) -> HashSet<TreeNode<L>> {
+        let canon_id = self.graph.canonicalize(id);
+        self.data
+            .get(&canon_id)
+            .into_iter()
+            .flat_map(|h| h.keys().filter(|&&s| s >= min_size && s <= max_size))
+            .par_bridge()
+            .flat_map(|&size| self.sample_root(size, samples_per_size, size as u64))
             .collect()
     }
 

@@ -256,7 +256,7 @@ fn run_count_extraction<L: Label>(
     eprintln!("Zhang-Shasha extraction (count-based sampling, with lower-bound pruning)");
     eprintln!("Sampling {samples_per_size} terms per size from {min_size} to {max_size}");
 
-    let candidates = term_count.sample_unique(min_size, max_size, samples_per_size);
+    let candidates = term_count.sample_unique_root(min_size, max_size, samples_per_size);
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");
 
