@@ -14,7 +14,7 @@ use rayon::prelude::*;
 
 use rise_distance::{
     EClassId, EGraph, Expr, FixpointSampler, FixpointSamplerConfig, Label, RiseLabel, TermCount,
-    TreeNode, UnitCost, ZSStats, find_min_zs, tree_distance_unit,
+    TreeNode, UnitCost, ZSStats, find_min_struct, find_min_zs, tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -201,11 +201,14 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
                 run_count_extraction(
                     &term_count,
                     &ref_tree,
-                    min_size,
-                    *limit,
-                    *sample_count,
-                    *distribution,
-                    cli.with_types,
+                    &CountSampleConfig {
+                        min_size,
+                        max_size: *limit,
+                        total_samples: *sample_count,
+                        distribution: *distribution,
+                        with_types: cli.with_types,
+                        distance: cli.distance,
+                    },
                 );
             }
         }
@@ -214,7 +217,14 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             samples,
         } => {
             let ref_tree = parse_ref(&cli.reference, &parse_tree);
-            run_boltzmann_extraction(&graph, &ref_tree, cli.with_types, *samples, *target_weight);
+            run_boltzmann_extraction(
+                &graph,
+                &ref_tree,
+                cli.with_types,
+                *samples,
+                *target_weight,
+                cli.distance,
+            );
         }
     }
 }
@@ -247,6 +257,16 @@ fn parse_ref<L: Label>(
 }
 
 // --- Count-based extraction ---
+
+#[derive(Debug, Clone)]
+struct CountSampleConfig {
+    min_size: usize,
+    max_size: usize,
+    total_samples: usize,
+    distribution: SampleDistribution,
+    with_types: bool,
+    distance: DistanceMetric,
+}
 
 #[derive(Debug, Clone, Copy)]
 enum SampleDistribution {
@@ -310,18 +330,22 @@ impl std::fmt::Display for SampleDistribution {
 fn run_count_extraction<L: Label>(
     term_count: &TermCount<BigUint, L>,
     ref_tree: &TreeNode<L>,
-    min_size: usize,
-    max_size: usize,
-    total_samples: usize,
-    distribution: SampleDistribution,
-    with_types: bool,
+    config: &CountSampleConfig,
 ) {
+    let CountSampleConfig {
+        min_size,
+        max_size,
+        total_samples,
+        distribution,
+        with_types,
+        distance,
+    } = *config;
     let ref_node_count = ref_tree.size_with_types();
     let ref_stripped_count = ref_tree.size_without_types();
     eprintln!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();
-    eprintln!("Zhang-Shasha extraction (count-based sampling, with lower-bound pruning)");
+    eprintln!("{distance} extraction (count-based sampling)");
 
     let candidates = match distribution {
         SampleDistribution::Proportional(min_per_size) => {
@@ -379,10 +403,21 @@ fn run_count_extraction<L: Label>(
         .into_par_iter()
         .progress_count(n_candidates as u64);
 
-    if let (Some(result), stats) = find_min_zs(iter, ref_tree, &UnitCost, term_count.with_types()) {
-        print_result(&result, ref_tree, &stats, start.elapsed());
-    } else {
-        eprintln!("No result found!");
+    match distance {
+        DistanceMetric::ZhangShasha => {
+            if let (Some(result), stats) = find_min_zs(iter, ref_tree, &UnitCost, with_types) {
+                print_zs_result(&result, ref_tree, &stats, start.elapsed(), with_types);
+            } else {
+                eprintln!("No result found!");
+            }
+        }
+        DistanceMetric::Structural => {
+            if let Some(result) = find_min_struct(iter, ref_tree, &UnitCost, with_types) {
+                print_struct_result(&result, ref_tree, start.elapsed(), with_types);
+            } else {
+                eprintln!("No result found!");
+            }
+        }
     }
 }
 
@@ -394,13 +429,14 @@ fn run_boltzmann_extraction<L: Label>(
     with_types: bool,
     samples: usize,
     target_weight: usize,
+    distance: DistanceMetric,
 ) {
     let ref_node_count = ref_tree.size_with_types();
     let ref_stripped_count = ref_tree.size_without_types();
     eprintln!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
 
     let start = Instant::now();
-    eprintln!("Zhang-Shasha extraction (Boltzmann sampling, with lower-bound pruning)");
+    eprintln!("{distance} extraction (Boltzmann sampling)");
 
     let mut rng = ChaCha12Rng::seed_from_u64(100);
     let config = FixpointSamplerConfig::builder().build();
@@ -412,21 +448,33 @@ fn run_boltzmann_extraction<L: Label>(
     let samples_vec = fp_sampler.take(samples).collect::<Vec<_>>();
     let iter = samples_vec.into_par_iter().progress_count(samples as u64);
 
-    if let (Some(result), stats) = find_min_zs(iter, ref_tree, &UnitCost, with_types) {
-        print_result(&result, ref_tree, &stats, start.elapsed());
-    } else {
-        eprintln!("No result found!");
+    match distance {
+        DistanceMetric::ZhangShasha => {
+            if let (Some(result), stats) = find_min_zs(iter, ref_tree, &UnitCost, with_types) {
+                print_zs_result(&result, ref_tree, &stats, start.elapsed(), with_types);
+            } else {
+                eprintln!("No result found!");
+            }
+        }
+        DistanceMetric::Structural => {
+            if let Some(result) = find_min_struct(iter, ref_tree, &UnitCost, with_types) {
+                print_struct_result(&result, ref_tree, start.elapsed(), with_types);
+            } else {
+                eprintln!("No result found!");
+            }
+        }
     }
 }
 
 // --- Shared result printing ---
 
 #[expect(clippy::cast_precision_loss)]
-fn print_result<L: Label>(
+fn print_zs_result<L: Label>(
     result: &(TreeNode<L>, usize),
     ref_tree: &TreeNode<L>,
     stats: &ZSStats,
     elapsed: std::time::Duration,
+    with_types: bool,
 ) {
     let best = &result.0;
     eprintln!("Best distance: {}", result.1);
@@ -449,8 +497,29 @@ fn print_result<L: Label>(
         100.0 * stats.full_comparisons as f64 / stats.trees_enumerated as f64
     );
 
-    let zs_dist = tree_distance_unit(&best.flatten(true), &ref_tree.flatten(true));
+    let zs_dist = tree_distance_unit(&best.flatten(with_types), &ref_tree.flatten(with_types));
     eprintln!("ZS distance to ref: {zs_dist}");
+    print_tree_sizes(best, ref_tree);
+    println!("{best}");
+}
+
+fn print_struct_result<L: Label>(
+    result: &(TreeNode<L>, usize),
+    ref_tree: &TreeNode<L>,
+    elapsed: std::time::Duration,
+    with_types: bool,
+) {
+    let best = &result.0;
+    eprintln!("Best structural distance: {}", result.1);
+    eprintln!("Time: {elapsed:.2?}");
+
+    let zs_dist = tree_distance_unit(&best.flatten(with_types), &ref_tree.flatten(with_types));
+    eprintln!("ZS distance to ref: {zs_dist}");
+    print_tree_sizes(best, ref_tree);
+    println!("{best}");
+}
+
+fn print_tree_sizes<L: Label>(best: &TreeNode<L>, ref_tree: &TreeNode<L>) {
     eprintln!(
         "Best tree size: {} with types, {} without",
         best.size_with_types(),
@@ -461,8 +530,6 @@ fn print_result<L: Label>(
         ref_tree.size_with_types(),
         ref_tree.size_without_types()
     );
-
-    println!("{best}");
 }
 
 // --- Histogram display (count subcommand only) ---
