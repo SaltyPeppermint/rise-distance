@@ -4,12 +4,8 @@
 
 use std::borrow::{Borrow, Cow};
 use std::iter::Product;
-use std::sync::{Arc, Mutex};
-use std::thread;
 
-use dashmap::DashMap;
 use hashbrown::{HashMap, HashSet};
-use log::debug;
 use num_traits::{NumAssignRef, NumRef};
 use rand::distributions::WeightedIndex;
 use rand::distributions::uniform::SampleUniform;
@@ -71,21 +67,18 @@ pub struct TermCount<'a, C: Counter, L: Label> {
 impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// Run the term counting analysis on an e-graph.
     ///
-    ///
-    ///
     /// # Arguments
     /// * `limit` - Maximum term size to count
     /// * `with_types` - If true, include type annotations in size calculations
-    /// # Panics
-    /// Panics if threads fail to join (should not happen in practice).
     #[must_use]
+    #[expect(clippy::missing_panics_doc)]
     pub fn new(limit: usize, with_types: bool, graph: &EGraph<L>) -> TermCount<'_, C, L> {
         // Build parent map and type size cache
         let parents = Self::build_parent_map(graph);
         let type_cache = TypeSizeCache::build(graph);
 
         // Find leaf classes (classes with at least one leaf node)
-        let leaves = graph
+        let mut pending: UniqueQueue<EClassId> = graph
             .class_ids()
             .filter(|&id| {
                 graph
@@ -96,102 +89,78 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             })
             .collect();
 
-        let analysis_pending = Arc::new(Mutex::new(leaves));
-        let data = DashMap::new();
+        let mut data: HashMap<EClassId, HashMap<usize, C>> = HashMap::new();
 
-        // Run parallel analysis
-        thread::scope(|scope| {
-            for i in 0..thread::available_parallelism().map_or(1, |p| p.get()) {
-                let tap = analysis_pending.clone();
-                let td = &data;
-                let tp = &parents;
-                let tc = &type_cache;
-                scope.spawn(move || {
-                    debug!("Thread #{i} started!");
-                    TermCount::resolve_pending_analysis(limit, with_types, graph, td, &tap, tc, tp);
-                    debug!("Thread #{i} finished!");
-                });
+        // Fixpoint iteration: process classes in rounds.
+        // Each round drains the current queue, computes new data for each class
+        // in parallel (reading only from the previous round's data), then applies
+        // all updates sequentially before the next round.
+        while !pending.is_empty() {
+            // Compute new data for each class in parallel, reading from `data` (immutable)
+            let results: Vec<(EClassId, Option<HashMap<usize, C>>)> = pending
+                .drain()
+                .par_bridge()
+                .map(|id| {
+                    debug_assert_eq!(graph.canonicalize(id), id);
+                    let eclass = graph.class(id);
+
+                    let available_data = eclass.nodes().iter().filter_map(|node| {
+                        let all_ready = node.children().iter().all(|child_id| match child_id {
+                            ExprChildId::Nat(_) | ExprChildId::Data(_) => true,
+                            ExprChildId::EClass(eclass_id) => {
+                                data.contains_key(&graph.canonicalize(*eclass_id))
+                            }
+                        });
+                        all_ready.then(|| {
+                            let type_overhead = if with_types {
+                                1 + type_cache.get_type_size(eclass.ty())
+                            } else {
+                                0
+                            };
+                            Self::make_node_data_from_map(
+                                limit,
+                                graph,
+                                node.children(),
+                                &data,
+                                &type_cache,
+                                type_overhead,
+                            )
+                        })
+                    });
+
+                    let merged = available_data.reduce(|mut a, b| {
+                        Self::merge(&mut a, b);
+                        a
+                    });
+
+                    (id, merged)
+                })
+                .collect();
+
+            // Apply results sequentially — no concurrent mutation
+            for (id, computed) in results {
+                if let Some(computed_data) = computed {
+                    if data.get(&id).is_none_or(|v| *v != computed_data) {
+                        if let Some(parent_set) = parents.get(&id) {
+                            pending.extend(parent_set.iter().copied());
+                        }
+                        data.insert(id, computed_data);
+                    }
+                } else {
+                    // Not all children ready yet — re-queue
+                    assert!(!graph.class(id).nodes().is_empty());
+                    pending.insert(id);
+                }
             }
-        });
+        }
 
-        let suffix_cache = Self::build_suffix_cache(limit, graph, &data, &type_cache);
+        let suffix_cache = Self::build_suffix_cache_from_map(limit, graph, &data, &type_cache);
         TermCount {
-            data: data.into_par_iter().collect(),
+            data,
             suffix_cache,
             graph,
             type_sizes: type_cache,
             with_types,
-        }
-    }
-
-    /// Process pending e-classes from the work queue.
-    fn resolve_pending_analysis(
-        limit: usize,
-        with_types: bool,
-        graph: &EGraph<L>,
-        data: &DashMap<EClassId, HashMap<usize, C>>,
-        analysis_pending: &Arc<Mutex<UniqueQueue<EClassId>>>,
-        type_cache: &TypeSizeCache,
-        parents: &HashMap<EClassId, HashSet<EClassId>>,
-    ) {
-        // Potentially, this might lead to a situation where only one thread is working on the queue.
-        // This has not been observed in practice, but it is a potential bottleneck.
-        // Drop lock at the end of the scope
-        while let Some(id) = { analysis_pending.lock().unwrap().pop() } {
-            // let canonical_id = graph.canonicalize(id); // Only canonical ids are ever in here
-            debug_assert_eq!(graph.canonicalize(id), id);
-            let eclass = graph.class(id);
-
-            // Check if we can calculate the analysis for any enode
-            let available_data = eclass.nodes().iter().filter_map(|node| {
-                // If all the childs eclass_children have data, we can calculate it!
-                let all_ready = node.children().iter().all(|child_id| match child_id {
-                    ExprChildId::Nat(_) | ExprChildId::Data(_) => true,
-                    ExprChildId::EClass(eclass_id) => {
-                        data.contains_key(&graph.canonicalize(*eclass_id))
-                    }
-                });
-                all_ready.then(|| {
-                    // Get the type overhead for this e-class
-                    let type_overhead = if with_types {
-                        1 + type_cache.get_type_size(eclass.ty())
-                    } else {
-                        0
-                    };
-                    TermCount::make_node_data(
-                        limit,
-                        graph,
-                        node.children(),
-                        data,
-                        type_cache,
-                        type_overhead,
-                    )
-                })
-            });
-
-            // If we have some info, we add that info to our storage.
-            // Otherwise we have absolutely no info about the nodes so we can only put them back onto the queue.
-            // and hope for a better time later.
-            if let Some(computed_data) = available_data.reduce(|mut a, b| {
-                Self::merge(&mut a, b);
-                a
-            }) {
-                // If we have gained new information, put the parents onto the queue.
-                // They need to be re-evaluated.
-                // Only once we have reached a fixpoint we can stop updating the parents.
-                if data.get(&id).is_none_or(|v| *v != computed_data) {
-                    if let Some(parent_set) = parents.get(&id) {
-                        analysis_pending
-                            .lock()
-                            .unwrap()
-                            .extend(parent_set.iter().copied());
-                    }
-                    data.insert(id, computed_data);
-                }
-            } else {
-                assert!(!eclass.nodes().is_empty());
-                analysis_pending.lock().unwrap().insert(id);
-            }
         }
     }
 
@@ -202,12 +171,12 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         }
     }
 
-    /// Compute term counts for a single e-node.
-    fn make_node_data(
+    /// Compute term counts for a single e-node, reading from a plain `HashMap`.
+    fn make_node_data_from_map(
         limit: usize,
         graph: &EGraph<L>,
         children: &[ExprChildId],
-        data: &DashMap<EClassId, HashMap<usize, C>>,
+        data: &HashMap<EClassId, HashMap<usize, C>>,
         type_cache: &TypeSizeCache,
         type_overhead: usize,
     ) -> HashMap<usize, C> {
@@ -227,7 +196,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
         let histograms = children
             .iter()
-            .map(|c| TermCount::get_child_data(graph, *c, data, type_cache))
+            .map(|c| Self::get_child_data_from_map(graph, *c, data, type_cache))
             .collect::<Vec<_>>();
         let mut result = Self::convolve(&histograms, budget);
 
@@ -260,30 +229,25 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         parents
     }
 
-    /// Get the count data for a child, handling Nat/Data/EClass variants.
-    fn get_child_data(
+    /// Get the count data for a child, reading from a plain `HashMap`.
+    fn get_child_data_from_map(
         graph: &EGraph<L>,
         child_id: ExprChildId,
-        data: &DashMap<EClassId, HashMap<usize, C>>,
+        data: &HashMap<EClassId, HashMap<usize, C>>,
         type_cache: &TypeSizeCache,
     ) -> HashMap<usize, C> {
         match child_id {
             ExprChildId::Nat(nat_id) => {
-                // Nat nodes have a fixed size (no choices)
                 let size = type_cache.get_nat_size(nat_id);
                 HashMap::from([(size, C::one())])
             }
             ExprChildId::Data(data_id) => {
-                // Data type nodes have a fixed size (no choices)
                 let size = type_cache.get_data_size(data_id);
                 HashMap::from([(size, C::one())])
             }
             ExprChildId::EClass(eclass_id) => {
-                // E-class children use the precomputed data
                 let canonical_id = graph.canonicalize(eclass_id);
-                data.get(&canonical_id)
-                    .map(|r| r.clone())
-                    .unwrap_or_default()
+                data.get(&canonical_id).cloned().unwrap_or_default()
             }
         }
     }
@@ -484,16 +448,15 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     /// Build suffix convolution tables for all e-classes at the maximum budget.
-    fn build_suffix_cache(
+    fn build_suffix_cache_from_map(
         limit: usize,
         graph: &EGraph<L>,
-        data: &DashMap<EClassId, HashMap<usize, C>>,
+        data: &HashMap<EClassId, HashMap<usize, C>>,
         type_cache: &TypeSizeCache,
     ) -> HashMap<EClassId, Vec<Vec<HashMap<usize, C>>>> {
         let max_budget = limit.saturating_sub(1);
         data.par_iter()
-            .map(|entry| {
-                let id = *entry.key();
+            .map(|(&id, _)| {
                 let nodes = graph.class(id).nodes();
                 let per_node = nodes
                     .iter()
@@ -501,7 +464,9 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                         let histograms = n
                             .children()
                             .iter()
-                            .map(|&c_id| Self::get_child_data(graph, c_id, data, type_cache))
+                            .map(|&c_id| {
+                                Self::get_child_data_from_map(graph, c_id, data, type_cache)
+                            })
                             .collect::<Vec<_>>();
                         Self::suffix_convolutions(&histograms, max_budget)
                     })
