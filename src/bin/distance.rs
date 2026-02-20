@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use hashbrown::HashMap;
 use indicatif::ParallelProgressIterator;
 use num::BigUint;
 use num::ToPrimitive;
@@ -337,13 +338,10 @@ fn run_count_extraction<L: Label>(
                     let z = (s as f64 - center) / sigma;
                     (s, (-0.5 * z * z).exp())
                 })
-                .collect::<Vec<_>>();
+                .collect::<HashMap<_, _>>();
             let total_weight: f64 = weights.iter().map(|(_, w)| w).sum();
             let samples_per_size = |size: usize| {
-                let w = weights
-                    .iter()
-                    .find(|(s, _)| *s == size)
-                    .map_or(0.0, |(_, w)| *w);
+                let w = *weights.get(&size).unwrap_or(&0.0);
                 let s = (w / total_weight * total_samples as f64).round() as u64;
                 eprintln!("Sampling {s} terms for size {size}");
                 s
