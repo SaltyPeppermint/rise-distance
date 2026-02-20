@@ -1,6 +1,60 @@
+use std::cmp::Reverse;
+
 use crate::{tree::FlattenedTreeNode, tree_distance};
 
 use super::{EditCosts, Label};
+
+/// Structural Distance: More `overlap` is better, otherwise fall back on `zs_sum` as a tiebreaker
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StructuralDistance {
+    // More overlap is good, so to make the derives meaningful, we have to reverse them!
+    overlap: Reverse<usize>,
+    zs_sum: usize,
+}
+
+impl StructuralDistance {
+    fn new(overlap: usize, zs_sum: usize) -> Self {
+        Self {
+            overlap: Reverse(overlap),
+            zs_sum,
+        }
+    }
+
+    #[must_use]
+    pub fn worst() -> Self {
+        Self {
+            overlap: Reverse(0),
+            zs_sum: usize::MAX,
+        }
+    }
+
+    #[must_use]
+    pub fn overlap(&self) -> usize {
+        self.overlap.0
+    }
+
+    #[must_use]
+    pub fn zs_sum(&self) -> usize {
+        self.zs_sum
+    }
+}
+
+impl std::ops::Add for StructuralDistance {
+    type Output = StructuralDistance;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        StructuralDistance {
+            overlap: Reverse(self.overlap.0 + rhs.overlap.0),
+            zs_sum: self.zs_sum + rhs.zs_sum,
+        }
+    }
+}
+
+impl std::iter::Sum for StructuralDistance {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), std::ops::Add::add)
+    }
+}
 
 /// Very simple structural diff.
 /// starting from the root, is already present.
@@ -8,29 +62,26 @@ pub fn structural_diff<L: Label, C: EditCosts<L>>(
     reference: &FlattenedTreeNode<L>,
     candidate: &FlattenedTreeNode<L>,
     costs: &C,
-) -> usize {
-    if reference.children().len() != candidate.children().len() {
-        return cost_rec(reference, costs);
-    }
-    let children_diff = reference
-        .children()
-        .iter()
-        .zip(candidate.children())
-        .map(|(r, c)| structural_diff(r, c, costs))
-        .sum();
-    if reference.label() != candidate.label() {
-        return tree_distance(reference, candidate, costs);
-    }
-    children_diff
-}
-
-fn cost_rec<L: Label, C: EditCosts<L>>(tree: &FlattenedTreeNode<L>, costs: &C) -> usize {
-    costs.insert(tree.label())
-        + tree
+) -> StructuralDistance {
+    fn rec<L: Label, C: EditCosts<L>>(
+        reference: &FlattenedTreeNode<L>,
+        candidate: &FlattenedTreeNode<L>,
+        costs: &C,
+    ) -> StructuralDistance {
+        if reference.label() != candidate.label() {
+            return StructuralDistance::new(0, tree_distance(reference, candidate, costs));
+        }
+        // This node matched — count 1 for overlap
+        let children_diff: StructuralDistance = reference
             .children()
             .iter()
-            .map(|c| cost_rec(c, costs))
-            .sum::<usize>()
+            .zip(candidate.children())
+            .map(|(r, c)| rec(r, c, costs))
+            .sum();
+
+        StructuralDistance::new(1, 0) + children_diff
+    }
+    rec(reference, candidate, costs)
 }
 
 #[cfg(test)]
@@ -46,6 +97,10 @@ mod tests {
         TreeNode::new_untyped(label, children)
     }
 
+    fn sd(overlap: usize, zs_sum: usize) -> StructuralDistance {
+        StructuralDistance::new(overlap, zs_sum)
+    }
+
     #[test]
     fn identical_trees() {
         let tree1 = node(
@@ -58,15 +113,16 @@ mod tests {
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
         .flatten(true);
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 0);
+        // All 3 nodes match: overlap = 3, zs_sum = 0
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(3, 0));
     }
 
     #[test]
     fn different_leaves() {
         let tree1 = leaf("a".to_owned()).flatten(true);
         let tree2 = leaf("b".to_owned()).flatten(true);
-        // Same structure but different labels -> falls back to tree_distance (1 relabel)
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 1);
+        // Labels differ at root -> tree_distance = 1, overlap = 0
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(0, 1));
     }
 
     #[test]
@@ -77,9 +133,8 @@ mod tests {
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
         .flatten(true);
-        // Different number of children -> cost of entire reference tree
-        // tree1 has 2 nodes: "a" and "b"
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 2);
+        // Root matches (1), b matches (1), extra c ignored -> overlap = 2
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(2, 0));
     }
 
     #[test]
@@ -107,15 +162,13 @@ mod tests {
             vec![node("b".to_owned(), vec![leaf("c".to_owned())])],
         )
         .flatten(true);
-        // Root matches (1 child each), but b's children differ (2 vs 1)
-        // Cost is the subtree rooted at b in reference: b, c, d = 3 nodes
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 3);
+        // a(1), b(1), c(1) match, d ignored -> overlap = 3
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(3, 0));
     }
 
     #[test]
     fn same_structure_different_labels() {
         // Same structure but different labels at root -> falls back to tree_distance
-        // All 3 labels differ, so tree_distance = 3 (three relabels)
         let tree1 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
@@ -126,14 +179,14 @@ mod tests {
             vec![leaf("y".to_owned()), leaf("z".to_owned())],
         )
         .flatten(true);
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 3);
+        // Root labels differ -> tree_distance = 3 (three relabels), overlap = 0
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(0, 3));
     }
 
     #[test]
     fn deep_matching_structure() {
         // Both have the same deep structure: a - b - c - d vs w - x - y - z
-        // Children match structurally at each level, but labels differ at root
-        // -> falls back to tree_distance = 4 (four relabels)
+        // Root labels differ -> falls back to tree_distance = 4
         let tree1 = node(
             "a".to_owned(),
             vec![node(
@@ -150,7 +203,7 @@ mod tests {
             )],
         )
         .flatten(true);
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 4);
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(0, 4));
     }
 
     #[test]
@@ -188,11 +241,8 @@ mod tests {
         )
         .flatten(true);
 
-        // Root has 3 children in both - match
-        // b has 2 children in tree1 vs 1 in tree2 - mismatch at b
-        // Cost is subtree at b: b, e, f = 3 nodes
-        // c and d match (both leaves)
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 3);
+        // a(1), b(1), e(1), c(1), d(1) match, f ignored -> overlap = 5
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(5, 0));
     }
 
     #[test]
@@ -203,9 +253,8 @@ mod tests {
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
         .flatten(true);
-        // tree1 (reference) is a leaf (0 children), tree2 has 2 children
-        // Mismatch at root -> cost of reference = 1 node
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 1);
+        // Root label matches (1), zip of 0 and 2 children = empty -> overlap = 1
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(1, 0));
     }
 
     #[test]
@@ -216,8 +265,7 @@ mod tests {
         )
         .flatten(true);
         let tree2 = leaf("a".to_owned()).flatten(true);
-        // tree1 (reference) has 2 children, tree2 has 0
-        // Mismatch at root -> cost of reference = 3 nodes
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 3);
+        // Root label matches (1), zip of 2 and 0 children = empty -> overlap = 1
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(1, 0));
     }
 }

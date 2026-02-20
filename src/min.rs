@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 
+use crate::structural::StructuralDistance;
+
 use super::euler_str::EulerString;
 use super::nodes::Label;
 use super::structural::structural_diff;
@@ -132,20 +134,27 @@ pub fn find_min_struct<L, CF, I>(
     reference: &TreeNode<L>,
     costs: &CF,
     with_types: bool,
-) -> Option<(TreeNode<L>, usize)>
+) -> Option<(TreeNode<L>, StructuralDistance)>
 where
     L: Label,
     CF: EditCosts<L>,
     I: ParallelIterator<Item = TreeNode<L>>,
 {
-    let running_best = AtomicUsize::new(usize::MAX);
+    let running_best_overlap = AtomicUsize::new(0);
+    let running_best_zs = AtomicUsize::new(usize::MAX);
     let ref_tree = reference.flatten(with_types);
     candidates
         .filter_map(|candidate| {
             let flat_candidate = candidate.flatten(with_types);
             let distance = structural_diff(&ref_tree, &flat_candidate, costs);
-            let best = running_best.fetch_min(distance, Ordering::Relaxed);
-            (distance < best).then_some((candidate, distance))
+            let best_overlap =
+                running_best_overlap.fetch_max(distance.overlap(), Ordering::Relaxed);
+            if distance.overlap() > best_overlap {
+                let best_zs = running_best_zs.fetch_min(distance.zs_sum(), Ordering::Relaxed);
+                (distance.zs_sum() < best_zs).then_some((candidate, distance))
+            } else {
+                None
+            }
         })
         .min_by_key(|(_, d)| *d)
 }

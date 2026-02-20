@@ -27,5 +27,6 @@ pub use graph::{EClass, EGraph};
 pub use ids::EClassId;
 pub use min::{ZSStats, find_min_struct, find_min_zs};
 pub use nodes::Label;
+pub use structural::StructuralDistance;
 pub use tree::TreeNode;
 pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};

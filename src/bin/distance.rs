@@ -12,6 +12,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
+use rise_distance::StructuralDistance;
 use rise_distance::{
     EClassId, EGraph, Expr, FixpointSampler, FixpointSamplerConfig, Label, RiseLabel, TermCount,
     TreeNode, UnitCost, ZSStats, find_min_struct, find_min_zs, tree_distance_unit,
@@ -504,17 +505,18 @@ fn print_zs_result<L: Label>(
 }
 
 fn print_struct_result<L: Label>(
-    result: &(TreeNode<L>, usize),
+    result: &(TreeNode<L>, StructuralDistance),
     ref_tree: &TreeNode<L>,
     elapsed: std::time::Duration,
     with_types: bool,
 ) {
     let best = &result.0;
-    eprintln!("Best structural distance: {}", result.1);
+    eprintln!("Best structural overlap: {}", result.1.overlap());
+    eprintln!("Best structural zs_sum: {}", result.1.zs_sum());
     eprintln!("Time: {elapsed:.2?}");
 
     let zs_dist = tree_distance_unit(&best.flatten(with_types), &ref_tree.flatten(with_types));
-    eprintln!("ZS distance to ref: {zs_dist}");
+    eprintln!("Raw ZS distance to ref: {zs_dist}");
     print_tree_sizes(best, ref_tree);
     println!("{best}");
 }
