@@ -4,34 +4,66 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 
 use super::euler_str::EulerString;
-use super::graph::EGraph;
 use super::nodes::Label;
 use super::structural::structural_diff;
 use super::tree::TreeNode;
 use super::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
 
-/// Available distance metrics for tree comparison.
-#[derive(Debug, Clone, clap::ValueEnum)]
-pub enum DistanceMetric {
-    /// Zhang-Shasha tree edit distance
-    Zs,
-}
+/// Core Zhang-Shasha minimum distance search over a parallel iterator of candidate trees.
+///
+/// Applies size-difference and Euler-string lower-bound pruning before computing
+/// the full edit distance.
+pub fn find_min_zs<L, CF, I>(
+    candidates: I,
+    reference: &TreeNode<L>,
+    costs: &CF,
+    with_types: bool,
+) -> (Option<(TreeNode<L>, usize)>, ZSStats)
+where
+    L: Label,
+    CF: EditCosts<L>,
+    I: ParallelIterator<Item = TreeNode<L>>,
+{
+    let ref_flat = reference.flatten(with_types);
 
-impl std::fmt::Display for DistanceMetric {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Zs => write!(f, "zs"),
-        }
-    }
+    let ref_size = ref_flat.size();
+    let ref_euler = EulerString::new(&ref_flat);
+    let ref_pp = PreprocessedTree::new(&ref_flat);
+    let running_best = AtomicUsize::new(usize::MAX);
+
+    candidates
+        .map(|candidate| {
+            let candidate_flat = candidate.flatten(with_types);
+            let best = running_best.load(Ordering::Relaxed);
+
+            if candidate_flat.size().abs_diff(ref_size) > best {
+                return (None, ZSStats::size_pruned());
+            }
+
+            if ref_euler.lower_bound(&candidate_flat, costs) > best {
+                return (None, ZSStats::euler_pruned());
+            }
+
+            let distance = tree_distance_with_ref(&candidate_flat, &ref_pp, costs);
+            running_best.fetch_min(distance, Ordering::Relaxed);
+
+            (Some((candidate, distance)), ZSStats::compared())
+        })
+        .reduce(
+            || (None, ZSStats::default()),
+            |a, b| {
+                let best = [a.0, b.0].into_iter().flatten().min_by_key(|v| v.1);
+                (best, a.1 + b.1)
+            },
+        )
 }
 
 /// Statistics from filtered extraction
 #[derive(Debug, Clone, Default)]
-pub struct Stats {
+pub struct ZSStats {
     /// Total number of trees enumerated
     pub trees_enumerated: usize,
     /// Trees pruned by simple metric
@@ -42,7 +74,7 @@ pub struct Stats {
     pub full_comparisons: usize,
 }
 
-impl Stats {
+impl ZSStats {
     pub(crate) fn size_pruned() -> Self {
         Self {
             trees_enumerated: 1,
@@ -71,7 +103,7 @@ impl Stats {
     }
 }
 
-impl std::ops::Add for Stats {
+impl std::ops::Add for ZSStats {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
@@ -84,156 +116,36 @@ impl std::ops::Add for Stats {
     }
 }
 
-/// Core Zhang-Shasha minimum distance search over a parallel iterator of candidate trees.
+/// Find the tree in the e-graph with minimum structural difference to the reference, with zs integration.
 ///
-/// Applies size-difference and Euler-string lower-bound pruning before computing
-/// the full edit distance.
-pub fn find_min_zs_par<L, CF, I>(
+/// # Arguments
+/// * `graph` - The e-graph to search
+/// * `reference` - The target tree to match
+/// * `costs` - Edit cost function for ZS
+/// * `with_types` - Whether to include type annotations in comparison
+///
+/// # Returns
+/// `Some((tree, distance))` if a tree was found.
+#[must_use]
+pub fn find_min_struct<L, CF, I>(
     candidates: I,
     reference: &TreeNode<L>,
     costs: &CF,
     with_types: bool,
-) -> (Option<(TreeNode<L>, usize)>, Stats)
+) -> Option<(TreeNode<L>, usize)>
 where
     L: Label,
     CF: EditCosts<L>,
     I: ParallelIterator<Item = TreeNode<L>>,
 {
-    let ref_flat = reference.flatten(with_types);
-
-    let ref_size = ref_flat.size();
-    let ref_euler = EulerString::new(&ref_flat);
-    let ref_pp = PreprocessedTree::new(&ref_flat);
     let running_best = AtomicUsize::new(usize::MAX);
-
+    let ref_tree = reference.flatten(with_types);
     candidates
-        .map(|candidate| {
-            let candidate_flat = candidate.flatten(with_types);
-            let best = running_best.load(Ordering::Relaxed);
-
-            if candidate_flat.size().abs_diff(ref_size) > best {
-                return (None, Stats::size_pruned());
-            }
-
-            if ref_euler.lower_bound(&candidate_flat, costs) > best {
-                return (None, Stats::euler_pruned());
-            }
-
-            let distance = tree_distance_with_ref(&candidate_flat, &ref_pp, costs);
-            running_best.fetch_min(distance, Ordering::Relaxed);
-
-            (Some((candidate, distance)), Stats::compared())
-        })
-        .reduce(
-            || (None, Stats::default()),
-            |a, b| {
-                let best = [a.0, b.0].into_iter().flatten().min_by_key(|v| v.1);
-                (best, a.1 + b.1)
-            },
-        )
-}
-
-/// Find the tree in the e-graph with minimum Zhang-Shasha edit distance to the reference.
-///
-/// Uses parallel enumeration with pruning heuristics:
-/// - Size difference lower bound
-/// - Euler string distance lower bound
-///
-/// # Arguments
-/// * `graph` - The e-graph to search
-/// * `reference` - The target tree to match
-/// * `costs` - Edit cost function
-/// * `max_revisits` - Maximum allowed revisits for cycle handling
-/// * `with_types` - Whether to include type annotations in comparison
-///
-/// # Returns
-/// A tuple of (`best_result`, statistics) where `best_result` is `Some((tree, distance))`
-/// if a tree was found.
-#[must_use]
-pub fn find_min_exhaustive_zs<L: Label, CF: EditCosts<L>>(
-    graph: &EGraph<L>,
-    reference: &TreeNode<L>,
-    costs: &CF,
-    max_revisits: usize,
-    with_types: bool,
-) -> (Option<(TreeNode<L>, usize)>, Stats) {
-    let ref_tree = reference.flatten(with_types);
-
-    let ref_size = ref_tree.size();
-    let ref_euler = EulerString::new(&ref_tree);
-    let ref_pp = PreprocessedTree::new(&ref_tree);
-    let running_best = AtomicUsize::new(usize::MAX);
-
-    let (result, stats) = graph
-        .choice_iter(max_revisits)
-        .par_bridge()
-        .progress_count(graph.count_trees(max_revisits) as u64)
-        .map(|choices| {
-            {
-                let candidate = graph.tree_from_choices(graph.root(), &choices);
-                let flat_candidate = candidate.flatten(with_types);
-                let best = running_best.load(Ordering::Relaxed);
-
-                // Fast pruning: size difference is a lower bound on edit distance
-                // (need at least |n1 - n2| insertions or deletions)
-                if flat_candidate.size().abs_diff(ref_size) > best {
-                    return (None, Stats::size_pruned());
-                }
-
-                // Euler string heuristic: EDS(s(T1), s(T2)) ≤ 2 · EDT(T1, T2)
-                // Therefore EDT ≥ EDS / 2, giving us a tighter lower bound
-                if ref_euler.lower_bound(&flat_candidate, costs) > best {
-                    return (None, Stats::euler_pruned());
-                }
-
-                let distance = tree_distance_with_ref(&flat_candidate, &ref_pp, costs);
-                running_best.fetch_min(distance, Ordering::Relaxed);
-
-                (Some((candidate, distance)), Stats::compared())
-            }
-        })
-        .reduce(
-            || (None, Stats::default()),
-            |a, b| {
-                let best = [a.0, b.0].into_iter().flatten().min_by_key(|v| v.1);
-                (best, a.1 + b.1)
-            },
-        );
-
-    (result, stats)
-}
-
-/// Find the tree in the e-graph with minimum structural difference to the reference.
-///
-/// # Arguments
-/// * `graph` - The e-graph to search
-/// * `reference` - The target tree to match
-/// * `costs` - Edit cost function
-/// * `max_revisits` - Maximum allowed revisits for cycle handling
-/// * `with_types` - Whether to include type annotations in comparison
-/// * `ignore_labels` - Whether to ignore label differences (structure only)
-///
-/// # Returns
-/// `Some((tree, distance))` if a tree was found.
-#[must_use]
-pub fn find_min_struct<L: Label, C: EditCosts<L>>(
-    graph: &EGraph<L>,
-    reference: &TreeNode<L>,
-    costs: &C,
-    max_revisits: usize,
-    with_types: bool,
-    ignore_labels: bool,
-) -> Option<(TreeNode<L>, usize)> {
-    let ref_tree = reference.flatten(with_types);
-    graph
-        .choice_iter(max_revisits)
-        .par_bridge()
-        .progress_count(graph.count_trees(max_revisits) as u64)
-        .map(|choices| {
-            let candidate = graph.tree_from_choices(graph.root(), &choices);
+        .filter_map(|candidate| {
             let flat_candidate = candidate.flatten(with_types);
-            let distance = structural_diff(&ref_tree, &flat_candidate, costs, ignore_labels);
-            (candidate, distance)
+            let distance = structural_diff(&ref_tree, &flat_candidate, costs);
+            let best = running_best.fetch_min(distance, Ordering::Relaxed);
+            (distance < best).then_some((candidate, distance))
         })
         .min_by_key(|(_, d)| *d)
 }
@@ -242,7 +154,10 @@ pub fn find_min_struct<L: Label, C: EditCosts<L>>(
 mod tests {
     use hashbrown::HashMap;
 
+    use rayon::iter::ParallelBridge;
+
     use super::*;
+    use crate::EGraph;
     use crate::graph::EClass;
     use crate::ids::{EClassId, ExprChildId, NatId, TypeChildId};
     use crate::nodes::{ENode, NatNode};
@@ -315,9 +230,17 @@ mod tests {
                 leaf("0".to_owned()),
             ],
         );
-        let result = find_min_exhaustive_zs(&graph, &reference, &UnitCost, 0, true)
-            .0
-            .unwrap();
+        let result = find_min_zs(
+            graph
+                .choice_iter(0)
+                .map(|c| graph.tree_from_choices(graph.root(), &c))
+                .par_bridge(),
+            &reference,
+            &UnitCost,
+            true,
+        )
+        .0
+        .unwrap();
 
         assert_eq!(result.1, 0);
     }
@@ -340,9 +263,17 @@ mod tests {
             "typeOf".to_owned(),
             vec![leaf("a".to_owned()), leaf("0".to_owned())],
         );
-        let result = find_min_exhaustive_zs(&graph, &reference, &UnitCost, 0, true)
-            .0
-            .unwrap();
+        let result = find_min_zs(
+            graph
+                .choice_iter(0)
+                .map(|c| graph.tree_from_choices(graph.root(), &c))
+                .par_bridge(),
+            &reference,
+            &UnitCost,
+            true,
+        )
+        .0
+        .unwrap();
 
         assert_eq!(result.1, 0);
         assert_eq!(result.0.label(), "a");
@@ -382,9 +313,17 @@ mod tests {
                 leaf("0".to_owned()),
             ],
         );
-        let result = find_min_exhaustive_zs(&graph, &reference, &UnitCost, 0, true)
-            .0
-            .unwrap();
+        let result = find_min_zs(
+            graph
+                .choice_iter(0)
+                .map(|c| graph.tree_from_choices(graph.root(), &c))
+                .par_bridge(),
+            &reference,
+            &UnitCost,
+            true,
+        )
+        .0
+        .unwrap();
 
         assert_eq!(result.1, 0);
         assert_eq!(result.0.label(), "a");
@@ -430,9 +369,17 @@ mod tests {
             ],
         );
 
-        let result = find_min_exhaustive_zs(&graph, &reference, &UnitCost, 0, true)
-            .0
-            .unwrap();
+        let result = find_min_zs(
+            graph
+                .choice_iter(0)
+                .map(|c| graph.tree_from_choices(graph.root(), &c))
+                .par_bridge(),
+            &reference,
+            &UnitCost,
+            true,
+        )
+        .0
+        .unwrap();
         assert_eq!(result.1, 0);
     }
 
@@ -455,9 +402,17 @@ mod tests {
             vec![leaf("a".to_owned()), leaf("0".to_owned())],
         );
 
-        let result = find_min_exhaustive_zs(&graph, &reference, &UnitCost, 0, true)
-            .0
-            .unwrap();
+        let result = find_min_zs(
+            graph
+                .choice_iter(0)
+                .map(|c| graph.tree_from_choices(graph.root(), &c))
+                .par_bridge(),
+            &reference,
+            &UnitCost,
+            true,
+        )
+        .0
+        .unwrap();
         assert_eq!(result.1, 0);
         assert_eq!(result.0.label(), "a");
     }
@@ -481,7 +436,15 @@ mod tests {
             vec![leaf("a".to_owned()), leaf("0".to_owned())],
         );
 
-        let (result, stats) = find_min_exhaustive_zs(&graph, &reference, &UnitCost, 0, true);
+        let (result, stats) = find_min_zs(
+            graph
+                .choice_iter(0)
+                .map(|c| graph.tree_from_choices(graph.root(), &c))
+                .par_bridge(),
+            &reference,
+            &UnitCost,
+            true,
+        );
 
         assert_eq!(result.unwrap().1, 0);
         assert_eq!(stats.trees_enumerated, 2);

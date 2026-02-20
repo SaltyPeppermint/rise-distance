@@ -25,7 +25,7 @@ pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
 pub use euler_str::tree_distance_euler_bound;
 pub use graph::{EClass, EGraph};
 pub use ids::EClassId;
-pub use min::{DistanceMetric, Stats, find_min_exhaustive_zs, find_min_struct, find_min_zs_par};
+pub use min::{ZSStats, find_min_struct, find_min_zs};
 pub use nodes::Label;
 pub use tree::TreeNode;
 pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};

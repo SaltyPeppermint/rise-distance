@@ -277,10 +277,10 @@ mod tests {
             .choice_iter(1)
             .map(|c| graph.tree_from_choices(graph.root(), &c).to_string())
             .collect::<Vec<_>>();
-        assert!(trees.contains(&"(a (b d) (c d))".to_owned()));
-        assert!(trees.contains(&"(a (b d) (c (rec d)))".to_owned()));
-        assert!(trees.contains(&"(a (b (rec d)) (c d))".to_owned()));
-        assert!(trees.contains(&"(a (b (rec d)) (c (rec d)))".to_owned()));
+        assert!(trees.contains(&"(typeOf (a (typeOf (b (typeOf d 0)) 0) (typeOf (c (typeOf d 0)) 0)) 0)".to_owned()));
+        assert!(trees.contains(&"(typeOf (a (typeOf (b (typeOf d 0)) 0) (typeOf (c (typeOf (rec (typeOf d 0)) 0)) 0)) 0)".to_owned()));
+        assert!(trees.contains(&"(typeOf (a (typeOf (b (typeOf (rec (typeOf d 0)) 0)) 0) (typeOf (c (typeOf d 0)) 0)) 0)".to_owned()));
+        assert!(trees.contains(&"(typeOf (a (typeOf (b (typeOf (rec (typeOf d 0)) 0)) 0) (typeOf (c (typeOf (rec (typeOf d 0)) 0)) 0)) 0)".to_owned()));
 
         assert_eq!(graph.choice_iter(0).count(), 1);
         assert_eq!(graph.count_trees(0), graph.choice_iter(0).count());

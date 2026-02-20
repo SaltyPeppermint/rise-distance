@@ -13,8 +13,8 @@ use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
 use rise_distance::{
-    DistanceMetric, EClassId, EGraph, Expr, FixpointSampler, FixpointSamplerConfig, Label,
-    RiseLabel, Stats, TermCount, TreeNode, UnitCost, find_min_zs_par, tree_distance_unit,
+    EClassId, EGraph, Expr, FixpointSampler, FixpointSamplerConfig, Label, RiseLabel, TermCount,
+    TreeNode, UnitCost, ZSStats, find_min_zs, tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -25,7 +25,7 @@ struct Cli {
     raw_strings: bool,
 
     /// Distance metric to use
-    #[arg(short, long, default_value_t = DistanceMetric::Zs)]
+    #[arg(short, long, default_value_t = DistanceMetric::ZhangShasha)]
     distance: DistanceMetric,
 
     /// Path to the serialized e-graph JSON file
@@ -116,6 +116,24 @@ struct RefSource {
     /// Name of the reference tree (requires --file)
     #[arg(short = 'n', long, requires = "file")]
     name: Option<String>,
+}
+
+/// Available distance metrics for tree comparison.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum DistanceMetric {
+    /// Zhang-Shasha tree edit distance
+    ZhangShasha,
+    /// Structural tree edit distance
+    Structural,
+}
+
+impl std::fmt::Display for DistanceMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZhangShasha => write!(f, "ZhangShasha"),
+            Self::Structural => write!(f, "Structural"),
+        }
+    }
 }
 
 fn main() {
@@ -361,9 +379,7 @@ fn run_count_extraction<L: Label>(
         .into_par_iter()
         .progress_count(n_candidates as u64);
 
-    if let (Some(result), stats) =
-        find_min_zs_par(iter, ref_tree, &UnitCost, term_count.with_types())
-    {
+    if let (Some(result), stats) = find_min_zs(iter, ref_tree, &UnitCost, term_count.with_types()) {
         print_result(&result, ref_tree, &stats, start.elapsed());
     } else {
         eprintln!("No result found!");
@@ -396,7 +412,7 @@ fn run_boltzmann_extraction<L: Label>(
     let samples_vec = fp_sampler.take(samples).collect::<Vec<_>>();
     let iter = samples_vec.into_par_iter().progress_count(samples as u64);
 
-    if let (Some(result), stats) = find_min_zs_par(iter, ref_tree, &UnitCost, with_types) {
+    if let (Some(result), stats) = find_min_zs(iter, ref_tree, &UnitCost, with_types) {
         print_result(&result, ref_tree, &stats, start.elapsed());
     } else {
         eprintln!("No result found!");
@@ -409,7 +425,7 @@ fn run_boltzmann_extraction<L: Label>(
 fn print_result<L: Label>(
     result: &(TreeNode<L>, usize),
     ref_tree: &TreeNode<L>,
-    stats: &Stats,
+    stats: &ZSStats,
     elapsed: std::time::Duration,
 ) {
     let best = &result.0;

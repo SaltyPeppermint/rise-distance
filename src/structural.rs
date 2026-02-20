@@ -1,15 +1,13 @@
-use crate::tree::FlattenedTreeNode;
+use crate::{tree::FlattenedTreeNode, tree_distance};
 
 use super::{EditCosts, Label};
 
 /// Very simple structural diff.
-/// The idea is to ignore the labels and just look at how much of the goal tree,
 /// starting from the root, is already present.
 pub fn structural_diff<L: Label, C: EditCosts<L>>(
     reference: &FlattenedTreeNode<L>,
     candidate: &FlattenedTreeNode<L>,
     costs: &C,
-    ignore_labels: bool,
 ) -> usize {
     if reference.children().len() != candidate.children().len() {
         return cost_rec(reference, costs);
@@ -18,10 +16,10 @@ pub fn structural_diff<L: Label, C: EditCosts<L>>(
         .children()
         .iter()
         .zip(candidate.children())
-        .map(|(r, c)| structural_diff(r, c, costs, ignore_labels))
+        .map(|(r, c)| structural_diff(r, c, costs))
         .sum();
-    if !ignore_labels && reference.label() != candidate.label() {
-        return costs.relabel(candidate.label(), reference.label()) + children_diff;
+    if reference.label() != candidate.label() {
+        return tree_distance(reference, candidate, costs);
     }
     children_diff
 }
@@ -60,15 +58,15 @@ mod tests {
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
         .flatten(true);
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 0);
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 0);
     }
 
     #[test]
-    fn identical_leaves() {
+    fn different_leaves() {
         let tree1 = leaf("a".to_owned()).flatten(true);
         let tree2 = leaf("b".to_owned()).flatten(true);
-        // Labels are ignored, both are leaves with no children
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 0);
+        // Same structure but different labels -> falls back to tree_distance (1 relabel)
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 1);
     }
 
     #[test]
@@ -81,7 +79,7 @@ mod tests {
         .flatten(true);
         // Different number of children -> cost of entire reference tree
         // tree1 has 2 nodes: "a" and "b"
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 2);
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 2);
     }
 
     #[test]
@@ -111,12 +109,13 @@ mod tests {
         .flatten(true);
         // Root matches (1 child each), but b's children differ (2 vs 1)
         // Cost is the subtree rooted at b in reference: b, c, d = 3 nodes
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 3);
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 3);
     }
 
     #[test]
     fn same_structure_different_labels() {
-        // Labels are ignored, only structure matters
+        // Same structure but different labels at root -> falls back to tree_distance
+        // All 3 labels differ, so tree_distance = 3 (three relabels)
         let tree1 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
@@ -127,12 +126,14 @@ mod tests {
             vec![leaf("y".to_owned()), leaf("z".to_owned())],
         )
         .flatten(true);
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 0);
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 3);
     }
 
     #[test]
     fn deep_matching_structure() {
-        // Both have the same deep structure: a - b - c - d
+        // Both have the same deep structure: a - b - c - d vs w - x - y - z
+        // Children match structurally at each level, but labels differ at root
+        // -> falls back to tree_distance = 4 (four relabels)
         let tree1 = node(
             "a".to_owned(),
             vec![node(
@@ -149,7 +150,7 @@ mod tests {
             )],
         )
         .flatten(true);
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 0);
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 4);
     }
 
     #[test]
@@ -191,7 +192,7 @@ mod tests {
         // b has 2 children in tree1 vs 1 in tree2 - mismatch at b
         // Cost is subtree at b: b, e, f = 3 nodes
         // c and d match (both leaves)
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 3);
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 3);
     }
 
     #[test]
@@ -204,7 +205,7 @@ mod tests {
         .flatten(true);
         // tree1 (reference) is a leaf (0 children), tree2 has 2 children
         // Mismatch at root -> cost of reference = 1 node
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 1);
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 1);
     }
 
     #[test]
@@ -217,6 +218,6 @@ mod tests {
         let tree2 = leaf("a".to_owned()).flatten(true);
         // tree1 (reference) has 2 children, tree2 has 0
         // Mismatch at root -> cost of reference = 3 nodes
-        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost, true), 3);
+        assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), 3);
     }
 }
