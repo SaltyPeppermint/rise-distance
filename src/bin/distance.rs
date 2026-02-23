@@ -82,6 +82,11 @@ Examples:
         /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
         #[arg(short = 'p', long, requires = "budget", default_value_t = SampleDistribution::Uniform)]
         distribution: SampleDistribution,
+
+        /// Use overlap sampling: lock in shared structure with the reference tree
+        /// before sampling holes
+        #[arg(short = 'o', long, requires = "budget")]
+        overlap: bool,
     },
 
     /// Boltzmann sampling-based search
@@ -167,6 +172,7 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             display,
             budget: samples,
             distribution,
+            overlap,
         } => {
             eprintln!("Limit: {limit}");
 
@@ -209,6 +215,7 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
                         distribution: *distribution,
                         with_types: cli.with_types,
                         distance: cli.distance,
+                        overlap: *overlap,
                     },
                 );
             }
@@ -267,6 +274,7 @@ struct CountSampleConfig {
     distribution: SampleDistribution,
     with_types: bool,
     distance: DistanceMetric,
+    overlap: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -340,6 +348,7 @@ fn run_count_extraction<L: Label>(
         distribution,
         with_types,
         distance,
+        overlap,
     } = *config;
     let ref_node_count = ref_tree.size_with_types();
     let ref_stripped_count = ref_tree.size_without_types();
@@ -347,6 +356,18 @@ fn run_count_extraction<L: Label>(
 
     let start = Instant::now();
     eprintln!("{distance} extraction (count-based sampling)");
+
+    if overlap {
+        eprintln!("Using overlap sampling");
+    }
+
+    let sample = |samples_per_size: Box<dyn Fn(usize) -> u64 + Sync + Send>| {
+        if overlap {
+            term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, samples_per_size)
+        } else {
+            term_count.sample_unique_root(min_size, max_size, samples_per_size)
+        }
+    };
 
     let candidates = match distribution {
         SampleDistribution::Proportional(min_per_size) => {
@@ -358,7 +379,7 @@ fn run_count_extraction<L: Label>(
                 "Sampling {total_samples} terms proportionally from {min_size} to {max_size}"
             );
             let budget = BigUint::from(total_samples);
-            let samples_per_size = |size| {
+            sample(Box::new(move |size| {
                 let s = histogram.get(&size).map_or(0, |count| {
                     (count * &budget / &total_terms)
                         .to_u64()
@@ -367,8 +388,7 @@ fn run_count_extraction<L: Label>(
                 });
                 eprintln!("Sampling {s} terms for size {size}");
                 s
-            };
-            term_count.sample_unique_root(min_size, max_size, samples_per_size)
+            }))
         }
         SampleDistribution::Normal(sigma) => {
             let center = (ref_tree.size(with_types) - min_size) as f64;
@@ -383,18 +403,17 @@ fn run_count_extraction<L: Label>(
                 })
                 .collect::<HashMap<_, _>>();
             let total_weight: f64 = weights.iter().map(|(_, w)| w).sum();
-            let samples_per_size = |size: usize| {
+            sample(Box::new(move |size: usize| {
                 let w = *weights.get(&size).unwrap_or(&0.0);
                 let s = (w / total_weight * total_samples as f64).round() as u64;
                 eprintln!("Sampling {s} terms for size {size}");
                 s
-            };
-            term_count.sample_unique_root(min_size, max_size, samples_per_size)
+            }))
         }
         SampleDistribution::Uniform => {
             eprintln!("Sampling {total_samples} terms per size from {min_size} to {max_size}");
             let samples_per_size = (total_samples / (max_size - min_size)) as u64;
-            term_count.sample_unique_root(min_size, max_size, |_| samples_per_size)
+            sample(Box::new(move |_| samples_per_size))
         }
     };
     let n_candidates = candidates.len();
