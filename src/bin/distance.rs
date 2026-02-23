@@ -68,8 +68,8 @@ Examples:
 ")]
     Count {
         /// Maximum term size to count
-        #[arg(short, long, default_value_t = 10)]
-        limit: usize,
+        #[arg(short, long)]
+        max_size: Option<usize>,
 
         #[command(flatten)]
         display: DisplayConfig,
@@ -168,16 +168,18 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
 
     match &cli.command {
         Command::Count {
-            limit,
+            max_size,
             display,
             budget: samples,
             distribution,
             overlap,
         } => {
-            eprintln!("Limit: {limit}");
+            let ref_tree = parse_ref(&cli.reference, &parse_tree);
+            let max_size = max_size.unwrap_or_else(|| ref_tree.size(cli.with_types));
+            eprintln!("Limit: {max_size}");
 
             let start = Instant::now();
-            let term_count = TermCount::<BigUint, L>::new(*limit, cli.with_types, &graph);
+            let term_count = TermCount::<BigUint, L>::new(max_size, cli.with_types, &graph);
             eprintln!("Counting completed in {:.2?}", start.elapsed());
 
             if display.histogram {
@@ -194,13 +196,12 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             }
 
             if let Some(sample_count) = samples {
-                let ref_tree = parse_ref(&cli.reference, &parse_tree);
                 let Some(min_size) = term_count
                     .of_eclass(root)
                     .and_then(|h| h.keys().min().copied())
                 else {
                     panic!(
-                        "Root e-class {root:?} has no terms up to size limit {limit}. \
+                        "Root e-class {root:?} has no terms up to size limit {max_size}. \
                          The smallest representable term likely exceeds this limit \
                          (try increasing -l)."
                     );
@@ -210,7 +211,7 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
                     &ref_tree,
                     &CountSampleConfig {
                         min_size,
-                        max_size: *limit,
+                        max_size,
                         total_samples: *sample_count,
                         distribution: *distribution,
                         with_types: cli.with_types,

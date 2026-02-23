@@ -61,7 +61,7 @@ pub struct TermCount<'a, C: Counter, L: Label> {
     pub(crate) data: HashMap<EClassId, HashMap<usize, C>>,
     /// Per e-class, per node index: precomputed suffix convolution tables.
     /// `suffix_cache[eclass][node_idx][i]` = convolution of children `i..n`,
-    /// mapping budget -> count. Computed once at max budget (`limit - 1`).
+    /// mapping budget -> count. Computed once at max budget (`max_size - 1`).
     pub(crate) suffix_cache: HashMap<EClassId, Vec<Vec<HashMap<usize, C>>>>,
     pub(crate) graph: &'a EGraph<L>,
     pub(crate) type_sizes: TypeSizeCache,
@@ -72,11 +72,11 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// Run the term counting analysis on an e-graph.
     ///
     /// # Arguments
-    /// * `limit` - Maximum term size to count
+    /// * `max_size` - Maximum term size to count
     /// * `with_types` - If true, include type annotations in size calculations
     #[must_use]
     #[expect(clippy::missing_panics_doc)]
-    pub fn new(limit: usize, with_types: bool, graph: &EGraph<L>) -> TermCount<'_, C, L> {
+    pub fn new(max_size: usize, with_types: bool, graph: &EGraph<L>) -> TermCount<'_, C, L> {
         // Build parent map and type size cache
         let parents = Self::build_parent_map(graph);
         let type_cache = TypeSizeCache::build(graph);
@@ -122,7 +122,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                                 0
                             };
                             Self::make_node_data_from_map(
-                                limit,
+                                max_size,
                                 graph,
                                 node.children(),
                                 &data,
@@ -158,7 +158,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             }
         }
 
-        let suffix_cache = Self::build_suffix_cache_from_map(limit, graph, &data, &type_cache);
+        let suffix_cache = Self::build_suffix_cache_from_map(max_size, graph, &data, &type_cache);
         TermCount {
             data,
             suffix_cache,
@@ -177,7 +177,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
     /// Compute term counts for a single e-node, reading from a plain `HashMap`.
     fn make_node_data_from_map(
-        limit: usize,
+        max_size: usize,
         graph: &EGraph<L>,
         children: &[ExprChildId],
         data: &HashMap<EClassId, HashMap<usize, C>>,
@@ -188,13 +188,13 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         let base_size = 1 + type_overhead;
 
         if children.is_empty() {
-            if base_size <= limit {
+            if base_size <= max_size {
                 return HashMap::from([(base_size, C::one())]);
             }
             return HashMap::new();
         }
 
-        let Some(budget) = limit.checked_sub(base_size) else {
+        let Some(budget) = max_size.checked_sub(base_size) else {
             return HashMap::new();
         };
 
@@ -219,12 +219,12 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     fn build_parent_map(graph: &EGraph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
         let mut parents = HashMap::<EClassId, HashSet<EClassId>>::new();
 
-        for class_id in graph.class_ids() {
-            for node in graph.class(class_id).nodes() {
+        for id in graph.class_ids() {
+            for node in graph.class(id).nodes() {
                 for child_id in node.children() {
                     if let ExprChildId::EClass(child_eclass_id) = child_id {
-                        let canonical_child = graph.canonicalize(*child_eclass_id);
-                        parents.entry(canonical_child).or_default().insert(class_id);
+                        let c_id = graph.canonicalize(*child_eclass_id);
+                        parents.entry(c_id).or_default().insert(id);
                     }
                 }
             }
@@ -241,18 +241,18 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         type_cache: &TypeSizeCache,
     ) -> HashMap<usize, C> {
         match child_id {
-            ExprChildId::Nat(nat_id) => {
-                let size = type_cache.get_nat_size(nat_id);
+            ExprChildId::Nat(id) => {
+                let size = type_cache.get_nat_size(id);
                 HashMap::from([(size, C::one())])
             }
-            ExprChildId::Data(data_id) => {
-                let size = type_cache.get_data_size(data_id);
+            ExprChildId::Data(id) => {
+                let size = type_cache.get_data_size(id);
                 HashMap::from([(size, C::one())])
             }
-            ExprChildId::EClass(eclass_id) => {
-                let canonical_id = graph.canonicalize(eclass_id);
-                data.get(&canonical_id).cloned().unwrap_or_default()
-            }
+            ExprChildId::EClass(id) => data
+                .get(&graph.canonicalize(id))
+                .cloned()
+                .unwrap_or_default(),
         }
     }
 
@@ -304,12 +304,12 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
     /// Build suffix convolution tables for all e-classes at the maximum budget.
     fn build_suffix_cache_from_map(
-        limit: usize,
+        max_size: usize,
         graph: &EGraph<L>,
         data: &HashMap<EClassId, HashMap<usize, C>>,
         type_cache: &TypeSizeCache,
     ) -> HashMap<EClassId, Vec<Vec<HashMap<usize, C>>>> {
-        let max_budget = limit.saturating_sub(1);
+        let max_budget = max_size.saturating_sub(1);
         data.par_iter()
             .map(|(&id, _)| {
                 let nodes = graph.class(id).nodes();
@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn size_limit_filters() {
+    fn max_size_filters() {
         // Class 0: has node "f" pointing to class 1
         // Class 1: leaf "a"
         let graph = EGraph::new(
@@ -570,14 +570,14 @@ mod tests {
             HashMap::new(),
         );
 
-        // Limit = 1, so f(a) with size 2 should be filtered out
+        // max_size = 1, so f(a) with size 2 should be filtered out
         let term_count = TermCount::<BigUint, _>::new(1, false, &graph);
 
         // Class 1 should have data (size 1)
         assert!(term_count.data.contains_key(&EClassId::new(1)));
         assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(1u32));
 
-        // Class 0 should be empty (size 2 exceeds limit)
+        // Class 0 should be empty (size 2 exceeds max_size)
         assert!(
             term_count
                 .data
