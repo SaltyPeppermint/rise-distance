@@ -46,9 +46,9 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         &self,
         min_size: usize,
         max_size: usize,
-        samples_per_size: F,
+        samples_fn: F,
     ) -> HashSet<TreeNode<L>> {
-        self.sample_unique(self.graph.root(), min_size, max_size, samples_per_size)
+        self.sample_unique(self.graph.root(), min_size, max_size, samples_fn)
     }
 
     /// Sample unique terms across a range of sizes.
@@ -66,7 +66,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         id: EClassId,
         min_size: usize,
         max_size: usize,
-        samples_per_size: F,
+        samples_fn: F,
     ) -> HashSet<TreeNode<L>> {
         let canon_id = self.graph.canonicalize(id);
         self.data
@@ -74,7 +74,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             .into_iter()
             .flat_map(|h| h.keys().filter(|&&s| s >= min_size && s <= max_size))
             .par_bridge()
-            .flat_map(|&size| self.sample_root(size, samples_per_size(size), size as u64))
+            .flat_map(|&size| self.sample_root(size, samples_fn(size), size as u64))
             .collect()
     }
 

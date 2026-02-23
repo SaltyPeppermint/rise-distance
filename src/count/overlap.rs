@@ -22,15 +22,9 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         ref_tree: &TreeNode<L>,
         min_size: usize,
         max_size: usize,
-        samples_per_size: F,
+        samples_fn: F,
     ) -> HashSet<TreeNode<L>> {
-        self.sample_unique_overlap(
-            self.graph.root(),
-            ref_tree,
-            min_size,
-            max_size,
-            samples_per_size,
-        )
+        self.sample_unique_overlap(self.graph.root(), ref_tree, min_size, max_size, samples_fn)
     }
 
     /// Sample unique terms across a range of sizes, maximizing structural
@@ -47,7 +41,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         ref_tree: &TreeNode<L>,
         min_size: usize,
         max_size: usize,
-        samples_per_size: F,
+        samples_fn: F,
     ) -> HashSet<TreeNode<L>> {
         let canon_id = self.graph.canonicalize(id);
         let Some(partial) = self.match_ref_tree(canon_id, ref_tree) else {
@@ -66,7 +60,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             .par_bridge()
             .flat_map(|size| {
                 let remaining = size - fixed;
-                let samples = samples_per_size(size);
+                let samples = samples_fn(size);
                 let thread_partial = &partial;
                 (0..samples).into_par_iter().filter_map(move |sample| {
                     let mut rng = ChaCha12Rng::seed_from_u64(size as u64);

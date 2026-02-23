@@ -361,14 +361,6 @@ fn run_count_extraction<L: Label>(
         eprintln!("Using overlap sampling");
     }
 
-    let sample = |samples_per_size: Box<dyn Fn(usize) -> u64 + Sync + Send>| {
-        if overlap {
-            term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, samples_per_size)
-        } else {
-            term_count.sample_unique_root(min_size, max_size, samples_per_size)
-        }
-    };
-
     let candidates = match distribution {
         SampleDistribution::Proportional(min_per_size) => {
             let histogram = term_count.of_root().expect("Root e-class has no terms");
@@ -379,7 +371,7 @@ fn run_count_extraction<L: Label>(
                 "Sampling {total_samples} terms proportionally from {min_size} to {max_size}"
             );
             let budget = BigUint::from(total_samples);
-            sample(Box::new(move |size| {
+            let samples_fn = move |size| {
                 let s = histogram.get(&size).map_or(0, |count| {
                     (count * &budget / &total_terms)
                         .to_u64()
@@ -388,7 +380,12 @@ fn run_count_extraction<L: Label>(
                 });
                 eprintln!("Sampling {s} terms for size {size}");
                 s
-            }))
+            };
+            if overlap {
+                term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, samples_fn)
+            } else {
+                term_count.sample_unique_root(min_size, max_size, samples_fn)
+            }
         }
         SampleDistribution::Normal(sigma) => {
             let center = (ref_tree.size(with_types) - min_size) as f64;
@@ -403,17 +400,26 @@ fn run_count_extraction<L: Label>(
                 })
                 .collect::<HashMap<_, _>>();
             let total_weight: f64 = weights.iter().map(|(_, w)| w).sum();
-            sample(Box::new(move |size: usize| {
+            let samples_fn = |size| {
                 let w = *weights.get(&size).unwrap_or(&0.0);
                 let s = (w / total_weight * total_samples as f64).round() as u64;
                 eprintln!("Sampling {s} terms for size {size}");
                 s
-            }))
+            };
+            if overlap {
+                term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, samples_fn)
+            } else {
+                term_count.sample_unique_root(min_size, max_size, samples_fn)
+            }
         }
         SampleDistribution::Uniform => {
             eprintln!("Sampling {total_samples} terms per size from {min_size} to {max_size}");
-            let samples_per_size = (total_samples / (max_size - min_size)) as u64;
-            sample(Box::new(move |_| samples_per_size))
+            let samples_fn = (total_samples / (max_size - min_size)) as u64;
+            if overlap {
+                term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, |_| samples_fn)
+            } else {
+                term_count.sample_unique_root(min_size, max_size, |_| samples_fn)
+            }
         }
     };
     let n_candidates = candidates.len();
