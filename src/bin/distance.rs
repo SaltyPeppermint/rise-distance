@@ -332,11 +332,6 @@ impl std::fmt::Display for SampleDistribution {
     }
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
 fn run_count_extraction<L: Label>(
     term_count: &TermCount<BigUint, L>,
     ref_tree: &TreeNode<L>,
@@ -362,66 +357,19 @@ fn run_count_extraction<L: Label>(
         eprintln!("Using overlap sampling");
     }
 
-    let candidates = match distribution {
-        SampleDistribution::Proportional(min_per_size) => {
-            let histogram = term_count.of_root().expect("Root e-class has no terms");
-            let total_terms = (min_size..=max_size)
-                .filter_map(|s| histogram.get(&s))
-                .sum::<BigUint>();
-            eprintln!(
-                "Sampling {total_samples} terms proportionally from {min_size} to {max_size}"
-            );
-            let budget = BigUint::from(total_samples);
-            let samples_fn = move |size| {
-                let s = histogram.get(&size).map_or(0, |count| {
-                    (count * &budget / &total_terms)
-                        .to_u64()
-                        .unwrap_or(u64::MAX)
-                        .max(min_per_size as u64)
-                });
-                eprintln!("Sampling {s} terms for size {size}");
-                s
-            };
-            if overlap {
-                term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, samples_fn)
-            } else {
-                term_count.sample_unique_root(min_size, max_size, samples_fn)
-            }
-        }
-        SampleDistribution::Normal(sigma) => {
-            let center = (ref_tree.size(with_types) - min_size) as f64;
-            eprintln!(
-                "Sampling {total_samples} terms with normal distribution (center={center}, sigma={sigma}) from {min_size} to {max_size}"
-            );
-            // Compute unnormalized weights for each size
-            let weights = (min_size..=max_size)
-                .map(|s| {
-                    let z = (s as f64 - center) / sigma;
-                    (s, (-0.5 * z * z).exp())
-                })
-                .collect::<HashMap<_, _>>();
-            let total_weight: f64 = weights.iter().map(|(_, w)| w).sum();
-            let samples_fn = |size| {
-                let w = *weights.get(&size).unwrap_or(&0.0);
-                let s = (w / total_weight * total_samples as f64).round() as u64;
-                eprintln!("Sampling {s} terms for size {size}");
-                s
-            };
-            if overlap {
-                term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, samples_fn)
-            } else {
-                term_count.sample_unique_root(min_size, max_size, samples_fn)
-            }
-        }
-        SampleDistribution::Uniform => {
-            eprintln!("Sampling {total_samples} terms per size from {min_size} to {max_size}");
-            let samples_fn = (total_samples / (max_size - min_size)) as u64;
-            if overlap {
-                term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, |_| samples_fn)
-            } else {
-                term_count.sample_unique_root(min_size, max_size, |_| samples_fn)
-            }
-        }
+    let samples_per_size = samples_per_size(
+        term_count,
+        ref_tree,
+        min_size,
+        max_size,
+        total_samples,
+        distribution,
+        with_types,
+    );
+    let candidates = if overlap {
+        term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, &samples_per_size)
+    } else {
+        term_count.sample_unique_root(min_size, max_size, &samples_per_size)
     };
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");
@@ -444,6 +392,75 @@ fn run_count_extraction<L: Label>(
             } else {
                 eprintln!("No result found!");
             }
+        }
+    }
+}
+
+fn samples_per_size<L: Label>(
+    term_count: &TermCount<BigUint, L>,
+    ref_tree: &TreeNode<L>,
+    min_size: usize,
+    max_size: usize,
+    total_samples: usize,
+    distribution: SampleDistribution,
+    with_types: bool,
+) -> HashMap<usize, u64> {
+    match distribution {
+        SampleDistribution::Proportional(min_per_size) => {
+            let histogram = term_count.of_root().expect("Root e-class has no terms");
+            let total_terms = (min_size..=max_size)
+                .filter_map(|s| histogram.get(&s))
+                .sum::<BigUint>();
+            eprintln!(
+                "Sampling {total_samples} terms proportionally from {min_size} to {max_size}"
+            );
+            let budget = BigUint::from(total_samples);
+            (min_size..max_size)
+                .map(|size| {
+                    let n = histogram.get(&size).map_or(0, |count| {
+                        (count * &budget / &total_terms)
+                            .to_u64()
+                            .unwrap_or(u64::MAX)
+                            .max(min_per_size as u64)
+                    });
+                    eprintln!("Sampling {n} terms for size {size}");
+                    (size, n)
+                })
+                .collect()
+        }
+        SampleDistribution::Normal(sigma) => {
+            #[expect(clippy::cast_precision_loss)]
+            let center = (ref_tree.size(with_types) - min_size) as f64;
+            eprintln!(
+                "Sampling {total_samples} terms with normal distribution (center={center}, sigma={sigma}) from {min_size} to {max_size}"
+            );
+            // Compute unnormalized weights for each size
+            let weights = (min_size..=max_size)
+                .map(|s| {
+                    #[expect(clippy::cast_precision_loss)]
+                    let z = (s as f64 - center) / sigma;
+                    (s, (-0.5 * z * z).exp())
+                })
+                .collect::<HashMap<_, _>>();
+            let total_weight: f64 = weights.iter().map(|(_, w)| w).sum();
+            (min_size..max_size)
+                .map(|size| {
+                    let w = *weights.get(&size).unwrap_or(&0.0);
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss
+                    )]
+                    let n = (w / total_weight * total_samples as f64).round() as u64;
+                    eprintln!("Sampling {n} terms for size {size}");
+                    (size, n)
+                })
+                .collect()
+        }
+        SampleDistribution::Uniform => {
+            eprintln!("Sampling {total_samples} terms per size from {min_size} to {max_size}");
+            let s = (total_samples / (max_size - min_size)) as u64;
+            (min_size..max_size).map(|size| (size, s)).collect()
         }
     }
 }

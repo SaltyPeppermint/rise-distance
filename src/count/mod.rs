@@ -241,8 +241,8 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         type_cache: &TypeSizeCache,
     ) -> HashMap<usize, C> {
         match child_id {
-            ExprChildId::Nat(id) => {
-                let size = type_cache.get_nat_size(id);
+            ExprChildId::Nat(nat_id) => {
+                let size = type_cache.get_nat_size(nat_id);
                 HashMap::from([(size, C::one())])
             }
             ExprChildId::Data(id) => {

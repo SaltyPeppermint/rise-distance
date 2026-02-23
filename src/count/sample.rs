@@ -42,13 +42,13 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     ///
     /// See `sample_unique` for more info
     #[must_use]
-    pub fn sample_unique_root<F: Fn(usize) -> u64 + Sync + Send>(
+    pub fn sample_unique_root(
         &self,
         min_size: usize,
         max_size: usize,
-        samples_fn: F,
+        samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<TreeNode<L>> {
-        self.sample_unique(self.graph.root(), min_size, max_size, samples_fn)
+        self.sample_unique(self.graph.root(), min_size, max_size, samples_per_size)
     }
 
     /// Sample unique terms across a range of sizes.
@@ -61,12 +61,12 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// and calling `sample` with a size that has no terms would cause all node
     /// weights to be zero, panicking with `AllWeightsZero`.
     #[must_use]
-    pub fn sample_unique<F: Fn(usize) -> u64 + Sync + Send>(
+    pub fn sample_unique(
         &self,
         id: EClassId,
         min_size: usize,
         max_size: usize,
-        samples_fn: F,
+        samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<TreeNode<L>> {
         let canon_id = self.graph.canonicalize(id);
         self.data
@@ -74,7 +74,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             .into_iter()
             .flat_map(|h| h.keys().filter(|&&s| s >= min_size && s <= max_size))
             .par_bridge()
-            .flat_map(|&size| self.sample_root(size, samples_fn(size), size as u64))
+            .flat_map(|&size| self.sample_root(size, samples_per_size[&size], size as u64))
             .collect()
     }
 
