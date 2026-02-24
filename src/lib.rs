@@ -7,8 +7,11 @@ mod graph;
 mod ids;
 mod min;
 mod nodes;
+mod overlap;
 pub mod rise;
 mod structural;
+#[cfg(test)]
+mod test_utils;
 mod tree;
 mod utils;
 mod zs;

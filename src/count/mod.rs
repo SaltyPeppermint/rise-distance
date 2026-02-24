@@ -17,8 +17,7 @@ use crate::utils::UniqueQueue;
 
 mod overlap;
 mod sample;
-#[cfg(test)]
-mod test_utils;
+
 mod type_cache;
 
 use type_cache::TypeSizeCache;
@@ -369,10 +368,10 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
 #[cfg(test)]
 mod tests {
-    use super::test_utils::*;
     use super::*;
     use crate::graph::EClass;
     use crate::nodes::ENode;
+    use crate::test_utils::*;
     use num::BigUint;
 
     #[test]
