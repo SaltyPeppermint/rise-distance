@@ -271,15 +271,7 @@ pub fn tree_distance_unit<L: Label>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TreeNode;
-
-    fn leaf<L: Label>(label: L) -> TreeNode<L> {
-        TreeNode::leaf_untyped(label)
-    }
-
-    fn node<L: Label>(label: L, children: Vec<TreeNode<L>>) -> TreeNode<L> {
-        TreeNode::new_untyped(label, children)
-    }
+    use crate::test_utils::*;
 
     #[test]
     fn basic_zhang_shasha() {

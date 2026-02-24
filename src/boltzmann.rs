@@ -428,33 +428,10 @@ impl<L: Label, R: Rng + SeedableRng> Iterator for FixpointSampler<'_, L, R> {
 mod tests {
     use super::*;
     use crate::graph::EClass;
-    use crate::ids::NatId;
-    use crate::ids::TypeChildId;
-    use crate::nodes::{ENode, NatNode};
+    use crate::nodes::ENode;
+    use crate::test_utils::*;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
-
-    fn dummy_ty() -> TypeChildId {
-        TypeChildId::Nat(NatId::new(0))
-    }
-
-    fn dummy_nat_nodes() -> HashMap<NatId, NatNode<String>> {
-        let mut map = HashMap::new();
-        map.insert(NatId::new(0), NatNode::leaf("0".to_owned()));
-        map
-    }
-
-    fn eid(i: usize) -> ExprChildId {
-        ExprChildId::EClass(EClassId::new(i))
-    }
-
-    fn cfv(classes: Vec<EClass<String>>) -> HashMap<EClassId, EClass<String>> {
-        classes
-            .into_iter()
-            .enumerate()
-            .map(|(i, c)| (EClassId::new(i), c))
-            .collect()
-    }
 
     fn cyclic_graph() -> EGraph<String> {
         // Class 0: "f" with child Class 0 (cycle!), or leaf "x"

@@ -87,15 +87,9 @@ pub fn structural_diff<L: Label, C: EditCosts<L>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TreeNode, UnitCost};
+    use crate::UnitCost;
 
-    fn leaf<L: Label>(label: L) -> TreeNode<L> {
-        TreeNode::leaf_untyped(label)
-    }
-
-    fn node<L: Label>(label: L, children: Vec<TreeNode<L>>) -> TreeNode<L> {
-        TreeNode::new_untyped(label, children)
-    }
+    use crate::test_utils::*;
 
     fn sd(overlap: usize, zs_sum: usize) -> StructuralDistance {
         StructuralDistance::new(overlap, zs_sum)

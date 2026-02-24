@@ -221,33 +221,9 @@ impl<L: Label> EGraph<L> {
 mod tests {
 
     use crate::ids::NumericId;
+    use crate::test_utils::*;
 
     use super::*;
-
-    fn eid(i: usize) -> ExprChildId {
-        ExprChildId::EClass(EClassId::new(i))
-    }
-
-    /// Helper to create a dummy `TypeId` for tests
-    fn dummy_ty() -> TypeChildId {
-        TypeChildId::Nat(NatId::new(0))
-    }
-
-    /// Helper to create dummy nat nodes hashmap with a "0" leaf at NatId(0)
-    fn dummy_nat_nodes() -> HashMap<NatId, NatNode<String>> {
-        let mut nats = HashMap::new();
-        nats.insert(NatId::new(0), NatNode::leaf("0".to_owned()));
-        nats
-    }
-
-    /// Helper to convert a Vec of `EClasses` to a `HashMap` with sequential `EClassIds`
-    fn cfv(classes: Vec<EClass<String>>) -> HashMap<EClassId, EClass<String>> {
-        classes
-            .into_iter()
-            .enumerate()
-            .map(|(i, c)| (EClassId::new(i), c))
-            .collect()
-    }
 
     /// Helper to build a simple graph with one class containing one node
     fn single_node_graph(label: &str) -> EGraph<String> {

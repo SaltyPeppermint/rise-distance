@@ -146,11 +146,11 @@ mod tests {
     use crate::zs::UnitCost;
 
     fn leaf(label: &str) -> TreeNode<String> {
-        TreeNode::leaf_untyped(label.to_owned())
+        crate::test_utils::leaf(label.to_owned())
     }
 
     fn node(label: &str, children: Vec<TreeNode<String>>) -> TreeNode<String> {
-        TreeNode::new_untyped(label.to_owned(), children)
+        crate::test_utils::node(label.to_owned(), children)
     }
 
     #[test]

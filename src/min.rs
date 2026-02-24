@@ -168,39 +168,11 @@ mod tests {
     use super::*;
     use crate::EGraph;
     use crate::graph::EClass;
-    use crate::ids::{EClassId, ExprChildId, NatId, TypeChildId};
-    use crate::nodes::{ENode, NatNode};
+    use crate::ids::EClassId;
+    use crate::nodes::ENode;
     use crate::zs::UnitCost;
 
-    fn leaf<L: Label>(label: impl Into<L>) -> TreeNode<L> {
-        TreeNode::leaf_untyped(label.into())
-    }
-
-    fn node<L: Label>(label: L, children: Vec<TreeNode<L>>) -> TreeNode<L> {
-        TreeNode::new_untyped(label, children)
-    }
-
-    fn eid(i: usize) -> ExprChildId {
-        ExprChildId::EClass(EClassId::new(i))
-    }
-
-    fn dummy_ty() -> TypeChildId {
-        TypeChildId::Nat(NatId::new(0))
-    }
-
-    fn dummy_nat_nodes() -> HashMap<NatId, NatNode<String>> {
-        let mut nats = HashMap::new();
-        nats.insert(NatId::new(0), NatNode::leaf("0".to_owned()));
-        nats
-    }
-
-    fn cfv(classes: Vec<EClass<String>>) -> HashMap<EClassId, EClass<String>> {
-        classes
-            .into_iter()
-            .enumerate()
-            .map(|(i, c)| (EClassId::new(i), c))
-            .collect()
-    }
+    use crate::test_utils::*;
 
     #[test]
     fn min_distance_exact_match() {

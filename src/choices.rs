@@ -220,30 +220,8 @@ impl PathTracker {
 mod tests {
     use super::*;
     use crate::graph::EClass;
-    use crate::ids::{ExprChildId, NatId, TypeChildId};
-    use crate::nodes::{ENode, NatNode};
-
-    fn eid(i: usize) -> ExprChildId {
-        ExprChildId::EClass(EClassId::new(i))
-    }
-
-    fn dummy_ty() -> TypeChildId {
-        TypeChildId::Nat(NatId::new(0))
-    }
-
-    fn dummy_nat_nodes() -> HashMap<NatId, NatNode<String>> {
-        let mut nats = HashMap::new();
-        nats.insert(NatId::new(0), NatNode::leaf("0".to_owned()));
-        nats
-    }
-
-    fn cfv(classes: Vec<EClass<String>>) -> HashMap<EClassId, EClass<String>> {
-        classes
-            .into_iter()
-            .enumerate()
-            .map(|(i, c)| (EClassId::new(i), c))
-            .collect()
-    }
+    use crate::nodes::ENode;
+    use crate::test_utils::*;
 
     #[test]
     fn choice_iter_enumerates_all_trees_diamond_cycle() {
