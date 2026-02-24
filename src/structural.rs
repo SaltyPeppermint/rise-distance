@@ -71,7 +71,7 @@ pub fn structural_diff<L: Label, C: EditCosts<L>>(
         if reference.label() != candidate.label() {
             return StructuralDistance::new(0, tree_distance(reference, candidate, costs));
         }
-        // This node matched — count 1 for overlap
+        // This node matched -> count 1 for overlap
         let children_diff: StructuralDistance = reference
             .children()
             .iter()

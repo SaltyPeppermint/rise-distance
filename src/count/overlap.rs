@@ -219,7 +219,7 @@ mod tests {
     fn sample_with_overlap_exact_match() {
         // Class 0: f(class1)
         // Class 1: leaf "a"
-        // ref_tree: (f a) — exact match, target_size=2
+        // ref_tree: (f a) -> exact match, target_size=2
         let graph = EGraph::new(
             cfv(vec![
                 EClass::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
@@ -251,7 +251,7 @@ mod tests {
         // Class 0: f(class1, class2)
         // Class 1: leaf "a", leaf "x"
         // Class 2: leaf "b", leaf "y"
-        // ref_tree: (f a z) — "a" matches class1, "z" does NOT match class2
+        // ref_tree: (f a z) -> "a" matches class1, "z" does NOT match class2
         let graph = EGraph::new(
             cfv(vec![
                 EClass::new(
@@ -297,7 +297,7 @@ mod tests {
     fn sample_with_overlap_budget_too_small() {
         // Class 0: f(class1)
         // Class 1: leaf "a"
-        // ref_tree: (f a) — fixed size = 2, but target = 1
+        // ref_tree: (f a) -> fixed size = 2, but target = 1
         let graph = EGraph::new(
             cfv(vec![
                 EClass::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn sample_with_overlap_no_match_returns_none() {
         // Class 0: leaf "a", leaf "b"
-        // ref_tree: "z" — no match at root, returns None
+        // ref_tree: "z" -> no match at root, returns None
         let graph = EGraph::new(
             cfv(vec![EClass::new(
                 vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],

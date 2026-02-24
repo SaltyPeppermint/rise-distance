@@ -4,8 +4,8 @@
 //! node label when entering and leaving. For a tree with n nodes, the Euler string
 //! has length 2n.
 //!
-//! The key property is: EDS(s(T1), s(T2)) ≤ 2 · EDT(T1, T2)
-//! which gives us: EDT(T1, T2) ≥ EDS(s(T1), s(T2)) / 2
+//! The key property is: EDS(s(T1), s(T2)) <= 2 * EDT(T1, T2)
+//! which gives us: EDT(T1, T2) => EDS(s(T1), s(T2)) / 2
 //!
 //! This provides a lower bound on tree edit distance that can be computed in O(n·m) time
 //! using standard string edit distance, useful for pruning in tree distance computations.
