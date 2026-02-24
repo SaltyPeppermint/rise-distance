@@ -142,12 +142,13 @@ fn collect_matched_nodes<'a, L: Label>(
 
 /// Collect all e-class IDs transitively reachable from a set of root classes,
 /// following all e-node children in the original graph.
+/// Essentially a transitive hull
 fn collect_reachable<L: Label>(
     graph: &EGraph<L>,
     roots: impl IntoIterator<Item = EClassId>,
 ) -> HashSet<EClassId> {
     let mut visited = HashSet::new();
-    let mut stack: Vec<EClassId> = roots.into_iter().collect();
+    let mut stack = roots.into_iter().collect::<Vec<_>>();
 
     while let Some(id) = stack.pop() {
         let canonical = graph.canonicalize(id);
