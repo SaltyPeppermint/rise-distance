@@ -11,14 +11,14 @@ use crate::{EGraph, PartialChild, PartialTree, TreeNode, tree_node_to_partial};
 /// At each e-class, finds e-nodes whose label matches the `ref_tree`'s label.
 /// If multiple match, tries all and picks the one with the largest
 /// `resolved_count`. Returns `None` if no e-node matches (caller creates a Hole).
-pub(crate) fn match_ref_tree<L: Label>(
+pub fn match_ref_tree<L: Label>(
     graph: &EGraph<L>,
     eclass_id: EClassId,
     ref_tree: &TreeNode<L>,
 ) -> Option<PartialTree<L>> {
     let canonical_id = graph.canonicalize(eclass_id);
     let eclass = graph.class(canonical_id);
-    let ty = Some(TreeNode::<L>::from_eclass(graph, canonical_id));
+    let ty = Some(TreeNode::from_eclass(graph, canonical_id));
 
     let mut best = None;
 
@@ -36,12 +36,12 @@ pub(crate) fn match_ref_tree<L: Label>(
         for &child_id in children {
             match child_id {
                 ExprChildId::Nat(nat_id) => {
-                    let nat_tree = TreeNode::<L>::from_nat(graph, nat_id);
+                    let nat_tree = TreeNode::from_nat(graph, nat_id);
                     partial_children.push(PartialChild::Resolved(tree_node_to_partial(&nat_tree)));
                     ref_idx += 1;
                 }
                 ExprChildId::Data(data_id) => {
-                    let data_tree = TreeNode::<L>::from_data(graph, data_id);
+                    let data_tree = TreeNode::from_data(graph, data_id);
                     partial_children.push(PartialChild::Resolved(tree_node_to_partial(&data_tree)));
                     ref_idx += 1;
                 }
@@ -84,15 +84,15 @@ pub(crate) fn match_ref_tree<L: Label>(
 ///
 /// Returns a map from canonical `EClassId` → the chosen `ENode`.
 /// Classes where no e-node label matched are absent from the map (they are holes).
-fn collect_matched_nodes<L: Label>(
-    graph: &EGraph<L>,
+fn collect_matched_nodes<'a, L: Label>(
+    graph: &'a EGraph<L>,
     eclass_id: EClassId,
     ref_tree: &TreeNode<L>,
-) -> HashMap<EClassId, ENode<L>> {
+) -> HashMap<EClassId, &'a ENode<L>> {
     let canonical_id = graph.canonicalize(eclass_id);
     let eclass = graph.class(canonical_id);
 
-    let mut best: Option<(ENode<L>, usize, HashMap<EClassId, ENode<L>>)> = None;
+    let mut best = None;
 
     for node in eclass
         .nodes()
@@ -107,24 +107,20 @@ fn collect_matched_nodes<L: Label>(
         let mut ref_idx = 0;
 
         for &child_id in children {
-            match child_id {
-                ExprChildId::Nat(_) | ExprChildId::Data(_) => {
-                    resolved += 1;
-                    ref_idx += 1;
-                }
-                ExprChildId::EClass(child_eclass_id) => {
-                    if ref_idx < ref_children.len() {
-                        let sub =
-                            collect_matched_nodes(graph, child_eclass_id, &ref_children[ref_idx]);
-                        // If the child class itself is in sub, that means it matched
-                        let child_canonical = graph.canonicalize(child_eclass_id);
-                        if sub.contains_key(&child_canonical) {
-                            resolved += sub.len();
-                        }
-                        child_matches.extend(sub);
+            if let ExprChildId::EClass(child_eclass_id) = child_id {
+                if ref_idx < ref_children.len() {
+                    let sub = collect_matched_nodes(graph, child_eclass_id, &ref_children[ref_idx]);
+                    // If the child class itself is in sub, that means it matched
+                    let child_canonical = graph.canonicalize(child_eclass_id);
+                    if sub.contains_key(&child_canonical) {
+                        resolved += sub.len();
                     }
-                    ref_idx += 1;
+                    child_matches.extend(sub);
                 }
+                ref_idx += 1;
+            } else {
+                resolved += 1;
+                ref_idx += 1;
             }
         }
 
@@ -132,7 +128,7 @@ fn collect_matched_nodes<L: Label>(
             .as_ref()
             .is_none_or(|(_, best_resolved, _)| resolved > *best_resolved)
         {
-            best = Some((node.clone(), resolved, child_matches));
+            best = Some((node, resolved, child_matches));
         }
     }
 
@@ -212,7 +208,7 @@ pub fn prune_by_ref_tree<L: Label>(
             let canonical = graph.canonicalize(class_id);
             let eclass = graph.class(canonical);
 
-            if let Some(chosen_node) = matched.get(&canonical) {
+            if let Some(&chosen_node) = matched.get(&canonical) {
                 if protected.contains(&canonical) {
                     // Protected by hole reachability — keep all nodes
                     (canonical, eclass.clone())
@@ -223,7 +219,7 @@ pub fn prune_by_ref_tree<L: Label>(
                     }
                     (
                         canonical,
-                        EClass::new(vec![chosen_node.clone()], eclass.ty()),
+                        EClass::new(vec![chosen_node.to_owned()], eclass.ty()),
                     )
                 }
             } else {
@@ -233,11 +229,11 @@ pub fn prune_by_ref_tree<L: Label>(
         })
         .collect();
 
+    // TODO: fun_ty_nodes and data_ty_nodes could also be pruned to remove unreferenced entries
     let pruned_graph = EGraph::new(
         new_classes,
         graph.root(),
         graph.union_find().to_vec(),
-        // TODO: fun_ty_nodes and data_ty_nodes could also be pruned to remove unreferenced entries
         graph.fun_ty_nodes().clone(),
         graph.nat_nodes().clone(),
         graph.data_ty_nodes().clone(),

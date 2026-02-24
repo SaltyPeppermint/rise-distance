@@ -84,8 +84,9 @@ impl<L: Label> EGraph<L> {
     }
 
     /// Set the root `EClassId` (useful after deserialization)
+    /// Automatically canonicalized
     fn set_root(&mut self, root: EClassId) {
-        self.root = Some(root);
+        self.root = Some(self.canonicalize(root));
     }
 
     /// Get the root `EClassId`.
