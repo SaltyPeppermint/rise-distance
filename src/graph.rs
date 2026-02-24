@@ -168,6 +168,26 @@ impl<L: Label> EGraph<L> {
     }
 
     #[must_use]
+    pub fn union_find(&self) -> &[EClassId] {
+        &self.union_find
+    }
+
+    #[must_use]
+    pub fn fun_ty_nodes(&self) -> &HashMap<FunId, FunTyNode<L>> {
+        &self.fun_ty_nodes
+    }
+
+    #[must_use]
+    pub fn nat_nodes(&self) -> &HashMap<NatId, NatNode<L>> {
+        &self.nat_nodes
+    }
+
+    #[must_use]
+    pub fn data_ty_nodes(&self) -> &HashMap<DataId, DataTyNode<L>> {
+        &self.data_ty_nodes
+    }
+
+    #[must_use]
     pub fn tree_from_choices(&self, id: EClassId, choices: &[usize]) -> TreeNode<L> {
         self.tree_from_choices_rec(id, 0, choices).0
     }

@@ -30,6 +30,7 @@ pub use graph::{EClass, EGraph};
 pub use ids::EClassId;
 pub use min::{ZSStats, find_min_struct, find_min_zs};
 pub use nodes::Label;
+pub use overlap::prune_by_ref_tree;
 pub use structural::StructuralDistance;
 pub use tree::{PartialChild, PartialTree, TreeNode, tree_node_to_partial};
 pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};
