@@ -27,7 +27,7 @@ pub use count::TermCount;
 pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
 pub use euler_str::tree_distance_euler_bound;
 pub use graph::{EClass, EGraph};
-pub use ids::EClassId;
+pub use ids::{EClassId, NumericId};
 pub use min::{ZSStats, find_min_struct, find_min_zs};
 pub use nodes::Label;
 pub use overlap::prune_by_ref_tree;

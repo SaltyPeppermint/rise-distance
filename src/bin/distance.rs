@@ -10,10 +10,9 @@ use num::BigUint;
 use num::ToPrimitive;
 use rayon::prelude::*;
 
-use rise_distance::StructuralDistance;
 use rise_distance::{
-    EClassId, EGraph, Expr, Label, RiseLabel, TermCount, TreeNode, UnitCost, ZSStats,
-    find_min_struct, find_min_zs, tree_distance_unit,
+    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, StructuralDistance, TermCount, TreeNode,
+    UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -23,16 +22,8 @@ struct Cli {
     #[arg(long)]
     raw_strings: bool,
 
-    /// Distance metric to use
-    #[arg(short, long, default_value_t = DistanceMetric::ZhangShasha)]
-    distance: DistanceMetric,
-
     /// Path to the serialized e-graph JSON file
     egraph: String,
-
-    /// Include type annotations in size calculations
-    #[arg(short = 't', long)]
-    with_types: bool,
 
     #[command(flatten)]
     reference: RefSource,
@@ -43,28 +34,42 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Count-based uniform sampling by exact term size
+    /// Count-based sampling by exact term size
     #[command(after_help = "\
 Examples:
   # Count terms up to size 20, print root histogram
-  distance graph.json count -l 20 --histogram
+  distance graph.json sample -l 20 --histogram
 
-  # Pretty-print with bar chart, then sample
-  distance graph.json count -l 20 --histogram --pretty -b 100 -e '(+ 1 2)'
+  # Pretty-print histogram with bar chart
+  distance graph.json sample -l 20 --histogram --pretty
 
-  # Sample only, from sizes 5 to 20
-  distance graph.json -e '(+ 1 2)' count -l 20 -m 5 -b 100
+  # Sample 100 terms uniformly, compute Zhang-Shasha distance
+  distance graph.json -e '(+ 1 2)' sample -l 20 -b 100
 
   # Proportional sampling with min 10 per size
-  distance graph.json -e '(+ 1 2)' count -l 20 -b 500 -p proportional:10
+  distance graph.json -e '(+ 1 2)' sample -l 20 -b 500 -p proportional:10
 
   # Normal distribution sampling with sigma=2.5
-  distance graph.json -e '(+ 1 2)' count -l 20 -b 500 -p normal:2.5
+  distance graph.json -e '(+ 1 2)' sample -l 20 -b 500 -p normal:2.5
+
+  # Use structural distance metric
+  distance graph.json -e '(+ 1 2)' sample -l 20 -b 100 -d structural
+
+  # Overlap sampling locks in shared structure with the reference tree
+  distance graph.json -e '(+ 1 2)' sample -l 20 -b 100 --overlap
 
   # Compare to a named tree from a file
-  distance graph.json -f trees.txt -n blocking_goal count -l 20 -m 5 -s 100
+  distance graph.json -f trees.txt -n goal sample -l 20 -b 100
 ")]
     Sample {
+        /// Include type annotations in size calculations
+        #[arg(short = 't', long)]
+        with_types: bool,
+
+        /// Distance metric to use
+        #[arg(short, long, default_value_t = DistanceMetric::ZhangShasha)]
+        distance: DistanceMetric,
+
         /// Maximum term size to count
         #[arg(short, long)]
         max_size: Option<usize>,
@@ -83,8 +88,27 @@ Examples:
 
         /// Use overlap sampling: lock in shared structure with the reference tree
         /// before sampling holes
-        #[arg(short = 'o', long, requires = "budget")]
+        #[arg(long, requires = "budget")]
         overlap: bool,
+    },
+
+    /// Prune the e-graph by overlap with a reference tree and output the result
+    #[command(after_help = "\
+Examples:
+  # Prune and print result to stdout
+  distance graph.json -e '(+ 1 2)' prune
+
+  # Prune and write to a file
+  distance graph.json -e '(+ 1 2)' prune -o pruned.json
+
+  # Prune using a named tree from a file
+  distance graph.json -f trees.txt -n goal prune -o pruned.json
+")]
+    Prune {
+        /// Write pruned graph to a file instead of printing to stdout.
+        /// The output filename will encode the root e-class ID.
+        #[arg(short, long)]
+        output: Option<String>,
     },
 }
 
@@ -143,10 +167,11 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
     let graph = EGraph::<L>::parse_from_file(Path::new(&cli.egraph));
     let root = graph.root();
     eprintln!("Root e-class: {root:?}");
-    eprintln!("With types: {}", cli.with_types);
 
     match &cli.command {
         Command::Sample {
+            with_types,
+            distance,
             max_size,
             display,
             budget: samples,
@@ -154,11 +179,11 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             overlap,
         } => {
             let ref_tree = parse_ref(&cli.reference, &parse_tree);
-            let max_size = max_size.unwrap_or_else(|| ref_tree.size(cli.with_types));
+            let max_size = max_size.unwrap_or_else(|| ref_tree.size(*with_types));
             eprintln!("Limit: {max_size}");
 
             let start = Instant::now();
-            let term_count = TermCount::<BigUint, L>::new(max_size, cli.with_types, &graph);
+            let term_count = TermCount::<BigUint, L>::new(max_size, *with_types, &graph);
             eprintln!("Counting completed in {:.2?}", start.elapsed());
 
             if display.histogram {
@@ -193,11 +218,39 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
                         max_size,
                         total_samples: *sample_count,
                         distribution: *distribution,
-                        with_types: cli.with_types,
-                        distance: cli.distance,
+                        with_types: *with_types,
+                        distance: *distance,
                         overlap: *overlap,
                     },
                 );
+            }
+        }
+        Command::Prune { output } => {
+            let ref_tree = parse_ref(&cli.reference, &parse_tree);
+            let start = Instant::now();
+            let (pruned, pruned_ids) = prune_by_ref_tree(&graph, root, &ref_tree);
+            eprintln!("Pruning completed in {:.2?}", start.elapsed());
+            eprintln!("Pruned {} e-classes", pruned_ids.len());
+            let pruned_str = format!(
+                "[{}]",
+                pruned_ids
+                    .iter()
+                    .map(|&i| i.to_index().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+
+            if let Some(path) = output {
+                let out_path = Path::new(path);
+                let file = fs::File::create(out_path)
+                    .unwrap_or_else(|e| panic!("Failed to create '{path}': {e}"));
+                serde_json::to_writer(std::io::BufWriter::new(file), &pruned)
+                    .expect("Failed to serialize pruned e-graph");
+                println!("Root: {root:?}; Pruned: {pruned_str}; Path: {path}");
+            } else {
+                let json =
+                    serde_json::to_string(&pruned).expect("Failed to serialize pruned e-graph");
+                println!("Root: {root:?}; Pruned: {pruned_str}; EGraph: {json}");
             }
         }
     }
