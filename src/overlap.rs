@@ -18,7 +18,7 @@ pub fn match_ref_tree<L: Label>(
 ) -> Option<PartialTree<L>> {
     let canonical_id = graph.canonicalize(eclass_id);
     let eclass = graph.class(canonical_id);
-    let ty = Some(TreeNode::from_eclass(graph, canonical_id));
+    let ty = TreeNode::from_eclass(graph, canonical_id);
 
     let mut best = None;
 
@@ -220,7 +220,7 @@ pub fn prune_by_ref_tree<L: Label>(
                     }
                     (
                         canonical,
-                        EClass::new(vec![chosen_node.to_owned()], eclass.ty()),
+                        EClass::new(vec![chosen_node.to_owned()], eclass.ty().copied()),
                     )
                 }
             } else {

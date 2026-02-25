@@ -107,7 +107,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             return TreeNode::new_typed(
                 pick.label().clone(),
                 vec![],
-                Some(TreeNode::from_eclass(self.graph, canonical_id)),
+                TreeNode::from_eclass(self.graph, canonical_id),
             );
         }
         // Sequentially sample a size for each child, weighting by:
@@ -145,7 +145,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                     ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
                 })
                 .collect(),
-            Some(TreeNode::from_eclass(self.graph, canonical_id)),
+            TreeNode::from_eclass(self.graph, canonical_id),
         )
     }
 

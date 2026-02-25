@@ -2,16 +2,16 @@ use hashbrown::HashMap;
 
 use crate::graph::EClass;
 use crate::ids::{EClassId, ExprChildId, NatId, TypeChildId};
-use crate::nodes::NatNode;
 use crate::nodes::Label;
+use crate::nodes::NatNode;
 use crate::tree::TreeNode;
 
 pub fn eid(i: usize) -> ExprChildId {
     ExprChildId::EClass(EClassId::new(i))
 }
 
-pub fn dummy_ty() -> TypeChildId {
-    TypeChildId::Nat(NatId::new(0))
+pub fn dummy_ty() -> Option<TypeChildId> {
+    Some(TypeChildId::Nat(NatId::new(0)))
 }
 
 pub fn dummy_nat_nodes() -> HashMap<NatId, NatNode<String>> {

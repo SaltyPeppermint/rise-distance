@@ -25,12 +25,12 @@ use super::tree::TreeNode;
 #[serde(bound(deserialize = "L: Label"))]
 pub struct EClass<L: Label> {
     nodes: Vec<ENode<L>>,
-    ty: TypeChildId,
+    ty: Option<TypeChildId>,
 }
 
 impl<L: Label> EClass<L> {
     #[must_use]
-    pub fn new(nodes: Vec<ENode<L>>, ty: TypeChildId) -> Self {
+    pub fn new(nodes: Vec<ENode<L>>, ty: Option<TypeChildId>) -> Self {
         Self { nodes, ty }
     }
 
@@ -40,8 +40,8 @@ impl<L: Label> EClass<L> {
     }
 
     #[must_use]
-    pub fn ty(&self) -> TypeChildId {
-        self.ty
+    pub fn ty(&self) -> Option<&TypeChildId> {
+        self.ty.as_ref()
     }
 }
 
@@ -222,7 +222,7 @@ impl<L: Label> EGraph<L> {
         let eclass_tree = TreeNode::new_typed(
             node.label().clone(),
             children,
-            Some(TreeNode::from_eclass(self, id)),
+            TreeNode::from_eclass(self, id),
         );
         (eclass_tree, curr_idx)
     }

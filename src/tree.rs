@@ -83,9 +83,9 @@ impl<L: Label> TreeNode<L> {
 
     /// Build a type tree from an e-class's type annotation.
     #[must_use]
-    pub fn from_eclass(graph: &EGraph<L>, id: EClassId) -> Self {
-        let ty_id = graph.class(id).ty();
-        Self::from_type(graph, ty_id)
+    pub fn from_eclass(graph: &EGraph<L>, id: EClassId) -> Option<Self> {
+        let ty_id = graph.class(id).ty()?;
+        Some(Self::from_type(graph, *ty_id))
     }
 
     fn from_type(graph: &EGraph<L>, id: TypeChildId) -> Self {
@@ -379,9 +379,7 @@ impl<L: Label> PartialTree<L> {
     /// Holes contribute 0.
     pub fn fixed_size(&self, with_types: bool) -> usize {
         let type_overhead = if with_types {
-            self.ty
-                .as_deref()
-                .map_or(0, |t| 1 + t.size_without_types())
+            self.ty.as_deref().map_or(0, |t| 1 + t.size_without_types())
         } else {
             0
         };

@@ -1,10 +1,11 @@
-mod boltzmann;
+// mod boltzmann;
 mod choices;
 mod count;
 mod diversity;
 mod euler_str;
 mod graph;
 mod ids;
+mod math;
 mod min;
 mod nodes;
 mod overlap;
@@ -17,11 +18,12 @@ mod utils;
 mod zs;
 
 // Re-export rise types at this level for convenience
+pub use math::{Math, MathLabel};
 pub use rise::{Expr, Nat, RiseLabel, Type};
 
-pub use boltzmann::{
-    FindLambdaError, FixpointSampler, FixpointSamplerConfig, find_lambda_for_target_size,
-};
+// pub use boltzmann::{
+//     FindLambdaError, FixpointSampler, FixpointSamplerConfig, find_lambda_for_target_size,
+// };
 pub use choices::ChoiceIter;
 pub use count::TermCount;
 pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};

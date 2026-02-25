@@ -115,8 +115,8 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                             }
                         });
                         all_ready.then(|| {
-                            let type_overhead = if with_types {
-                                1 + type_cache.get_type_size(eclass.ty())
+                            let type_overhead = if with_types && let Some(t) = eclass.ty() {
+                                1 + type_cache.get_type_size(*t)
                             } else {
                                 0
                             };
@@ -294,8 +294,10 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     pub(crate) fn type_overhead(&self, eclass: &EClass<L>) -> usize {
-        if self.with_types {
-            1 + self.type_sizes.get_type_size(eclass.ty())
+        if self.with_types
+            && let Some(t) = eclass.ty()
+        {
+            1 + self.type_sizes.get_type_size(*t)
         } else {
             0
         }
