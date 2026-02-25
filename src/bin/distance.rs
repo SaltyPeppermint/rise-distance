@@ -6,8 +6,7 @@ use std::time::Instant;
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use hashbrown::HashMap;
 use indicatif::ParallelProgressIterator;
-use num::BigUint;
-use num::ToPrimitive;
+use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
 use rise_distance::{
@@ -18,10 +17,6 @@ use rise_distance::{
 #[derive(Parser)]
 #[command(about = "Find the closest tree in an e-graph to a reference tree")]
 struct Cli {
-    /// Use raw string labels instead of Rise-typed labels (for regression testing)
-    #[arg(long)]
-    raw_strings: bool,
-
     /// Path to the serialized e-graph JSON file
     egraph: String,
 
@@ -148,25 +143,10 @@ impl std::fmt::Display for DistanceMetric {
 fn main() {
     let cli = Cli::parse();
 
-    if cli.raw_strings {
-        run::<String>(&cli, |sexpr| {
-            TreeNode::<String>::from_str(sexpr).expect("Failed to parse s-expression")
-        });
-    } else {
-        run::<RiseLabel>(&cli, |sexpr| {
-            sexpr
-                .parse::<Expr>()
-                .expect("Failed to parse Rise expression")
-                .to_tree()
-        });
-    }
-}
-
-fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
-    eprintln!("Loading e-graph from: {}", cli.egraph);
-    let graph = EGraph::<L>::parse_from_file(Path::new(&cli.egraph));
+    std::eprintln!("Loading e-graph from: {}", cli.egraph);
+    let graph = EGraph::<RiseLabel>::parse_from_file(Path::new(&cli.egraph));
     let root = graph.root();
-    eprintln!("Root e-class: {root:?}");
+    std::eprintln!("Root e-class: {root:?}");
 
     match &cli.command {
         Command::Sample {
@@ -178,20 +158,20 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             distribution,
             overlap,
         } => {
-            let ref_tree = parse_ref(&cli.reference, &parse_tree);
+            let ref_tree = parse_ref(&cli.reference);
             let max_size = max_size.unwrap_or_else(|| ref_tree.size(*with_types));
-            eprintln!("Limit: {max_size}");
+            std::eprintln!("Limit: {max_size}");
 
             let start = Instant::now();
-            let term_count = TermCount::<BigUint, L>::new(max_size, *with_types, &graph);
-            eprintln!("Counting completed in {:.2?}", start.elapsed());
+            let term_count = TermCount::<BigUint, RiseLabel>::new(max_size, *with_types, &graph);
+            std::eprintln!("Counting completed in {:.2?}", start.elapsed());
 
             if display.histogram {
                 print_histogram("Root", root, &term_count, display);
 
                 for &id in &display.additional_histogram_ids {
                     print_histogram(
-                        &format!("EClassId({id})"),
+                        &std::format!("EClassId({id})"),
                         EClassId::new(id),
                         &term_count,
                         display,
@@ -204,7 +184,7 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
                     .of_eclass(root)
                     .and_then(|h| h.keys().min().copied())
                 else {
-                    panic!(
+                    std::panic!(
                         "Root e-class {root:?} has no terms up to size limit {max_size}. \
                          The smallest representable term likely exceeds this limit \
                          (try increasing -l)."
@@ -226,12 +206,12 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             }
         }
         Command::Prune { output } => {
-            let ref_tree = parse_ref(&cli.reference, &parse_tree);
+            let ref_tree = parse_ref(&cli.reference);
             let start = Instant::now();
             let (pruned, pruned_ids) = prune_by_ref_tree(&graph, root, &ref_tree);
-            eprintln!("Pruning completed in {:.2?}", start.elapsed());
-            eprintln!("Pruned {} e-classes", pruned_ids.len());
-            let pruned_str = format!(
+            std::eprintln!("Pruning completed in {:.2?}", start.elapsed());
+            std::eprintln!("Pruned {} e-classes", pruned_ids.len());
+            let pruned_str = std::format!(
                 "[{}]",
                 pruned_ids
                     .iter()
@@ -243,23 +223,26 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
             if let Some(path) = output {
                 let out_path = Path::new(path);
                 let file = fs::File::create(out_path)
-                    .unwrap_or_else(|e| panic!("Failed to create '{path}': {e}"));
+                    .unwrap_or_else(|e| std::panic!("Failed to create '{path}': {e}"));
                 serde_json::to_writer(std::io::BufWriter::new(file), &pruned)
                     .expect("Failed to serialize pruned e-graph");
-                println!("Root: {root:?}; Pruned: {pruned_str}; Path: {path}");
+                std::println!("Root: {root:?}; Pruned: {pruned_str}; Path: {path}");
             } else {
                 let json =
                     serde_json::to_string(&pruned).expect("Failed to serialize pruned e-graph");
-                println!("Root: {root:?}; Pruned: {pruned_str}; EGraph: {json}");
+                std::println!("Root: {root:?}; Pruned: {pruned_str}; EGraph: {json}");
             }
         }
     }
 }
 
-fn parse_ref<L: Label>(
-    source: &RefSource,
-    parse_tree: impl Fn(&str) -> TreeNode<L>,
-) -> TreeNode<L> {
+fn parse_ref(source: &RefSource) -> TreeNode<RiseLabel> {
+    let parse_tree = |sexpr: &str| {
+        sexpr
+            .parse::<Expr>()
+            .expect("Failed to parse Rise expression")
+            .to_tree()
+    };
     if let Some(expr) = &source.expr {
         eprintln!("Parsing reference tree from command line...");
         return parse_tree(expr);

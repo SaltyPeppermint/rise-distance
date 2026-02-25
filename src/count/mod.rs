@@ -81,7 +81,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         let type_cache = TypeSizeCache::build(graph);
 
         // Find leaf classes (classes with at least one leaf node)
-        let mut pending: UniqueQueue<EClassId> = graph
+        let mut pending = graph
             .class_ids()
             .filter(|&id| {
                 graph
@@ -90,7 +90,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                     .iter()
                     .any(|n| n.children().is_empty())
             })
-            .collect();
+            .collect::<UniqueQueue<_>>();
 
         let mut data = HashMap::new();
 
