@@ -8,14 +8,12 @@ use hashbrown::HashMap;
 use indicatif::ParallelProgressIterator;
 use num::BigUint;
 use num::ToPrimitive;
-use rand::SeedableRng;
-use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
 use rise_distance::StructuralDistance;
 use rise_distance::{
-    EClassId, EGraph, Expr, FixpointSampler, FixpointSamplerConfig, Label, RiseLabel, TermCount,
-    TreeNode, UnitCost, ZSStats, find_min_struct, find_min_zs, tree_distance_unit,
+    EClassId, EGraph, Expr, Label, RiseLabel, TermCount, TreeNode, UnitCost, ZSStats,
+    find_min_struct, find_min_zs, tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -66,7 +64,7 @@ Examples:
   # Compare to a named tree from a file
   distance graph.json -f trees.txt -n blocking_goal count -l 20 -m 5 -s 100
 ")]
-    Count {
+    Sample {
         /// Maximum term size to count
         #[arg(short, long)]
         max_size: Option<usize>,
@@ -87,25 +85,6 @@ Examples:
         /// before sampling holes
         #[arg(short = 'o', long, requires = "budget")]
         overlap: bool,
-    },
-
-    /// Boltzmann sampling-based search
-    #[command(after_help = "\
-Examples:
-  # Reference tree from file
-  distance graph.json -f trees.txt -n blocking_goal boltzmann
-
-  # Reference tree from command line
-  distance graph.json -e '(+ 1 2)' boltzmann -s 1000
-")]
-    Boltzmann {
-        /// Target weight
-        #[arg(short = 'w', long, default_value_t = 0)]
-        target_weight: usize,
-
-        /// Number of samples
-        #[arg(short = 's', long, default_value_t = 1_000_000)]
-        samples: usize,
     },
 }
 
@@ -167,7 +146,7 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
     eprintln!("With types: {}", cli.with_types);
 
     match &cli.command {
-        Command::Count {
+        Command::Sample {
             max_size,
             display,
             budget: samples,
@@ -220,20 +199,6 @@ fn run<L: Label>(cli: &Cli, parse_tree: impl Fn(&str) -> TreeNode<L>) {
                     },
                 );
             }
-        }
-        Command::Boltzmann {
-            target_weight,
-            samples,
-        } => {
-            let ref_tree = parse_ref(&cli.reference, &parse_tree);
-            run_boltzmann_extraction(
-                &graph,
-                &ref_tree,
-                cli.with_types,
-                *samples,
-                *target_weight,
-                cli.distance,
-            );
         }
     }
 }
@@ -461,51 +426,6 @@ fn samples_per_size<L: Label>(
             eprintln!("Sampling {total_samples} terms per size from {min_size} to {max_size}");
             let s = (total_samples / (max_size - min_size)) as u64;
             (min_size..max_size).map(|size| (size, s)).collect()
-        }
-    }
-}
-
-// --- Boltzmann-based extraction ---
-
-fn run_boltzmann_extraction<L: Label>(
-    graph: &EGraph<L>,
-    ref_tree: &TreeNode<L>,
-    with_types: bool,
-    samples: usize,
-    target_weight: usize,
-    distance: DistanceMetric,
-) {
-    let ref_node_count = ref_tree.size_with_types();
-    let ref_stripped_count = ref_tree.size_without_types();
-    eprintln!("Reference tree has {ref_node_count} nodes ({ref_stripped_count} without types)");
-
-    let start = Instant::now();
-    eprintln!("{distance} extraction (Boltzmann sampling)");
-
-    let mut rng = ChaCha12Rng::seed_from_u64(100);
-    let config = FixpointSamplerConfig::builder().build();
-    let (fp_sampler, lambda, expected_size) =
-        FixpointSampler::for_target_size(graph, target_weight, &config, &mut rng).unwrap();
-    eprintln!("LAMBDA IS {lambda}");
-    eprintln!("EXPECTED SIZE IS {expected_size}");
-
-    let samples_vec = fp_sampler.take(samples).collect::<Vec<_>>();
-    let iter = samples_vec.into_par_iter().progress_count(samples as u64);
-
-    match distance {
-        DistanceMetric::ZhangShasha => {
-            if let (Some(result), stats) = find_min_zs(iter, ref_tree, &UnitCost, with_types) {
-                print_zs_result(&result, ref_tree, &stats, start.elapsed(), with_types);
-            } else {
-                eprintln!("No result found!");
-            }
-        }
-        DistanceMetric::Structural => {
-            if let Some(result) = find_min_struct(iter, ref_tree, &UnitCost, with_types) {
-                print_struct_result(&result, ref_tree, start.elapsed(), with_types);
-            } else {
-                eprintln!("No result found!");
-            }
         }
     }
 }
