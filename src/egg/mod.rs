@@ -1,6 +1,9 @@
 pub mod math;
 
-use egg::{Analysis, Id, Language};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use egg::{Analysis, Id, Language, RecExpr, Rewrite, Runner, SimpleScheduler};
 use hashbrown::HashMap;
 
 use crate::ids::{EClassId, ExprChildId};
@@ -68,21 +71,75 @@ where
     )
 }
 
+/// Run equality saturation for exactly `n` iterations and return the converted
+/// egraphs of the **third-last**, **second-last**, and **last** iteration
+/// (in that order).
+///
+/// # Panics
+///
+/// Panics if fewer than 3 iterations are completed (e.g. the runner saturates early) or n is too low
+pub fn run_last_three<'a, L, N, LL, R>(start: &RecExpr<L>, rules: R, n: usize) -> [EGraph<LL>; 3]
+where
+    L: Language + 'static,
+    N: Analysis<L> + Default + Clone + 'static,
+    N::Data: Clone,
+    LL: Label + for<'b> From<&'b L>,
+    R: IntoIterator<Item = &'a Rewrite<L, N>>,
+{
+    // Ring buffer of capacity 3: only the last 3 snapshots are kept.
+    // `with_hook` requires `'static`, so share via Arc<Mutex<_>>.
+    let ring = Arc::new(Mutex::new(VecDeque::with_capacity(3)));
+    let ring_hook = Arc::clone(&ring);
+
+    let runner = Runner::default()
+        .with_scheduler(SimpleScheduler)
+        .with_iter_limit(n)
+        .with_expr(start)
+        .with_hook(move |runner| {
+            let mut r = ring_hook.lock().unwrap();
+            if r.len() == 3 {
+                r.pop_front().unwrap();
+            }
+            r.push_back(runner.egraph.clone());
+            Ok(())
+        })
+        .run(rules);
+
+    let mut r = Arc::try_unwrap(ring)
+        .expect("no other Arc holders")
+        .into_inner()
+        .unwrap();
+
+    // I am uninterested if it ran for less than 3 iterations since the very first egraph only contains the start term
+    assert!(runner.iterations.len() >= 3);
+
+    // Remove the last egraph, we do not care since we have access to the rebuilt version via runner.egraph
+    r.pop_back().unwrap();
+
+    let mut eg1 = r.pop_back().unwrap();
+    eg1.rebuild();
+    let mut eg2 = r.pop_back().unwrap();
+    eg2.rebuild();
+    [
+        convert::<L, N, LL>(&eg2, runner.roots[0]),
+        convert::<L, N, LL>(&eg1, runner.roots[0]),
+        // Final post-run egraph after the final rebuild is the last one
+        convert::<L, N, LL>(&runner.egraph, runner.roots[0]),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use egg::{RecExpr, Runner};
 
+    use super::math::ConstantFold;
+    use super::*;
     use crate::ids::{ExprChildId, NumericId};
-
-    use super::convert;
-    use super::math::{ConstantFold, Math, MathLabel};
 
     /// Build a saturated egg `EGraph` from a string expression, returning (egraph, root).
     fn build(expr: &str) -> (egg::EGraph<Math, ConstantFold>, egg::Id) {
-        let expr: RecExpr<Math> = expr.parse().unwrap();
-        let runner = Runner::<Math, ConstantFold>::default()
-            .with_expr(&expr)
-            .run(&[]);
+        let expr = expr.parse().unwrap();
+        let runner = Runner::default().with_expr(&expr).run(&[]);
         let root = runner.roots[0];
         (runner.egraph, root)
     }
@@ -93,7 +150,7 @@ mod tests {
     #[test]
     fn convert_single_symbol() {
         let (egg, root) = build("x");
-        let g = convert::<Math, ConstantFold, MathLabel>(&egg, root);
+        let g = convert::<_, _, MathLabel>(&egg, root);
 
         assert_eq!(g.root().to_index(), usize::from(egg.find(root)));
         // The root class must exist and contain exactly the Symbol node
@@ -114,7 +171,7 @@ mod tests {
     #[expect(clippy::float_cmp)]
     fn convert_single_constant() {
         let (egg, root) = build("42");
-        let g = convert::<Math, ConstantFold, MathLabel>(&egg, root);
+        let g = convert::<_, _, MathLabel>(&egg, root);
 
         let class = g.class(g.root());
         assert!(
@@ -131,7 +188,7 @@ mod tests {
     #[test]
     fn convert_unary_ln() {
         let (egg, root) = build("(ln x)");
-        let g = convert::<Math, ConstantFold, MathLabel>(&egg, root);
+        let g = convert::<_, _, MathLabel>(&egg, root);
 
         // Root class has an Ln node with one EClass child
         let root_class = g.class(g.root());
@@ -162,7 +219,7 @@ mod tests {
     #[test]
     fn convert_binary_add() {
         let (egg, root) = build("(+ x y)");
-        let g = convert::<Math, ConstantFold, MathLabel>(&egg, root);
+        let g = convert::<_, _, MathLabel>(&egg, root);
 
         let root_class = g.class(g.root());
         let add_node = root_class
@@ -179,7 +236,7 @@ mod tests {
     #[test]
     fn convert_class_count_matches() {
         let (egg, root) = build("(* (+ x 1) (- y 2))");
-        let g = convert::<Math, ConstantFold, MathLabel>(&egg, root);
+        let g = convert::<_, _, MathLabel>(&egg, root);
 
         let egg_class_count = egg.number_of_classes();
         let converted_count = g.class_ids().count();
@@ -201,7 +258,7 @@ mod tests {
         egg_graph.union(a, b);
         egg_graph.rebuild();
 
-        let g = convert::<Math, ConstantFold, MathLabel>(&egg_graph, root);
+        let g = convert::<_, _, MathLabel>(&egg_graph, root);
 
         // Every EClass child referenced by a node must be a key in the graph
         for id in g.class_ids() {
@@ -223,7 +280,7 @@ mod tests {
     fn convert_union_find_is_populated() {
         // Build an expression with children so the union-find has entries
         let (egg, root) = build("(+ x y)");
-        let g = convert::<Math, ConstantFold, MathLabel>(&egg, root);
+        let g = convert::<_, _, MathLabel>(&egg, root);
 
         // Every entry in the union-find must resolve to a canonical class id
         for (i, &canonical) in g.union_find().iter().enumerate() {
@@ -244,7 +301,7 @@ mod tests {
     #[test]
     fn convert_root_matches_egg_root() {
         let (egg, root) = build("(sin x)");
-        let g = convert::<Math, ConstantFold, MathLabel>(&egg, root);
+        let g = convert::<_, _, MathLabel>(&egg, root);
 
         assert_eq!(g.root().to_index(), usize::from(egg.find(root)));
     }
@@ -261,7 +318,7 @@ mod tests {
             .with_expr(&expr)
             .run(&[]);
         let root = runner.roots[0];
-        let g = convert::<Math, ConstantFold, MathLabel>(&runner.egraph, root);
+        let g = convert::<_, _, MathLabel>(&runner.egraph, root);
 
         // The root class must contain the folded constant 5.0
         let root_class = g.class(g.root());
@@ -280,7 +337,7 @@ mod tests {
     #[test]
     fn convert_leaf_has_empty_union_find() {
         let (egg, root) = build("x");
-        let g = convert::<Math, ConstantFold, MathLabel>(&egg, root);
+        let g = convert::<_, _, MathLabel>(&egg, root);
 
         // Even a lone symbol has a class ID, so the union-find covers that entry.
         // Every entry must map to a canonical class.
