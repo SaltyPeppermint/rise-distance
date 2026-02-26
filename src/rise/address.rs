@@ -43,22 +43,22 @@ impl IntoSexp for Address {
 }
 
 impl Address {
-    /// Convert this address to a `RiseLabel`.
+    /// Convert this address to a `TreeNode<RiseLabel>`.
     #[must_use]
-    pub fn to_label(&self) -> RiseLabel {
-        match self {
+    pub fn to_tree(&self) -> TreeNode<RiseLabel> {
+        TreeNode::leaf_untyped(self.into())
+    }
+}
+
+impl From<&Address> for RiseLabel {
+    fn from(value: &Address) -> RiseLabel {
+        match value {
             Address::Var(i) => RiseLabel::AddrVar(*i),
             Address::Global => RiseLabel::Global,
             Address::Local => RiseLabel::Local,
             Address::Private => RiseLabel::Private,
             Address::Constant => RiseLabel::Constant,
         }
-    }
-
-    /// Convert this address to a `TreeNode<RiseLabel>`.
-    #[must_use]
-    pub fn to_tree(&self) -> TreeNode<RiseLabel> {
-        TreeNode::leaf_untyped(self.to_label())
     }
 }
 

@@ -143,10 +143,27 @@ impl IntoSexp for DataType {
 }
 
 impl DataType {
-    /// Convert this data type to a `RiseLabel`.
+    /// Convert this data type to a `TreeNode<RiseLabel>`.
     #[must_use]
-    pub fn to_label(&self) -> RiseLabel {
+    pub fn to_tree(&self) -> TreeNode<RiseLabel> {
         match self {
+            DataType::Var(_) | DataType::Scalar(_) | DataType::NatT => {
+                TreeNode::leaf_untyped(self.into())
+            }
+            DataType::Index(n) => TreeNode::new_untyped(self.into(), vec![n.to_tree()]),
+            DataType::Pair(a, b) => {
+                TreeNode::new_untyped(self.into(), vec![a.to_tree(), b.to_tree()])
+            }
+            DataType::Array(n, dt) | DataType::Vector(n, dt) => {
+                TreeNode::new_untyped(self.into(), vec![n.to_tree(), dt.to_tree()])
+            }
+        }
+    }
+}
+
+impl From<&DataType> for RiseLabel {
+    fn from(value: &DataType) -> Self {
+        match value {
             DataType::Var(i) => RiseLabel::DataVar(*i),
             DataType::Scalar(s) => RiseLabel::Scalar(s.clone()),
             DataType::NatT => RiseLabel::NatT,
@@ -154,23 +171,6 @@ impl DataType {
             DataType::Pair(..) => RiseLabel::PairT,
             DataType::Array(..) => RiseLabel::ArrT,
             DataType::Vector(..) => RiseLabel::VecT,
-        }
-    }
-
-    /// Convert this data type to a `TreeNode<RiseLabel>`.
-    #[must_use]
-    pub fn to_tree(&self) -> TreeNode<RiseLabel> {
-        match self {
-            DataType::Var(_) | DataType::Scalar(_) | DataType::NatT => {
-                TreeNode::leaf_untyped(self.to_label())
-            }
-            DataType::Index(n) => TreeNode::new_untyped(self.to_label(), vec![n.to_tree()]),
-            DataType::Pair(a, b) => {
-                TreeNode::new_untyped(self.to_label(), vec![a.to_tree(), b.to_tree()])
-            }
-            DataType::Array(n, dt) | DataType::Vector(n, dt) => {
-                TreeNode::new_untyped(self.to_label(), vec![n.to_tree(), dt.to_tree()])
-            }
         }
     }
 }
@@ -287,31 +287,29 @@ impl Type {
         Type::Data(dt)
     }
 
-    /// Convert this type to a `RiseLabel`.
-    /// Note: For `Type::Data`, this returns the label of the inner `DataType`.
-    #[must_use]
-    pub fn to_label(&self) -> RiseLabel {
-        match self {
-            Type::Data(dt) => dt.to_label(),
-            Type::Fun(..) => RiseLabel::Fun,
-            Type::NatFun(..) => RiseLabel::NatFun,
-            Type::DataFun(..) => RiseLabel::DataFun,
-            Type::AddrFun(..) => RiseLabel::AddrFun,
-            Type::NatNatFun(..) => RiseLabel::NatNatFun,
-        }
-    }
-
     /// Convert this type to a `TreeNode<RiseLabel>`.
     #[must_use]
     pub fn to_tree(&self) -> TreeNode<RiseLabel> {
         match self {
             Type::Data(dt) => dt.to_tree(),
-            Type::Fun(a, b) => {
-                TreeNode::new_untyped(self.to_label(), vec![a.to_tree(), b.to_tree()])
-            }
+            Type::Fun(a, b) => TreeNode::new_untyped(self.into(), vec![a.to_tree(), b.to_tree()]),
             Type::NatFun(t) | Type::DataFun(t) | Type::AddrFun(t) | Type::NatNatFun(t) => {
-                TreeNode::new_untyped(self.to_label(), vec![t.to_tree()])
+                TreeNode::new_untyped(self.into(), vec![t.to_tree()])
             }
+        }
+    }
+}
+
+impl From<&Type> for RiseLabel {
+    /// Note: For `Type::Data`, this returns the label of the inner `DataType`.
+    fn from(value: &Type) -> Self {
+        match value {
+            Type::Data(dt) => dt.into(),
+            Type::Fun(..) => RiseLabel::Fun,
+            Type::NatFun(..) => RiseLabel::NatFun,
+            Type::DataFun(..) => RiseLabel::DataFun,
+            Type::AddrFun(..) => RiseLabel::AddrFun,
+            Type::NatNatFun(..) => RiseLabel::NatNatFun,
         }
     }
 }

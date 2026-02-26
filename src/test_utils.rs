@@ -10,6 +10,7 @@ pub fn eid(i: usize) -> ExprChildId {
     ExprChildId::EClass(EClassId::new(i))
 }
 
+#[expect(clippy::unnecessary_wraps)]
 pub fn dummy_ty() -> Option<TypeChildId> {
     Some(TypeChildId::Nat(NatId::new(0)))
 }

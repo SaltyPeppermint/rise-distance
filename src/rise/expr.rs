@@ -54,18 +54,6 @@ impl IntoSexp for LiteralData {
 }
 
 impl LiteralData {
-    /// Convert this literal to a `RiseLabel`.
-    #[must_use]
-    pub fn to_label(&self) -> RiseLabel {
-        match self {
-            LiteralData::Bool(b) => RiseLabel::BoolLit(*b),
-            LiteralData::Int(n) => RiseLabel::IntLit(*n),
-            LiteralData::Float(f) => RiseLabel::FloatLit(*f),
-            LiteralData::Double(d) => RiseLabel::DoubleLit(*d),
-            LiteralData::Nat(n) => RiseLabel::NatLit(*n),
-        }
-    }
-
     /// Try to parse a bool, int, float, or double literal from a string.
     /// Returns `Ok(Some(...))` if parsed, `Ok(None)` if not a literal, or `Err` if malformed.
     /// Try to parse a bool, int, float, or double literal from a string.
@@ -89,6 +77,18 @@ impl LiteralData {
                     _ => None,
                 }
             }
+        }
+    }
+}
+
+impl From<&LiteralData> for RiseLabel {
+    fn from(value: &LiteralData) -> RiseLabel {
+        match value {
+            LiteralData::Bool(b) => RiseLabel::BoolLit(*b),
+            LiteralData::Int(n) => RiseLabel::IntLit(*n),
+            LiteralData::Float(f) => RiseLabel::FloatLit(*f),
+            LiteralData::Double(d) => RiseLabel::DoubleLit(*d),
+            LiteralData::Nat(n) => RiseLabel::NatLit(*n),
         }
     }
 }
@@ -130,11 +130,9 @@ pub enum ExprNode {
     Primitive(Primitive),
 }
 
-impl ExprNode {
-    /// Convert this expression node to a `RiseLabel`.
-    #[must_use]
-    pub fn to_label(&self) -> RiseLabel {
-        match self {
+impl From<&ExprNode> for RiseLabel {
+    fn from(value: &ExprNode) -> Self {
+        match value {
             ExprNode::Var(i) => RiseLabel::Var(*i),
             ExprNode::App(..) => RiseLabel::App,
             ExprNode::Lambda(..) => RiseLabel::Lambda,
@@ -145,8 +143,8 @@ impl ExprNode {
             ExprNode::AddrApp(..) => RiseLabel::AddrApp,
             ExprNode::AddrLambda(..) => RiseLabel::AddrLambda,
             ExprNode::NatNatLambda(..) => RiseLabel::NatNatLambda,
-            ExprNode::Literal(lit) => lit.to_label(),
-            ExprNode::NatLiteral(n) => n.to_label(),
+            ExprNode::Literal(lit) => lit.into(),
+            ExprNode::NatLiteral(n) => n.into(),
             ExprNode::IndexLiteral(..) => RiseLabel::IndexLiteral,
             ExprNode::Primitive(p) => RiseLabel::Primitive(p.clone()),
         }
@@ -230,7 +228,7 @@ impl Expr {
     /// Convert this expression to a `TreeNode<RiseLabel>`
     #[must_use]
     pub fn to_tree(&self) -> TreeNode<RiseLabel> {
-        let label = self.node.to_label();
+        let label = (&self.node).into();
         let ty = self.ty.as_ref().map(|t| t.to_tree());
         match &self.node {
             ExprNode::Var(_) | ExprNode::Literal(_) | ExprNode::Primitive(_) => {
