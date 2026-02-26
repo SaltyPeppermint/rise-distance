@@ -2,10 +2,10 @@
 mod choices;
 mod count;
 mod diversity;
+pub mod egg;
 mod euler_str;
 mod graph;
 mod ids;
-mod math;
 mod min;
 mod nodes;
 mod overlap;
@@ -18,7 +18,6 @@ mod utils;
 mod zs;
 
 // Re-export rise types at this level for convenience
-pub use math::{Math, MathLabel};
 pub use rise::{Expr, Nat, RiseLabel, Type};
 
 // pub use boltzmann::{

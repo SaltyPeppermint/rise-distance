@@ -4,15 +4,10 @@ use egg::{
     Analysis, DidMerge, Id, Language, PatternAst, Rewrite, Subst, Symbol, define_language,
     merge_option, rewrite,
 };
-use hashbrown::HashMap;
-use hashbrown::hash_map::Entry;
+
 use ordered_float::NotNan;
 
 pub use label::MathLabel;
-
-use crate::ids::{EClassId, ExprChildId, NatId, TypeChildId};
-use crate::nodes::ENode;
-use crate::{EClass, EGraph};
 
 pub type Constant = NotNan<f64>;
 
@@ -138,70 +133,8 @@ fn is_not_zero(var: &str) -> impl Fn(&mut egg::EGraph<Math, ConstantFold>, Id, &
     }
 }
 
-impl From<egg::EGraph<Math, ConstantFold>> for EGraph<MathLabel> {
-    fn from(value: egg::EGraph<Math, ConstantFold>) -> Self {
-        let mut classes: HashMap<EClassId, EClass<MathLabel>> = HashMap::new();
-        for egg_class in value.classes() {
-            let canonical = value.find(egg_class.id);
-            let eclass_id = EClassId::new(usize::from(canonical));
-
-            let nodes = egg_class
-                .nodes
-                .iter()
-                .map(|math_node| {
-                    let label = Math::to_label(math_node);
-                    let children: Vec<ExprChildId> = math_node
-                        .children()
-                        .iter()
-                        .map(|&child_id| {
-                            ExprChildId::EClass(EClassId::new(usize::from(value.find(child_id))))
-                        })
-                        .collect();
-                    if children.is_empty() {
-                        ENode::leaf(label)
-                    } else {
-                        ENode::new(label, children)
-                    }
-                })
-                .collect();
-
-            match classes.entry(eclass_id) {
-                Entry::Occupied(mut entry) => {
-                    let mut merged = entry.get().nodes().to_vec();
-                    merged.extend(nodes);
-                    entry.insert(EClass::new(merged, None));
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(EClass::new(nodes, None));
-                }
-            }
-        }
-
-        // Build union-find: identity mapping for canonical IDs
-        let max_id = value
-            .classes()
-            .map(|c| usize::from(c.id))
-            .max()
-            .map_or(0, |m| m + 1);
-        let union_find = (0..max_id)
-            .map(|i| EClassId::new(usize::from(value.find(Id::from(i)))))
-            .collect::<Vec<_>>();
-
-        // Use the first class as root (caller should set root appropriately)
-        let root = classes.keys().next().copied().unwrap_or(EClassId::new(0));
-
-        EGraph::new(
-            classes,
-            root,
-            union_find,
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-        )
-    }
-}
-
 #[rustfmt::skip]
+#[must_use]
 pub fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
     rewrite!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
     rewrite!("comm-mul";  "(* ?a ?b)"        => "(* ?b ?a)"),
@@ -270,7 +203,7 @@ pub fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
 
 #[cfg(test)]
 mod tests {
-    use egg::{AstSize, Extractor, LpExtractor, RecExpr, Runner, SimpleScheduler, StopReason};
+    use egg::{RecExpr, Runner, SimpleScheduler, StopReason};
 
     use super::*;
 
@@ -398,28 +331,6 @@ mod tests {
         runner.egraph.union_trusted(lhs, rhs, "whatever");
         let proof = runner.explain_equivalence(&expr, &expr2).get_flat_strings();
         assert_eq!(proof, vec!["(+ (* x 1) y)", "(Rewrite=> whatever 20)"]);
-    }
-
-    // #[cfg(feature = "lp")]
-    #[test]
-    fn math_lp_extract() {
-        let expr: RecExpr<Math> = "(pow (+ x (+ x x)) (+ x x))".parse().unwrap();
-
-        let runner: Runner<Math, ConstantFold> = Runner::default()
-            .with_iter_limit(3)
-            .with_expr(&expr)
-            .run(&rules());
-        let root = runner.roots[0];
-
-        let best = Extractor::new(&runner.egraph, AstSize).find_best(root).1;
-        let lp_best = LpExtractor::new(&runner.egraph, AstSize).solve(root);
-
-        println!("input   [{}] {}", expr.len(), expr);
-        println!("normal  [{}] {}", best.len(), best);
-        println!("ilp cse [{}] {}", lp_best.len(), lp_best);
-
-        assert_ne!(best, lp_best);
-        assert_eq!(lp_best.len(), 4);
     }
 
     #[test]

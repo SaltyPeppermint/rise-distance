@@ -8,9 +8,9 @@ use crate::Label;
 
 use super::{Constant, Math};
 
-impl Math {
-    pub(super) fn to_label(s: &Self) -> MathLabel {
-        match s {
+impl From<&Math> for MathLabel {
+    fn from(value: &Math) -> Self {
+        match value {
             Math::Diff(_) => MathLabel::Diff,
             Math::Integral(_) => MathLabel::Integral,
             Math::Add(_) => MathLabel::Add,

@@ -38,6 +38,10 @@ impl<L: Label> EClass<L> {
     pub fn nodes(&self) -> &[ENode<L>] {
         &self.nodes
     }
+    #[must_use]
+    pub fn nodes_mut(&mut self) -> &mut Vec<ENode<L>> {
+        &mut self.nodes
+    }
 
     #[must_use]
     pub fn ty(&self) -> Option<&TypeChildId> {
