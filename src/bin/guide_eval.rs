@@ -2,7 +2,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use clap::Parser;
-use egg::{RecExpr, Rewrite, Runner, SimpleScheduler};
+use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
 use hashbrown::HashMap;
 use num::BigUint;
 
@@ -103,7 +103,13 @@ fn main() {
         "Sampling goals from iteration-{} frontier...",
         cli.iterations
     );
-    let goals = sample_frontier_terms(eg_n, raw_n1, cli.goals, cli.max_size);
+    let max_size = cli.max_size.unwrap_or_else(|| {
+        let k = AstSize.cost_rec(&seed);
+        let m = k + k / 2;
+        eprintln!("No max_size was given, using 1.5 goal size (={m})");
+        m
+    });
+    let goals = sample_frontier_terms(eg_n, raw_n1, cli.goals, max_size);
     if goals.is_empty() {
         eprintln!(
             "No frontier terms found at iteration {}. Try more iterations or a larger max-size.",
@@ -118,7 +124,7 @@ fn main() {
         "Sampling guides from iteration-{} frontier...",
         cli.iterations - 1
     );
-    let guides = sample_frontier_terms(eg_n1, raw_n2, cli.guides, cli.max_size);
+    let guides = sample_frontier_terms(eg_n1, raw_n2, cli.guides, max_size);
     if guides.is_empty() {
         eprintln!(
             "No frontier terms found at iteration {}.",
@@ -199,8 +205,7 @@ fn evaluate_goal(
 
         writeln!(
             writer,
-            "\"{goal}\",{},{dist_val},{reached},{iters_str},\"{guide}\"",
-            rank + 1,
+            "{goal},{rank},{dist_val},{reached},{iters_str},{guide}",
         )
         .expect("write row");
 
@@ -221,26 +226,25 @@ fn sample_frontier_terms(
     egraph: &EGraph<MathLabel>,
     prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
     count: usize,
-    max_size: Option<usize>,
+    max_size: usize,
 ) -> Vec<TreeNode<MathLabel>> {
-    let tc = TermCount::<BigUint, MathLabel>::new(max_size.unwrap_or(30), false, egraph);
+    let tc = TermCount::<BigUint, MathLabel>::new(max_size, false, egraph);
 
     let Some(histogram) = tc.of_root() else {
         return Vec::new();
     };
 
     let min_size = histogram.keys().min().copied().unwrap_or(1);
-    let max_s = max_size.unwrap_or_else(|| histogram.keys().max().copied().unwrap_or(30));
 
     // Uniform sampling across sizes, oversample to account for rejection
-    let num_sizes = (max_s - min_size).max(1);
+    let num_sizes = (max_size - min_size).max(1);
     let per_size = (count / num_sizes).max(1) as u64;
     let oversample_per_size = per_size.saturating_mul(5);
-    let samples_per_size = (min_size..=max_s)
+    let samples_per_size = (min_size..=max_size)
         .map(|s| (s, oversample_per_size))
         .collect::<HashMap<usize, u64>>();
 
-    let candidates = tc.sample_unique_root(min_size, max_s, &samples_per_size);
+    let candidates = tc.sample_unique_root(min_size, max_size, &samples_per_size);
 
     // Rejection filter: keep only terms NOT in the previous egraph
     candidates
