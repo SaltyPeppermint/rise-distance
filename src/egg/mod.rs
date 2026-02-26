@@ -40,12 +40,18 @@ where
         .collect::<HashMap<_, _>>();
 
     // Build union-find: identity mapping for canonical IDs
-    // Iterating over the nodes is the safest choice to not miss a non-canonical id
+    // Include both class IDs and all child IDs to cover the full range of IDs
+    // that canonicalize() may be called with.
     let max_id = egg_graph
-        .nodes()
-        .iter()
-        .flat_map(|n| n.children().iter())
-        .map(|id| usize::from(*id))
+        .classes()
+        .map(|c| usize::from(c.id))
+        .chain(
+            egg_graph
+                .nodes()
+                .iter()
+                .flat_map(|n| n.children().iter())
+                .map(|id| usize::from(*id)),
+        )
         .max()
         .map_or(0, |m| m + 1);
     let union_find = (0..max_id)
@@ -276,7 +282,15 @@ mod tests {
         let (egg, root) = build("x");
         let g = convert::<Math, ConstantFold, MathLabel>(&egg, root);
 
-        // A lone symbol has no children, so no entries are gathered for union-find
-        assert!(g.union_find().is_empty());
+        // Even a lone symbol has a class ID, so the union-find covers that entry.
+        // Every entry must map to a canonical class.
+        for (i, &canonical) in g.union_find().iter().enumerate() {
+            let _ = g.class(canonical); // panics if not found
+            assert_eq!(
+                g.canonicalize(canonical),
+                canonical,
+                "entry {i}: union-find entry {canonical:?} is not canonical"
+            );
+        }
     }
 }
