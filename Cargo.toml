@@ -73,3 +73,7 @@ path = "src/bin/compare.rs"
 [[bin]]
 name = "distance"
 path = "src/bin/distance.rs"
+
+[[bin]]
+name = "guide-eval"
+path = "src/bin/guide_eval.rs"

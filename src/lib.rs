@@ -17,12 +17,6 @@ mod tree;
 mod utils;
 mod zs;
 
-// Re-export rise types at this level for convenience
-pub use rise::{Expr, Nat, RiseLabel, Type};
-
-// pub use boltzmann::{
-//     FindLambdaError, FixpointSampler, FixpointSamplerConfig, find_lambda_for_target_size,
-// };
 pub use choices::ChoiceIter;
 pub use count::TermCount;
 pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
@@ -32,6 +26,22 @@ pub use ids::{EClassId, NumericId};
 pub use min::{ZSStats, find_min_struct, find_min_zs};
 pub use nodes::Label;
 pub use overlap::prune_by_ref_tree;
-pub use structural::StructuralDistance;
+pub use rise::{Expr, Nat, RiseLabel, Type};
+pub use structural::{StructuralDistance, structural_diff};
 pub use tree::{PartialChild, PartialTree, TreeNode, tree_node_to_partial};
 pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum DistanceMetric {
+    ZhangShasha,
+    Structural,
+}
+
+impl std::fmt::Display for DistanceMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZhangShasha => write!(f, "zhang-shasha"),
+            Self::Structural => write!(f, "structural"),
+        }
+    }
+}

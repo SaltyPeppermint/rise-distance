@@ -86,8 +86,29 @@ where
     LL: Label + for<'b> From<&'b L>,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
-    // Ring buffer of capacity 3: only the last 3 snapshots are kept.
-    // `with_hook` requires `'static`, so share via Arc<Mutex<_>>.
+    run_last_three_with_raw::<L, N, LL, R>(start, rules, n).0
+}
+
+/// Run equality saturation for exactly `n` iterations and return:
+/// - converted egraphs for iterations `n-2`, `n-1`, `n`
+/// - raw egg egraphs (rebuilt) for iterations `n-2`, `n-1`, and `n`, useful for
+///   `lookup_expr`-based frontier membership checks
+///
+/// # Panics
+///
+/// Panics if fewer than 3 iterations complete.
+pub fn run_last_three_with_raw<'a, L, N, LL, R>(
+    start: &RecExpr<L>,
+    rules: R,
+    n: usize,
+) -> ([EGraph<LL>; 3], [egg::EGraph<L, N>; 3])
+where
+    L: Language + 'static,
+    N: Analysis<L> + Default + Clone + 'static,
+    N::Data: Clone,
+    LL: Label + for<'b> From<&'b L>,
+    R: IntoIterator<Item = &'a Rewrite<L, N>>,
+{
     let ring = Arc::new(Mutex::new(VecDeque::with_capacity(3)));
     let ring_hook = Arc::clone(&ring);
 
@@ -105,27 +126,33 @@ where
         })
         .run(rules);
 
+    assert!(runner.iterations.len() >= 3);
+
+    let root = runner.roots[0];
+    // The runner owns the hook closure which holds the second Arc clone of `ring`.
+    // Dropping the runner releases that clone, leaving ours as the sole owner so
+    // that `try_unwrap` succeeds.
+    drop(runner);
+
     let mut r = Arc::try_unwrap(ring)
-        .expect("no other Arc holders")
+        .expect("runner dropped, no other Arc holders")
         .into_inner()
         .unwrap();
 
-    // I am uninterested if it ran for less than 3 iterations since the very first egraph only contains the start term
-    assert!(runner.iterations.len() >= 3);
+    let mut eg_n = r.pop_back().unwrap();
+    eg_n.rebuild();
+    let mut eg_n_minus_1 = r.pop_back().unwrap();
+    eg_n_minus_1.rebuild();
+    let mut eg_n_minus_2 = r.pop_back().unwrap();
+    eg_n_minus_2.rebuild();
 
-    // Remove the last egraph, we do not care since we have access to the rebuilt version via runner.egraph
-    r.pop_back().unwrap();
-
-    let mut eg1 = r.pop_back().unwrap();
-    eg1.rebuild();
-    let mut eg2 = r.pop_back().unwrap();
-    eg2.rebuild();
-    [
-        convert::<L, N, LL>(&eg2, runner.roots[0]),
-        convert::<L, N, LL>(&eg1, runner.roots[0]),
-        // Final post-run egraph after the final rebuild is the last one
-        convert::<L, N, LL>(&runner.egraph, runner.roots[0]),
-    ]
+    let converted = [
+        convert::<L, N, LL>(&eg_n_minus_2, root),
+        convert::<L, N, LL>(&eg_n_minus_1, root),
+        convert::<L, N, LL>(&eg_n, root),
+    ];
+    let raw = [eg_n_minus_2, eg_n_minus_1, eg_n];
+    (converted, raw)
 }
 
 #[cfg(test)]
@@ -214,7 +241,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 4. Binary operator (+ x y) — two distinct children
+    // 4. Binary operator (+ x y) -> two distinct children
     // -----------------------------------------------------------------------
     #[test]
     fn convert_binary_add() {

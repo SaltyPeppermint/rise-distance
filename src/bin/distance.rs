@@ -10,8 +10,9 @@ use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
 use rise_distance::{
-    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, StructuralDistance, TermCount, TreeNode,
-    UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
+    DistanceMetric, EClassId, EGraph, Expr, Label, NumericId, RiseLabel, StructuralDistance,
+    TermCount, TreeNode, UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree,
+    tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -120,24 +121,6 @@ struct RefSource {
     /// Name of the reference tree (requires --file)
     #[arg(short = 'n', long, requires = "file")]
     name: Option<String>,
-}
-
-/// Available distance metrics for tree comparison.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum DistanceMetric {
-    /// Zhang-Shasha tree edit distance
-    ZhangShasha,
-    /// Structural tree edit distance
-    Structural,
-}
-
-impl std::fmt::Display for DistanceMetric {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ZhangShasha => write!(f, "ZhangShasha"),
-            Self::Structural => write!(f, "Structural"),
-        }
-    }
 }
 
 fn main() {
