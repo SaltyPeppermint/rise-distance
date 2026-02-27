@@ -3,7 +3,7 @@
 //! Counts the number of terms up to a given size that can be extracted from each e-class.
 
 use std::borrow::Borrow;
-use std::iter::Product;
+use std::iter::{Product, Sum};
 
 use hashbrown::{HashMap, HashSet};
 use num_traits::{NumAssignRef, NumRef};
@@ -35,6 +35,8 @@ pub trait Counter:
     + SampleUniform
     + PartialEq
     + PartialOrd
+    + for<'a> Sum<&'a Self>
+    + TryInto<u64, Error: std::fmt::Debug>
     + Product // + Weight
 {
 }
@@ -50,6 +52,8 @@ impl<
         + SampleUniform
         + PartialEq
         + PartialOrd
+        + for<'a> Sum<&'a Self>
+        + TryInto<u64, Error: std::fmt::Debug>
         + Product, // + Weight,
 > Counter for T
 {

@@ -2,7 +2,9 @@ use std::time::Instant;
 
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
+use rayon::prelude::*;
 
 use rise_distance::cli::{DistanceMetric, SampleDistribution};
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel};
@@ -157,7 +159,8 @@ fn main() {
     let guide_count = if cli.enumerate {
         usize::MAX
     } else {
-        cli.guides.expect("-g/--guides is required when not using --enumerate")
+        cli.guides
+            .expect("-g/--guides is required when not using --enumerate")
     };
     let guides = get_frontier_terms(
         &eg_guide,
@@ -230,7 +233,7 @@ fn evaluate_goal(
     goal_idx: usize,
     total_goals: usize,
     cfg: &EvalConfig<'_>,
-    mut csv: Option<&mut csv::Writer<std::fs::File>>,
+    csv: Option<&mut csv::Writer<std::fs::File>>,
     top: usize,
 ) {
     eprintln!(
@@ -254,33 +257,44 @@ fn evaluate_goal(
         .parse::<RecExpr<Math>>()
         .expect("goal round-trips to RecExpr");
 
-    let goal_str = goal.to_string();
-    let mut results = Vec::with_capacity(ranked.len());
-    for (rank, (dist_val, guide)) in ranked.into_iter().enumerate() {
-        let iters = verify_reachability(&guide, &goal_recexpr, cfg.rules, cfg.verify_iters);
-        let reached = iters.is_some();
+    let pb_style = ProgressStyle::with_template(
+        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
+    )
+    .unwrap();
 
-        if let Some(w) = csv.as_deref_mut() {
+    let results = ranked
+        .into_par_iter()
+        .enumerate()
+        .progress_with_style(pb_style)
+        .map(|(rank, (dist_val, guide))| {
+            let iters = verify_reachability(&guide, &goal_recexpr, cfg.rules, cfg.verify_iters);
+            VerifyResult {
+                rank: rank + 1,
+                distance: dist_val,
+                reached: iters.is_some(),
+                iterations_to_reach: iters,
+                guide,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    eprintln!("Verification completed in {:.2?}", timer.elapsed());
+
+    if let Some(w) = csv {
+        let goal_str = goal.to_string();
+        for r in &results {
             w.write_record([
                 &goal_str,
-                &(rank + 1).to_string(),
-                &dist_val.to_string(),
-                &reached.to_string(),
-                &iters.map_or_else(String::new, |i| i.to_string()),
-                &guide.to_string(),
+                &r.rank.to_string(),
+                &r.distance.to_string(),
+                &r.reached.to_string(),
+                &r.iterations_to_reach
+                    .map_or_else(String::new, |i| i.to_string()),
+                &r.guide.to_string(),
             ])
             .expect("write CSV row");
         }
-
-        results.push(VerifyResult {
-            rank: rank + 1,
-            distance: dist_val,
-            reached,
-            iterations_to_reach: iters,
-            guide,
-        });
     }
-    eprintln!("Verification completed in {:.2?}", timer.elapsed());
 
     print_summary(&results, goal, cfg.verify_iters, top);
 }
@@ -319,7 +333,9 @@ fn get_frontier_terms(
     if enumerate {
         let total_terms: BigUint = histogram.values().cloned().sum();
         eprintln!("Enumerating all {total_terms} terms up to size {max_size}");
-        tc.enumerate_root(max_size)
+
+        let pb = ProgressBar::new(max_size as u64);
+        tc.enumerate_root(max_size, Some(pb))
             .into_iter()
             .filter(is_frontier)
             .take(count)
@@ -354,8 +370,13 @@ fn rank_guides(
     metric: DistanceMetric,
 ) -> Vec<(usize, TreeNode<MathLabel>)> {
     let goal_flat = goal.flatten(false);
-    let mut ranked = guides
-        .iter()
+    let pb_style = ProgressStyle::with_template(
+        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
+    )
+    .unwrap();
+    let mut ranked: Vec<_> = guides
+        .par_iter()
+        .progress_with_style(pb_style)
         .map(|guide| {
             let guide_flat = guide.flatten(false);
             let dist = match metric {
@@ -366,7 +387,7 @@ fn rank_guides(
             };
             (dist, guide.clone())
         })
-        .collect::<Vec<_>>();
+        .collect();
     ranked.sort_by_key(|(d, _)| *d);
     ranked
 }
