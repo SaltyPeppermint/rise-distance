@@ -47,53 +47,27 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         let type_overhead = self.type_overhead(eclass);
         let ty = TreeNode::from_eclass(self.graph, canonical_id);
 
-        let sizes = (0..=max_size)
+        let work: Vec<_> = (0..=max_size)
             .filter(|size| histogram.contains_key(size))
-            .collect::<Vec<_>>();
+            .filter_map(|size| size.checked_sub(1 + type_overhead))
+            .flat_map(|budget| (0..nodes.len()).map(move |ni| (budget, ni)))
+            .collect();
 
-        let iter = sizes
+        let iter = work
             .into_par_iter()
-            .flat_map(|size| {
-                (0..nodes.len()).into_par_iter().flat_map_iter({
-                    let ty = ty.clone();
-                    move |ni| {
-                        let node = &nodes[ni];
-                        let children = node.children();
+            .flat_map_iter(|(child_budget, ni)| {
+                let node = &nodes[ni];
+                let children = node.children();
 
-                        let Some(child_budget) = size.checked_sub(1 + type_overhead) else {
-                            return Vec::new().into_iter();
-                        };
-
-                        if children.is_empty() {
-                            return if child_budget == 0 {
-                                vec![TreeNode::new_typed(
-                                    node.label().clone(),
-                                    vec![],
-                                    ty.clone(),
-                                )]
-                                .into_iter()
-                            } else {
-                                Vec::new().into_iter()
-                            };
-                        }
-
-                        self.enumerate_children(children, child_budget)
-                            .into_iter()
-                            .map({
-                                let label = node.label().clone();
-                                let ty = ty.clone();
-                                move |child_combo| {
-                                    TreeNode::new_typed(
-                                        label.clone(),
-                                        child_combo,
-                                        ty.clone(),
-                                    )
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                    }
-                })
+                self.enumerate_children(children, child_budget)
+                    .into_iter()
+                    .map(|child_combo| {
+                        TreeNode::new_typed(
+                            node.label().clone(),
+                            child_combo,
+                            ty.clone(),
+                        )
+                    })
             });
 
         if let Some(pb) = progress {
@@ -131,18 +105,6 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         for node in nodes {
             let children = node.children();
 
-            if children.is_empty() {
-                if child_budget == 0 {
-                    results.push(TreeNode::new_typed(
-                        node.label().clone(),
-                        vec![],
-                        ty.clone(),
-                    ));
-                }
-                continue;
-            }
-
-            // Enumerate all valid size distributions across children
             for child_combo in self.enumerate_children(children, child_budget) {
                 results.push(TreeNode::new_typed(
                     node.label().clone(),
