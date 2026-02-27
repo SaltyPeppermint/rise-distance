@@ -7,7 +7,7 @@ use num::BigUint;
 
 use rise_distance::cli::{DistanceMetric, SampleDistribution};
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel};
-use rise_distance::egg::run_guide_target;
+use rise_distance::egg::run_guide_goal;
 use rise_distance::{EGraph, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit};
 
 #[derive(Parser)]
@@ -24,7 +24,7 @@ Examples:
   # Write CSV output to a file
   guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 10 -o results.csv
 
-  # Limit verification iterations separately from target iterations
+  # Limit verification iterations separately from goal iterations
   guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 4 -g 20 --verify-iters 5
 "
 )]
@@ -35,7 +35,7 @@ struct Cli {
 
     /// Number of eqsat iterations to grow the egraph
     #[arg(short = 'n', long)]
-    target_iteration: usize,
+    goal_iteration: usize,
 
     /// Number of eqsat iterations to grow the egraph to reach the guide
     #[arg(short = 'i', long)]
@@ -81,7 +81,7 @@ struct VerifyResult {
 fn main() {
     let cli = Cli::parse();
     let rules = rise_distance::egg::math::rules();
-    let verify_iters = cli.verify_iters.unwrap_or(cli.target_iteration);
+    let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iteration);
 
     let seed = cli
         .seed
@@ -89,7 +89,7 @@ fn main() {
         .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
 
     eprintln!("Seed: {seed}");
-    eprintln!("Target Iterations: {}", cli.target_iteration);
+    eprintln!("Goal Iterations: {}", cli.goal_iteration);
     eprintln!("Guide Iterations: {}", cli.guide_iteration);
     eprintln!("Distance metric: {}", cli.distance);
     eprintln!("Distribution: {}", cli.distribution);
@@ -97,15 +97,15 @@ fn main() {
     // Step 1: Grow egraph and capture snapshots at guide and target iterations
     eprintln!(
         "Running equality saturation for {} iterations...",
-        cli.target_iteration
+        cli.goal_iteration
     );
     let start = Instant::now();
-    let [(prev_eg_guide, eg_guide), (prev_eg_target, eg_target)] =
-        run_guide_target::<Math, ConstantFold, MathLabel, _>(
+    let [(prev_eg_guide, eg_guide), (prev_eg_goal, eg_goal)] =
+        run_guide_goal::<Math, ConstantFold, MathLabel, _>(
             &seed,
             &rules,
             cli.guide_iteration,
-            cli.target_iteration,
+            cli.goal_iteration,
         );
     eprintln!("Eqsat completed in {:.2?}", start.elapsed());
 
@@ -121,8 +121,8 @@ fn main() {
         m
     });
     let goals = sample_frontier_terms(
-        &eg_target,
-        &prev_eg_target,
+        &eg_goal,
+        &prev_eg_goal,
         cli.goals,
         max_size,
         cli.distribution,
@@ -130,7 +130,7 @@ fn main() {
     if goals.is_empty() {
         eprintln!(
             "No frontier terms found at iteration {}. Try more iterations or a larger max-size.",
-            cli.target_iteration
+            cli.goal_iteration
         );
         return;
     }

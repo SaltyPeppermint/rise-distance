@@ -122,7 +122,7 @@ impl std::ops::Add for ZSStats {
 ///
 /// # Arguments
 /// * `graph` - The e-graph to search
-/// * `reference` - The target tree to match
+/// * `reference` - The goal tree to match
 /// * `costs` - Edit cost function for ZS
 /// * `with_types` - Whether to include type annotations in comparison
 ///

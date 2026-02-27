@@ -70,24 +70,24 @@ where
     )
 }
 
-/// Run equality saturation for `n_target` iterations, capturing egraphs at two
-/// points: `n_guide` and `n_target`.
+/// Run equality saturation for `n_goal` iterations, capturing egraphs at two
+/// points: `n_guide` and `n_goal`.
 ///
 /// Returns an array of two `(raw, converted)` pairs:
 /// - `[0]`: raw egraph at `n_guide - 1` (rebuilt) and converted egraph at `n_guide`
-/// - `[1]`: raw egraph at `n_target - 1` (rebuilt) and converted egraph at `n_target`
+/// - `[1]`: raw egraph at `n_goal - 1` (rebuilt) and converted egraph at `n_goal`
 ///
 /// The raw egraphs are useful for `lookup_expr`-based frontier membership checks.
 ///
 /// # Panics
 ///
-/// Panics if `n_guide == 0`, `n_target <= n_guide`, or if the runner
-/// saturates before reaching `n_target` iterations.
-pub fn run_guide_target<'a, L, N, LL, R>(
+/// Panics if `n_guide == 0`, `n_goal <= n_guide`, or if the runner
+/// saturates before reaching `n_goal` iterations.
+pub fn run_guide_goal<'a, L, N, LL, R>(
     start: &RecExpr<L>,
     rules: R,
     n_guide: usize,
-    n_target: usize,
+    n_goal: usize,
 ) -> [(egg::EGraph<L, N>, EGraph<LL>); 2]
 where
     L: Language + 'static,
@@ -97,14 +97,14 @@ where
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
     assert!(n_guide > 0);
-    assert!(n_target > n_guide);
+    assert!(n_goal > n_guide);
 
     let egs = Arc::new(Mutex::new([const { None }; 4]));
     let eg_ref = egs.clone();
 
     let runner = Runner::default()
         .with_scheduler(SimpleScheduler)
-        .with_iter_limit(n_target)
+        .with_iter_limit(n_goal)
         .with_expr(start)
         .with_hook(move |runner| {
             let i = runner.iterations.len();
@@ -114,10 +114,10 @@ where
             } else if i == n_guide {
                 let mut r = eg_ref.lock().unwrap();
                 r[1] = Some(runner.egraph.clone());
-            } else if i == n_target - 1 {
+            } else if i == n_goal - 1 {
                 let mut r = eg_ref.lock().unwrap();
                 r[2] = Some(runner.egraph.clone());
-            } else if i == n_target {
+            } else if i == n_goal {
                 let mut r = eg_ref.lock().unwrap();
                 r[3] = Some(runner.egraph.clone());
             }
@@ -139,16 +139,16 @@ where
         .into_inner()
         .unwrap();
 
-    let [eg_guide_min_1, eg_guide, eg_target_min_1, eg_goal] = egs;
+    let [eg_guide_min_1, eg_guide, eg_goal_min_1, eg_goal] = egs;
 
     let mut eg_guide_min_1 = eg_guide_min_1.unwrap();
     eg_guide_min_1.rebuild();
-    let mut eg_target_min_1 = eg_target_min_1.unwrap();
-    eg_target_min_1.rebuild();
+    let mut eg_goal_min_1 = eg_goal_min_1.unwrap();
+    eg_goal_min_1.rebuild();
 
     [
         (eg_guide_min_1, convert(&eg_guide.unwrap(), root)),
-        (eg_target_min_1, convert(&eg_goal.unwrap(), root)),
+        (eg_goal_min_1, convert(&eg_goal.unwrap(), root)),
     ]
 }
 
