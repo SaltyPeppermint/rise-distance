@@ -53,22 +53,16 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             .flat_map(|budget| (0..nodes.len()).map(move |ni| (budget, ni)))
             .collect();
 
-        let iter = work
-            .into_par_iter()
-            .flat_map_iter(|(child_budget, ni)| {
-                let node = &nodes[ni];
-                let children = node.children();
+        let iter = work.into_par_iter().flat_map_iter(|(child_budget, ni)| {
+            let node = &nodes[ni];
+            let children = node.children();
 
-                self.enumerate_children(children, child_budget)
-                    .into_iter()
-                    .map(|child_combo| {
-                        TreeNode::new_typed(
-                            node.label().clone(),
-                            child_combo,
-                            ty.clone(),
-                        )
-                    })
-            });
+            self.enumerate_children(children, child_budget)
+                .into_iter()
+                .map(|child_combo| {
+                    TreeNode::new_typed(node.label().clone(), child_combo, ty.clone())
+                })
+        });
 
         if let Some(pb) = progress {
             pb.set_length(sum);
