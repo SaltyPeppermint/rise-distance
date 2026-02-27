@@ -44,8 +44,8 @@ struct Cli {
     guide_iteration: usize,
 
     /// Number of guide candidates to sample from the n-1 frontier
-    #[arg(short, long)]
-    guides: usize,
+    #[arg(short, long, conflicts_with = "enumerate")]
+    guides: Option<usize>,
 
     /// Number of goal terms to sample from the n frontier
     #[arg(long, default_value_t = 1)]
@@ -61,7 +61,7 @@ struct Cli {
 
     /// How to distribute the sample budget across sizes.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
-    #[arg(short = 'p', long, default_value_t = SampleDistribution::Uniform)]
+    #[arg(short = 'p', long, default_value_t = SampleDistribution::Uniform, conflicts_with = "enumerate")]
     distribution: SampleDistribution,
 
     /// CSV output file (stdout if omitted)
@@ -75,6 +75,11 @@ struct Cli {
     /// Number of top guides to print in summary table (default: 10)
     #[arg(long, default_value_t = 10)]
     top: usize,
+
+    /// Enumerate all terms exhaustively instead of sampling.
+    /// Only feasible for small egraphs.
+    #[arg(long)]
+    enumerate: bool,
 }
 
 struct VerifyResult {
@@ -127,12 +132,13 @@ fn main() {
         eprintln!("No max_size was given, using 1.5 goal size (={m})");
         m
     });
-    let goals = sample_frontier_terms(
+    let goals = get_frontier_terms(
         &eg_goal,
         &prev_eg_goal,
         cli.goals,
         max_size,
         cli.distribution,
+        false,
     );
     if goals.is_empty() {
         eprintln!(
@@ -143,17 +149,23 @@ fn main() {
     }
     eprintln!("Sampled {} goal(s)", goals.len());
 
-    // Step 3: Sample guides from the iteration-(n-1) frontier
+    // Step 3: Get guides from the iteration-(n-1) frontier
     eprintln!(
-        "Sampling guides from iteration-{} frontier...",
+        "Getting guides from iteration-{} frontier...",
         cli.guide_iteration
     );
-    let guides = sample_frontier_terms(
+    let guide_count = if cli.enumerate {
+        usize::MAX
+    } else {
+        cli.guides.expect("-g/--guides is required when not using --enumerate")
+    };
+    let guides = get_frontier_terms(
         &eg_guide,
         &prev_eg_guide,
-        cli.guides,
+        guide_count,
         max_size,
         cli.distribution,
+        cli.enumerate,
     );
     if guides.is_empty() {
         eprintln!(
@@ -162,7 +174,7 @@ fn main() {
         );
         return;
     }
-    eprintln!("Sampled {} guide(s)", guides.len());
+    eprintln!("Found {} guide(s)", guides.len());
 
     // Step 4 & 5: For each goal, rank guides by distance, then verify reachability
     let cfg = EvalConfig {
@@ -188,8 +200,15 @@ fn run_eval(
     top: usize,
 ) {
     if let Some(w) = csv.as_mut() {
-        w.write_record(["goal", "rank", "distance", "reached", "iterations_to_reach", "guide"])
-            .expect("write CSV header");
+        w.write_record([
+            "goal",
+            "rank",
+            "distance",
+            "reached",
+            "iterations_to_reach",
+            "guide",
+        ])
+        .expect("write CSV header");
     }
     for (goal_idx, goal) in goals.iter().enumerate() {
         evaluate_goal(goal, goal_idx, goals.len(), cfg, csv.as_mut(), top);
@@ -266,13 +285,17 @@ fn evaluate_goal(
     print_summary(&results, goal, cfg.verify_iters, top);
 }
 
-/// Sample terms from `egraph` that are NOT present in `prev_raw_egg` (i.e. frontier terms).
-fn sample_frontier_terms(
+/// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
+///
+/// When `enumerate` is true, enumerates all terms exhaustively.
+/// Otherwise, samples terms using the given distribution.
+fn get_frontier_terms(
     egraph: &EGraph<MathLabel>,
     prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
     count: usize,
     max_size: usize,
     distribution: SampleDistribution,
+    enumerate: bool,
 ) -> Vec<TreeNode<MathLabel>> {
     let tc = TermCount::<BigUint, MathLabel>::new(max_size, false, egraph);
 
@@ -280,28 +303,47 @@ fn sample_frontier_terms(
         return Vec::new();
     };
 
-    let min_size = histogram.keys().min().copied().unwrap_or(1);
-    // Oversample 5x to account for rejection filtering
-    let total_samples = count * 5;
+    let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
+    sorted_hist.sort_unstable();
+    for (k, v) in &sorted_hist {
+        eprintln!("{v} terms of size {k}");
+    }
 
-    #[expect(clippy::cast_precision_loss)]
-    let normal_center = (min_size + max_size) as f64 / 2.0;
-    let samples_per_size =
-        distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
+    let is_frontier = |tree: &TreeNode<MathLabel>| {
+        let Ok(recexpr) = tree.to_string().parse::<RecExpr<Math>>() else {
+            return false;
+        };
+        prev_raw_egg.lookup_expr(&recexpr).is_none()
+    };
 
-    let candidates = tc.sample_unique_root(min_size, max_size, &samples_per_size);
+    if enumerate {
+        let total_terms: BigUint = histogram.values().cloned().sum();
+        eprintln!("Enumerating all {total_terms} terms up to size {max_size}");
+        tc.enumerate_root(max_size)
+            .filter(is_frontier)
+            .take(count)
+            .collect()
+    } else {
+        let min_size = histogram.keys().min().copied().unwrap_or(1);
+        // Oversample 5x to account for rejection filtering
+        let total_samples = count * 5;
 
-    // Rejection filter: keep only terms NOT in the previous egraph
-    candidates
-        .into_iter()
-        .filter(|tree| {
-            let Ok(recexpr) = tree.to_string().parse::<RecExpr<Math>>() else {
-                return false;
-            };
-            prev_raw_egg.lookup_expr(&recexpr).is_none()
-        })
-        .take(count)
-        .collect()
+        #[expect(clippy::cast_precision_loss)]
+        let normal_center = (min_size + max_size) as f64 / 2.0;
+        let samples_per_size = distribution.samples_per_size(
+            histogram,
+            min_size,
+            max_size,
+            total_samples,
+            normal_center,
+        );
+
+        tc.sample_unique_root(min_size, max_size, &samples_per_size)
+            .into_iter()
+            .filter(is_frontier)
+            .take(count)
+            .collect()
+    }
 }
 
 /// Rank guides by distance to the goal. Returns `(distance, guide)` pairs sorted ascending.
@@ -363,7 +405,12 @@ fn verify_reachability(
 }
 
 #[expect(clippy::cast_precision_loss)]
-fn print_summary(results: &[VerifyResult], goal: &TreeNode<MathLabel>, max_iters: usize, top: usize) {
+fn print_summary(
+    results: &[VerifyResult],
+    goal: &TreeNode<MathLabel>,
+    max_iters: usize,
+    top: usize,
+) {
     let successful = results.iter().filter(|r| r.reached).collect::<Vec<_>>();
     let total = results.len();
     let n_reached = successful.len();

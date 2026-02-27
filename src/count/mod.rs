@@ -15,6 +15,7 @@ use super::ids::{EClassId, ExprChildId};
 use super::nodes::Label;
 use crate::utils::UniqueQueue;
 
+mod enumerate;
 mod overlap;
 mod sample;
 
