@@ -2,7 +2,7 @@ pub mod math;
 
 use std::sync::{Arc, Mutex};
 
-use egg::{Analysis, Id, Language, RecExpr, Rewrite, Runner, SimpleScheduler};
+use egg::{Analysis, Id, Language, RecExpr, Rewrite, Runner, SimpleScheduler, StopReason};
 use hashbrown::HashMap;
 
 use crate::ids::{EClassId, ExprChildId};
@@ -126,6 +126,14 @@ where
 
     let root = runner.roots[0];
     let mut eg_goal = runner.egraph.clone();
+    assert!(
+        matches!(
+            &runner.stop_reason.clone().unwrap(),
+            &StopReason::IterationLimit(_)
+        ),
+        "Failed cause stopped with {:?}",
+        runner.stop_reason.clone()
+    );
     eg_goal.rebuild();
 
     // The runner owns the hook closure which holds the second Arc clone of `ring`.
