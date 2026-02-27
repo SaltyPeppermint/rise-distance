@@ -7,7 +7,7 @@ use num::BigUint;
 
 use rise_distance::cli::{DistanceMetric, SampleDistribution};
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel};
-use rise_distance::egg::run_last_three_with_raw;
+use rise_distance::egg::run_guide_target;
 use rise_distance::{EGraph, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit};
 
 #[derive(Parser)]
@@ -16,16 +16,16 @@ use rise_distance::{EGraph, TermCount, TreeNode, UnitCost, structural_diff, tree
     after_help = "\
 Examples:
   # Basic evaluation with Zhang-Shasha distance
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -g 10 --max-size 10 -d zhang-shasha
+  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 10 --max-size 10 -d zhang-shasha
 
-  # More guides and goals, structural distance metric
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -g 50 --goals 5 -d structural
+  # Guide from an earlier iteration
+  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 3 -g 50 --goals 5 -d structural
 
   # Write CSV output to a file
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -g 10 -o results.csv
+  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 10 -o results.csv
 
-  # Limit verification iterations separately from growth iterations
-  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -g 20 --verify-iters 5
+  # Limit verification iterations separately from target iterations
+  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 4 -g 20 --verify-iters 5
 "
 )]
 struct Cli {
@@ -35,7 +35,11 @@ struct Cli {
 
     /// Number of eqsat iterations to grow the egraph
     #[arg(short = 'n', long)]
-    iterations: usize,
+    target_iteration: usize,
+
+    /// Number of eqsat iterations to grow the egraph to reach the guide
+    #[arg(short = 'i', long)]
+    guide_iteration: usize,
 
     /// Number of guide candidates to sample from the n-1 frontier
     #[arg(short, long)]
@@ -77,7 +81,7 @@ struct VerifyResult {
 fn main() {
     let cli = Cli::parse();
     let rules = rise_distance::egg::math::rules();
-    let verify_iters = cli.verify_iters.unwrap_or(cli.iterations);
+    let verify_iters = cli.verify_iters.unwrap_or(cli.target_iteration);
 
     let seed = cli
         .seed
@@ -85,27 +89,30 @@ fn main() {
         .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
 
     eprintln!("Seed: {seed}");
-    eprintln!("Iterations: {}", cli.iterations);
+    eprintln!("Target Iterations: {}", cli.target_iteration);
+    eprintln!("Guide Iterations: {}", cli.guide_iteration);
     eprintln!("Distance metric: {}", cli.distance);
     eprintln!("Distribution: {}", cli.distribution);
 
-    // Step 1: Grow egraph and capture three consecutive snapshots + raw egg graphs
+    // Step 1: Grow egraph and capture snapshots at guide and target iterations
     eprintln!(
         "Running equality saturation for {} iterations...",
-        cli.iterations
+        cli.target_iteration
     );
     let start = Instant::now();
-    let (converted_egs, raw_egs) =
-        run_last_three_with_raw::<Math, ConstantFold, MathLabel, _>(&seed, &rules, cli.iterations);
+    let [(prev_eg_guide, eg_guide), (prev_eg_target, eg_target)] =
+        run_guide_target::<Math, ConstantFold, MathLabel, _>(
+            &seed,
+            &rules,
+            cli.guide_iteration,
+            cli.target_iteration,
+        );
     eprintln!("Eqsat completed in {:.2?}", start.elapsed());
-
-    let [_, eg_n1, eg_n] = &converted_egs;
-    let [raw_n2, raw_n1, _raw_n] = &raw_egs;
 
     // Step 2: Sample goals from the iteration-n frontier
     eprintln!(
         "Sampling goals from iteration-{} frontier...",
-        cli.iterations
+        cli.guide_iteration
     );
     let max_size = cli.max_size.unwrap_or_else(|| {
         let k = AstSize.cost_rec(&seed);
@@ -113,11 +120,17 @@ fn main() {
         eprintln!("No max_size was given, using 1.5 goal size (={m})");
         m
     });
-    let goals = sample_frontier_terms(eg_n, raw_n1, cli.goals, max_size, cli.distribution);
+    let goals = sample_frontier_terms(
+        &eg_target,
+        &prev_eg_target,
+        cli.goals,
+        max_size,
+        cli.distribution,
+    );
     if goals.is_empty() {
         eprintln!(
             "No frontier terms found at iteration {}. Try more iterations or a larger max-size.",
-            cli.iterations
+            cli.target_iteration
         );
         return;
     }
@@ -126,13 +139,19 @@ fn main() {
     // Step 3: Sample guides from the iteration-(n-1) frontier
     eprintln!(
         "Sampling guides from iteration-{} frontier...",
-        cli.iterations - 1
+        cli.guide_iteration
     );
-    let guides = sample_frontier_terms(eg_n1, raw_n2, cli.guides, max_size, cli.distribution);
+    let guides = sample_frontier_terms(
+        &eg_guide,
+        &prev_eg_guide,
+        cli.guides,
+        max_size,
+        cli.distribution,
+    );
     if guides.is_empty() {
         eprintln!(
             "No frontier terms found at iteration {}.",
-            cli.iterations - 1
+            cli.guide_iteration
         );
         return;
     }

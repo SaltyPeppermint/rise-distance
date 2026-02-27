@@ -1,6 +1,5 @@
 pub mod math;
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use egg::{Analysis, Id, Language, RecExpr, Rewrite, Runner, SimpleScheduler};
@@ -71,37 +70,25 @@ where
     )
 }
 
-/// Run equality saturation for exactly `n` iterations and return the converted
-/// egraphs of the **third-last**, **second-last**, and **last** iteration
-/// (in that order).
+/// Run equality saturation for `n_target` iterations, capturing egraphs at two
+/// points: `n_guide` and `n_target`.
+///
+/// Returns an array of two `(raw, converted)` pairs:
+/// - `[0]`: raw egraph at `n_guide - 1` (rebuilt) and converted egraph at `n_guide`
+/// - `[1]`: raw egraph at `n_target - 1` (rebuilt) and converted egraph at `n_target`
+///
+/// The raw egraphs are useful for `lookup_expr`-based frontier membership checks.
 ///
 /// # Panics
 ///
-/// Panics if fewer than 3 iterations are completed (e.g. the runner saturates early) or n is too low
-pub fn run_last_three<'a, L, N, LL, R>(start: &RecExpr<L>, rules: R, n: usize) -> [EGraph<LL>; 3]
-where
-    L: Language + 'static,
-    N: Analysis<L> + Default + Clone + 'static,
-    N::Data: Clone,
-    LL: Label + for<'b> From<&'b L>,
-    R: IntoIterator<Item = &'a Rewrite<L, N>>,
-{
-    run_last_three_with_raw::<L, N, LL, R>(start, rules, n).0
-}
-
-/// Run equality saturation for exactly `n` iterations and return:
-/// - converted egraphs for iterations `n-2`, `n-1`, `n`
-/// - raw egg egraphs (rebuilt) for iterations `n-2`, `n-1`, and `n`, useful for
-///   `lookup_expr`-based frontier membership checks
-///
-/// # Panics
-///
-/// Panics if fewer than 3 iterations complete.
-pub fn run_last_three_with_raw<'a, L, N, LL, R>(
+/// Panics if `n_guide == 0`, `n_target <= n_guide`, or if the runner
+/// saturates before reaching `n_target` iterations.
+pub fn run_guide_target<'a, L, N, LL, R>(
     start: &RecExpr<L>,
     rules: R,
-    n: usize,
-) -> ([EGraph<LL>; 3], [egg::EGraph<L, N>; 3])
+    n_guide: usize,
+    n_target: usize,
+) -> [(egg::EGraph<L, N>, EGraph<LL>); 2]
 where
     L: Language + 'static,
     N: Analysis<L> + Default + Clone + 'static,
@@ -109,19 +96,32 @@ where
     LL: Label + for<'b> From<&'b L>,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
-    let ring = Arc::new(Mutex::new(VecDeque::with_capacity(3)));
-    let ring_hook = Arc::clone(&ring);
+    assert!(n_guide > 0);
+    assert!(n_target > n_guide);
+
+    let egs = Arc::new(Mutex::new([const { None }; 4]));
+    let eg_ref = egs.clone();
 
     let runner = Runner::default()
         .with_scheduler(SimpleScheduler)
-        .with_iter_limit(n)
+        .with_iter_limit(n_target)
         .with_expr(start)
         .with_hook(move |runner| {
-            let mut r = ring_hook.lock().unwrap();
-            if r.len() == 3 {
-                r.pop_front().unwrap();
+            let i = runner.iterations.len();
+            if i == n_guide - 1 {
+                let mut r = eg_ref.lock().unwrap();
+                r[0] = Some(runner.egraph.clone());
+            } else if i == n_guide {
+                let mut r = eg_ref.lock().unwrap();
+                r[1] = Some(runner.egraph.clone());
+            } else if i == n_target - 1 {
+                let mut r = eg_ref.lock().unwrap();
+                r[2] = Some(runner.egraph.clone());
+            } else if i == n_target {
+                let mut r = eg_ref.lock().unwrap();
+                r[3] = Some(runner.egraph.clone());
             }
-            r.push_back(runner.egraph.clone());
+
             Ok(())
         })
         .run(rules);
@@ -134,25 +134,22 @@ where
     // that `try_unwrap` succeeds.
     drop(runner);
 
-    let mut r = Arc::try_unwrap(ring)
+    let egs = Arc::try_unwrap(egs)
         .expect("runner dropped, no other Arc holders")
         .into_inner()
         .unwrap();
 
-    let mut eg_n = r.pop_back().unwrap();
-    eg_n.rebuild();
-    let mut eg_n_minus_1 = r.pop_back().unwrap();
-    eg_n_minus_1.rebuild();
-    let mut eg_n_minus_2 = r.pop_back().unwrap();
-    eg_n_minus_2.rebuild();
+    let [eg_guide_min_1, eg_guide, eg_target_min_1, eg_goal] = egs;
 
-    let converted = [
-        convert::<L, N, LL>(&eg_n_minus_2, root),
-        convert::<L, N, LL>(&eg_n_minus_1, root),
-        convert::<L, N, LL>(&eg_n, root),
-    ];
-    let raw = [eg_n_minus_2, eg_n_minus_1, eg_n];
-    (converted, raw)
+    let mut eg_guide_min_1 = eg_guide_min_1.unwrap();
+    eg_guide_min_1.rebuild();
+    let mut eg_target_min_1 = eg_target_min_1.unwrap();
+    eg_target_min_1.rebuild();
+
+    [
+        (eg_guide_min_1, convert(&eg_guide.unwrap(), root)),
+        (eg_target_min_1, convert(&eg_goal.unwrap(), root)),
+    ]
 }
 
 #[cfg(test)]
