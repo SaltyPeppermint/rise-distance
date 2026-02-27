@@ -1,3 +1,5 @@
+use rayon::prelude::*;
+
 use super::Counter;
 use super::TermCount;
 use crate::TreeNode;
@@ -6,18 +8,17 @@ use crate::nodes::Label;
 
 impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// Enumerate all terms from the root e-class with sizes in `1..=max_size`.
-    pub fn enumerate_root(&self, max_size: usize) -> impl Iterator<Item = TreeNode<L>> + '_ {
+    pub fn enumerate_root(&self, max_size: usize) -> Vec<TreeNode<L>> {
         self.enumerate(self.graph.root(), max_size)
     }
 
     /// Enumerate all terms from an e-class with sizes in `1..=max_size`.
-    pub fn enumerate(
-        &self,
-        id: EClassId,
-        max_size: usize,
-    ) -> impl Iterator<Item = TreeNode<L>> + '_ {
+    pub fn enumerate(&self, id: EClassId, max_size: usize) -> Vec<TreeNode<L>> {
         let canon_id = self.graph.canonicalize(id);
-        (1..=max_size).flat_map(move |size| self.enumerate_class(canon_id, size))
+        (1..=max_size)
+            .into_par_iter()
+            .flat_map(|size| self.enumerate_class(canon_id, size))
+            .collect()
     }
 
     /// Enumerate all terms of exactly `size` from an e-class.
@@ -42,33 +43,31 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             return Vec::new();
         };
 
-        let mut results = Vec::new();
+        nodes
+            .par_iter()
+            .flat_map(|node| {
+                let children = node.children();
 
-        for node in nodes {
-            let children = node.children();
-
-            if children.is_empty() {
-                if child_budget == 0 {
-                    results.push(TreeNode::new_typed(
-                        node.label().clone(),
-                        vec![],
-                        ty.clone(),
-                    ));
+                if children.is_empty() {
+                    if child_budget == 0 {
+                        return vec![TreeNode::new_typed(
+                            node.label().clone(),
+                            vec![],
+                            ty.clone(),
+                        )];
+                    }
+                    return vec![];
                 }
-                continue;
-            }
 
-            // Enumerate all valid size distributions across children
-            for child_combo in self.enumerate_children(children, child_budget) {
-                results.push(TreeNode::new_typed(
-                    node.label().clone(),
-                    child_combo,
-                    ty.clone(),
-                ));
-            }
-        }
-
-        results
+                // Enumerate all valid size distributions across children
+                self.enumerate_children(children, child_budget)
+                    .into_iter()
+                    .map(|child_combo| {
+                        TreeNode::new_typed(node.label().clone(), child_combo, ty.clone())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     /// Enumerate all ways to fill `children` with exactly `budget` total size,
@@ -158,7 +157,7 @@ mod tests {
         );
 
         let tc = TermCount::<BigUint, _>::new(10, false, &graph);
-        let terms: Vec<_> = tc.enumerate_root(10).collect();
+        let terms = tc.enumerate_root(10);
         assert_eq!(terms.len(), 1);
         assert_eq!(terms[0].label(), "a");
     }
@@ -178,7 +177,7 @@ mod tests {
         );
 
         let tc = TermCount::<BigUint, _>::new(10, false, &graph);
-        let terms: Vec<_> = tc.enumerate_root(10).collect();
+        let terms = tc.enumerate_root(10);
         assert_eq!(terms.len(), 2);
         let labels: Vec<_> = terms.iter().map(|t| t.label().as_str()).collect();
         assert!(labels.contains(&"a"));
@@ -200,7 +199,7 @@ mod tests {
         );
 
         let tc = TermCount::<BigUint, _>::new(10, false, &graph);
-        let terms: Vec<_> = tc.enumerate_root(10).collect();
+        let terms = tc.enumerate_root(10);
         assert_eq!(terms.len(), 1);
         assert_eq!(terms[0].label(), "f");
         assert_eq!(terms[0].children()[0].label(), "a");
@@ -238,7 +237,7 @@ mod tests {
         );
 
         let tc = TermCount::<BigUint, _>::new(10, false, &graph);
-        let terms: Vec<_> = tc.enumerate_root(10).collect();
+        let terms = tc.enumerate_root(10);
         // 2 * 3 = 6 combinations
         assert_eq!(terms.len(), 6);
     }
@@ -259,7 +258,7 @@ mod tests {
 
         let tc = TermCount::<BigUint, _>::new(10, false, &graph);
         // max_size=1 should not include f(a) which is size 2
-        let terms: Vec<_> = tc.enumerate_root(1).collect();
+        let terms = tc.enumerate_root(1);
         assert_eq!(terms.len(), 0);
     }
 
@@ -294,7 +293,7 @@ mod tests {
         let max_size = 10;
         let tc = TermCount::<BigUint, _>::new(max_size, false, &graph);
 
-        let terms: Vec<_> = tc.enumerate_root(max_size).collect();
+        let terms = tc.enumerate_root(max_size);
         let expected_total: BigUint = tc
             .of_root()
             .unwrap()

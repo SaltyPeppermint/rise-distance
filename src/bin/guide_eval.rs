@@ -320,6 +320,7 @@ fn get_frontier_terms(
         let total_terms: BigUint = histogram.values().cloned().sum();
         eprintln!("Enumerating all {total_terms} terms up to size {max_size}");
         tc.enumerate_root(max_size)
+            .into_iter()
             .filter(is_frontier)
             .take(count)
             .collect()
