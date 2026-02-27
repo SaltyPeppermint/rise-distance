@@ -3,14 +3,12 @@ use std::time::Instant;
 
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
-use hashbrown::HashMap;
 use num::BigUint;
 
+use rise_distance::cli::{DistanceMetric, SampleDistribution};
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel};
 use rise_distance::egg::run_last_three_with_raw;
-use rise_distance::{
-    DistanceMetric, EGraph, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit,
-};
+use rise_distance::{EGraph, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit};
 
 #[derive(Parser)]
 #[command(
@@ -55,6 +53,11 @@ struct Cli {
     #[arg(short, long)] // default_value_t = DistanceMetric::ZhangShasha
     distance: DistanceMetric,
 
+    /// How to distribute the sample budget across sizes.
+    /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
+    #[arg(short = 'p', long, default_value_t = SampleDistribution::Uniform)]
+    distribution: SampleDistribution,
+
     /// CSV output file (stdout if omitted)
     #[arg(short, long)]
     output: Option<String>,
@@ -84,6 +87,7 @@ fn main() {
     eprintln!("Seed: {seed}");
     eprintln!("Iterations: {}", cli.iterations);
     eprintln!("Distance metric: {}", cli.distance);
+    eprintln!("Distribution: {}", cli.distribution);
 
     // Step 1: Grow egraph and capture three consecutive snapshots + raw egg graphs
     eprintln!(
@@ -109,7 +113,7 @@ fn main() {
         eprintln!("No max_size was given, using 1.5 goal size (={m})");
         m
     });
-    let goals = sample_frontier_terms(eg_n, raw_n1, cli.goals, max_size);
+    let goals = sample_frontier_terms(eg_n, raw_n1, cli.goals, max_size, cli.distribution);
     if goals.is_empty() {
         eprintln!(
             "No frontier terms found at iteration {}. Try more iterations or a larger max-size.",
@@ -124,7 +128,7 @@ fn main() {
         "Sampling guides from iteration-{} frontier...",
         cli.iterations - 1
     );
-    let guides = sample_frontier_terms(eg_n1, raw_n2, cli.guides, max_size);
+    let guides = sample_frontier_terms(eg_n1, raw_n2, cli.guides, max_size, cli.distribution);
     if guides.is_empty() {
         eprintln!(
             "No frontier terms found at iteration {}.",
@@ -227,6 +231,7 @@ fn sample_frontier_terms(
     prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
     count: usize,
     max_size: usize,
+    distribution: SampleDistribution,
 ) -> Vec<TreeNode<MathLabel>> {
     let tc = TermCount::<BigUint, MathLabel>::new(max_size, false, egraph);
 
@@ -235,14 +240,13 @@ fn sample_frontier_terms(
     };
 
     let min_size = histogram.keys().min().copied().unwrap_or(1);
+    // Oversample 5x to account for rejection filtering
+    let total_samples = count * 5;
 
-    // Uniform sampling across sizes, oversample to account for rejection
-    let num_sizes = (max_size - min_size).max(1);
-    let per_size = (count / num_sizes).max(1) as u64;
-    let oversample_per_size = per_size.saturating_mul(5);
-    let samples_per_size = (min_size..=max_size)
-        .map(|s| (s, oversample_per_size))
-        .collect::<HashMap<usize, u64>>();
+    #[expect(clippy::cast_precision_loss)]
+    let normal_center = (min_size + max_size) as f64 / 2.0;
+    let samples_per_size =
+        distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
 
     let candidates = tc.sample_unique_root(min_size, max_size, &samples_per_size);
 

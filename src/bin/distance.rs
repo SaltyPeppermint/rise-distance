@@ -1,18 +1,16 @@
 use std::fs;
 use std::path::Path;
-use std::str::FromStr;
 use std::time::Instant;
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
-use hashbrown::HashMap;
 use indicatif::ParallelProgressIterator;
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
+use rise_distance::cli::{DistanceMetric, SampleDistribution};
 use rise_distance::{
-    DistanceMetric, EClassId, EGraph, Expr, Label, NumericId, RiseLabel, StructuralDistance,
-    TermCount, TreeNode, UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree,
-    tree_distance_unit,
+    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, StructuralDistance, TermCount, TreeNode,
+    UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -262,60 +260,6 @@ struct CountSampleConfig {
     overlap: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum SampleDistribution {
-    /// Uniform accross the term sizes
-    Uniform,
-    /// Proportional to the number of terms of that size with a minimum number per size
-    Proportional(usize),
-    /// As a normal distribution centered in the middle between the smallest and goal term
-    /// value = sigma
-    Normal(f64),
-}
-
-impl FromStr for SampleDistribution {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s == "uniform" {
-            return Ok(Self::Uniform);
-        }
-        if s == "proportional" {
-            return Ok(Self::Proportional(10));
-        }
-
-        if let Some(rest) = s.strip_prefix("proportional:") {
-            let min = rest
-                .parse::<usize>()
-                .map_err(|e| format!("invalid min_per_size in 'proportional:{rest}': {e}"))?;
-            return Ok(Self::Proportional(min));
-        }
-
-        if s == "normal" {
-            return Ok(Self::Normal(2.6));
-        }
-        if let Some(rest) = s.strip_prefix("normal:") {
-            let sigma = rest
-                .parse::<f64>()
-                .map_err(|e| format!("invalid sigma in 'normal:{rest}': {e}"))?;
-            return Ok(Self::Normal(sigma));
-        }
-        Err(format!(
-            "unknown distribution '{s}': expected 'uniform', 'proportional:<min>', or 'normal:<sigma>'"
-        ))
-    }
-}
-
-impl std::fmt::Display for SampleDistribution {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Uniform => write!(f, "uniform"),
-            Self::Proportional(min) => write!(f, "proportional:{min}"),
-            Self::Normal(sigma) => write!(f, "normal:{sigma}"),
-        }
-    }
-}
-
 fn run_count_extraction<L: Label>(
     term_count: &TermCount<BigUint, L>,
     ref_tree: &TreeNode<L>,
@@ -341,15 +285,11 @@ fn run_count_extraction<L: Label>(
         eprintln!("Using overlap sampling");
     }
 
-    let samples_per_size = samples_per_size(
-        term_count,
-        ref_tree,
-        min_size,
-        max_size,
-        total_samples,
-        distribution,
-        with_types,
-    );
+    let histogram = term_count.of_root().expect("Root e-class has no terms");
+    #[expect(clippy::cast_precision_loss)]
+    let normal_center = (ref_tree.size(with_types) - min_size) as f64;
+    let samples_per_size =
+        distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
     let candidates = if overlap {
         term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, &samples_per_size)
     } else {
@@ -376,75 +316,6 @@ fn run_count_extraction<L: Label>(
             } else {
                 eprintln!("No result found!");
             }
-        }
-    }
-}
-
-fn samples_per_size<L: Label>(
-    term_count: &TermCount<BigUint, L>,
-    ref_tree: &TreeNode<L>,
-    min_size: usize,
-    max_size: usize,
-    total_samples: usize,
-    distribution: SampleDistribution,
-    with_types: bool,
-) -> HashMap<usize, u64> {
-    match distribution {
-        SampleDistribution::Proportional(min_per_size) => {
-            let histogram = term_count.of_root().expect("Root e-class has no terms");
-            let total_terms = (min_size..=max_size)
-                .filter_map(|s| histogram.get(&s))
-                .sum::<BigUint>();
-            eprintln!(
-                "Sampling {total_samples} terms proportionally from {min_size} to {max_size}"
-            );
-            let budget = BigUint::from(total_samples);
-            (min_size..max_size)
-                .map(|size| {
-                    let n = histogram.get(&size).map_or(0, |count| {
-                        (count * &budget / &total_terms)
-                            .to_u64()
-                            .unwrap_or(u64::MAX)
-                            .max(min_per_size as u64)
-                    });
-                    eprintln!("Sampling {n} terms for size {size}");
-                    (size, n)
-                })
-                .collect()
-        }
-        SampleDistribution::Normal(sigma) => {
-            #[expect(clippy::cast_precision_loss)]
-            let center = (ref_tree.size(with_types) - min_size) as f64;
-            eprintln!(
-                "Sampling {total_samples} terms with normal distribution (center={center}, sigma={sigma}) from {min_size} to {max_size}"
-            );
-            // Compute unnormalized weights for each size
-            let weights = (min_size..=max_size)
-                .map(|s| {
-                    #[expect(clippy::cast_precision_loss)]
-                    let z = (s as f64 - center) / sigma;
-                    (s, (-0.5 * z * z).exp())
-                })
-                .collect::<HashMap<_, _>>();
-            let total_weight: f64 = weights.iter().map(|(_, w)| w).sum();
-            (min_size..max_size)
-                .map(|size| {
-                    let w = *weights.get(&size).unwrap_or(&0.0);
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        clippy::cast_possible_truncation,
-                        clippy::cast_sign_loss
-                    )]
-                    let n = (w / total_weight * total_samples as f64).round() as u64;
-                    eprintln!("Sampling {n} terms for size {size}");
-                    (size, n)
-                })
-                .collect()
-        }
-        SampleDistribution::Uniform => {
-            eprintln!("Sampling {total_samples} terms per size from {min_size} to {max_size}");
-            let s = (total_samples / (max_size - min_size)) as u64;
-            (min_size..max_size).map(|size| (size, s)).collect()
         }
     }
 }

@@ -1,5 +1,6 @@
 // mod boltzmann;
 mod choices;
+pub mod cli;
 mod count;
 mod diversity;
 pub mod egg;
@@ -30,18 +31,3 @@ pub use rise::{Expr, Nat, RiseLabel, Type};
 pub use structural::{StructuralDistance, structural_diff};
 pub use tree::{PartialChild, PartialTree, TreeNode, tree_node_to_partial};
 pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum DistanceMetric {
-    ZhangShasha,
-    Structural,
-}
-
-impl std::fmt::Display for DistanceMetric {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ZhangShasha => write!(f, "zhang-shasha"),
-            Self::Structural => write!(f, "structural"),
-        }
-    }
-}
