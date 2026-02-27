@@ -28,22 +28,79 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         progress: Option<ProgressBar>,
     ) -> Vec<TreeNode<L>> {
         let canon_id = self.graph.canonicalize(id);
-        let sum: u64 = self
+        let sum = self
             .of_eclass(id)
             .unwrap()
             .values()
             .sum::<C>()
             .try_into()
             .unwrap();
-        let iter = (0..=max_size).into_par_iter();
+
+        // Build (size, node_index) pairs so rayon can distribute work
+        // across both sizes and nodes, not just sizes.
+        let canonical_id = self.graph.canonicalize(canon_id);
+        let Some(histogram) = self.data.get(&canonical_id) else {
+            return Vec::new();
+        };
+        let eclass = self.graph.class(canonical_id);
+        let nodes = eclass.nodes();
+        let type_overhead = self.type_overhead(eclass);
+        let ty = TreeNode::from_eclass(self.graph, canonical_id);
+
+        let sizes = (0..=max_size)
+            .filter(|size| histogram.contains_key(size))
+            .collect::<Vec<_>>();
+
+        let iter = sizes
+            .into_par_iter()
+            .flat_map(|size| {
+                (0..nodes.len()).into_par_iter().flat_map_iter({
+                    let ty = ty.clone();
+                    move |ni| {
+                        let node = &nodes[ni];
+                        let children = node.children();
+
+                        let Some(child_budget) = size.checked_sub(1 + type_overhead) else {
+                            return Vec::new().into_iter();
+                        };
+
+                        if children.is_empty() {
+                            return if child_budget == 0 {
+                                vec![TreeNode::new_typed(
+                                    node.label().clone(),
+                                    vec![],
+                                    ty.clone(),
+                                )]
+                                .into_iter()
+                            } else {
+                                Vec::new().into_iter()
+                            };
+                        }
+
+                        self.enumerate_children(children, child_budget)
+                            .into_iter()
+                            .map({
+                                let label = node.label().clone();
+                                let ty = ty.clone();
+                                move |child_combo| {
+                                    TreeNode::new_typed(
+                                        label.clone(),
+                                        child_combo,
+                                        ty.clone(),
+                                    )
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                    }
+                })
+            });
+
         if let Some(pb) = progress {
             pb.set_length(sum);
-            iter.flat_map(|size| self.enumerate_class(canon_id, size))
-                .progress_with(pb)
-                .collect()
+            iter.progress_with(pb).collect()
         } else {
-            iter.flat_map(|size| self.enumerate_class(canon_id, size))
-                .collect()
+            iter.collect()
         }
     }
 
@@ -104,51 +161,26 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         // Accumulate via left-fold: start with the empty tuple at budget=`budget`,
         // then for each child, expand every (remaining_budget, partial_combo) by
         // enumerating that child at each feasible size.
+        //
+        // When the accumulator is large enough, parallelize the expansion step.
+        const PAR_THRESHOLD: usize = 256;
+
         let mut acc = vec![(budget, Vec::new())];
 
         for &child_id in children {
-            let mut next_acc = Vec::new();
-
-            for (remaining, partial) in acc {
-                match child_id {
-                    ExprChildId::Nat(nat_id) => {
-                        let child_size = self.type_sizes.get_nat_size(nat_id);
-                        if child_size <= remaining {
-                            let tree = TreeNode::from_nat(self.graph, nat_id);
-                            let mut combo = partial;
-                            combo.push(tree);
-                            next_acc.push((remaining - child_size, combo));
-                        }
-                    }
-                    ExprChildId::Data(data_id) => {
-                        let child_size = self.type_sizes.get_data_size(data_id);
-                        if child_size <= remaining {
-                            let tree = TreeNode::from_data(self.graph, data_id);
-                            let mut combo = partial;
-                            combo.push(tree);
-                            next_acc.push((remaining - child_size, combo));
-                        }
-                    }
-                    ExprChildId::EClass(eclass_id) => {
-                        let canonical_child = self.graph.canonicalize(eclass_id);
-                        let Some(child_histogram) = self.data.get(&canonical_child) else {
-                            continue;
-                        };
-
-                        for (&child_size, _) in child_histogram {
-                            if child_size > remaining {
-                                continue;
-                            }
-                            let child_trees = self.enumerate_class(canonical_child, child_size);
-                            for tree in child_trees {
-                                let mut combo = partial.clone();
-                                combo.push(tree);
-                                next_acc.push((remaining - child_size, combo));
-                            }
-                        }
-                    }
-                }
-            }
+            let next_acc = if acc.len() >= PAR_THRESHOLD {
+                acc.into_par_iter()
+                    .flat_map_iter(|(remaining, partial)| {
+                        self.expand_child(child_id, remaining, partial)
+                    })
+                    .collect()
+            } else {
+                acc.into_iter()
+                    .flat_map(|(remaining, partial)| {
+                        self.expand_child(child_id, remaining, partial)
+                    })
+                    .collect()
+            };
 
             acc = next_acc;
         }
@@ -158,6 +190,59 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             .filter(|(remaining, _)| *remaining == 0)
             .map(|(_, combo)| combo)
             .collect()
+    }
+
+    /// Expand a single partial combo by one child, returning all valid extensions.
+    fn expand_child(
+        &self,
+        child_id: ExprChildId,
+        remaining: usize,
+        partial: Vec<TreeNode<L>>,
+    ) -> Vec<(usize, Vec<TreeNode<L>>)> {
+        match child_id {
+            ExprChildId::Nat(nat_id) => {
+                let child_size = self.type_sizes.get_nat_size(nat_id);
+                if child_size <= remaining {
+                    let tree = TreeNode::from_nat(self.graph, nat_id);
+                    let mut combo = partial;
+                    combo.push(tree);
+                    vec![(remaining - child_size, combo)]
+                } else {
+                    Vec::new()
+                }
+            }
+            ExprChildId::Data(data_id) => {
+                let child_size = self.type_sizes.get_data_size(data_id);
+                if child_size <= remaining {
+                    let tree = TreeNode::from_data(self.graph, data_id);
+                    let mut combo = partial;
+                    combo.push(tree);
+                    vec![(remaining - child_size, combo)]
+                } else {
+                    Vec::new()
+                }
+            }
+            ExprChildId::EClass(eclass_id) => {
+                let canonical_child = self.graph.canonicalize(eclass_id);
+                let Some(child_histogram) = self.data.get(&canonical_child) else {
+                    return Vec::new();
+                };
+
+                let mut results = Vec::new();
+                for (&child_size, _) in child_histogram {
+                    if child_size > remaining {
+                        continue;
+                    }
+                    let child_trees = self.enumerate_class(canonical_child, child_size);
+                    for tree in child_trees {
+                        let mut combo = partial.clone();
+                        combo.push(tree);
+                        results.push((remaining - child_size, combo));
+                    }
+                }
+                results
+            }
+        }
     }
 }
 
