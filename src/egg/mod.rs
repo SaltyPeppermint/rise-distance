@@ -99,7 +99,7 @@ where
     assert!(n_guide > 0);
     assert!(n_goal > n_guide);
 
-    let egs = Arc::new(Mutex::new([const { None }; 4]));
+    let egs = Arc::new(Mutex::new([const { None }; 3]));
     let eg_ref = egs.clone();
 
     let runner = Runner::default()
@@ -108,20 +108,16 @@ where
         .with_expr(start)
         .with_hook(move |runner| {
             let i = runner.iterations.len();
+            let mut r = eg_ref.lock().unwrap();
             if i == n_guide - 1 {
-                let mut r = eg_ref.lock().unwrap();
                 r[0] = Some(runner.egraph.clone());
-            } else if i == n_guide {
-                let mut r = eg_ref.lock().unwrap();
-                r[1] = Some(runner.egraph.clone());
-            } else if i == n_goal - 1 {
-                let mut r = eg_ref.lock().unwrap();
-                r[2] = Some(runner.egraph.clone());
-            } else if i == n_goal {
-                let mut r = eg_ref.lock().unwrap();
-                r[3] = Some(runner.egraph.clone());
             }
-
+            if i == n_guide {
+                r[1] = Some(runner.egraph.clone());
+            }
+            if i == n_goal - 1 {
+                r[2] = Some(runner.egraph.clone());
+            }
             Ok(())
         })
         .run(rules);
@@ -129,6 +125,9 @@ where
     assert!(runner.iterations.len() >= 3);
 
     let root = runner.roots[0];
+    let mut eg_goal = runner.egraph.clone();
+    eg_goal.rebuild();
+
     // The runner owns the hook closure which holds the second Arc clone of `ring`.
     // Dropping the runner releases that clone, leaving ours as the sole owner so
     // that `try_unwrap` succeeds.
@@ -139,7 +138,7 @@ where
         .into_inner()
         .unwrap();
 
-    let [eg_guide_min_1, eg_guide, eg_goal_min_1, eg_goal] = egs;
+    let [eg_guide_min_1, eg_guide, eg_goal_min_1] = egs;
 
     let mut eg_guide_min_1 = eg_guide_min_1.unwrap();
     eg_guide_min_1.rebuild();
@@ -148,7 +147,7 @@ where
 
     [
         (eg_guide_min_1, convert(&eg_guide.unwrap(), root)),
-        (eg_goal_min_1, convert(&eg_goal.unwrap(), root)),
+        (eg_goal_min_1, convert(&eg_goal, root)),
     ]
 }
 

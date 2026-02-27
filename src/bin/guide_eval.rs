@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::time::Instant;
 
 use clap::Parser;
@@ -16,16 +15,19 @@ use rise_distance::{EGraph, TermCount, TreeNode, UnitCost, structural_diff, tree
     after_help = "\
 Examples:
   # Basic evaluation with Zhang-Shasha distance
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 10 --max-size 10 -d zhang-shasha
+  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -d zhang-shasha
 
   # Guide from an earlier iteration
-  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 3 -g 50 --goals 5 -d structural
+  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 3 -g 100 --goals 5 -d structural
 
   # Write CSV output to a file
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 10 -o results.csv
+  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -o results.csv
 
   # Limit verification iterations separately from goal iterations
-  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 4 -g 20 --verify-iters 5
+  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 4 -g 100 --max-size 150 --verify-iters 5
+
+  # Print top 20 guides in the summary table (default: 10)
+  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -d zhang-shasha --top 20
 "
 )]
 struct Cli {
@@ -69,6 +71,10 @@ struct Cli {
     /// Max iterations when verifying guide reachability (defaults to -n value)
     #[arg(long)]
     verify_iters: Option<usize>,
+
+    /// Number of top guides to print in summary table (default: 10)
+    #[arg(long, default_value_t = 10)]
+    top: usize,
 }
 
 struct VerifyResult {
@@ -76,6 +82,7 @@ struct VerifyResult {
     distance: usize,
     reached: bool,
     iterations_to_reach: Option<usize>,
+    guide: TreeNode<MathLabel>,
 }
 
 fn main() {
@@ -112,7 +119,7 @@ fn main() {
     // Step 2: Sample goals from the iteration-n frontier
     eprintln!(
         "Sampling goals from iteration-{} frontier...",
-        cli.guide_iteration
+        cli.goal_iteration
     );
     let max_size = cli.max_size.unwrap_or_else(|| {
         let k = AstSize.cost_rec(&seed);
@@ -165,23 +172,30 @@ fn main() {
         verify_iters,
     };
 
-    if let Some(path) = &cli.output {
+    let csv_writer = cli.output.as_deref().map(|path| {
         let file = std::fs::File::create(path)
             .unwrap_or_else(|e| panic!("Failed to create '{path}': {e}"));
-        run_eval(&goals, &cfg, file);
-    } else {
-        run_eval(&goals, &cfg, std::io::stdout().lock());
-    }
+        csv::Writer::from_writer(file)
+    });
+
+    run_eval(&goals, &cfg, csv_writer, cli.top);
 }
 
-fn run_eval(goals: &[TreeNode<MathLabel>], cfg: &EvalConfig<'_>, mut writer: impl Write) {
-    writeln!(
-        writer,
-        "goal,rank,distance,reached,iterations_to_reach,guide"
-    )
-    .expect("write header");
+fn run_eval(
+    goals: &[TreeNode<MathLabel>],
+    cfg: &EvalConfig<'_>,
+    mut csv: Option<csv::Writer<std::fs::File>>,
+    top: usize,
+) {
+    if let Some(w) = csv.as_mut() {
+        w.write_record(["goal", "rank", "distance", "reached", "iterations_to_reach", "guide"])
+            .expect("write CSV header");
+    }
     for (goal_idx, goal) in goals.iter().enumerate() {
-        evaluate_goal(goal, goal_idx, goals.len(), cfg, &mut writer);
+        evaluate_goal(goal, goal_idx, goals.len(), cfg, csv.as_mut(), top);
+    }
+    if let Some(w) = csv.as_mut() {
+        w.flush().expect("flush CSV");
     }
 }
 
@@ -197,7 +211,8 @@ fn evaluate_goal(
     goal_idx: usize,
     total_goals: usize,
     cfg: &EvalConfig<'_>,
-    writer: &mut impl Write,
+    mut csv: Option<&mut csv::Writer<std::fs::File>>,
+    top: usize,
 ) {
     eprintln!(
         "\n=== Goal {}/{}: {} (size {}) ===",
@@ -220,28 +235,35 @@ fn evaluate_goal(
         .parse::<RecExpr<Math>>()
         .expect("goal round-trips to RecExpr");
 
+    let goal_str = goal.to_string();
     let mut results = Vec::with_capacity(ranked.len());
     for (rank, (dist_val, guide)) in ranked.into_iter().enumerate() {
         let iters = verify_reachability(&guide, &goal_recexpr, cfg.rules, cfg.verify_iters);
         let reached = iters.is_some();
-        let iters_str = iters.map_or_else(String::new, |i| i.to_string());
 
-        writeln!(
-            writer,
-            "{goal},{rank},{dist_val},{reached},{iters_str},{guide}",
-        )
-        .expect("write row");
+        if let Some(w) = csv.as_deref_mut() {
+            w.write_record([
+                &goal_str,
+                &(rank + 1).to_string(),
+                &dist_val.to_string(),
+                &reached.to_string(),
+                &iters.map_or_else(String::new, |i| i.to_string()),
+                &guide.to_string(),
+            ])
+            .expect("write CSV row");
+        }
 
         results.push(VerifyResult {
             rank: rank + 1,
             distance: dist_val,
             reached,
             iterations_to_reach: iters,
+            guide,
         });
     }
     eprintln!("Verification completed in {:.2?}", timer.elapsed());
 
-    print_summary(&results, goal, cfg.verify_iters);
+    print_summary(&results, goal, cfg.verify_iters, top);
 }
 
 /// Sample terms from `egraph` that are NOT present in `prev_raw_egg` (i.e. frontier terms).
@@ -341,7 +363,7 @@ fn verify_reachability(
 }
 
 #[expect(clippy::cast_precision_loss)]
-fn print_summary(results: &[VerifyResult], goal: &TreeNode<MathLabel>, max_iters: usize) {
+fn print_summary(results: &[VerifyResult], goal: &TreeNode<MathLabel>, max_iters: usize, top: usize) {
     let successful = results.iter().filter(|r| r.reached).collect::<Vec<_>>();
     let total = results.len();
     let n_reached = successful.len();
@@ -388,6 +410,19 @@ fn print_summary(results: &[VerifyResult], goal: &TreeNode<MathLabel>, max_iters
         eprintln!(
             "  First viable guide at rank: {} (distance {})",
             successful[0].rank, successful[0].distance
+        );
+    }
+
+    // Top-N guide table
+    eprintln!("\n  Top guides (rank / dist / reached / iters / term):");
+    for r in results.iter().take(top) {
+        let reached_marker = if r.reached { "✓" } else { "✗" };
+        let iters_str = r
+            .iterations_to_reach
+            .map_or_else(|| "-".to_owned(), |i| i.to_string());
+        eprintln!(
+            "    {:>3}  dist={:<4}  {}  iters={:<4}  {}",
+            r.rank, r.distance, reached_marker, iters_str, r.guide
         );
     }
 }
