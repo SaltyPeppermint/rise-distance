@@ -846,12 +846,13 @@ fn plot_rank_vs_iterations(
         .map(|r| r.rank as f64)
         .fold(0.0_f64, f64::max);
     let verify_iters_f = cfg.verify_iters as f64;
+    let timeout_y = verify_iters_f + 1.0;
     let max_iters = reached
         .iter()
         .map(|(_, y)| *y)
-        .fold(verify_iters_f, f64::max);
+        .fold(timeout_y, f64::max);
 
-    let root = BitMapBackend::new(path, (800, 640)).into_drawing_area();
+    let root = BitMapBackend::new(path, (1600, 1280)).into_drawing_area();
     root.fill(&WHITE).expect("fill background");
 
     let corr = rank_iterations_correlation(results);
@@ -859,14 +860,42 @@ fn plot_rank_vs_iterations(
         .num_guides
         .map_or_else(|| "all".to_owned(), |g| g.to_string());
 
+    // Compute regression early so we can show stats in the header
+    let regression = linear_regression(&reached);
+    let n_timeout = timed_out.len();
+    let stats_line = regression.as_ref().map_or_else(
+        || format!("r = {corr:.3} | n = {} reached, {n_timeout} timed out", reached.len()),
+        |reg| {
+            format!(
+                "R² = {:.3} | slope = {:.3} ± {:.3} | r = {corr:.3} | n = {} reached, {n_timeout} timed out",
+                reg.r_sq, reg.slope, reg.se_slope, reached.len()
+            )
+        },
+    );
+
+    // Build iteration breakdown line
+    let mut iter_counts = BTreeMap::<String, usize>::new();
+    for r in results {
+        let key = r
+            .iterations_to_reach
+            .map_or_else(|| "none".to_owned(), |i| i.to_string());
+        *iter_counts.entry(key).or_default() += 1;
+    }
+    let iter_line = iter_counts
+        .iter()
+        .map(|(k, v)| format!("i{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+
     // Split into title area + chart area
-    let (title_area, chart_area) = root.split_vertically(40);
+    let (title_area, chart_area) = root.split_vertically(140);
 
     // Draw title and subtitle
+    let meta_style = ("sans-serif", 24).into_font().color(&GREY);
     title_area
         .draw_text(
             "Rank vs Iterations to Reach Goal",
-            &("sans-serif", 16).into_font().color(&BLACK),
+            &("sans-serif", 32).into_font().color(&BLACK),
             (10, 2),
         )
         .expect("draw title");
@@ -881,12 +910,14 @@ fn plot_rank_vs_iterations(
         goal.size_without_types(),
     );
     title_area
-        .draw_text(
-            &subtitle,
-            &("sans-serif", 12).into_font().color(&GREY),
-            (10, 22),
-        )
+        .draw_text(&subtitle, &meta_style, (10, 38))
         .expect("draw subtitle");
+    title_area
+        .draw_text(&stats_line, &meta_style, (10, 68))
+        .expect("draw stats line");
+    title_area
+        .draw_text(&iter_line, &meta_style, (10, 98))
+        .expect("draw iter breakdown");
 
     let mut chart = ChartBuilder::on(&chart_area)
         .margin(10)
@@ -907,11 +938,11 @@ fn plot_rank_vs_iterations(
         .draw_series(
             reached
                 .iter()
-                .map(|&(x, y)| Circle::new((x, y), 3, BLUE.filled())),
+                .map(|&(x, y)| Circle::new((x, y), 4, BLUE.filled())),
         )
         .expect("draw reached points")
         .label("reached")
-        .legend(|(x, y)| Circle::new((x, y), 3, BLUE.filled()));
+        .legend(|(x, y)| Circle::new((x, y), 4, BLUE.filled()));
 
     // Draw timed-out guides as red crosses at y = verify_iters
     if !timed_out.is_empty() {
@@ -919,11 +950,11 @@ fn plot_rank_vs_iterations(
             .draw_series(
                 timed_out
                     .iter()
-                    .map(|&x| Cross::new((x, verify_iters_f), 3, RED.filled())),
+                    .map(|&x| Cross::new((x, timeout_y), 4, RED.filled())),
             )
             .expect("draw timed-out points")
             .label(format!("timed out (>{} iters)", cfg.verify_iters))
-            .legend(|(x, y)| Cross::new((x, y), 3, RED.filled()));
+            .legend(|(x, y)| Cross::new((x, y), 4, RED.filled()));
 
         // Draw a dashed line at verify_iters to show the cutoff
         chart
@@ -938,15 +969,15 @@ fn plot_rank_vs_iterations(
 
     chart
         .configure_series_labels()
-        .position(SeriesLabelPosition::UpperLeft)
+        .position(SeriesLabelPosition::LowerRight)
         .background_style(WHITE.mix(0.8))
         .border_style(BLACK)
+        .label_font(("sans-serif", 24).into_font().color(&GREY))
         .draw()
         .expect("draw legend");
 
-    // Linear regression on reached points only
-    if let Some(reg) = linear_regression(&reached) {
-        // Draw regression line
+    // Draw regression line
+    if let Some(reg) = &regression {
         let x0 = 0.0_f64;
         let x1 = max_rank * 1.05;
         let y0 = (reg.intercept + reg.slope * x0).clamp(0.0, max_iters * 1.05);
@@ -954,31 +985,9 @@ fn plot_rank_vs_iterations(
         chart
             .draw_series(LineSeries::new(
                 vec![(x0, y0), (x1, y1)],
-                RED.stroke_width(2),
+                GREEN.stroke_width(2),
             ))
             .expect("draw regression line");
-
-        // Draw stats text box in the bottom-right of the chart area
-        let n_timeout = timed_out.len();
-        let stats_text = format!(
-            "R² = {:.3}\nslope = {:.3} ± {:.3}\nr = {corr:.3}\nn = {} reached, {n_timeout} timed out",
-            reg.r_sq,
-            reg.slope,
-            reg.se_slope,
-            reached.len()
-        );
-        let text_style = ("sans-serif", 16).into_font().color(&BLACK);
-        let line_height = 20.0;
-        let n_lines = stats_text.lines().count();
-        let text_elements = stats_text
-            .lines()
-            .enumerate()
-            .map(|(i, line)| {
-                let y_pos = line_height * (n_lines - i) as f64;
-                Text::new(line.to_owned(), (max_rank * 0.5, y_pos), text_style.clone())
-            })
-            .collect::<Vec<_>>();
-        chart.draw_series(text_elements).expect("draw stats text");
     }
 
     root.present().expect("present plot");
