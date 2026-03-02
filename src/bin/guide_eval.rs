@@ -262,7 +262,7 @@ fn run_eval(
     for (goal_idx, (goal, guides)) in guides_for_goal.iter().enumerate() {
         log!(
             log,
-            "\n=== Goal {}/{} (size {goal})===\n{}",
+            "\n=== Goal {}/{} (size {})===\n",
             goal_idx + 1,
             guides_for_goal.len(),
             goal.size_without_types()
