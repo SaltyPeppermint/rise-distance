@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env::current_dir;
-use std::fmt::Write;
 use std::fs::File;
+use std::io::Write;
 use std::time::Instant;
 
 use clap::Parser;
@@ -12,7 +12,7 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
 
-use rise_distance::cli::{DistanceMetric, SampleDistribution, SampleStrategy};
+use rise_distance::cli::{DistanceMetric, SampleDistribution, SampleStrategy, log};
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel};
 use rise_distance::egg::run_guide_goal;
 use rise_distance::{EGraph, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit};
@@ -87,6 +87,9 @@ struct Cli {
     /// Sample Strategy
     #[arg(long)]
     strategy: SampleStrategy,
+
+    #[arg(long)]
+    log_file: Option<String>,
 }
 
 struct VerifyResult {
@@ -99,6 +102,8 @@ struct VerifyResult {
 
 fn main() {
     let cli = Cli::parse();
+    let mut log = output_file_name(&cli, ".log");
+
     let rules = rise_distance::egg::math::rules();
     let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
 
@@ -107,30 +112,32 @@ fn main() {
         .parse::<RecExpr<Math>>()
         .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
 
-    eprintln!("Seed: {seed}");
-    eprintln!("Goal Iterations: {}", cli.goal_iters);
-    eprintln!("Guide Iterations: {}", cli.guide_iters);
-    eprintln!("Distance metric: {}", cli.distance);
-    eprintln!("Distribution: {}", cli.distribution);
+    log!(log, "Seed: {seed}");
+    log!(log, "Goal Iterations: {}", cli.goal_iters);
+    log!(log, "Guide Iterations: {}", cli.guide_iters);
+    log!(log, "Distance metric: {}", cli.distance);
+    log!(log, "Distribution: {}", cli.distribution);
 
     // Step 1: Grow egraph and capture snapshots at guide and target iterations
-    eprintln!(
+    log!(
+        log,
         "Running equality saturation for {} iterations...",
         cli.goal_iters
     );
     let start = Instant::now();
     let [(prev_eg_guide, eg_guide), (prev_eg_goal, eg_goal)] =
         run_guide_goal(&seed, &rules, cli.guide_iters, cli.goal_iters);
-    eprintln!("Eqsat completed in {:.2?}", start.elapsed());
+    log!(log, "Eqsat completed in {:.2?}", start.elapsed());
 
     // Step 2: Sample goals from the iteration-n frontier
-    eprintln!(
+    log!(
+        log,
         "\nSampling goals from iteration-{} frontier...",
         cli.goal_iters
     );
     let max_size = cli.max_size.unwrap_or_else(|| {
         let m = AstSize.cost_rec(&seed);
-        eprintln!("No max_size was given, using 1 goal size (={m})");
+        log!(log, "No max_size was given, using 1 goal size (={m})");
         m
     });
     let goals = get_goal_term(
@@ -139,22 +146,25 @@ fn main() {
         cli.goals,
         max_size,
         cli.distribution,
+        &mut log,
     );
     if goals.is_empty() {
-        eprintln!(
+        log!(
+            log,
             "No frontier terms found at iteration {}. Try more iterations or a larger max-size.",
             cli.goal_iters
         );
         return;
     }
-    eprintln!("Sampled {} goal(s)", goals.len());
+    log!(log, "Sampled {} goal(s)", goals.len());
 
     let mut guides_per_goal = HashMap::new();
 
     for (id, goal) in goals.into_iter().enumerate() {
         // Step 3: Get guides from the iteration-(n-1) frontier
-        eprintln!("Looking at goal {id}: {goal}");
-        eprintln!(
+        log!(log, "Looking at goal {id}: {goal}");
+        log!(
+            log,
             "\nGetting guides from iteration-{} frontier...",
             cli.guide_iters
         );
@@ -172,11 +182,16 @@ fn main() {
             cli.distribution,
             cli.strategy,
             &goal,
+            &mut log,
         );
         if guides.is_empty() {
-            eprintln!("No frontier terms found at iteration {}.", cli.guide_iters);
+            log!(
+                log,
+                "No frontier terms found at iteration {}.",
+                cli.guide_iters
+            );
         } else {
-            eprintln!("Found {} guide(s)", guides.len());
+            log!(log, "Found {} guide(s)", guides.len());
         }
         guides_per_goal.insert(goal, guides);
     }
@@ -188,14 +203,16 @@ fn main() {
         cli.distance,
         verify_iters,
         cli.top,
-        output_file_name(&cli),
+        output_file_name(&cli, ".csv"),
+        &mut log,
     );
+    log.flush().unwrap();
 }
 
-fn output_file_name(cli: &Cli) -> File {
+fn output_file_name(cli: &Cli, ending: &str) -> File {
     cli.output.as_deref().map_or_else(
         || {
-            let mut pat = format!("run-{}-{}-sampling", cli.guide_iters, cli.goal_iters);
+            let pat = format!("run-{}-{}-sampling", cli.guide_iters, cli.goal_iters);
             let other_p = current_dir()
                 .unwrap()
                 .read_dir()
@@ -205,6 +222,7 @@ fn output_file_name(cli: &Cli) -> File {
                         && !d.file_type().ok()?.is_dir()
                         && let Some(s) = d.file_name().to_str()
                         && s.contains(&pat)
+                        && s.ends_with(ending)
                     {
                         return s.rsplit_once('_')?.1.parse().ok();
                     }
@@ -212,7 +230,7 @@ fn output_file_name(cli: &Cli) -> File {
                 })
                 .max()
                 .unwrap_or(0);
-            write!(pat, "_{other_p}.csv").unwrap();
+            let pat = format!("{pat}_{other_p}.{ending}");
             let path = current_dir().unwrap().join(pat);
             File::create(path).unwrap()
         },
@@ -227,6 +245,7 @@ fn run_eval(
     verify_iters: usize,
     top: usize,
     output: File,
+    log: &mut File,
 ) {
     let mut csv_writer = Writer::from_writer(output);
     csv_writer
@@ -241,7 +260,8 @@ fn run_eval(
         .expect("write CSV header");
 
     for (goal_idx, (goal, guides)) in guides_for_goal.iter().enumerate() {
-        eprintln!(
+        log!(
+            log,
             "\n=== Goal {}/{} (size {goal})===\n{}",
             goal_idx + 1,
             guides_for_goal.len(),
@@ -249,7 +269,8 @@ fn run_eval(
         );
 
         let ranked = rank_guides(guides, goal, metric);
-        eprintln!(
+        log!(
+            log,
             "Verifying {} guides (max {verify_iters} iters each)...",
             ranked.len(),
         );
@@ -281,7 +302,7 @@ fn run_eval(
             })
             .collect::<Vec<_>>();
 
-        eprintln!("Verification completed in {:.2?}", timer.elapsed());
+        log!(log, "Verification completed in {:.2?}", timer.elapsed());
 
         let goal_str = goal.to_string();
         for r in &results {
@@ -298,7 +319,7 @@ fn run_eval(
                 .expect("write CSV row");
         }
 
-        print_summary(&results, goal, verify_iters, top);
+        print_summary(&results, goal, verify_iters, top, log);
     }
     csv_writer.flush().expect("flush CSV");
 }
@@ -307,6 +328,7 @@ fn run_eval(
 ///
 /// When `enumerate` is true, enumerates all terms exhaustively.
 /// Otherwise, samples terms using the given distribution.
+#[expect(clippy::too_many_arguments)]
 fn get_guide_terms(
     egraph: &EGraph<MathLabel>,
     prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
@@ -315,6 +337,7 @@ fn get_guide_terms(
     distribution: SampleDistribution,
     strategy: SampleStrategy,
     goal: &TreeNode<MathLabel>,
+    log: &mut File,
 ) -> Vec<TreeNode<MathLabel>> {
     let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
 
@@ -324,15 +347,18 @@ fn get_guide_terms(
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
     sorted_hist.sort_unstable();
-    eprintln!("Terms in goal frontier:");
+    log!(log, "Terms in goal frontier:");
     for (k, v) in &sorted_hist {
-        eprintln!("{v} terms of size {k}");
+        log!(log, "{v} terms of size {k}");
     }
 
     match strategy {
         SampleStrategy::Enumerate => {
             let total_terms = histogram.values().cloned().sum::<BigUint>();
-            eprintln!("Enumerating all {total_terms} terms up to size {max_size}");
+            log!(
+                log,
+                "Enumerating all {total_terms} terms up to size {max_size}"
+            );
 
             let pb = ProgressBar::new(max_size as u64);
             tc.enumerate_root(max_size, Some(pb))
@@ -391,6 +417,7 @@ fn get_goal_term(
     count: usize,
     max_size: usize,
     distribution: SampleDistribution,
+    log: &mut File,
 ) -> Vec<TreeNode<MathLabel>> {
     let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
 
@@ -400,9 +427,9 @@ fn get_goal_term(
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
     sorted_hist.sort_unstable();
-    eprintln!("Terms in guide frontier:");
+    log!(log, "Terms in guide frontier:");
     for (k, v) in &sorted_hist {
-        eprintln!("{v} terms of size {k}");
+        log!(log, "{v} terms of size {k}");
     }
 
     let min_size = histogram.keys().min().copied().unwrap_or(1);
@@ -492,22 +519,24 @@ fn verify_reachability(
     None
 }
 
-#[expect(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, clippy::too_many_lines)]
 fn print_summary(
     results: &[VerifyResult],
     goal: &TreeNode<MathLabel>,
     max_iters: usize,
     top: usize,
+    log: &mut File,
 ) {
     let successful = results.iter().filter(|r| r.reached).collect::<Vec<_>>();
     let total = results.len();
     let n_reached = successful.len();
 
-    eprintln!("\nSummary for goal: {goal}");
-    eprintln!("  Goal size: {}", goal.size_without_types());
-    eprintln!("  Total guides evaluated: {total}");
-    eprintln!("  Max verify iterations: {max_iters}");
-    eprintln!(
+    log!(log, "\nSummary for goal: {goal}");
+    log!(log, "  Goal size: {}", goal.size_without_types());
+    log!(log, "  Total guides evaluated: {total}");
+    log!(log, "  Max verify iterations: {max_iters}");
+    log!(
+        log,
         "  Guides that reached goal: {n_reached}/{total} ({:.1}%)",
         100.0 * n_reached as f64 / total.max(1) as f64
     );
@@ -520,20 +549,23 @@ fn print_summary(
             .filter_map(|r| r.iterations_to_reach)
             .collect::<Vec<_>>();
 
-        eprintln!(
+        log!(
+            log,
             "  Successful guide ranks:      min={}, median={}, max={}",
             ranks.first().unwrap(),
             ranks[ranks.len() / 2],
             ranks.last().unwrap()
         );
-        eprintln!(
+        log!(
+            log,
             "  Successful guide distances:  min={}, median={}, max={}",
             dists.iter().min().unwrap(),
             dists[dists.len() / 2],
             dists.iter().max().unwrap()
         );
         if !iters.is_empty() {
-            eprintln!(
+            log!(
+                log,
                 "  Iterations to reach:         min={}, median={}, max={}",
                 iters.iter().min().unwrap(),
                 iters[iters.len() / 2],
@@ -542,9 +574,11 @@ fn print_summary(
         }
 
         // First successful rank (how far down the ranking before finding a viable guide)
-        eprintln!(
+        log!(
+            log,
             "  First viable guide at rank: {} (distance {})",
-            successful[0].rank, successful[0].distance
+            successful[0].rank,
+            successful[0].distance
         );
     }
 
@@ -555,10 +589,18 @@ fn print_summary(
         ranks.push(r.rank);
         sizes.push(r.guide.size_without_types());
     }
-    eprintln!("\n  Breakdown by iterations to reach:");
-    eprintln!(
+    log!(log, "\n  Breakdown by iterations to reach:");
+    log!(
+        log,
         "    {:>5}  {:>5}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
-        "iters", "count", "min_rank", "med_rank", "max_rank", "min_size", "med_size", "max_size"
+        "iters",
+        "count",
+        "min_rank",
+        "med_rank",
+        "max_rank",
+        "min_size",
+        "med_size",
+        "max_size"
     );
     for (iters_key, (mut ranks, mut sizes)) in by_iters {
         ranks.sort_unstable();
@@ -571,21 +613,30 @@ fn print_summary(
         let min_s = sizes[0];
         let med_s = sizes[count / 2];
         let max_s = sizes[count - 1];
-        eprintln!(
+        log!(
+            log,
             "    {label:>5}  {count:>5}  {min_r:>8}  {med_r:>8}  {max_r:>8}  {min_s:>8}  {med_s:>8}  {max_s:>8}"
         );
     }
 
     // Top-N guide table
-    eprintln!("\n  Top guides (rank / dist / reached / iters / term):");
+    log!(
+        log,
+        "\n  Top guides (rank / dist / reached / iters / term):"
+    );
     for r in results.iter().take(top) {
         let reached_marker = if r.reached { "✓" } else { "✗" };
         let iters_str = r
             .iterations_to_reach
             .map_or_else(|| "-".to_owned(), |i| i.to_string());
-        eprintln!(
+        log!(
+            log,
             "    {:>3}  dist={:<4}  {}  iters={:<4}  {}",
-            r.rank, r.distance, reached_marker, iters_str, r.guide
+            r.rank,
+            r.distance,
+            reached_marker,
+            iters_str,
+            r.guide
         );
     }
 }

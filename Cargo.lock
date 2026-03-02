@@ -807,7 +807,6 @@ dependencies = [
  "hashbrown 0.16.1",
  "indexmap",
  "indicatif",
- "log",
  "num",
  "num-traits",
  "ordered-float",

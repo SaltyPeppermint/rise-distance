@@ -155,3 +155,15 @@ impl SampleDistribution {
         }
     }
 }
+
+/// Log to both a file and stderr. Wraps `writeln!` + `eprintln!`.
+#[macro_export]
+macro_rules! log {
+    ($dst:expr, $($arg:tt)*) => {{
+        use std::io::Write as _;
+        writeln!($dst, $($arg)*).unwrap();
+        eprintln!($($arg)*);
+    }};
+}
+
+pub use log;
