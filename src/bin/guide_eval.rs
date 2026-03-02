@@ -209,11 +209,17 @@ fn main() {
     log.flush().unwrap();
 }
 
+/// Create an output file for this run.
+///
+/// If `-o` was given, uses that path directly. Otherwise, auto-generates a
+/// filename like `run-{guide_iters}-{goal_iters}-sampling_{N}{ending}` in the
+/// current directory, where `N` is one higher than the largest existing run number.
+/// `ending` should include the leading dot (e.g. `".csv"`).
 fn output_file_name(cli: &Cli, ending: &str) -> File {
     cli.output.as_deref().map_or_else(
         || {
             let pat = format!("run-{}-{}-sampling", cli.guide_iters, cli.goal_iters);
-            let other_p = current_dir()
+            let max_existing = current_dir()
                 .unwrap()
                 .read_dir()
                 .unwrap()
@@ -224,13 +230,13 @@ fn output_file_name(cli: &Cli, ending: &str) -> File {
                         && s.contains(&pat)
                         && s.ends_with(ending)
                     {
-                        return s.rsplit_once('_')?.1.parse().ok();
+                        return s.strip_suffix(ending)?.rsplit_once('_')?.1.parse().ok();
                     }
                     None
                 })
                 .max()
                 .unwrap_or(0);
-            let pat = format!("{pat}_{other_p}.{ending}");
+            let pat = format!("{pat}_{}{ending}", max_existing + 1);
             let path = current_dir().unwrap().join(pat);
             File::create(path).unwrap()
         },
