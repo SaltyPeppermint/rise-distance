@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::env::current_dir;
 use std::fs::File;
 use std::io::Write;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
@@ -10,6 +11,7 @@ use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
 use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
+use plotters::prelude::*;
 use rayon::prelude::*;
 
 use rise_distance::cli::{DistanceMetric, SampleDistribution, SampleStrategy, log};
@@ -102,7 +104,7 @@ struct VerifyResult {
 
 fn main() {
     let cli = Cli::parse();
-    let mut log = output_file_name(&cli, ".log");
+    let mut log = output_file(&cli, ".log");
 
     let rules = rise_distance::egg::math::rules();
     let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
@@ -203,7 +205,8 @@ fn main() {
         cli.distance,
         verify_iters,
         cli.top,
-        output_file_name(&cli, ".csv"),
+        output_file(&cli, ".csv"),
+        &output_file_path(&cli, ".1.png"),
         &mut log,
     );
     log.flush().unwrap();
@@ -215,7 +218,7 @@ fn main() {
 /// filename like `run-{guide_iters}-{goal_iters}-sampling_{N}{ending}` in the
 /// current directory, where `N` is one higher than the largest existing run number.
 /// `ending` should include the leading dot (e.g. `".csv"`).
-fn output_file_name(cli: &Cli, ending: &str) -> File {
+fn output_file_path(cli: &Cli, ending: &str) -> PathBuf {
     cli.output.as_deref().map_or_else(
         || {
             let pat = format!("run-{}-{}-sampling", cli.guide_iters, cli.goal_iters);
@@ -237,13 +240,17 @@ fn output_file_name(cli: &Cli, ending: &str) -> File {
                 .max()
                 .unwrap_or(0);
             let pat = format!("{pat}_{}{ending}", max_existing + 1);
-            let path = current_dir().unwrap().join(pat);
-            File::create(path).unwrap()
+            current_dir().unwrap().join(pat)
         },
-        |path| File::create(path).expect("Failed to create output csv"),
+        PathBuf::from,
     )
 }
 
+fn output_file(cli: &Cli, ending: &str) -> File {
+    File::create(output_file_path(cli, ending)).expect("Failed to create output file")
+}
+
+#[expect(clippy::too_many_arguments)]
 fn run_eval(
     guides_for_goal: &HashMap<TreeNode<MathLabel>, Vec<TreeNode<MathLabel>>>,
     rules: &[Rewrite<Math, ConstantFold>],
@@ -251,6 +258,7 @@ fn run_eval(
     verify_iters: usize,
     top: usize,
     output: File,
+    plot_path: &PathBuf,
     log: &mut File,
 ) {
     let mut csv_writer = Writer::from_writer(output);
@@ -326,6 +334,13 @@ fn run_eval(
         }
 
         print_summary(&results, goal, verify_iters, top, log);
+
+        let corr = rank_iterations_correlation(&results);
+        log!(
+            log,
+            "\n  Spearman rank correlation (rank vs iterations_to_reach): {corr:.4}"
+        );
+        plot_rank_vs_iterations(&results, goal, plot_path, log);
     }
     csv_writer.flush().expect("flush CSV");
 }
@@ -645,4 +660,123 @@ fn print_summary(
             r.guide
         );
     }
+}
+
+/// Compute the Spearman rank correlation between guide rank and iterations to reach the goal.
+///
+/// Only guides that actually reached the goal are included. Returns 0.0 when
+/// fewer than 2 data points are available.
+#[expect(clippy::cast_precision_loss, clippy::float_cmp, clippy::similar_names)]
+fn rank_iterations_correlation(results: &[VerifyResult]) -> f64 {
+    fn to_ranks(vals: &[f64]) -> Vec<f64> {
+        let mut indexed: Vec<(usize, f64)> = vals.iter().copied().enumerate().collect();
+        indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        let mut ranks = vec![0.0; vals.len()];
+        let mut i = 0;
+        while i < indexed.len() {
+            let mut j = i;
+            while j < indexed.len() && indexed[j].1 == indexed[i].1 {
+                j += 1;
+            }
+            let avg_rank = (i + j + 1) as f64 / 2.0;
+            for item in &indexed[i..j] {
+                ranks[item.0] = avg_rank;
+            }
+            i = j;
+        }
+        ranks
+    }
+
+    let pairs: Vec<(f64, f64)> = results
+        .iter()
+        .filter_map(|r| Some((r.rank as f64, r.iterations_to_reach? as f64)))
+        .collect();
+
+    if pairs.len() < 2 {
+        return 0.0;
+    }
+
+    let xs: Vec<f64> = pairs.iter().map(|(x, _)| *x).collect();
+    let ys: Vec<f64> = pairs.iter().map(|(_, y)| *y).collect();
+    let rx = to_ranks(&xs);
+    let ry = to_ranks(&ys);
+
+    let n = rx.len() as f64;
+    let mean_rx = rx.iter().sum::<f64>() / n;
+    let mean_ry = ry.iter().sum::<f64>() / n;
+
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    let mut var_y = 0.0;
+    for i in 0..rx.len() {
+        let dx = rx[i] - mean_rx;
+        let dy = ry[i] - mean_ry;
+        cov += dx * dy;
+        var_x += dx * dx;
+        var_y += dy * dy;
+    }
+
+    let denom = (var_x * var_y).sqrt();
+    if denom < f64::EPSILON {
+        0.0
+    } else {
+        cov / denom
+    }
+}
+
+/// Plot rank vs iterations-to-reach as a scatter plot and save as PNG.
+#[expect(clippy::cast_precision_loss)]
+fn plot_rank_vs_iterations(
+    results: &[VerifyResult],
+    goal: &TreeNode<MathLabel>,
+    path: &PathBuf,
+    log: &mut File,
+) {
+    let points: Vec<(f64, f64)> = results
+        .iter()
+        .filter_map(|r| Some((r.rank as f64, r.iterations_to_reach? as f64)))
+        .collect();
+
+    if points.len() < 2 {
+        log!(log, "  Not enough reachable guides to plot.");
+        return;
+    }
+
+    let max_rank = points.iter().map(|(x, _)| *x).fold(0.0_f64, f64::max);
+    let max_iters = points.iter().map(|(_, y)| *y).fold(0.0_f64, f64::max);
+
+    let root = BitMapBackend::new(path, (800, 600)).into_drawing_area();
+    root.fill(&WHITE).expect("fill background");
+
+    let corr = rank_iterations_correlation(results);
+    let caption = format!(
+        "Rank vs Iterations (goal size {}, r={corr:.3})",
+        goal.size_without_types()
+    );
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption(&caption, ("sans-serif", 22))
+        .margin(10)
+        .x_label_area_size(35)
+        .y_label_area_size(45)
+        .build_cartesian_2d(0.0..(max_rank * 1.05), 0.0..(max_iters * 1.05))
+        .expect("build chart");
+
+    chart
+        .configure_mesh()
+        .x_desc("Rank (by distance)")
+        .y_desc("Iterations to reach goal")
+        .draw()
+        .expect("draw mesh");
+
+    chart
+        .draw_series(
+            points
+                .iter()
+                .map(|&(x, y)| Circle::new((x, y), 3, BLUE.filled())),
+        )
+        .expect("draw points");
+
+    root.present().expect("present plot");
+    log!(log, "  Plot saved to {}", path.display());
 }
