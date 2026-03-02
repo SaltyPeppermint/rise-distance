@@ -669,7 +669,7 @@ fn print_summary(
 #[expect(clippy::cast_precision_loss, clippy::float_cmp, clippy::similar_names)]
 fn rank_iterations_correlation(results: &[VerifyResult]) -> f64 {
     fn to_ranks(vals: &[f64]) -> Vec<f64> {
-        let mut indexed: Vec<(usize, f64)> = vals.iter().copied().enumerate().collect();
+        let mut indexed = vals.iter().copied().enumerate().collect::<Vec<_>>();
         indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         let mut ranks = vec![0.0; vals.len()];
         let mut i = 0;
@@ -687,17 +687,17 @@ fn rank_iterations_correlation(results: &[VerifyResult]) -> f64 {
         ranks
     }
 
-    let pairs: Vec<(f64, f64)> = results
+    let pairs = results
         .iter()
         .filter_map(|r| Some((r.rank as f64, r.iterations_to_reach? as f64)))
-        .collect();
+        .collect::<Vec<_>>();
 
     if pairs.len() < 2 {
         return 0.0;
     }
 
-    let xs: Vec<f64> = pairs.iter().map(|(x, _)| *x).collect();
-    let ys: Vec<f64> = pairs.iter().map(|(_, y)| *y).collect();
+    let xs = pairs.iter().map(|(x, _)| *x).collect::<Vec<_>>();
+    let ys = pairs.iter().map(|(_, y)| *y).collect::<Vec<_>>();
     let rx = to_ranks(&xs);
     let ry = to_ranks(&ys);
 
