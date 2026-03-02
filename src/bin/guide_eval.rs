@@ -626,12 +626,15 @@ fn print_summary(
     }
 
     // Breakdown by iterations-to-reach (None = unreached)
-    let mut by_iters = BTreeMap::<Option<usize>, (Vec<_>, Vec<_>)>::new();
-    for r in results {
-        let (ranks, sizes) = by_iters.entry(r.iterations_to_reach).or_default();
-        ranks.push(r.rank);
-        sizes.push(r.guide.size_without_types());
-    }
+    let by_iters = results.iter().fold(
+        BTreeMap::<Option<usize>, (Vec<_>, Vec<_>)>::new(),
+        |mut acc, r| {
+            let (ranks, sizes) = acc.entry(r.iterations_to_reach).or_default();
+            ranks.push(r.rank);
+            sizes.push(r.guide.size_without_types());
+            acc
+        },
+    );
     log!(log, "\n  Breakdown by iterations to reach:");
     log!(
         log,
@@ -727,16 +730,14 @@ fn rank_iterations_correlation(results: &[VerifyResult]) -> f64 {
     let mean_rx = rx.iter().sum::<f64>() / n;
     let mean_ry = ry.iter().sum::<f64>() / n;
 
-    let mut cov = 0.0;
-    let mut var_x = 0.0;
-    let mut var_y = 0.0;
-    for i in 0..rx.len() {
-        let dx = rx[i] - mean_rx;
-        let dy = ry[i] - mean_ry;
-        cov += dx * dy;
-        var_x += dx * dx;
-        var_y += dy * dy;
-    }
+    let (cov, var_x, var_y) =
+        rx.iter()
+            .zip(&ry)
+            .fold((0.0, 0.0, 0.0), |(cov, var_x, var_y), (rx_i, ry_i)| {
+                let dx = rx_i - mean_rx;
+                let dy = ry_i - mean_ry;
+                (cov + dx * dy, var_x + dx * dx, var_y + dy * dy)
+            });
 
     let denom = (var_x * var_y).sqrt();
     if denom < f64::EPSILON {
@@ -950,16 +951,15 @@ fn plot_rank_vs_iterations(
         let text_style = ("sans-serif", 16).into_font().color(&BLACK);
         let line_height = 20.0;
         let n_lines = stats_text.lines().count();
-        for (i, line) in stats_text.lines().enumerate() {
-            let y_pos = line_height * (n_lines - i) as f64;
-            chart
-                .draw_series(std::iter::once(Text::new(
-                    line.to_owned(),
-                    (max_rank * 0.5, y_pos),
-                    text_style.clone(),
-                )))
-                .expect("draw stats text");
-        }
+        let text_elements = stats_text
+            .lines()
+            .enumerate()
+            .map(|(i, line)| {
+                let y_pos = line_height * (n_lines - i) as f64;
+                Text::new(line.to_owned(), (max_rank * 0.5, y_pos), text_style.clone())
+            })
+            .collect::<Vec<_>>();
+        chart.draw_series(text_elements).expect("draw stats text");
     }
 
     root.present().expect("present plot");
