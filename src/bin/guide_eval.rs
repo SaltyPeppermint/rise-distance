@@ -12,6 +12,7 @@ use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
 use plotters::prelude::*;
+use plotters::style::full_palette::GREY;
 use rayon::prelude::*;
 
 use rise_distance::cli::{DistanceMetric, SampleDistribution, SampleStrategy, log};
@@ -850,15 +851,27 @@ fn plot_rank_vs_iterations(
         .map(|(_, y)| *y)
         .fold(verify_iters_f, f64::max);
 
-    let root = BitMapBackend::new(path, (800, 600)).into_drawing_area();
+    let root = BitMapBackend::new(path, (800, 640)).into_drawing_area();
     root.fill(&WHITE).expect("fill background");
 
     let corr = rank_iterations_correlation(results);
     let guides_str = cfg
         .num_guides
         .map_or_else(|| "all".to_owned(), |g| g.to_string());
-    let caption = format!(
-        "Rank vs Iterations | {} | {} | {} | guides={} | goal_i={} guide_i={} | goal_size={}",
+
+    // Split into title area + chart area
+    let (title_area, chart_area) = root.split_vertically(40);
+
+    // Draw title and subtitle
+    title_area
+        .draw_text(
+            "Rank vs Iterations to Reach Goal",
+            &("sans-serif", 16).into_font().color(&BLACK),
+            (10, 2),
+        )
+        .expect("draw title");
+    let subtitle = format!(
+        "{} | {} | {} | guides={} | goal_i={} guide_i={} | goal_size={}",
         cfg.strategy,
         cfg.distance,
         cfg.distribution,
@@ -867,9 +880,15 @@ fn plot_rank_vs_iterations(
         cfg.guide_iters,
         goal.size_without_types(),
     );
+    title_area
+        .draw_text(
+            &subtitle,
+            &("sans-serif", 12).into_font().color(&GREY),
+            (10, 22),
+        )
+        .expect("draw subtitle");
 
-    let mut chart = ChartBuilder::on(&root)
-        .caption(&caption, ("sans-serif", 15))
+    let mut chart = ChartBuilder::on(&chart_area)
         .margin(10)
         .x_label_area_size(35)
         .y_label_area_size(45)
