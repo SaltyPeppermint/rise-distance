@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::env::current_dir;
+use std::fmt::Write;
 use std::fs::File;
 use std::time::Instant;
 
@@ -180,15 +182,42 @@ fn main() {
     }
 
     // Step 4 & 5: For each goal, rank guides by distance, then verify reachability
-
     run_eval(
         &guides_per_goal,
         &rules,
         cli.distance,
         verify_iters,
         cli.top,
-        cli.output.as_deref(),
+        output_file_name(&cli),
     );
+}
+
+fn output_file_name(cli: &Cli) -> File {
+    cli.output.as_deref().map_or_else(
+        || {
+            let mut pat = format!("run-{}-{}-sampling", cli.guide_iters, cli.goal_iters);
+            let other_p = current_dir()
+                .unwrap()
+                .read_dir()
+                .unwrap()
+                .filter_map(|e| {
+                    if let Ok(d) = e
+                        && !d.file_type().ok()?.is_dir()
+                        && let Some(s) = d.file_name().to_str()
+                        && s.contains(&pat)
+                    {
+                        return s.rsplit_once('_')?.1.parse().ok();
+                    }
+                    None
+                })
+                .max()
+                .unwrap_or(0);
+            write!(pat, "_{other_p}.csv").unwrap();
+            let path = current_dir().unwrap().join(pat);
+            File::create(path).unwrap()
+        },
+        |path| File::create(path).expect("Failed to create output csv"),
+    )
 }
 
 fn run_eval(
@@ -197,12 +226,11 @@ fn run_eval(
     metric: DistanceMetric,
     verify_iters: usize,
     top: usize,
-    output: Option<&str>,
+    output: File,
 ) {
-    let mut csv_writer = output.map(|path| {
-        let file = File::create(path).expect("Failed to create output csv");
-        let mut w = Writer::from_writer(file);
-        w.write_record([
+    let mut csv_writer = Writer::from_writer(output);
+    csv_writer
+        .write_record([
             "goal",
             "rank",
             "distance",
@@ -211,8 +239,6 @@ fn run_eval(
             "guide",
         ])
         .expect("write CSV header");
-        w
-    });
 
     for (goal_idx, (goal, guides)) in guides_for_goal.iter().enumerate() {
         eprintln!(
@@ -257,10 +283,10 @@ fn run_eval(
 
         eprintln!("Verification completed in {:.2?}", timer.elapsed());
 
-        if let Some(w) = &mut csv_writer {
-            let goal_str = goal.to_string();
-            for r in &results {
-                w.write_record([
+        let goal_str = goal.to_string();
+        for r in &results {
+            csv_writer
+                .write_record([
                     &goal_str,
                     &r.rank.to_string(),
                     &r.distance.to_string(),
@@ -270,14 +296,11 @@ fn run_eval(
                     &r.guide.to_string(),
                 ])
                 .expect("write CSV row");
-            }
         }
 
         print_summary(&results, goal, verify_iters, top);
     }
-    if let Some(w) = csv_writer.as_mut() {
-        w.flush().expect("flush CSV");
-    }
+    csv_writer.flush().expect("flush CSV");
 }
 
 /// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
