@@ -102,6 +102,17 @@ struct VerifyResult {
     guide: TreeNode<MathLabel>,
 }
 
+struct PlotConfig {
+    strategy: SampleStrategy,
+    distance: DistanceMetric,
+    distribution: SampleDistribution,
+    num_guides: Option<usize>,
+    guide_iters: usize,
+    goal_iters: usize,
+    verify_iters: usize,
+}
+
+#[expect(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
     let mut log = output_file(&cli, ".log");
@@ -199,6 +210,15 @@ fn main() {
     }
 
     // Step 4 & 5: For each goal, rank guides by distance, then verify reachability
+    let plot_cfg = PlotConfig {
+        strategy: cli.strategy,
+        distance: cli.distance,
+        distribution: cli.distribution,
+        num_guides: cli.guides,
+        guide_iters: cli.guide_iters,
+        goal_iters: cli.goal_iters,
+        verify_iters,
+    };
     run_eval(
         &guides_per_goal,
         &rules,
@@ -207,6 +227,7 @@ fn main() {
         cli.top,
         output_file(&cli, ".csv"),
         &output_file_path(&cli, ".1.png"),
+        &plot_cfg,
         &mut log,
     );
     log.flush().unwrap();
@@ -259,6 +280,7 @@ fn run_eval(
     top: usize,
     output: File,
     plot_path: &PathBuf,
+    plot_cfg: &PlotConfig,
     log: &mut File,
 ) {
     let mut csv_writer = Writer::from_writer(output);
@@ -340,7 +362,7 @@ fn run_eval(
             log,
             "\n  Spearman rank correlation (rank vs iterations_to_reach): {corr:.4}"
         );
-        plot_rank_vs_iterations(&results, goal, plot_path, log);
+        plot_rank_vs_iterations(&results, goal, plot_path, plot_cfg, log);
     }
     csv_writer.flush().expect("flush CSV");
 }
@@ -604,7 +626,7 @@ fn print_summary(
     }
 
     // Breakdown by iterations-to-reach (None = unreached)
-    let mut by_iters: BTreeMap<Option<usize>, (Vec<usize>, Vec<usize>)> = BTreeMap::new();
+    let mut by_iters = BTreeMap::<Option<usize>, (Vec<_>, Vec<_>)>::new();
     for r in results {
         let (ranks, sizes) = by_iters.entry(r.iterations_to_reach).or_default();
         ranks.push(r.rank);
@@ -724,38 +746,129 @@ fn rank_iterations_correlation(results: &[VerifyResult]) -> f64 {
     }
 }
 
+struct LinearRegression {
+    slope: f64,
+    intercept: f64,
+    r_sq: f64,
+    se_slope: f64,
+}
+
+/// Fit a simple linear regression (OLS) to `(x, y)` pairs.
+/// Returns `None` if fewer than 2 points or zero variance in x.
+#[expect(clippy::cast_precision_loss, clippy::similar_names)]
+fn linear_regression(points: &[(f64, f64)]) -> Option<LinearRegression> {
+    let n = points.len() as f64;
+    if n < 2.0 {
+        return None;
+    }
+
+    let sum_x = points.iter().map(|(x, _)| x).sum::<f64>();
+    let sum_y = points.iter().map(|(_, y)| y).sum::<f64>();
+    let sum_xy = points.iter().map(|(x, y)| x * y).sum::<f64>();
+    let sum_x2 = points.iter().map(|(x, _)| x * x).sum::<f64>();
+    let denom = n * sum_x2 - sum_x * sum_x;
+    if denom.abs() <= f64::EPSILON {
+        return None;
+    }
+
+    let slope = (n * sum_xy - sum_x * sum_y) / denom;
+    let intercept = (sum_y - slope * sum_x) / n;
+
+    let mean_y = sum_y / n;
+    let ss_res = points
+        .iter()
+        .map(|(x, y)| {
+            let pred = slope * x + intercept;
+            (y - pred).powi(2)
+        })
+        .sum::<f64>();
+    let ss_tot = points
+        .iter()
+        .map(|(_, y)| (y - mean_y).powi(2))
+        .sum::<f64>();
+    let r_sq = if ss_tot.abs() > f64::EPSILON {
+        1.0 - ss_res / ss_tot
+    } else {
+        0.0
+    };
+    let se_slope = if n > 2.0 {
+        let mse = ss_res / (n - 2.0);
+        let mean_x = sum_x / n;
+        let ss_xx = points
+            .iter()
+            .map(|(x, _)| (x - mean_x).powi(2))
+            .sum::<f64>();
+        if ss_xx.abs() > f64::EPSILON {
+            (mse / ss_xx).sqrt()
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    Some(LinearRegression {
+        slope,
+        intercept,
+        r_sq,
+        se_slope,
+    })
+}
+
 /// Plot rank vs iterations-to-reach as a scatter plot and save as PNG.
-#[expect(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, clippy::too_many_lines)]
 fn plot_rank_vs_iterations(
     results: &[VerifyResult],
     goal: &TreeNode<MathLabel>,
     path: &PathBuf,
+    cfg: &PlotConfig,
     log: &mut File,
 ) {
-    let points: Vec<(f64, f64)> = results
+    let reached = results
         .iter()
         .filter_map(|r| Some((r.rank as f64, r.iterations_to_reach? as f64)))
-        .collect();
+        .collect::<Vec<_>>();
+    let timed_out = results
+        .iter()
+        .filter(|r| !r.reached)
+        .map(|r| r.rank as f64)
+        .collect::<Vec<_>>();
 
-    if points.len() < 2 {
-        log!(log, "  Not enough reachable guides to plot.");
+    if reached.len() + timed_out.len() < 2 {
+        log!(log, "  Not enough guides to plot.");
         return;
     }
 
-    let max_rank = points.iter().map(|(x, _)| *x).fold(0.0_f64, f64::max);
-    let max_iters = points.iter().map(|(_, y)| *y).fold(0.0_f64, f64::max);
+    let max_rank = results
+        .iter()
+        .map(|r| r.rank as f64)
+        .fold(0.0_f64, f64::max);
+    let verify_iters_f = cfg.verify_iters as f64;
+    let max_iters = reached
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(verify_iters_f, f64::max);
 
     let root = BitMapBackend::new(path, (800, 600)).into_drawing_area();
     root.fill(&WHITE).expect("fill background");
 
     let corr = rank_iterations_correlation(results);
+    let guides_str = cfg
+        .num_guides
+        .map_or_else(|| "all".to_owned(), |g| g.to_string());
     let caption = format!(
-        "Rank vs Iterations (goal size {}, r={corr:.3})",
-        goal.size_without_types()
+        "Rank vs Iterations | {} | {} | {} | guides={} | goal_i={} guide_i={} | goal_size={}",
+        cfg.strategy,
+        cfg.distance,
+        cfg.distribution,
+        guides_str,
+        cfg.goal_iters,
+        cfg.guide_iters,
+        goal.size_without_types(),
     );
 
     let mut chart = ChartBuilder::on(&root)
-        .caption(&caption, ("sans-serif", 22))
+        .caption(&caption, ("sans-serif", 15))
         .margin(10)
         .x_label_area_size(35)
         .y_label_area_size(45)
@@ -769,13 +882,85 @@ fn plot_rank_vs_iterations(
         .draw()
         .expect("draw mesh");
 
+    // Draw reached guides as blue circles
     chart
         .draw_series(
-            points
+            reached
                 .iter()
                 .map(|&(x, y)| Circle::new((x, y), 3, BLUE.filled())),
         )
-        .expect("draw points");
+        .expect("draw reached points")
+        .label("reached")
+        .legend(|(x, y)| Circle::new((x, y), 3, BLUE.filled()));
+
+    // Draw timed-out guides as red crosses at y = verify_iters
+    if !timed_out.is_empty() {
+        chart
+            .draw_series(
+                timed_out
+                    .iter()
+                    .map(|&x| Cross::new((x, verify_iters_f), 3, RED.filled())),
+            )
+            .expect("draw timed-out points")
+            .label(format!("timed out (>{} iters)", cfg.verify_iters))
+            .legend(|(x, y)| Cross::new((x, y), 3, RED.filled()));
+
+        // Draw a dashed line at verify_iters to show the cutoff
+        chart
+            .draw_series(DashedLineSeries::new(
+                vec![(0.0, verify_iters_f), (max_rank * 1.05, verify_iters_f)],
+                5,
+                3,
+                RED.mix(0.4).stroke_width(1),
+            ))
+            .expect("draw cutoff line");
+    }
+
+    chart
+        .configure_series_labels()
+        .position(SeriesLabelPosition::UpperLeft)
+        .background_style(WHITE.mix(0.8))
+        .border_style(BLACK)
+        .draw()
+        .expect("draw legend");
+
+    // Linear regression on reached points only
+    if let Some(reg) = linear_regression(&reached) {
+        // Draw regression line
+        let x0 = 0.0_f64;
+        let x1 = max_rank * 1.05;
+        let y0 = (reg.intercept + reg.slope * x0).clamp(0.0, max_iters * 1.05);
+        let y1 = (reg.intercept + reg.slope * x1).clamp(0.0, max_iters * 1.05);
+        chart
+            .draw_series(LineSeries::new(
+                vec![(x0, y0), (x1, y1)],
+                RED.stroke_width(2),
+            ))
+            .expect("draw regression line");
+
+        // Draw stats text box in the bottom-right of the chart area
+        let n_timeout = timed_out.len();
+        let stats_text = format!(
+            "R² = {:.3}\nslope = {:.3} ± {:.3}\nr = {corr:.3}\nn = {} reached, {n_timeout} timed out",
+            reg.r_sq,
+            reg.slope,
+            reg.se_slope,
+            reached.len()
+        );
+        let text_style = ("sans-serif", 16).into_font().color(&BLACK);
+        let line_height = 20.0;
+        let n_lines = stats_text.lines().count();
+        for (i, line) in stats_text.lines().enumerate() {
+            let y_pos = line_height * (n_lines - i) as f64;
+            chart
+                .draw_series(std::iter::once(Text::new(
+                    line.to_owned(),
+                    (max_rank * 0.5, y_pos),
+                    text_style.clone(),
+                )))
+                .expect("draw stats text");
+        }
+    }
 
     root.present().expect("present plot");
     log!(log, "  Plot saved to {}", path.display());
