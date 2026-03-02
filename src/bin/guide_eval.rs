@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use clap::Parser;
@@ -479,6 +480,34 @@ fn print_summary(
         eprintln!(
             "  First viable guide at rank: {} (distance {})",
             successful[0].rank, successful[0].distance
+        );
+    }
+
+    // Breakdown by iterations-to-reach (None = unreached)
+    let mut by_iters: BTreeMap<Option<usize>, (Vec<usize>, Vec<usize>)> = BTreeMap::new();
+    for r in results {
+        let (ranks, sizes) = by_iters.entry(r.iterations_to_reach).or_default();
+        ranks.push(r.rank);
+        sizes.push(r.guide.size_without_types());
+    }
+    eprintln!("\n  Breakdown by iterations to reach:");
+    eprintln!(
+        "    {:>5}  {:>5}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
+        "iters", "count", "min_rank", "med_rank", "max_rank", "min_size", "med_size", "max_size"
+    );
+    for (iters_key, (mut ranks, mut sizes)) in by_iters {
+        ranks.sort_unstable();
+        sizes.sort_unstable();
+        let label = iters_key.map_or_else(|| "none".to_owned(), |i| i.to_string());
+        let count = ranks.len();
+        let min_r = ranks[0];
+        let med_r = ranks[count / 2];
+        let max_r = ranks[count - 1];
+        let min_s = sizes[0];
+        let med_s = sizes[count / 2];
+        let max_s = sizes[count - 1];
+        eprintln!(
+            "    {label:>5}  {count:>5}  {min_r:>8}  {med_r:>8}  {max_r:>8}  {min_s:>8}  {med_s:>8}  {max_s:>8}"
         );
     }
 
