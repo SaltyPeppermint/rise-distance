@@ -1,4 +1,5 @@
-use std::{fmt::Display, str::FromStr};
+use std::fmt::Display;
+use std::str::FromStr;
 
 use hashbrown::HashMap;
 use num::{BigUint, ToPrimitive};
@@ -14,6 +15,26 @@ impl Display for DistanceMetric {
         match self {
             Self::ZhangShasha => write!(f, "zhang-shasha"),
             Self::Structural => write!(f, "structural"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum SampleStrategy {
+    /// Use the `sample_with_overlap`
+    Overlap,
+    /// Sample fully random
+    Random,
+    /// Enumerate all terms up to the limit
+    Enumerate,
+}
+
+impl Display for SampleStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Overlap => write!(f, "overlap"),
+            Self::Random => write!(f, "random"),
+            Self::Enumerate => write!(f, "enumerate"),
         }
     }
 }

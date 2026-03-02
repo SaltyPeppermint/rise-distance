@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::time::Instant;
 
 use clap::Parser;
+use csv::Writer;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
+use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
 
-use rise_distance::cli::{DistanceMetric, SampleDistribution};
+use rise_distance::cli::{DistanceMetric, SampleDistribution, SampleStrategy};
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel};
 use rise_distance::egg::run_guide_goal;
 use rise_distance::{EGraph, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit};
@@ -40,11 +43,11 @@ struct Cli {
 
     /// Number of eqsat iterations to grow the egraph
     #[arg(short = 'n', long)]
-    goal_iteration: usize,
+    goal_iters: usize,
 
     /// Number of eqsat iterations to grow the egraph to reach the guide
     #[arg(short = 'i', long)]
-    guide_iteration: usize,
+    guide_iters: usize,
 
     /// Number of guide candidates to sample from the n-1 frontier
     #[arg(short, long, conflicts_with = "enumerate")]
@@ -59,12 +62,12 @@ struct Cli {
     max_size: Option<usize>,
 
     /// Distance metric to use for ranking
-    #[arg(short, long)] // default_value_t = DistanceMetric::ZhangShasha
+    #[arg(long)] // default_value_t = DistanceMetric::ZhangShasha
     distance: DistanceMetric,
 
     /// How to distribute the sample budget across sizes.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
-    #[arg(short = 'p', long, default_value_t = SampleDistribution::Uniform, conflicts_with = "enumerate")]
+    #[arg(long, default_value_t = SampleDistribution::Uniform)]
     distribution: SampleDistribution,
 
     /// CSV output file (stdout if omitted)
@@ -79,10 +82,9 @@ struct Cli {
     #[arg(long, default_value_t = 10)]
     top: usize,
 
-    /// Enumerate all terms exhaustively instead of sampling.
-    /// Only feasible for small egraphs.
+    /// Sample Strategy
     #[arg(long)]
-    enumerate: bool,
+    strategy: SampleStrategy,
 }
 
 struct VerifyResult {
@@ -96,7 +98,7 @@ struct VerifyResult {
 fn main() {
     let cli = Cli::parse();
     let rules = rise_distance::egg::math::rules();
-    let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iteration);
+    let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
 
     let seed = cli
         .seed
@@ -104,106 +106,102 @@ fn main() {
         .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
 
     eprintln!("Seed: {seed}");
-    eprintln!("Goal Iterations: {}", cli.goal_iteration);
-    eprintln!("Guide Iterations: {}", cli.guide_iteration);
+    eprintln!("Goal Iterations: {}", cli.goal_iters);
+    eprintln!("Guide Iterations: {}", cli.guide_iters);
     eprintln!("Distance metric: {}", cli.distance);
     eprintln!("Distribution: {}", cli.distribution);
 
     // Step 1: Grow egraph and capture snapshots at guide and target iterations
     eprintln!(
         "Running equality saturation for {} iterations...",
-        cli.goal_iteration
+        cli.goal_iters
     );
     let start = Instant::now();
     let [(prev_eg_guide, eg_guide), (prev_eg_goal, eg_goal)] =
-        run_guide_goal::<Math, ConstantFold, MathLabel, _>(
-            &seed,
-            &rules,
-            cli.guide_iteration,
-            cli.goal_iteration,
-        );
+        run_guide_goal(&seed, &rules, cli.guide_iters, cli.goal_iters);
     eprintln!("Eqsat completed in {:.2?}", start.elapsed());
 
     // Step 2: Sample goals from the iteration-n frontier
     eprintln!(
-        "Sampling goals from iteration-{} frontier...",
-        cli.goal_iteration
+        "\nSampling goals from iteration-{} frontier...",
+        cli.goal_iters
     );
     let max_size = cli.max_size.unwrap_or_else(|| {
-        let k = AstSize.cost_rec(&seed);
-        let m = k + k / 2;
-        eprintln!("No max_size was given, using 1.5 goal size (={m})");
+        let m = AstSize.cost_rec(&seed);
+        eprintln!("No max_size was given, using 1 goal size (={m})");
         m
     });
-    let goals = get_frontier_terms(
+    let goals = get_goal_term(
         &eg_goal,
         &prev_eg_goal,
         cli.goals,
         max_size,
         cli.distribution,
-        false,
     );
     if goals.is_empty() {
         eprintln!(
             "No frontier terms found at iteration {}. Try more iterations or a larger max-size.",
-            cli.goal_iteration
+            cli.goal_iters
         );
         return;
     }
     eprintln!("Sampled {} goal(s)", goals.len());
 
-    // Step 3: Get guides from the iteration-(n-1) frontier
-    eprintln!(
-        "Getting guides from iteration-{} frontier...",
-        cli.guide_iteration
-    );
-    let guide_count = if cli.enumerate {
-        usize::MAX
-    } else {
-        cli.guides
-            .expect("-g/--guides is required when not using --enumerate")
-    };
-    let guides = get_frontier_terms(
-        &eg_guide,
-        &prev_eg_guide,
-        guide_count,
-        max_size,
-        cli.distribution,
-        cli.enumerate,
-    );
-    if guides.is_empty() {
+    let mut guides_per_goal = HashMap::new();
+
+    for (id, goal) in goals.into_iter().enumerate() {
+        // Step 3: Get guides from the iteration-(n-1) frontier
+        eprintln!("Looking at goal {id}: {goal}");
         eprintln!(
-            "No frontier terms found at iteration {}.",
-            cli.guide_iteration
+            "\nGetting guides from iteration-{} frontier...",
+            cli.guide_iters
         );
-        return;
+        let guide_count = if let SampleStrategy::Enumerate = cli.strategy {
+            usize::MAX
+        } else {
+            cli.guides
+                .expect("-g/--guides is required when not using --strategy enumerate")
+        };
+        let guides = get_guide_terms(
+            &eg_guide,
+            &prev_eg_guide,
+            guide_count,
+            max_size,
+            cli.distribution,
+            cli.strategy,
+            &goal,
+        );
+        if guides.is_empty() {
+            eprintln!("No frontier terms found at iteration {}.", cli.guide_iters);
+        } else {
+            eprintln!("Found {} guide(s)", guides.len());
+        }
+        guides_per_goal.insert(goal, guides);
     }
-    eprintln!("Found {} guide(s)", guides.len());
 
     // Step 4 & 5: For each goal, rank guides by distance, then verify reachability
-    let cfg = EvalConfig {
-        guides: &guides,
-        rules: &rules,
-        metric: cli.distance,
+
+    run_eval(
+        &guides_per_goal,
+        &rules,
+        cli.distance,
         verify_iters,
-    };
-
-    let csv_writer = cli.output.as_deref().map(|path| {
-        let file = std::fs::File::create(path)
-            .unwrap_or_else(|e| panic!("Failed to create '{path}': {e}"));
-        csv::Writer::from_writer(file)
-    });
-
-    run_eval(&goals, &cfg, csv_writer, cli.top);
+        cli.top,
+        cli.output.as_deref(),
+    );
 }
 
 fn run_eval(
-    goals: &[TreeNode<MathLabel>],
-    cfg: &EvalConfig<'_>,
-    mut csv: Option<csv::Writer<std::fs::File>>,
+    guides_for_goal: &HashMap<TreeNode<MathLabel>, Vec<TreeNode<MathLabel>>>,
+    rules: &[Rewrite<Math, ConstantFold>],
+    metric: DistanceMetric,
+    verify_iters: usize,
     top: usize,
+    output: Option<&str>,
 ) {
-    if let Some(w) = csv.as_mut() {
+    let mut csv_writer = output.map(|path| {
+        let file = File::create(path).expect("Failed to create output csv");
+        let mut w = Writer::from_writer(file);
         w.write_record([
             "goal",
             "rank",
@@ -213,106 +211,89 @@ fn run_eval(
             "guide",
         ])
         .expect("write CSV header");
+        w
+    });
+
+    for (goal_idx, (goal, guides)) in guides_for_goal.iter().enumerate() {
+        eprintln!(
+            "\n=== Goal {}/{} (size {goal})===\n{}",
+            goal_idx + 1,
+            guides_for_goal.len(),
+            goal.size_without_types()
+        );
+
+        let ranked = rank_guides(guides, goal, metric);
+        eprintln!(
+            "Verifying {} guides (max {verify_iters} iters each)...",
+            ranked.len(),
+        );
+
+        let timer = Instant::now();
+        let goal_recexpr = goal
+            .to_string()
+            .parse::<RecExpr<Math>>()
+            .expect("goal round-trips to RecExpr");
+
+        let pb_style = ProgressStyle::with_template(
+            "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
+        )
+        .unwrap();
+
+        let results = ranked
+            .into_par_iter()
+            .enumerate()
+            .progress_with_style(pb_style)
+            .map(|(rank, (dist_val, guide))| {
+                let iters = verify_reachability(&guide, &goal_recexpr, rules, verify_iters);
+                VerifyResult {
+                    rank: rank + 1,
+                    distance: dist_val,
+                    reached: iters.is_some(),
+                    iterations_to_reach: iters,
+                    guide,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        eprintln!("Verification completed in {:.2?}", timer.elapsed());
+
+        if let Some(w) = &mut csv_writer {
+            let goal_str = goal.to_string();
+            for r in &results {
+                w.write_record([
+                    &goal_str,
+                    &r.rank.to_string(),
+                    &r.distance.to_string(),
+                    &r.reached.to_string(),
+                    &r.iterations_to_reach
+                        .map_or_else(String::new, |i| i.to_string()),
+                    &r.guide.to_string(),
+                ])
+                .expect("write CSV row");
+            }
+        }
+
+        print_summary(&results, goal, verify_iters, top);
     }
-    for (goal_idx, goal) in goals.iter().enumerate() {
-        evaluate_goal(goal, goal_idx, goals.len(), cfg, csv.as_mut(), top);
-    }
-    if let Some(w) = csv.as_mut() {
+    if let Some(w) = csv_writer.as_mut() {
         w.flush().expect("flush CSV");
     }
-}
-
-struct EvalConfig<'a> {
-    guides: &'a [TreeNode<MathLabel>],
-    rules: &'a [Rewrite<Math, ConstantFold>],
-    metric: DistanceMetric,
-    verify_iters: usize,
-}
-
-fn evaluate_goal(
-    goal: &TreeNode<MathLabel>,
-    goal_idx: usize,
-    total_goals: usize,
-    cfg: &EvalConfig<'_>,
-    csv: Option<&mut csv::Writer<std::fs::File>>,
-    top: usize,
-) {
-    eprintln!(
-        "\n=== Goal {}/{}: {} (size {}) ===",
-        goal_idx + 1,
-        total_goals,
-        goal,
-        goal.size_without_types()
-    );
-
-    let ranked = rank_guides(cfg.guides, goal, cfg.metric);
-    eprintln!(
-        "Verifying {} guides (max {} iters each)...",
-        ranked.len(),
-        cfg.verify_iters
-    );
-
-    let timer = Instant::now();
-    let goal_recexpr = goal
-        .to_string()
-        .parse::<RecExpr<Math>>()
-        .expect("goal round-trips to RecExpr");
-
-    let pb_style = ProgressStyle::with_template(
-        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
-    )
-    .unwrap();
-
-    let results = ranked
-        .into_par_iter()
-        .enumerate()
-        .progress_with_style(pb_style)
-        .map(|(rank, (dist_val, guide))| {
-            let iters = verify_reachability(&guide, &goal_recexpr, cfg.rules, cfg.verify_iters);
-            VerifyResult {
-                rank: rank + 1,
-                distance: dist_val,
-                reached: iters.is_some(),
-                iterations_to_reach: iters,
-                guide,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    eprintln!("Verification completed in {:.2?}", timer.elapsed());
-
-    if let Some(w) = csv {
-        let goal_str = goal.to_string();
-        for r in &results {
-            w.write_record([
-                &goal_str,
-                &r.rank.to_string(),
-                &r.distance.to_string(),
-                &r.reached.to_string(),
-                &r.iterations_to_reach
-                    .map_or_else(String::new, |i| i.to_string()),
-                &r.guide.to_string(),
-            ])
-            .expect("write CSV row");
-        }
-    }
-
-    print_summary(&results, goal, cfg.verify_iters, top);
 }
 
 /// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
 ///
 /// When `enumerate` is true, enumerates all terms exhaustively.
 /// Otherwise, samples terms using the given distribution.
-fn get_frontier_terms(
+fn get_guide_terms(
     egraph: &EGraph<MathLabel>,
     prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
     count: usize,
     max_size: usize,
     distribution: SampleDistribution,
-    enumerate: bool,
+    strategy: SampleStrategy,
+    goal: &TreeNode<MathLabel>,
 ) -> Vec<TreeNode<MathLabel>> {
-    let tc = TermCount::<BigUint, MathLabel>::new(max_size, false, egraph);
+    let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
 
     let Some(histogram) = tc.of_root() else {
         return Vec::new();
@@ -320,48 +301,109 @@ fn get_frontier_terms(
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
     sorted_hist.sort_unstable();
+    eprintln!("Terms in goal frontier:");
     for (k, v) in &sorted_hist {
         eprintln!("{v} terms of size {k}");
     }
 
-    let is_frontier = |tree: &TreeNode<MathLabel>| {
-        let Ok(recexpr) = tree.to_string().parse::<RecExpr<Math>>() else {
-            return false;
-        };
-        prev_raw_egg.lookup_expr(&recexpr).is_none()
+    match strategy {
+        SampleStrategy::Enumerate => {
+            let total_terms = histogram.values().cloned().sum::<BigUint>();
+            eprintln!("Enumerating all {total_terms} terms up to size {max_size}");
+
+            let pb = ProgressBar::new(max_size as u64);
+            tc.enumerate_root(max_size, Some(pb))
+                .into_iter()
+                .filter(|t| is_frontier(t, prev_raw_egg))
+                .take(count)
+                .collect()
+        }
+        SampleStrategy::Random => {
+            let min_size = histogram.keys().min().copied().unwrap_or(1);
+            // Oversample 5x to account for rejection filtering
+            #[expect(clippy::cast_precision_loss)]
+            let normal_center = (min_size + max_size) as f64 / 2.0;
+            let samples_per_size = distribution.samples_per_size(
+                histogram,
+                min_size,
+                max_size,
+                count * 5,
+                normal_center,
+            );
+
+            tc.sample_unique_root(min_size, max_size, &samples_per_size)
+                .into_iter()
+                .filter(|t| is_frontier(t, prev_raw_egg))
+                .take(count)
+                .collect()
+        }
+        SampleStrategy::Overlap => {
+            let min_size = histogram.keys().min().copied().unwrap_or(1);
+            // Oversample 5x to account for rejection filtering
+            #[expect(clippy::cast_precision_loss)]
+            let normal_center = (min_size + max_size) as f64 / 2.0;
+            let samples_per_size = distribution.samples_per_size(
+                histogram,
+                min_size,
+                max_size,
+                count * 5,
+                normal_center,
+            );
+            tc.sample_unique_root_overlap(goal, min_size, max_size, &samples_per_size)
+                .into_iter()
+                .filter(|t| is_frontier(t, prev_raw_egg))
+                .take(count)
+                .collect()
+        }
+    }
+}
+
+/// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
+///
+/// When `enumerate` is true, enumerates all terms exhaustively.
+/// Otherwise, samples terms using the given distribution.
+fn get_goal_term(
+    egraph: &EGraph<MathLabel>,
+    prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
+    count: usize,
+    max_size: usize,
+    distribution: SampleDistribution,
+) -> Vec<TreeNode<MathLabel>> {
+    let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
+
+    let Some(histogram) = tc.of_root() else {
+        return Vec::new();
     };
 
-    if enumerate {
-        let total_terms: BigUint = histogram.values().cloned().sum();
-        eprintln!("Enumerating all {total_terms} terms up to size {max_size}");
-
-        let pb = ProgressBar::new(max_size as u64);
-        tc.enumerate_root(max_size, Some(pb))
-            .into_iter()
-            .filter(is_frontier)
-            .take(count)
-            .collect()
-    } else {
-        let min_size = histogram.keys().min().copied().unwrap_or(1);
-        // Oversample 5x to account for rejection filtering
-        let total_samples = count * 5;
-
-        #[expect(clippy::cast_precision_loss)]
-        let normal_center = (min_size + max_size) as f64 / 2.0;
-        let samples_per_size = distribution.samples_per_size(
-            histogram,
-            min_size,
-            max_size,
-            total_samples,
-            normal_center,
-        );
-
-        tc.sample_unique_root(min_size, max_size, &samples_per_size)
-            .into_iter()
-            .filter(is_frontier)
-            .take(count)
-            .collect()
+    let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
+    sorted_hist.sort_unstable();
+    eprintln!("Terms in guide frontier:");
+    for (k, v) in &sorted_hist {
+        eprintln!("{v} terms of size {k}");
     }
+
+    let min_size = histogram.keys().min().copied().unwrap_or(1);
+    // Oversample 5x to account for rejection filtering
+    let total_samples = count * 5;
+
+    #[expect(clippy::cast_precision_loss)]
+    let normal_center = (min_size + max_size) as f64 / 2.0;
+    let samples_per_size =
+        distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
+
+    tc.sample_unique_root(min_size, max_size, &samples_per_size)
+        .into_iter()
+        .filter(|t| is_frontier(t, prev_raw_egg))
+        .take(count)
+        .collect()
+}
+
+/// Helper function to check if something is in the frontier
+fn is_frontier(tree: &TreeNode<MathLabel>, prev_raw_egg: &egg::EGraph<Math, ConstantFold>) -> bool {
+    let Ok(recexpr) = tree.to_string().parse::<RecExpr<Math>>() else {
+        return false;
+    };
+    prev_raw_egg.lookup_expr(&recexpr).is_none()
 }
 
 /// Rank guides by distance to the goal. Returns `(distance, guide)` pairs sorted ascending.
@@ -375,7 +417,7 @@ fn rank_guides(
         "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
     )
     .unwrap();
-    let mut ranked: Vec<_> = guides
+    let mut ranked = guides
         .par_iter()
         .progress_with_style(pb_style)
         .map(|guide| {
@@ -388,7 +430,7 @@ fn rank_guides(
             };
             (dist, guide.clone())
         })
-        .collect();
+        .collect::<Vec<_>>();
     ranked.sort_by_key(|(d, _)| *d);
     ranked
 }
