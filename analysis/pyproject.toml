@@ -14,7 +14,7 @@ dependencies = [
     "tensorboard",
     "tqdm",
     "flash-linear-attention",
-    "causal-conv1d",
+    # "causal-conv1d",
 ]
 
 [dependency-groups]
