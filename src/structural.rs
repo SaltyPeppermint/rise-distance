@@ -1,18 +1,48 @@
 use std::cmp::Reverse;
 use std::fmt::Display;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{tree::FlattenedTreeNode, tree_distance};
 
 use super::{EditCosts, Label};
 
 /// Structural Distance: More `overlap` is better, otherwise fall back on `zs_sum` as a tiebreaker
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StructuralDistance {
     // More overlap is good, so to make the derives meaningful, we have to reverse them!
     overlap: Reverse<usize>,
     zs_sum: usize,
+}
+
+impl Serialize for StructuralDistance {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Flat {
+            structural_overlap: usize,
+            structural_zs_sum: usize,
+        }
+        Flat {
+            structural_overlap: self.overlap.0,
+            structural_zs_sum: self.zs_sum,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for StructuralDistance {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Flat {
+            structural_overlap: usize,
+            structural_zs_sum: usize,
+        }
+        let flat = Flat::deserialize(deserializer)?;
+        Ok(StructuralDistance {
+            overlap: Reverse(flat.structural_overlap),
+            zs_sum: flat.structural_zs_sum,
+        })
+    }
 }
 
 impl Display for StructuralDistance {

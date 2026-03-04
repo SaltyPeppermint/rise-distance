@@ -96,7 +96,6 @@ struct Cli {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct VerifyResult {
-    #[serde(flatten)]
     guide: RankedGuide,
     reached: bool,
     iterations_to_reach: Option<usize>,
@@ -259,18 +258,6 @@ fn run_eval(
     log: &mut File,
 ) {
     let mut csv_writer = Writer::from_writer(output);
-    csv_writer
-        .write_record([
-            "goal",
-            "zs_rank",
-            "zs_distance",
-            "structural_rank",
-            "structural_distance",
-            "reached",
-            "iterations_to_reach",
-            "guide",
-        ])
-        .expect("write CSV header");
 
     for (goal_idx, (goal, guides)) in guides_for_goal.into_iter().enumerate() {
         log!(
@@ -317,22 +304,42 @@ fn run_eval(
 
         print_summary(&results, goal, verify_iters, log);
         let goal_str = goal.to_string();
-        for r in results {
+        for r in &results {
             csv_writer
-                .serialize(Record {
-                    goal: goal_str.clone(),
-                    verify_results: r,
-                })
+                .serialize(CsvRecord::new(&goal_str, r))
                 .expect("write CSV row");
         }
     }
     csv_writer.flush().expect("flush CSV");
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Record {
+#[derive(Debug, Serialize)]
+struct CsvRecord {
     goal: String,
-    verify_results: VerifyResult,
+    guide: String,
+    zs_distance: usize,
+    structural_overlap: usize,
+    structural_zs_sum: usize,
+    zs_rank: usize,
+    structural_rank: usize,
+    reached: bool,
+    iterations_to_reach: Option<usize>,
+}
+
+impl CsvRecord {
+    fn new(goal: &str, r: &VerifyResult) -> Self {
+        Self {
+            goal: goal.to_owned(),
+            guide: r.guide.guide.to_string(),
+            zs_distance: r.guide.zs_distance,
+            structural_overlap: r.guide.structural_distance.overlap(),
+            structural_zs_sum: r.guide.structural_distance.zs_sum(),
+            zs_rank: r.guide.zs_rank,
+            structural_rank: r.guide.structural_rank,
+            reached: r.reached,
+            iterations_to_reach: r.iterations_to_reach,
+        }
+    }
 }
 
 /// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
@@ -471,7 +478,6 @@ fn is_frontier(tree: &TreeNode<MathLabel>, prev_raw_egg: &egg::EGraph<Math, Cons
 struct RankedGuide {
     guide: TreeNode<MathLabel>,
     zs_distance: usize,
-    #[serde(flatten)]
     structural_distance: StructuralDistance,
     zs_rank: usize,
     structural_rank: usize,
