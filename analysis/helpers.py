@@ -2,58 +2,81 @@ import numpy as np
 import polars as pl
 import matplotlib.pyplot as plt
 from scipy.stats import spearmanr, kendalltau
-from sklearn.linear_model import LinearRegression
+
+# For kendalltau on large datasets, subsample to this size (O(n²) algorithm).
+KENDALL_MAX_N = 50_000
 
 
 def compute_correlations(
     data: pl.DataFrame, predictors: list[str], target: str
 ) -> pl.DataFrame:
-    """Compute Spearman rho, Kendall tau, and OLS R² for each predictor vs target."""
+    """Compute Spearman rho, Kendall tau, and OLS R² for each predictor vs target.
+
+    OLS stats are computed via closed-form formulas (no sklearn overhead).
+    Kendall tau is subsampled when n > KENDALL_MAX_N to avoid O(n²) blowup.
+    """
     reached = data.filter(pl.col("reached")).drop_nulls(subset=[target])
+    if len(reached) < 3:
+        return pl.DataFrame()
+
+    # Pull all needed columns once
+    arrays: dict[str, np.ndarray] = {}
+    for c in [target] + [p for p in predictors if p in reached.columns]:
+        arrays[c] = reached[c].to_numpy().astype(float)
+
+    y_full = arrays[target]
+    n = len(y_full)
+
     rows = []
     for pred in predictors:
-        if pred not in reached.columns:
+        if pred not in arrays:
             continue
-        col = reached[pred].drop_nulls()
-        tgt = reached[target].drop_nulls()
-        # Align lengths
-        n = min(len(col), len(tgt))
-        if n < 3:
-            continue
-        x = col[:n].to_numpy().astype(float)
-        y = tgt[:n].to_numpy().astype(float)
+        x = arrays[pred]
 
-        rho, rho_p = spearmanr(x, y)
-        tau, tau_p = kendalltau(x, y)
+        # ── Spearman (scipy, fast O(n log n)) ──
+        rho, rho_p = spearmanr(x, y_full)
 
-        # OLS
-        reg = LinearRegression().fit(x.reshape(-1, 1), y)
-        r2 = reg.score(x.reshape(-1, 1), y)
-        slope = reg.coef_[0]
-        intercept = reg.intercept_
+        # ── Kendall tau (subsample if large) ──
+        if n > KENDALL_MAX_N:
+            rng = np.random.default_rng(42)
+            idx = rng.choice(n, KENDALL_MAX_N, replace=False)
+            tau, tau_p = kendalltau(x[idx], y_full[idx])
+        else:
+            tau, tau_p = kendalltau(x, y_full)
 
-        # Standard error of slope
-        y_pred = reg.predict(x.reshape(-1, 1))
-        residuals = y - y_pred
-        mse = np.sum(residuals**2) / max(n - 2, 1)
-        ss_xx = np.sum((x - x.mean()) ** 2)
+        # ── OLS via closed-form (avoids sklearn object overhead) ──
+        x_mean = x.mean()
+        y_mean = y_full.mean()
+        x_centered = x - x_mean
+        ss_xx = x_centered @ x_centered
+        ss_xy = x_centered @ (y_full - y_mean)
+        slope = ss_xy / ss_xx if ss_xx > 1e-12 else 0.0
+        intercept = y_mean - slope * x_mean
+        residuals = y_full - (slope * x + intercept)
+        ss_res = residuals @ residuals
+        ss_tot = (y_full - y_mean) @ (y_full - y_mean)
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0
+        mse = ss_res / max(n - 2, 1)
         se_slope = np.sqrt(mse / ss_xx) if ss_xx > 1e-12 else 0.0
 
         rows.append(
             {
                 "predictor": pred,
                 "n": n,
-                "spearman_rho": round(rho, 4),
-                "spearman_p": round(rho_p, 6),
-                "kendall_tau": round(tau, 4),
-                "kendall_p": round(tau_p, 6),
-                "R²": round(r2, 4),
-                "slope": round(slope, 4),
-                "SE_slope": round(se_slope, 4),
-                "intercept": round(intercept, 4),
+                "spearman_rho": round(float(rho), 4),  # pyright: ignore[reportArgumentType]
+                "spearman_p": round(float(rho_p), 6),  # pyright: ignore[reportArgumentType]
+                "kendall_tau": round(float(tau), 4),  # pyright: ignore[reportArgumentType]
+                "kendall_p": round(float(tau_p), 6),  # pyright: ignore[reportArgumentType]
+                "R²": round(float(r2), 4),
+                "slope": round(float(slope), 4),
+                "SE_slope": round(float(se_slope), 4),
+                "intercept": round(float(intercept), 4),
             }
         )
     return pl.DataFrame(rows)
+
+
+SCATTER_MAX_POINTS = 20_000
 
 
 def plot_predictor_vs_iters(
@@ -61,52 +84,87 @@ def plot_predictor_vs_iters(
     predictor: str,
     target: str = "iterations_to_reach",
     title_suffix: str = "",
-    ax: plt.Axes | None = None,
+    ax: plt.Axes | None = None,  # pyright: ignore[reportPrivateImportUsage]
+    max_points: int = SCATTER_MAX_POINTS,
 ):
-    """Scatter plot of predictor vs iterations, with reached/timed-out markers and OLS line."""
+    """Scatter plot of predictor vs iterations, with reached/timed-out markers and OLS line.
+
+    Downsamples to `max_points` for rendering speed; OLS line uses full data.
+    """
     if ax is None:
         _, ax = plt.subplots()
 
     reached = data.filter(pl.col("reached")).drop_nulls(subset=[target])
     timed_out = data.filter(~pl.col("reached"))
 
-    # Reached points
     x_r = reached[predictor].to_numpy().astype(float)
     y_r = reached[target].to_numpy().astype(float)
+
+    # Downsample for plotting only
+    n_r = len(x_r)
+    if n_r > max_points:
+        rng = np.random.default_rng(0)
+        idx = rng.choice(n_r, max_points, replace=False)
+        x_r_plot, y_r_plot = x_r[idx], y_r[idx]
+    else:
+        x_r_plot, y_r_plot = x_r, y_r
+
     ax.scatter(
-        x_r, y_r, c="steelblue", s=20, alpha=0.6, label=f"reached (n={len(x_r)})"
+        x_r_plot,
+        y_r_plot,
+        c="steelblue",
+        s=10,
+        alpha=0.4,
+        label=f"reached (n={n_r})",
+        rasterized=True,
     )
 
     # Timed-out points (plotted at max_iters + 1)
-    if len(timed_out) > 0:
+    n_t = len(timed_out)
+    if n_t > 0:
         x_t = timed_out[predictor].to_numpy().astype(float)
         timeout_y = y_r.max() + 1 if len(y_r) > 0 else 1
+        if n_t > max_points:
+            rng = np.random.default_rng(1)
+            idx = rng.choice(n_t, max_points, replace=False)
+            x_t_plot = x_t[idx]
+        else:
+            x_t_plot = x_t
         ax.scatter(
-            x_t,
-            np.full_like(x_t, timeout_y),
+            x_t_plot,
+            np.full_like(x_t_plot, timeout_y),
             c="red",
-            marker="x",
-            s=20,
-            alpha=0.5,
-            label=f"timed out (n={len(x_t)})",
+            marker="x",  # type: ignore[arg-type]
+            s=10,
+            alpha=0.3,
+            label=f"timed out (n={n_t})",
+            rasterized=True,
         )
         ax.axhline(timeout_y, color="red", ls="--", alpha=0.3, lw=1)
 
-    # OLS regression line (reached only)
+    # OLS regression line (full data, closed-form)
     if len(x_r) >= 2:
-        reg = LinearRegression().fit(x_r.reshape(-1, 1), y_r)
+        x_mean = x_r.mean()
+        y_mean = y_r.mean()
+        x_c = x_r - x_mean
+        ss_xx = x_c @ x_c
+        slope = (x_c @ (y_r - y_mean)) / ss_xx if ss_xx > 1e-12 else 0.0
+        intercept = y_mean - slope * x_mean
+        resid = y_r - (slope * x_r + intercept)
+        ss_tot = (y_r - y_mean) @ (y_r - y_mean)
+        r2 = 1.0 - (resid @ resid) / ss_tot if ss_tot > 1e-12 else 0.0
         x_line = np.linspace(x_r.min(), x_r.max(), 100)
         ax.plot(
             x_line,
-            reg.predict(x_line.reshape(-1, 1)),
+            slope * x_line + intercept,
             c="green",
             lw=2,
             alpha=0.7,
-            label=f"OLS (R²={reg.score(x_r.reshape(-1, 1), y_r):.3f})",
+            label=f"OLS (R²={r2:.3f})",
         )
 
     ax.set_xlabel(predictor)
     ax.set_ylabel(target)
     ax.set_title(f"{predictor} vs {target}{title_suffix}")
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=8, loc="upper left")
     return ax
