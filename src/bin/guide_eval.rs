@@ -468,10 +468,7 @@ fn get_goal_term(
 
 /// Helper function to check if something is in the frontier
 fn is_frontier(tree: &TreeNode<MathLabel>, prev_raw_egg: &egg::EGraph<Math, ConstantFold>) -> bool {
-    let Ok(recexpr) = tree.to_string().parse::<RecExpr<Math>>() else {
-        return false;
-    };
-    prev_raw_egg.lookup_expr(&recexpr).is_none()
+    prev_raw_egg.lookup_expr(&tree.into()).is_none()
 }
 
 #[derive(Serialize, Deserialize, Debug)]

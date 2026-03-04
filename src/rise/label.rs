@@ -6,9 +6,13 @@ use std::str::FromStr;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::address::Address;
+use super::expr::{Expr, ExprNode, LiteralData};
+use super::nat::Nat;
 use super::primitive::Primitive;
-use super::types::ScalarType;
+use super::types::{DataType, ScalarType, Type};
 use crate::nodes::Label;
+use crate::tree::TreeNode;
 
 /// A compact label type for Rise that implements the Label trait.
 ///
@@ -295,6 +299,157 @@ impl<'de> Deserialize<'de> for RiseLabel {
     }
 }
 
+impl From<&TreeNode<RiseLabel>> for Expr {
+    fn from(tree: &TreeNode<RiseLabel>) -> Self {
+        let ty = tree.ty().map(tree_to_type);
+        let node = match tree.label() {
+            // Leaf expression labels
+            RiseLabel::Var(i) => ExprNode::Var(*i),
+            RiseLabel::BoolLit(b) => ExprNode::Literal(LiteralData::Bool(*b)),
+            RiseLabel::IntLit(n) => ExprNode::Literal(LiteralData::Int(*n)),
+            RiseLabel::FloatLit(f) => ExprNode::Literal(LiteralData::Float(*f)),
+            RiseLabel::DoubleLit(d) => ExprNode::Literal(LiteralData::Double(*d)),
+            RiseLabel::NatLit(n) => ExprNode::Literal(LiteralData::Nat(*n)),
+            RiseLabel::Primitive(p) => ExprNode::Primitive(p.clone()),
+
+            // Nat labels in expression position -> NatLiteral
+            RiseLabel::NatVar(_)
+            | RiseLabel::NatCst(_)
+            | RiseLabel::NatAdd
+            | RiseLabel::NatMul
+            | RiseLabel::NatPow
+            | RiseLabel::NatMod
+            | RiseLabel::NatFloorDiv => ExprNode::NatLiteral(tree_to_nat(tree)),
+
+            // Binary expression: (app f e)
+            RiseLabel::App => {
+                let f = Expr::from(&tree.children()[0]);
+                let e = Expr::from(&tree.children()[1]);
+                ExprNode::App(Box::new(f), Box::new(e))
+            }
+
+            // Unary expression lambdas
+            RiseLabel::Lambda => ExprNode::Lambda(Box::new(Expr::from(&tree.children()[0]))),
+            RiseLabel::NatLambda => ExprNode::NatLambda(Box::new(Expr::from(&tree.children()[0]))),
+            RiseLabel::DataLambda => {
+                ExprNode::DataLambda(Box::new(Expr::from(&tree.children()[0])))
+            }
+            RiseLabel::AddrLambda => {
+                ExprNode::AddrLambda(Box::new(Expr::from(&tree.children()[0])))
+            }
+            RiseLabel::NatNatLambda => {
+                ExprNode::NatNatLambda(Box::new(Expr::from(&tree.children()[0])))
+            }
+
+            // Application with heterogeneous second child
+            RiseLabel::NatApp => {
+                let f = Expr::from(&tree.children()[0]);
+                let n = tree_to_nat(&tree.children()[1]);
+                ExprNode::NatApp(Box::new(f), n)
+            }
+            RiseLabel::DataApp => {
+                let f = Expr::from(&tree.children()[0]);
+                let dt = tree_to_data_type(&tree.children()[1]);
+                ExprNode::DataApp(Box::new(f), dt)
+            }
+            RiseLabel::AddrApp => {
+                let f = Expr::from(&tree.children()[0]);
+                let addr = tree_to_address(&tree.children()[1]);
+                ExprNode::AddrApp(Box::new(f), addr)
+            }
+
+            // IndexLiteral: (idxL nat nat)
+            RiseLabel::IndexLiteral => {
+                let i = tree_to_nat(&tree.children()[0]);
+                let n = tree_to_nat(&tree.children()[1]);
+                ExprNode::IndexLiteral(i, n)
+            }
+
+            _ => panic!(
+                "unexpected label in expression position: {:?}",
+                tree.label()
+            ),
+        };
+        Expr { node, ty }
+    }
+}
+
+fn tree_to_nat(tree: &TreeNode<RiseLabel>) -> Nat {
+    match tree.label() {
+        RiseLabel::NatVar(i) => Nat::Var(*i),
+        RiseLabel::NatCst(n) => Nat::Cst(*n),
+        RiseLabel::NatAdd => Nat::Add(
+            Box::new(tree_to_nat(&tree.children()[0])),
+            Box::new(tree_to_nat(&tree.children()[1])),
+        ),
+        RiseLabel::NatMul => Nat::Mul(
+            Box::new(tree_to_nat(&tree.children()[0])),
+            Box::new(tree_to_nat(&tree.children()[1])),
+        ),
+        RiseLabel::NatPow => Nat::Pow(
+            Box::new(tree_to_nat(&tree.children()[0])),
+            Box::new(tree_to_nat(&tree.children()[1])),
+        ),
+        RiseLabel::NatMod => Nat::Mod(
+            Box::new(tree_to_nat(&tree.children()[0])),
+            Box::new(tree_to_nat(&tree.children()[1])),
+        ),
+        RiseLabel::NatFloorDiv => Nat::FloorDiv(
+            Box::new(tree_to_nat(&tree.children()[0])),
+            Box::new(tree_to_nat(&tree.children()[1])),
+        ),
+        _ => panic!("unexpected label in nat position: {:?}", tree.label()),
+    }
+}
+
+fn tree_to_address(tree: &TreeNode<RiseLabel>) -> Address {
+    match tree.label() {
+        RiseLabel::AddrVar(i) => Address::Var(*i),
+        RiseLabel::Global => Address::Global,
+        RiseLabel::Local => Address::Local,
+        RiseLabel::Private => Address::Private,
+        RiseLabel::Constant => Address::Constant,
+        _ => panic!("unexpected label in address position: {:?}", tree.label()),
+    }
+}
+
+fn tree_to_data_type(tree: &TreeNode<RiseLabel>) -> DataType {
+    match tree.label() {
+        RiseLabel::DataVar(i) => DataType::Var(*i),
+        RiseLabel::Scalar(s) => DataType::Scalar(s.clone()),
+        RiseLabel::NatT => DataType::NatT,
+        RiseLabel::IdxT => DataType::Index(Box::new(tree_to_nat(&tree.children()[0]))),
+        RiseLabel::PairT => DataType::Pair(
+            Box::new(tree_to_data_type(&tree.children()[0])),
+            Box::new(tree_to_data_type(&tree.children()[1])),
+        ),
+        RiseLabel::ArrT => DataType::Array(
+            Box::new(tree_to_nat(&tree.children()[0])),
+            Box::new(tree_to_data_type(&tree.children()[1])),
+        ),
+        RiseLabel::VecT => DataType::Vector(
+            Box::new(tree_to_nat(&tree.children()[0])),
+            Box::new(tree_to_data_type(&tree.children()[1])),
+        ),
+        _ => panic!("unexpected label in data type position: {:?}", tree.label()),
+    }
+}
+
+fn tree_to_type(tree: &TreeNode<RiseLabel>) -> Type {
+    match tree.label() {
+        RiseLabel::Fun => Type::Fun(
+            Box::new(tree_to_type(&tree.children()[0])),
+            Box::new(tree_to_type(&tree.children()[1])),
+        ),
+        RiseLabel::NatFun => Type::NatFun(Box::new(tree_to_type(&tree.children()[0]))),
+        RiseLabel::DataFun => Type::DataFun(Box::new(tree_to_type(&tree.children()[0]))),
+        RiseLabel::AddrFun => Type::AddrFun(Box::new(tree_to_type(&tree.children()[0]))),
+        RiseLabel::NatNatFun => Type::NatNatFun(Box::new(tree_to_type(&tree.children()[0]))),
+        // Data type labels in type position -> Type::Data
+        _ => Type::Data(tree_to_data_type(tree)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +482,26 @@ mod tests {
             RiseLabel::from_str("f32").unwrap(),
             RiseLabel::Scalar(ScalarType::F32)
         );
+    }
+
+    #[test]
+    fn tree_to_expr_roundtrip() {
+        let exprs = [
+            "(app map (lam $e0))",
+            "$e0",
+            "(natLam (natLam $e0))",
+            "(natApp map 5n)",
+            "(idxL $n0 10n)",
+            "(typeOf (lam (typeOf $e0 f32)) (fun f32 f32))",
+            "(dataApp map (arrT 10n f32))",
+            "(addrApp $e0 global)",
+        ];
+        for input in exprs {
+            let expr = input.parse::<Expr>().unwrap();
+            let tree = expr.to_tree();
+            let recovered = Expr::from(&tree);
+            assert_eq!(expr, recovered, "roundtrip failed for {input}");
+        }
     }
 
     #[test]
