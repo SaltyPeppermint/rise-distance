@@ -12,7 +12,7 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
 
-use rise_distance::cli::{DistanceMetric, SampleDistribution, SampleStrategy, log};
+use rise_distance::cli::{SampleDistribution, SampleStrategy, log};
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel};
 use rise_distance::egg::run_guide_goal;
 use rise_distance::{
@@ -233,15 +233,18 @@ fn main() {
 /// Create an output file for this run.
 ///
 /// If `-o` was given, uses that path directly. Otherwise, auto-generates a
-/// filename like `run-{guide_iters}-{goal_iters}-sampling_{N}{ending}` in the
-/// current directory, where `N` is one higher than the largest existing run number.
+/// filename like `runs/run-{guide_iters}-{goal_iters}-sampling_{N}{ending}`
+/// inside a `runs/` directory (created if needed), where `N` is one higher
+/// than the largest existing run number.
 /// `ending` should include the leading dot (e.g. `".csv"`).
 fn output_file_path(cli: &Cli, ending: &str) -> PathBuf {
     cli.output.as_deref().map_or_else(
         || {
+            let runs_dir = current_dir().unwrap().join("runs");
+            std::fs::create_dir_all(&runs_dir).expect("Failed to create runs/ directory");
+
             let pat = format!("run-{}-{}-sampling", cli.guide_iters, cli.goal_iters);
-            let max_existing = current_dir()
-                .unwrap()
+            let max_existing = runs_dir
                 .read_dir()
                 .unwrap()
                 .filter_map(|e| {
@@ -258,7 +261,7 @@ fn output_file_path(cli: &Cli, ending: &str) -> PathBuf {
                 .max()
                 .unwrap_or(0);
             let pat = format!("{pat}_{}{ending}", max_existing + 1);
-            current_dir().unwrap().join(pat)
+            runs_dir.join(pat)
         },
         PathBuf::from,
     )

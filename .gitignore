@@ -1,6 +1,6 @@
 /target
-*.log
 .DS_Store
 profile.json.gz
-*.csv
-*.png
+/runs/
+/old_runs/
+*.log
