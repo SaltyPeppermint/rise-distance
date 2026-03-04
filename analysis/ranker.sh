@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uv run jupyter nbconvert --to notebook --execute --inplace --log-level=INFO analysis/ranker.ipynb 2>&1 | tee ranker-run.log
+cd "$(dirname "$0")"
+export MPLBACKEND=Agg
+
+uv run jupyter nbconvert --to script --stdout ranker.ipynb | uv run python - 2>&1
