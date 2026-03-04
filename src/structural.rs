@@ -47,7 +47,7 @@ impl<'de> Deserialize<'de> for StructuralDistance {
 
 impl Display for StructuralDistance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "o:{}/zs:{}", self.overlap.0, self.zs_sum)
+        write!(f, "o:{}/zs:{}", self.overlap.0, self.zs_sum)
     }
 }
 
