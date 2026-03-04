@@ -1,4 +1,5 @@
 use std::cmp::Reverse;
+use std::fmt::Display;
 
 use crate::{tree::FlattenedTreeNode, tree_distance};
 
@@ -10,6 +11,12 @@ pub struct StructuralDistance {
     // More overlap is good, so to make the derives meaningful, we have to reverse them!
     overlap: Reverse<usize>,
     zs_sum: usize,
+}
+
+impl Display for StructuralDistance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "o:{}/zs:{}", self.overlap.0, self.zs_sum)
+    }
 }
 
 impl StructuralDistance {
