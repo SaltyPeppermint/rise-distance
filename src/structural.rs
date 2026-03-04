@@ -1,12 +1,14 @@
 use std::cmp::Reverse;
 use std::fmt::Display;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{tree::FlattenedTreeNode, tree_distance};
 
 use super::{EditCosts, Label};
 
 /// Structural Distance: More `overlap` is better, otherwise fall back on `zs_sum` as a tiebreaker
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct StructuralDistance {
     // More overlap is good, so to make the derives meaningful, we have to reverse them!
     overlap: Reverse<usize>,

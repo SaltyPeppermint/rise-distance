@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::env::current_dir;
 use std::fs::File;
 use std::io::Write;
@@ -11,8 +10,6 @@ use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
 use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
-use plotters::prelude::*;
-use plotters::style::full_palette::GREY;
 use rayon::prelude::*;
 
 use rise_distance::cli::{DistanceMetric, SampleDistribution, SampleStrategy, log};
@@ -21,6 +18,7 @@ use rise_distance::egg::run_guide_goal;
 use rise_distance::{
     EGraph, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
 #[command(
@@ -68,16 +66,15 @@ struct Cli {
     #[arg(long)]
     max_size: Option<usize>,
 
-    /// Distance metric to use for ranking
-    #[arg(long)] // default_value_t = DistanceMetric::ZhangShasha
-    distance: DistanceMetric,
-
+    // /// Distance metric to use for ranking
+    // #[arg(long)] // default_value_t = DistanceMetric::ZhangShasha
+    // distance: DistanceMetric,
     /// How to distribute the sample budget across sizes.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
     #[arg(long, default_value_t = SampleDistribution::Uniform)]
     distribution: SampleDistribution,
 
-    /// CSV output file (stdout if omitted)
+    /// CSV output file (generated if omitted)
     #[arg(short, long)]
     output: Option<String>,
 
@@ -97,23 +94,24 @@ struct Cli {
     log_file: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
 struct VerifyResult {
+    #[serde(flatten)]
     guide: RankedGuide,
     reached: bool,
     iterations_to_reach: Option<usize>,
 }
 
-struct PlotConfig {
-    strategy: SampleStrategy,
-    distance: DistanceMetric,
-    distribution: SampleDistribution,
-    num_guides: Option<usize>,
-    guide_iters: usize,
-    goal_iters: usize,
-    verify_iters: usize,
-}
+// struct PlotConfig {
+//     strategy: SampleStrategy,
+//     distance: DistanceMetric,
+//     distribution: SampleDistribution,
+//     num_guides: Option<usize>,
+//     guide_iters: usize,
+//     goal_iters: usize,
+//     verify_iters: usize,
+// }
 
-#[expect(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
     let mut log =
@@ -130,7 +128,7 @@ fn main() {
     log!(log, "Seed: {seed}");
     log!(log, "Goal Iterations: {}", cli.goal_iters);
     log!(log, "Guide Iterations: {}", cli.guide_iters);
-    log!(log, "Distance metric: {}", cli.distance);
+    // log!(log, "Distance metric: {}", cli.distance);
     log!(log, "Distribution: {}", cli.distribution);
 
     // Step 1: Grow egraph and capture snapshots at guide and target iterations
@@ -266,7 +264,6 @@ fn output_file_path(cli: &Cli, ending: &str) -> PathBuf {
     )
 }
 
-#[expect(clippy::too_many_arguments)]
 fn run_eval(
     guides_for_goal: &HashMap<TreeNode<MathLabel>, Vec<TreeNode<MathLabel>>>,
     rules: &[Rewrite<Math, ConstantFold>],
@@ -289,7 +286,7 @@ fn run_eval(
         ])
         .expect("write CSV header");
 
-    for (goal_idx, (goal, guides)) in guides_for_goal.iter().enumerate() {
+    for (goal_idx, (goal, guides)) in guides_for_goal.into_iter().enumerate() {
         log!(
             log,
             "\n=== Goal {}/{} (size {})===\n",
@@ -332,22 +329,16 @@ fn run_eval(
 
         log!(log, "Verification completed in {:.2?}", timer.elapsed());
 
+        print_summary(&results, goal, verify_iters, log);
         let goal_str = goal.to_string();
-        for r in &results {
+        for r in results {
             csv_writer
-                .write_record([
-                    &goal_str,
-                    &r.guide.zs_rank.to_string(),
-                    &r.guide.zs_rank.to_string(),
-                    &r.reached.to_string(),
-                    &r.iterations_to_reach
-                        .map_or_else(String::new, |i| i.to_string()),
-                    &r.guide.guide.to_string(),
-                ])
+                .serialize(Record {
+                    goal: goal_str.clone(),
+                    verify_results: r,
+                })
                 .expect("write CSV row");
         }
-
-        // print_summary(&results, goal, verify_iters, top, log);
 
         // let corr = rank_iterations_correlation(&results);
         // log!(
@@ -357,6 +348,12 @@ fn run_eval(
         // plot_rank_vs_iterations(&results, goal, plot_path, plot_cfg, log);
     }
     csv_writer.flush().expect("flush CSV");
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Record {
+    goal: String,
+    verify_results: VerifyResult,
 }
 
 /// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
@@ -491,9 +488,11 @@ fn is_frontier(tree: &TreeNode<MathLabel>, prev_raw_egg: &egg::EGraph<Math, Cons
     prev_raw_egg.lookup_expr(&recexpr).is_none()
 }
 
+#[derive(Serialize, Deserialize, Debug)]
 struct RankedGuide {
     guide: TreeNode<MathLabel>,
     zs_distance: usize,
+    #[serde(flatten)]
     structural_distance: StructuralDistance,
     zs_rank: usize,
     structural_rank: usize,
@@ -643,26 +642,26 @@ fn print_summary(
         }
 
         successful.sort_unstable_by_key(|v| v.guide.structural_rank);
-        log!(log, "RAW ZS");
+        log!(log, "STRUCTURAL");
         log!(
             log,
             "  Successful guide structural_rank:      min={}, median={}, max={}",
-            successful.first().unwrap().guide.zs_rank,
-            successful[successful.len() / 2].guide.zs_rank,
-            successful.last().unwrap().guide.zs_rank,
+            successful.first().unwrap().guide.structural_rank,
+            successful[successful.len() / 2].guide.structural_rank,
+            successful.last().unwrap().guide.structural_rank,
         );
         log!(
             log,
             "  Successful guide structural_dist:  min={}, median={}, max={}",
             successful
                 .iter()
-                .map(|v| v.guide.zs_distance)
+                .map(|v| v.guide.structural_distance)
                 .min()
                 .unwrap(),
-            successful[successful.len() / 2].guide.zs_distance,
+            successful[successful.len() / 2].guide.structural_distance,
             successful
                 .iter()
-                .map(|v| v.guide.zs_distance)
+                .map(|v| v.guide.structural_distance)
                 .max()
                 .unwrap(),
         );
@@ -692,7 +691,7 @@ fn print_summary(
                 successful[0].guide.structural_rank,
                 successful[0].guide.structural_distance,
             );
-        };
+        }
     }
 
     // // Breakdown by iterations-to-reach (None = unreached)
