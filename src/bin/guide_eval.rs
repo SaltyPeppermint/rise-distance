@@ -289,8 +289,12 @@ fn run_eval(
             .into_par_iter()
             .progress_with_style(pb_style)
             .map(|ranked_guide| {
-                let iters =
-                    verify_reachability(&ranked_guide.guide, &goal_recexpr, rules, verify_iters);
+                let iters = verify_reachability(
+                    std::slice::from_ref(&ranked_guide.guide),
+                    &goal_recexpr,
+                    rules,
+                    verify_iters,
+                );
                 VerifyResult {
                     guide: ranked_guide,
                     reached: iters.is_some(),
@@ -302,6 +306,7 @@ fn run_eval(
         log!(log, "Verification completed in {:.2?}", timer.elapsed());
 
         print_summary(&results, &goal, verify_iters, log);
+        verify_top_k(&results, &goal, rules, verify_iters, log);
 
         let goal_result = GoalResult { goal, results };
         serde_json::to_writer(&mut output, &goal_result).expect("write JSONL");
@@ -491,38 +496,98 @@ fn rank_guides(guides: &[TreeNode<MathLabel>], goal: &TreeNode<MathLabel>) -> Ve
         .collect()
 }
 
-/// Run eqsat from `guide` and check if `goal` becomes reachable.
+/// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
 /// Returns `Some(iteration)` if reached, `None` otherwise.
 fn verify_reachability(
-    guide: &TreeNode<MathLabel>,
+    guides: &[TreeNode<MathLabel>],
     goal: &RecExpr<Math>,
     rules: &[Rewrite<Math, ConstantFold>],
     max_iters: usize,
 ) -> Option<usize> {
-    let guide_recexpr = guide
-        .to_string()
-        .parse::<RecExpr<Math>>()
-        .expect("guide round-trips to RecExpr");
+    assert!(!guides.is_empty(), "must have at least one guide");
 
     let goal_clone = goal.clone();
 
-    let runner = Runner::<Math, ConstantFold>::default()
+    let mut runner = Runner::default()
         .with_scheduler(SimpleScheduler)
         .with_iter_limit(max_iters)
-        .with_expr(&guide_recexpr)
         .with_hook(move |runner| {
             if runner.egraph.lookup_expr(&goal_clone).is_some() {
                 return Err("goal found".to_owned());
             }
             Ok(())
-        })
-        .run(rules);
+        });
 
-    if runner.egraph.lookup_expr(goal).is_some() {
-        return Some(runner.iterations.len());
+    for expr in guides.iter().map(|g| g.into()) {
+        runner = runner.with_expr(&expr);
     }
 
-    None
+    // Union all guide roots together before running
+    for &root in &runner.roots[1..] {
+        runner.egraph.union(runner.roots[0], root);
+    }
+    runner.egraph.rebuild();
+
+    let runner = runner.run(rules);
+
+    runner
+        .egraph
+        .lookup_expr(goal)
+        .map(|_| runner.iterations.len())
+}
+
+const TOP_K: [usize; 6] = [1, 2, 5, 10, 50, 100];
+
+fn verify_top_k(
+    results: &[VerifyResult],
+    goal: &TreeNode<MathLabel>,
+    rules: &[Rewrite<Math, ConstantFold>],
+    max_iters: usize,
+    // top: usize,
+    log: &mut File,
+) {
+    let mut successful = results.iter().filter(|r| r.reached).collect::<Vec<_>>();
+    log!(log, "Testing out top-k to see if that improves things");
+    let go = goal.into();
+
+    if !successful.is_empty() {
+        successful.sort_unstable_by_key(|v| v.guide.zs_rank);
+        log!(log, "ZS DISTANCE:");
+        top_k(rules, max_iters, log, &successful, &go);
+        log!(log, "STRUCTURAL DISTANCE:");
+        successful.sort_unstable_by_key(|v| v.guide.structural_rank);
+        top_k(rules, max_iters, log, &successful, &go);
+    }
+}
+
+fn top_k(
+    rules: &[Rewrite<Math, ConstantFold>],
+    max_iters: usize,
+    log: &mut File,
+    successful: &[&VerifyResult],
+    go: &RecExpr<Math>,
+) {
+    for k in TOP_K {
+        let top_guides = successful[0..k]
+            .iter()
+            .map(|k| k.guide.guide.clone())
+            .collect::<Vec<_>>();
+        let could_reach = verify_reachability(&top_guides, go, rules, max_iters);
+        let best_in_k = successful[0..k]
+            .iter()
+            .filter_map(|v| v.iterations_to_reach)
+            .min();
+        if let Some(i) = best_in_k {
+            log!(log, "Best single guide in top {k} guides: {i}");
+        } else {
+            log!(log, "No single guide in top {k} could reach it");
+        }
+        if let Some(i) = could_reach {
+            log!(log, "Could reach with top {k} guides: {i}");
+        } else {
+            log!(log, "Could NOT reach with top {k} guides");
+        }
+    }
 }
 
 #[expect(clippy::cast_precision_loss, clippy::too_many_lines)]
