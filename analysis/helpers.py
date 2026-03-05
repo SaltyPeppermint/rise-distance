@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 import matplotlib.pyplot as plt
@@ -168,3 +171,32 @@ def plot_predictor_vs_iters(
     ax.set_title(f"{predictor} vs {target}{title_suffix}")
     ax.legend(fontsize=8, loc="upper right")
     return ax
+
+
+def load_guide_eval(path: Path) -> pl.DataFrame:
+    """Load a guide-eval JSON file and flatten it into the legacy CSV-compatible schema.
+
+    Returns a DataFrame with columns:
+        goal, guide, zs_distance, structural_overlap, structural_zs_sum,
+        zs_rank, structural_rank, reached, iterations_to_reach
+    """
+    with open(path) as f:
+        data = json.load(f)
+
+    rows = []
+    for goal_entry in data:
+        goal = goal_entry["goal"]
+        for r in goal_entry["results"]:
+            g = r["guide"]
+            rows.append({
+                "goal": str(goal),
+                "guide": str(g["guide"]),
+                "zs_distance": g["zs_distance"],
+                "structural_overlap": g["structural_overlap"],
+                "structural_zs_sum": g["structural_zs_sum"],
+                "zs_rank": g["zs_rank"],
+                "structural_rank": g["structural_rank"],
+                "reached": r["reached"],
+                "iterations_to_reach": r["iterations_to_reach"],
+            })
+    return pl.DataFrame(rows)

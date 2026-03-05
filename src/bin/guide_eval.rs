@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
-use csv::Writer;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
 use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
@@ -31,8 +30,8 @@ Examples:
   # Guide from an earlier iteration
   guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 3 -g 100 --goals 5 -d structural
 
-  # Write CSV output to a file
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -o results.csv
+  # Write JSON output to a file
+  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -o results.json
 
   # Limit verification iterations separately from goal iterations
   guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 4 -g 100 --max-size 150 --verify-iters 5
@@ -74,7 +73,7 @@ struct Cli {
     #[arg(long, default_value_t = SampleDistribution::Uniform)]
     distribution: SampleDistribution,
 
-    /// CSV output file (generated if omitted)
+    /// JSON output file (generated if omitted)
     #[arg(short, long)]
     output: Option<String>,
 
@@ -203,7 +202,7 @@ fn main() {
         &rules,
         verify_iters,
         // cli.top,
-        File::create(output_file_path(&cli, ".csv")).expect("Failed to create output file"),
+        File::create(output_file_path(&cli, ".json")).expect("Failed to create output file"),
         &mut log,
     );
     log.flush().unwrap();
@@ -212,7 +211,7 @@ fn main() {
 /// Create an output file for this run.
 ///
 /// If `-o` was given, uses that path directly. Otherwise, auto-generates a
-/// filename like `runs/run-{guide_iters}-{goal_iters}-sampling_{N}{ending}`
+/// filename like `runs/run-{guide_iters}-{goal_iters}-{strategy}-sampling_{N}{ending}`
 /// inside a `runs/` directory (created if needed), where `N` is one higher
 /// than the largest existing run number.
 /// `ending` should include the leading dot (e.g. `".csv"`).
@@ -257,7 +256,7 @@ fn run_eval(
     output: File,
     log: &mut File,
 ) {
-    let mut csv_writer = Writer::from_writer(output);
+    let mut goal_results = Vec::new();
 
     for (goal_idx, (goal, guides)) in guides_for_goal.into_iter().enumerate() {
         log!(
@@ -303,43 +302,19 @@ fn run_eval(
         log!(log, "Verification completed in {:.2?}", timer.elapsed());
 
         print_summary(&results, goal, verify_iters, log);
-        let goal_str = goal.to_string();
-        for r in &results {
-            csv_writer
-                .serialize(CsvRecord::new(&goal_str, r))
-                .expect("write CSV row");
-        }
+        goal_results.push(GoalResult {
+            goal: goal.clone(),
+            results,
+        });
     }
-    csv_writer.flush().expect("flush CSV");
+
+    serde_json::to_writer_pretty(output, &goal_results).expect("write JSON");
 }
 
-#[derive(Debug, Serialize)]
-struct CsvRecord {
-    goal: String,
-    guide: String,
-    zs_distance: usize,
-    structural_overlap: usize,
-    structural_zs_sum: usize,
-    zs_rank: usize,
-    structural_rank: usize,
-    reached: bool,
-    iterations_to_reach: Option<usize>,
-}
-
-impl CsvRecord {
-    fn new(goal: &str, r: &VerifyResult) -> Self {
-        Self {
-            goal: goal.to_owned(),
-            guide: r.guide.guide.to_string(),
-            zs_distance: r.guide.zs_distance,
-            structural_overlap: r.guide.structural_distance.overlap(),
-            structural_zs_sum: r.guide.structural_distance.zs_sum(),
-            zs_rank: r.guide.zs_rank,
-            structural_rank: r.guide.structural_rank,
-            reached: r.reached,
-            iterations_to_reach: r.iterations_to_reach,
-        }
-    }
+#[derive(Serialize)]
+struct GoalResult {
+    goal: TreeNode<MathLabel>,
+    results: Vec<VerifyResult>,
 }
 
 /// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
@@ -475,6 +450,7 @@ fn is_frontier(tree: &TreeNode<MathLabel>, prev_raw_egg: &egg::EGraph<Math, Cons
 struct RankedGuide {
     guide: TreeNode<MathLabel>,
     zs_distance: usize,
+    #[serde(flatten)]
     structural_distance: StructuralDistance,
     zs_rank: usize,
     structural_rank: usize,
