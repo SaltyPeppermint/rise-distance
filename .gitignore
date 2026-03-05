@@ -2,5 +2,6 @@
 .DS_Store
 profile.json.gz
 /runs/
-/old_runs/
+/old_data/
 *.log
+*.csv
