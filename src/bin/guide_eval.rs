@@ -311,8 +311,9 @@ fn run_eval(
             GoalResult { goal, results }
         })
         .collect::<Vec<_>>();
-
+    log!(log, "Writing the JSON");
     serde_json::to_writer(output, &goal_results).expect("write JSON");
+    log!(log, "JSON written");
 }
 
 #[derive(Serialize)]
