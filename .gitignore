@@ -5,3 +5,4 @@ profile.json.gz
 /old_data/
 *.log
 *.csv
+/data/guide_eval/
