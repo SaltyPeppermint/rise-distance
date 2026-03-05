@@ -166,5 +166,5 @@ def plot_predictor_vs_iters(
     ax.set_xlabel(predictor)
     ax.set_ylabel(target)
     ax.set_title(f"{predictor} vs {target}{title_suffix}")
-    ax.legend(fontsize=8, loc="upper left")
+    ax.legend(fontsize=8, loc="upper right")
     return ax
