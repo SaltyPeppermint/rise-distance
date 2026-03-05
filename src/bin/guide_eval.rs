@@ -198,7 +198,7 @@ fn main() {
     }
 
     run_eval(
-        &guides_per_goal,
+        guides_per_goal,
         &rules,
         verify_iters,
         // cli.top,
@@ -249,66 +249,70 @@ fn output_file_path(cli: &Cli, ending: &str) -> PathBuf {
 }
 
 fn run_eval(
-    guides_for_goal: &HashMap<TreeNode<MathLabel>, Vec<TreeNode<MathLabel>>>,
+    guides_for_goal: HashMap<TreeNode<MathLabel>, Vec<TreeNode<MathLabel>>>,
     rules: &[Rewrite<Math, ConstantFold>],
     verify_iters: usize,
     // top: usize,
     output: File,
     log: &mut File,
 ) {
-    let mut goal_results = Vec::new();
+    let n_goals = guides_for_goal.len();
+    let goal_results = guides_for_goal
+        .into_iter()
+        .enumerate()
+        .map(|(goal_idx, (goal, guides))| {
+            log!(
+                log,
+                "\n=== Goal {}/{} (size {})===\n",
+                goal_idx + 1,
+                n_goals,
+                goal.size_without_types()
+            );
 
-    for (goal_idx, (goal, guides)) in guides_for_goal.into_iter().enumerate() {
-        log!(
-            log,
-            "\n=== Goal {}/{} (size {})===\n",
-            goal_idx + 1,
-            guides_for_goal.len(),
-            goal.size_without_types()
-        );
+            let ranked = rank_guides(&guides, &goal);
+            log!(
+                log,
+                "Verifying {} guides (max {verify_iters} iters each)...",
+                ranked.len(),
+            );
 
-        let ranked = rank_guides(guides, goal);
-        log!(
-            log,
-            "Verifying {} guides (max {verify_iters} iters each)...",
-            ranked.len(),
-        );
+            let timer = Instant::now();
+            let goal_recexpr = goal
+                .to_string()
+                .parse::<RecExpr<Math>>()
+                .expect("goal round-trips to RecExpr");
 
-        let timer = Instant::now();
-        let goal_recexpr = goal
-            .to_string()
-            .parse::<RecExpr<Math>>()
-            .expect("goal round-trips to RecExpr");
+            let pb_style = ProgressStyle::with_template(
+                "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
+            )
+            .unwrap();
 
-        let pb_style = ProgressStyle::with_template(
-            "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
-        )
-        .unwrap();
+            let results = ranked
+                .into_par_iter()
+                .progress_with_style(pb_style)
+                .map(|ranked_guide| {
+                    let iters = verify_reachability(
+                        &ranked_guide.guide,
+                        &goal_recexpr,
+                        rules,
+                        verify_iters,
+                    );
+                    VerifyResult {
+                        guide: ranked_guide,
+                        reached: iters.is_some(),
+                        iterations_to_reach: iters,
+                    }
+                })
+                .collect::<Vec<_>>();
 
-        let results = ranked
-            .into_par_iter()
-            .progress_with_style(pb_style)
-            .map(|ranked_guide| {
-                let iters =
-                    verify_reachability(&ranked_guide.guide, &goal_recexpr, rules, verify_iters);
-                VerifyResult {
-                    guide: ranked_guide,
-                    reached: iters.is_some(),
-                    iterations_to_reach: iters,
-                }
-            })
-            .collect::<Vec<_>>();
+            log!(log, "Verification completed in {:.2?}", timer.elapsed());
 
-        log!(log, "Verification completed in {:.2?}", timer.elapsed());
+            print_summary(&results, &goal, verify_iters, log);
+            GoalResult { goal, results }
+        })
+        .collect::<Vec<_>>();
 
-        print_summary(&results, goal, verify_iters, log);
-        goal_results.push(GoalResult {
-            goal: goal.clone(),
-            results,
-        });
-    }
-
-    serde_json::to_writer_pretty(output, &goal_results).expect("write JSON");
+    serde_json::to_writer(output, &goal_results).expect("write JSON");
 }
 
 #[derive(Serialize)]
