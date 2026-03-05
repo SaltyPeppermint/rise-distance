@@ -1,3 +1,4 @@
+pub mod generate;
 mod label;
 
 use egg::{
