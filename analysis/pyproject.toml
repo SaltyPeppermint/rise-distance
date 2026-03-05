@@ -14,6 +14,7 @@ dependencies = [
     "tensorboard",
     "tqdm",
     "flash-linear-attention",
+    "torch-tb-profiler",
     # "causal-conv1d",
 ]
 
