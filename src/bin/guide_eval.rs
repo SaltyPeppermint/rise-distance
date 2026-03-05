@@ -219,7 +219,7 @@ fn main() {
 fn output_file_path(cli: &Cli, ending: &str) -> PathBuf {
     cli.output.as_deref().map_or_else(
         || {
-            let runs_dir = current_dir().unwrap().join("runs");
+            let runs_dir = current_dir().unwrap().join("data").join("guide_eval");
             std::fs::create_dir_all(&runs_dir).expect("Failed to create runs/ directory");
 
             let pat = format!(
