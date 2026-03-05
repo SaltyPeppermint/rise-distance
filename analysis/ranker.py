@@ -5,16 +5,27 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerFast
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    PreTrainedTokenizerFast,
+)
 
 
 class GuideRanker(nn.Module):
     def __init__(self, model_name: str, num_classes: int):
         super().__init__()
+        # Qwen3.5 is a VLM whose composite config lacks vocab_size at the
+        # top level.  Loading with the text sub-config works around this
+        # transformers bug and avoids pulling in the vision tower.
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        text_config = getattr(config, "get_text_config", lambda: config)()
         self.backbone = AutoModelForCausalLM.from_pretrained(
             model_name,
+            config=text_config,
             trust_remote_code=True,
-            dtype=torch.bfloat16,
+            torch_dtype=torch.bfloat16,
         )
         hidden_size = self.backbone.config.hidden_size
         for param in self.backbone.parameters():

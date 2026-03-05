@@ -1,7 +1,7 @@
 [project]
 name = "rise-distance-analysis"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "polars",
     "matplotlib",
@@ -15,8 +15,14 @@ dependencies = [
     "tqdm",
     "flash-linear-attention",
     "torch-tb-profiler",
-    # "causal-conv1d",
+    "causal-conv1d",
 ]
 
 [dependency-groups]
-dev = ["pre-commit>=4.5.1", "setuptools>=82.0.0"]
+dev = ["pre-commit>=4.5.1"]
+
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu130"
+# default = true
