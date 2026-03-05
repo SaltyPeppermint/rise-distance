@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import numpy as np
@@ -174,29 +173,13 @@ def plot_predictor_vs_iters(
 
 
 def load_guide_eval(path: Path) -> pl.DataFrame:
-    """Load a guide-eval JSONL file and flatten it into a DataFrame.
+    """Load a guide-eval CSV file into a DataFrame.
 
     Returns a DataFrame with columns:
         goal, guide, zs_distance, structural_overlap, structural_zs_sum,
         zs_rank, structural_rank, reached, iterations_to_reach
     """
-    with open(path) as f:
-        data = [json.loads(line) for line in f if line.strip()]
-
-    rows = []
-    for goal_entry in data:
-        goal = goal_entry["goal"]
-        for r in goal_entry["results"]:
-            g = r["guide"]
-            rows.append({
-                "goal": str(goal),
-                "guide": str(g["guide"]),
-                "zs_distance": g["zs_distance"],
-                "structural_overlap": g["structural_overlap"],
-                "structural_zs_sum": g["structural_zs_sum"],
-                "zs_rank": g["zs_rank"],
-                "structural_rank": g["structural_rank"],
-                "reached": r["reached"],
-                "iterations_to_reach": r["iterations_to_reach"],
-            })
-    return pl.DataFrame(rows)
+    df = pl.read_csv(path)
+    # Derive 'reached' from iterations_to_reach (null = not reached)
+    df = df.with_columns(pl.col("iterations_to_reach").is_not_null().alias("reached"))
+    return df

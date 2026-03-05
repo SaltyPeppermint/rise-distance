@@ -1,6 +1,6 @@
 use std::env::current_dir;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -17,7 +17,7 @@ use rise_distance::egg::run_guide_goal;
 use rise_distance::{
     EGraph, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 #[derive(Parser)]
 #[command(
@@ -93,10 +93,9 @@ struct Cli {
     log_file: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 struct VerifyResult {
     guide: RankedGuide,
-    reached: bool,
     iterations_to_reach: Option<usize>,
 }
 
@@ -202,7 +201,7 @@ fn main() {
         &rules,
         verify_iters,
         // cli.top,
-        File::create(output_file_path(&cli, ".jsonl")).expect("Failed to create output file"),
+        File::create(output_file_path(&cli, ".csv")).expect("Failed to create output file"),
         &mut log,
     );
     log.flush().unwrap();
@@ -256,7 +255,7 @@ fn run_eval(
     output: File,
     log: &mut File,
 ) {
-    let mut output = BufWriter::new(output);
+    let mut csv_writer = csv::Writer::from_writer(output);
     let n_goals = guides_for_goal.len();
     for (goal_idx, (goal, guides)) in guides_for_goal.into_iter().enumerate() {
         log!(
@@ -297,7 +296,6 @@ fn run_eval(
                 );
                 VerifyResult {
                     guide: ranked_guide,
-                    reached: iters.is_some(),
                     iterations_to_reach: iters,
                 }
             })
@@ -308,18 +306,41 @@ fn run_eval(
         print_summary(&results, &goal, verify_iters, log);
         verify_top_k(&results, &goal, rules, verify_iters, log);
 
-        let goal_result = GoalResult { goal, results };
-        serde_json::to_writer(&mut output, &goal_result).expect("write JSONL");
-        output.write_all(b"\n").expect("write newline");
-        log!(log, "Wrote goal {}/{} to JSONL", goal_idx + 1, n_goals);
+        for r in &results {
+            csv_writer
+                .serialize(CsvRow::new(&goal, r))
+                .expect("write CSV row");
+        }
+        log!(log, "Wrote goal {}/{} to CSV", goal_idx + 1, n_goals);
     }
-    output.flush().expect("flush output");
+    csv_writer.flush().expect("flush output");
 }
 
 #[derive(Serialize)]
-struct GoalResult {
-    goal: TreeNode<MathLabel>,
-    results: Vec<VerifyResult>,
+struct CsvRow {
+    goal: String,
+    guide: String,
+    zs_distance: usize,
+    structural_overlap: usize,
+    structural_zs_sum: usize,
+    zs_rank: usize,
+    structural_rank: usize,
+    iterations_to_reach: Option<usize>,
+}
+
+impl CsvRow {
+    fn new(goal: &TreeNode<MathLabel>, r: &VerifyResult) -> CsvRow {
+        CsvRow {
+            goal: goal.to_string(),
+            guide: r.guide.guide.to_string(),
+            zs_distance: r.guide.zs_distance,
+            structural_overlap: r.guide.structural_distance.overlap(),
+            structural_zs_sum: r.guide.structural_distance.zs_sum(),
+            zs_rank: r.guide.zs_rank,
+            structural_rank: r.guide.structural_rank,
+            iterations_to_reach: r.iterations_to_reach,
+        }
+    }
 }
 
 /// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
@@ -451,7 +472,7 @@ fn is_frontier(tree: &TreeNode<MathLabel>, prev_raw_egg: &egg::EGraph<Math, Cons
     prev_raw_egg.lookup_expr(&tree.into()).is_none()
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 struct RankedGuide {
     guide: TreeNode<MathLabel>,
     zs_distance: usize,
@@ -546,7 +567,10 @@ fn verify_top_k(
     // top: usize,
     log: &mut File,
 ) {
-    let mut successful = results.iter().filter(|r| r.reached).collect::<Vec<_>>();
+    let mut successful = results
+        .iter()
+        .filter(|r| r.iterations_to_reach.is_some())
+        .collect::<Vec<_>>();
     log!(log, "Testing out top-k to see if that improves things");
     let go = goal.into();
 
@@ -598,7 +622,10 @@ fn print_summary(
     // top: usize,
     log: &mut File,
 ) {
-    let mut successful = results.iter().filter(|r| r.reached).collect::<Vec<_>>();
+    let mut successful = results
+        .iter()
+        .filter(|r| r.iterations_to_reach.is_some())
+        .collect::<Vec<_>>();
     let total = results.len();
     let n_reached = successful.len();
 
