@@ -174,14 +174,14 @@ def plot_predictor_vs_iters(
 
 
 def load_guide_eval(path: Path) -> pl.DataFrame:
-    """Load a guide-eval JSON file and flatten it into the legacy CSV-compatible schema.
+    """Load a guide-eval JSONL file and flatten it into a DataFrame.
 
     Returns a DataFrame with columns:
         goal, guide, zs_distance, structural_overlap, structural_zs_sum,
         zs_rank, structural_rank, reached, iterations_to_reach
     """
     with open(path) as f:
-        data = json.load(f)
+        data = [json.loads(line) for line in f if line.strip()]
 
     rows = []
     for goal_entry in data:

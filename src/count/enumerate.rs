@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn enumerate_count_matches_term_count() {
-        // Class 0: f(class1, class1) — same child twice
+        // Class 0: f(class1, class1) -> same child twice
         // Class 1: "a", "b", g(class2)
         // Class 2: "c"
         let graph = EGraph::new(
