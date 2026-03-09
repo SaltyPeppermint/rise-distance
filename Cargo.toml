@@ -13,6 +13,7 @@ ahash = { version = "0.8", features = ["compile-time-rng"] }
 bon = "3"
 clap = { version = "4", features = ["derive"] }
 csv = "1"
+dashmap = "6"
 egg = { version = "0.11", features = ["serde-1"] }
 env_logger = "0.11"
 hashbrown = { version = "0.16", features = ["rayon", "serde"] }

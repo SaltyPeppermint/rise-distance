@@ -1,3 +1,6 @@
+use std::time::Instant;
+
+use dashmap::DashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar};
 use rayon::prelude::*;
 
@@ -27,6 +30,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         max_size: usize,
         progress: Option<ProgressBar>,
     ) -> Vec<TreeNode<L>> {
+        let t = Instant::now();
         let canon_id = self.graph.canonicalize(id);
         let sum = self
             .of_eclass(id)
@@ -47,36 +51,67 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         let type_overhead = self.type_overhead(eclass);
         let ty = TreeNode::from_eclass(self.graph, canonical_id);
 
-        let work: Vec<_> = (0..=max_size)
+        let cache = DashMap::new();
+
+        let work = (0..=max_size)
             .filter(|size| histogram.contains_key(size))
             .filter_map(|size| size.checked_sub(1 + type_overhead))
             .flat_map(|budget| (0..nodes.len()).map(move |ni| (budget, ni)))
-            .collect();
+            .collect::<Vec<_>>();
 
-        let iter = work.into_par_iter().flat_map_iter(|(child_budget, ni)| {
+        let iter = work.into_par_iter().flat_map(|(child_budget, ni)| {
             let node = &nodes[ni];
             let children = node.children();
 
-            self.enumerate_children(children, child_budget)
-                .into_iter()
+            self.enumerate_children(children, child_budget, &cache)
+                .par_bridge()
                 .map(|child_combo| {
                     TreeNode::new_typed(node.label().clone(), child_combo, ty.clone())
                 })
         });
 
-        if let Some(pb) = progress {
+        let result = if let Some(pb) = progress {
             pb.set_length(sum);
             iter.progress_with(pb).collect()
         } else {
             iter.collect()
-        }
+        };
+
+        eprintln!(
+            "Spent {} seconds enumerating the terms",
+            t.elapsed().as_secs()
+        );
+
+        result
     }
 
-    /// Enumerate all terms of exactly `size` from an e-class.
-    #[must_use]
-    fn enumerate_class(&self, id: EClassId, size: usize) -> Vec<TreeNode<L>> {
+    /// Enumerate all terms of exactly `size` from an e-class, using a shared cache.
+    fn enumerate_class_cached(
+        &self,
+        id: EClassId,
+        size: usize,
+        cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
+    ) -> Vec<TreeNode<L>> {
         let canonical_id = self.graph.canonicalize(id);
+        let key = (canonical_id, size);
 
+        // Cache hit
+        if let Some(cached) = cache.get(&key) {
+            return cached.clone();
+        }
+
+        let result = self.enumerate_class_inner(canonical_id, size, cache);
+        cache.insert(key, result.clone());
+        result
+    }
+
+    /// Inner logic for enumerating all terms of exactly `size` from a canonical e-class.
+    fn enumerate_class_inner(
+        &self,
+        canonical_id: EClassId,
+        size: usize,
+        cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
+    ) -> Vec<TreeNode<L>> {
         // Check if this class has any terms at this size
         let Some(histogram) = self.data.get(&canonical_id) else {
             return Vec::new();
@@ -86,20 +121,21 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         }
 
         let eclass = self.graph.class(canonical_id);
-        let nodes = eclass.nodes();
         let type_overhead = self.type_overhead(eclass);
-        let ty = TreeNode::from_eclass(self.graph, canonical_id);
 
+        // Bail if type size overhead is too big
         let Some(child_budget) = size.checked_sub(1 + type_overhead) else {
             return Vec::new();
         };
 
+        let ty = TreeNode::from_eclass(self.graph, canonical_id);
+
         let mut results = Vec::new();
 
-        for node in nodes {
+        for node in eclass.nodes() {
             let children = node.children();
 
-            for child_combo in self.enumerate_children(children, child_budget) {
+            for child_combo in self.enumerate_children(children, child_budget, cache) {
                 results.push(TreeNode::new_typed(
                     node.label().clone(),
                     child_combo,
@@ -113,30 +149,25 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
     /// Enumerate all ways to fill `children` with exactly `budget` total size,
     /// returning the cartesian product of child terms for each valid size tuple.
-    fn enumerate_children(&self, children: &[ExprChildId], budget: usize) -> Vec<Vec<TreeNode<L>>> {
+    fn enumerate_children(
+        &self,
+        children: &[ExprChildId],
+        budget: usize,
+        cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
+    ) -> impl Iterator<Item = Vec<TreeNode<L>>> {
         // Accumulate via left-fold: start with the empty tuple at budget=`budget`,
         // then for each child, expand every (remaining_budget, partial_combo) by
         // enumerating that child at each feasible size.
-        //
-        // When the accumulator is large enough, parallelize the expansion step.
-        const PAR_THRESHOLD: usize = 256;
 
         let mut acc = vec![(budget, Vec::new())];
 
         for &child_id in children {
-            let next_acc = if acc.len() >= PAR_THRESHOLD {
-                acc.into_par_iter()
-                    .flat_map_iter(|(remaining, partial)| {
-                        self.expand_child(child_id, remaining, partial)
-                    })
-                    .collect()
-            } else {
-                acc.into_iter()
-                    .flat_map(|(remaining, partial)| {
-                        self.expand_child(child_id, remaining, partial)
-                    })
-                    .collect()
-            };
+            let next_acc = acc
+                .into_iter()
+                .flat_map(|(remaining, partial)| {
+                    self.expand_child(child_id, remaining, partial, cache)
+                })
+                .collect();
 
             acc = next_acc;
         }
@@ -145,7 +176,6 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         acc.into_iter()
             .filter(|(remaining, _)| *remaining == 0)
             .map(|(_, combo)| combo)
-            .collect()
     }
 
     /// Expand a single partial combo by one child, returning all valid extensions.
@@ -154,6 +184,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         child_id: ExprChildId,
         remaining: usize,
         partial: Vec<TreeNode<L>>,
+        cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
     ) -> Vec<(usize, Vec<TreeNode<L>>)> {
         match child_id {
             ExprChildId::Nat(nat_id) => {
@@ -189,10 +220,11 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                     if child_size > remaining {
                         continue;
                     }
-                    let child_trees = self.enumerate_class(canonical_child, child_size);
+                    let child_trees =
+                        self.enumerate_class_cached(canonical_child, child_size, cache);
                     for tree in child_trees {
                         let mut combo = partial.clone();
-                        combo.push(tree);
+                        combo.push(tree.clone());
                         results.push((remaining - child_size, combo));
                     }
                 }
