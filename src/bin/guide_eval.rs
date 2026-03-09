@@ -378,7 +378,10 @@ fn get_guide_terms(
                 log,
                 "Enumerating all {total_terms} terms up to size {max_size}"
             );
-            assert!(total_terms.to_usize().is_some(), "Cannot enumerate more than usize!");
+            assert!(
+                total_terms.to_usize().is_some(),
+                "Cannot enumerate more than usize!"
+            );
 
             tc.enumerate_root(max_size, Some(ProgressBar::new(max_size as u64)))
                 .into_iter()
@@ -588,6 +591,9 @@ fn verify_top_k(
         top_k(rules, max_iters, log, &successful, &go);
         log!(log, "RANDOM:");
         successful.shuffle(&mut ChaCha12Rng::seed_from_u64(0));
+        top_k(rules, max_iters, log, &successful, &go);
+        log!(log, "KNOWN ITERATIONS:");
+        successful.sort_unstable_by_key(|v| v.iterations_to_reach);
         top_k(rules, max_iters, log, &successful, &go);
     }
 }
