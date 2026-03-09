@@ -9,6 +9,9 @@ use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
 use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
+use rand::SeedableRng;
+use rand::seq::SliceRandom;
+use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
 use rise_distance::cli::{SampleDistribution, SampleStrategy, log};
@@ -580,6 +583,9 @@ fn verify_top_k(
         top_k(rules, max_iters, log, &successful, &go);
         log!(log, "STRUCTURAL DISTANCE:");
         successful.sort_unstable_by_key(|v| v.guide.structural_rank);
+        top_k(rules, max_iters, log, &successful, &go);
+        log!(log, "RANDOM:");
+        successful.shuffle(&mut ChaCha12Rng::seed_from_u64(0));
         top_k(rules, max_iters, log, &successful, &go);
     }
 }
