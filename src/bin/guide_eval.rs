@@ -1,4 +1,5 @@
 use std::env::current_dir;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -91,9 +92,6 @@ struct Cli {
     /// Sample Strategy
     #[arg(long)]
     strategy: SampleStrategy,
-
-    #[arg(long)]
-    log_file: Option<String>,
 }
 
 #[derive(Serialize, Debug)]
@@ -104,8 +102,8 @@ struct VerifyResult {
 
 fn main() {
     let cli = Cli::parse();
-    let mut log =
-        File::create(output_file_path(&cli, ".log")).expect("Failed to create output file");
+    let out_folder = output_folder(&cli);
+    let mut log = File::create(out_folder.join("out.log")).expect("Failed to create output file");
 
     let rules = rise_distance::egg::math::rules();
     let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
@@ -204,49 +202,51 @@ fn main() {
         &rules,
         verify_iters,
         // cli.top,
-        File::create(output_file_path(&cli, ".csv")).expect("Failed to create output file"),
+        File::create(out_folder.join("out.csv")).expect("Failed to create output file"),
         &mut log,
     );
     log.flush().unwrap();
 }
 
-/// Create an output file for this run.
+/// Create an output folder for this run.
 ///
 /// If `-o` was given, uses that path directly. Otherwise, auto-generates a
-/// filename like `runs/run-{guide_iters}-{goal_iters}-{strategy}-sampling_{N}{ending}`
-/// inside a `runs/` directory (created if needed), where `N` is one higher
+/// filename like `runs/run-{goal_iters}-{strategy}-sampling_{N}`
+/// inside a `output/` directory (created if needed), where `N` is one higher
 /// than the largest existing run number.
-/// `ending` should include the leading dot (e.g. `".csv"`).
-fn output_file_path(cli: &Cli, ending: &str) -> PathBuf {
+fn output_folder(cli: &Cli) -> PathBuf {
     cli.output.as_deref().map_or_else(
         || {
             let runs_dir = current_dir().unwrap().join("data").join("guide_eval");
-            std::fs::create_dir_all(&runs_dir).expect("Failed to create runs/ directory");
-
-            let pat = format!(
+            std::fs::create_dir_all(&runs_dir).expect("Failed to create output directory");
+            let pat: OsString = format!(
                 "run-{}-{}-{}-sampling",
                 cli.guide_iters, cli.goal_iters, cli.strategy
-            );
+            )
+            .into();
             let max_existing = runs_dir
                 .read_dir()
                 .unwrap()
                 .filter_map(|e| {
-                    if let Ok(d) = e
-                        && !d.file_type().ok()?.is_dir()
-                        && let Some(s) = d.file_name().to_str()
-                        && s.contains(&pat)
-                        && s.ends_with(ending)
-                    {
-                        return s.strip_suffix(ending)?.rsplit_once('_')?.1.parse().ok();
+                    let d = e.ok()?;
+                    if d.file_type().ok()?.is_dir() && pat.as_os_str() == d.path().file_stem()? {
+                        return d.path().extension()?.to_str()?.parse::<usize>().ok();
                     }
                     None
                 })
                 .max()
                 .unwrap_or(0);
-            let pat = format!("{pat}_{}{ending}", max_existing + 1);
-            runs_dir.join(pat)
+            let this_run_dir = runs_dir
+                .join(pat)
+                .with_extension((max_existing + 1).to_string());
+            std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
+            this_run_dir
         },
-        PathBuf::from,
+        |c| {
+            let this_run_dir = PathBuf::from(c);
+            std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
+            this_run_dir
+        },
     )
 }
 
@@ -374,7 +374,8 @@ fn get_guide_terms(
         log!(log, "{v} terms of size {k}");
     }
 
-    match strategy {
+    let start = Instant::now();
+    let result = match strategy {
         SampleStrategy::Enumerate => {
             let total_terms = histogram.values().cloned().sum::<BigUint>();
             log!(
@@ -426,7 +427,13 @@ fn get_guide_terms(
                 .take(count)
                 .collect()
         }
-    }
+    };
+    log!(
+        log,
+        "Spent {} seconds enumerating/sampling the terms",
+        start.elapsed().as_secs()
+    );
+    result
 }
 
 /// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.

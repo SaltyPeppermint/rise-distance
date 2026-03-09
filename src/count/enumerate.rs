@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use dashmap::DashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar};
 use rayon::prelude::*;
@@ -30,7 +28,6 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         max_size: usize,
         progress: Option<ProgressBar>,
     ) -> Vec<TreeNode<L>> {
-        let t = Instant::now();
         let canon_id = self.graph.canonicalize(id);
         let sum = self
             .of_eclass(id)
@@ -70,19 +67,12 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                 })
         });
 
-        let result = if let Some(pb) = progress {
+        if let Some(pb) = progress {
             pb.set_length(sum);
             iter.progress_with(pb).collect()
         } else {
             iter.collect()
-        };
-
-        eprintln!(
-            "Spent {} seconds enumerating the terms",
-            t.elapsed().as_secs()
-        );
-
-        result
+        }
     }
 
     /// Enumerate all terms of exactly `size` from an e-class, using a shared cache.
