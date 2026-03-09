@@ -9,7 +9,7 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
 use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
-use num::BigUint;
+use num::{BigUint, ToPrimitive};
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha12Rng;
@@ -277,11 +277,7 @@ fn run_eval(
         );
 
         let timer = Instant::now();
-        let goal_recexpr = goal
-            .to_string()
-            .parse::<RecExpr<Math>>()
-            .expect("goal round-trips to RecExpr");
-
+        let goal_recexpr = (&goal).into();
         let pb_style = ProgressStyle::with_template(
             "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
         )
@@ -382,13 +378,12 @@ fn get_guide_terms(
                 log,
                 "Enumerating all {total_terms} terms up to size {max_size}"
             );
+            assert!(total_terms.to_usize().is_some(), "Cannot enumerate more than usize!");
 
-            let pb = ProgressBar::new(max_size as u64);
-            tc.enumerate_root(max_size, Some(pb))
+            tc.enumerate_root(max_size, Some(ProgressBar::new(max_size as u64)))
                 .into_iter()
                 .filter(|t| is_frontier(t, prev_raw_egg))
-                .take(count)
-                .collect()
+                .collect::<Vec<_>>()
         }
         SampleStrategy::Random => {
             let min_size = histogram.keys().min().copied().unwrap_or(1);
