@@ -194,6 +194,7 @@ fn main() {
         &rules,
         verify_iters,
         File::create(out_folder.join("out.csv")).expect("Failed to create output file"),
+        File::create(out_folder.join("top_k.json")).expect("Failed to create JSON output file"),
         &mut log,
     );
     log.flush().unwrap();
@@ -243,9 +244,11 @@ fn run_eval(
     rules: &[Rewrite<Math, ConstantFold>],
     verify_iters: usize,
     output: File,
+    json_output: File,
     log: &mut File,
 ) {
     let mut csv_writer = csv::Writer::from_writer(output);
+    let mut all_top_k: Vec<TopKResults> = Vec::new();
     let n_goals = goals.len();
     for (goal_idx, goal) in goals.iter().enumerate() {
         log!(
@@ -292,7 +295,7 @@ fn run_eval(
         log!(log, "Verification completed in {:.2?}", timer.elapsed());
 
         print_summary(&results, goal, verify_iters, log);
-        verify_top_k(&results, goal, rules, verify_iters, log);
+        all_top_k.push(verify_top_k(&results, goal, rules, verify_iters, log));
 
         for r in &results {
             csv_writer
@@ -302,6 +305,7 @@ fn run_eval(
         log!(log, "Wrote goal {}/{} to CSV", goal_idx + 1, n_goals);
     }
     csv_writer.flush().expect("flush output");
+    serde_json::to_writer_pretty(json_output, &all_top_k).expect("write top-k JSON");
 }
 
 #[derive(Serialize)]
@@ -559,19 +563,49 @@ fn verify_reachability(
     runner
         .egraph
         .lookup_expr(goal)
-        .map(|_| runner.iterations.len()).map(|i|(i,n_nodes))
+        .map(|_| runner.iterations.len())
+        .map(|i| (i, n_nodes))
 }
 
 const TOP_K: [usize; 6] = [1, 2, 5, 10, 50, 100];
+
+#[derive(Serialize)]
+struct TopKEntry {
+    k: usize,
+    best_single_iters: Option<usize>,
+    combined_iters: Option<usize>,
+    combined_nodes: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct TopKRandomTrial {
+    best_single_iters: Option<usize>,
+    combined_iters: Option<usize>,
+    combined_nodes: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct TopKRandomEntry {
+    k: usize,
+    trials: Vec<TopKRandomTrial>,
+}
+
+#[derive(Serialize)]
+struct TopKResults {
+    goal: String,
+    zs: Vec<TopKEntry>,
+    structural: Vec<TopKEntry>,
+    random: Vec<TopKRandomEntry>,
+    known_iters: Vec<TopKEntry>,
+}
 
 fn verify_top_k(
     results: &[VerifyResult],
     goal: &TreeNode<MathLabel>,
     rules: &[Rewrite<Math, ConstantFold>],
     max_iters: usize,
-    // top: usize,
     log: &mut File,
-) {
+) -> TopKResults {
     let mut successful = results
         .iter()
         .filter(|r| r.iterations_to_reach.is_some())
@@ -579,19 +613,31 @@ fn verify_top_k(
     log!(log, "Testing out top-k to see if that improves things");
     let go = goal.into();
 
+    let mut top_k_results = TopKResults {
+        goal: goal.to_string(),
+        zs: Vec::new(),
+        structural: Vec::new(),
+        random: Vec::new(),
+        known_iters: Vec::new(),
+    };
+
     if !successful.is_empty() {
         successful.sort_unstable_by_key(|v| v.guide.zs_rank);
         log!(log, "ZS DISTANCE:");
-        top_k(rules, max_iters, log, &successful, &go);
+        top_k_results.zs = top_k(rules, max_iters, log, &successful, &go);
         log!(log, "STRUCTURAL DISTANCE:");
         successful.sort_unstable_by_key(|v| v.guide.structural_rank);
-        top_k(rules, max_iters, log, &successful, &go);
-        log!(log, "RANDOM (10 trials averaged):");
-        top_k_random(rules, max_iters, log, &mut successful, &go, 10);
+        top_k_results.structural = top_k(rules, max_iters, log, &successful, &go);
+
         log!(log, "KNOWN ITERATIONS:");
         successful.sort_unstable_by_key(|v| v.iterations_to_reach);
-        top_k(rules, max_iters, log, &successful, &go);
+        top_k_results.known_iters = top_k(rules, max_iters, log, &successful, &go);
+
+        log!(log, "RANDOM (10 trials averaged):");
+        top_k_results.random = top_k_random(rules, max_iters, log, &mut successful, &go, 10);
     }
+
+    top_k_results
 }
 
 fn top_k(
@@ -600,8 +646,12 @@ fn top_k(
     log: &mut File,
     successful: &[&VerifyResult],
     go: &RecExpr<Math>,
-) {
+) -> Vec<TopKEntry> {
+    let mut entries = Vec::new();
     for k in TOP_K {
+        if k > successful.len() {
+            continue;
+        }
         let top_guides = successful[0..k]
             .iter()
             .map(|k| k.guide.guide.clone())
@@ -621,70 +671,60 @@ fn top_k(
         } else {
             log!(log, "Could NOT reach with top {k} guides");
         }
+        entries.push(TopKEntry {
+            k,
+            best_single_iters: best_in_k,
+            combined_iters: could_reach.map(|(i, _)| i),
+            combined_nodes: could_reach.map(|(_, n)| n),
+        });
     }
+    entries
 }
 
-#[expect(clippy::cast_precision_loss)]
 fn top_k_random(
     rules: &[Rewrite<Math, ConstantFold>],
     max_iters: usize,
     log: &mut File,
     successful: &mut [&VerifyResult],
     go: &RecExpr<Math>,
-    n_trials: u64,
-) {
+    n_trials: usize,
+) -> Vec<TopKRandomEntry> {
     let mut rng = ChaCha12Rng::seed_from_u64(0);
+    let mut entries = Vec::new();
     for k in TOP_K {
         if k > successful.len() {
             continue;
         }
-        let mut best_single_sum: f64 = 0.0;
-        let mut best_single_count: u64 = 0;
-        let mut combined_iter_sum: f64 = 0.0;
-        let mut combined_node_sum: f64 = 0.0;
-        let mut combined_count: u64 = 0;
+        let trials = (0..n_trials)
+            .map(|_| {
+                successful.shuffle(&mut rng);
+                let top_guides = successful[0..k]
+                    .iter()
+                    .map(|v| v.guide.guide.clone())
+                    .collect::<Vec<_>>();
+                let best_single_iters = successful[0..k]
+                    .iter()
+                    .filter_map(|v| v.iterations_to_reach)
+                    .min();
+                let combined = verify_reachability(&top_guides, go, rules, max_iters);
+                TopKRandomTrial {
+                    best_single_iters,
+                    combined_iters: combined.map(|(i, _)| i),
+                    combined_nodes: combined.map(|(_, n)| n),
+                }
+            })
+            .collect::<Vec<_>>();
 
-        for _ in 0..n_trials {
-            successful.shuffle(&mut rng);
-            let top_guides = successful[0..k]
-                .iter()
-                .map(|v| v.guide.guide.clone())
-                .collect::<Vec<_>>();
-            if let Some(i) = successful[0..k]
-                .iter()
-                .filter_map(|v| v.iterations_to_reach)
-                .min()
-            {
-                best_single_sum += i as f64;
-                best_single_count += 1;
-            }
-            if let Some((i, n)) = verify_reachability(&top_guides, go, rules, max_iters) {
-                combined_iter_sum += i as f64;
-                combined_node_sum += n as f64;
-                combined_count += 1;
-            }
-        }
+        let n_best = trials.iter().filter(|t| t.best_single_iters.is_some()).count();
+        let n_combined = trials.iter().filter(|t| t.combined_iters.is_some()).count();
+        log!(
+            log,
+            "Top {k}: {n_best}/{n_trials} trials had a reachable single guide, {n_combined}/{n_trials} reached combined",
+        );
 
-        if best_single_count > 0 {
-            log!(
-                log,
-                "Best single guide in top {k}: avg {:.1} iters ({best_single_count}/{n_trials} trials reached)",
-                best_single_sum / best_single_count as f64,
-            );
-        } else {
-            log!(log, "No single guide in top {k} could reach it (0/{n_trials} trials)");
-        }
-        if combined_count > 0 {
-            log!(
-                log,
-                "Combined top {k}: avg {:.1} iters, avg {:.0} nodes ({combined_count}/{n_trials} trials reached)",
-                combined_iter_sum / combined_count as f64,
-                combined_node_sum / combined_count as f64,
-            );
-        } else {
-            log!(log, "Could NOT reach with top {k} guides (0/{n_trials} trials)");
-        }
+        entries.push(TopKRandomEntry { k, trials });
     }
+    entries
 }
 
 #[expect(clippy::cast_precision_loss, clippy::too_many_lines)]
