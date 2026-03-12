@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
-use hashbrown::HashMap;
+use hashbrown::HashSet;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
 use rand::SeedableRng;
@@ -190,17 +190,11 @@ fn main() {
         log!(log, "Found {} guide(s)", guides.len());
     }
 
-    let mut guides_per_goal = HashMap::new();
-    for (id, goal) in goals.into_iter().enumerate() {
-        log!(log, "Looking at goal {id}: {goal}");
-        guides_per_goal.insert(goal, guides.clone());
-    }
-
     run_eval(
-        guides_per_goal,
+        &goals,
+        &guides,
         &rules,
         verify_iters,
-        // cli.top,
         File::create(out_folder.join("out.csv")).expect("Failed to create output file"),
         &mut log,
     );
@@ -250,25 +244,26 @@ fn output_folder(cli: &Cli) -> PathBuf {
 }
 
 fn run_eval(
-    guides_for_goal: HashMap<TreeNode<MathLabel>, Vec<TreeNode<MathLabel>>>,
+    goals: &[TreeNode<MathLabel>],
+    guides: &[TreeNode<MathLabel>],
     rules: &[Rewrite<Math, ConstantFold>],
     verify_iters: usize,
-    // top: usize,
     output: File,
     log: &mut File,
 ) {
     let mut csv_writer = csv::Writer::from_writer(output);
-    let n_goals = guides_for_goal.len();
-    for (goal_idx, (goal, guides)) in guides_for_goal.into_iter().enumerate() {
+    let n_goals = goals.len();
+    for (goal_idx, goal) in goals.iter().enumerate() {
         log!(
             log,
-            "\n=== Goal {}/{} (size {})===\n",
+            "\n=== Goal {}/{} (size {})===",
             goal_idx + 1,
             n_goals,
             goal.size_without_types()
         );
+        log!(log, "{goal}\n");
 
-        let ranked = rank_guides(&guides, &goal);
+        let ranked = rank_guides(guides, goal);
         log!(
             log,
             "Verifying {} guides (max {verify_iters} iters each)...",
@@ -276,7 +271,7 @@ fn run_eval(
         );
 
         let timer = Instant::now();
-        let goal_recexpr = (&goal).into();
+        let goal_recexpr = goal.into();
         let pb_style = ProgressStyle::with_template(
             "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
         )
@@ -301,12 +296,12 @@ fn run_eval(
 
         log!(log, "Verification completed in {:.2?}", timer.elapsed());
 
-        print_summary(&results, &goal, verify_iters, log);
-        verify_top_k(&results, &goal, rules, verify_iters, log);
+        print_summary(&results, goal, verify_iters, log);
+        verify_top_k(&results, goal, rules, verify_iters, log);
 
         for r in &results {
             csv_writer
-                .serialize(CsvRow::new(&goal, r))
+                .serialize(CsvRow::new(goal, r))
                 .expect("write CSV row");
         }
         log!(log, "Wrote goal {}/{} to CSV", goal_idx + 1, n_goals);
@@ -387,22 +382,33 @@ fn get_guide_terms(
         }
         SampleStrategy::Random => {
             let min_size = histogram.keys().min().copied().unwrap_or(1);
-            // Oversample 5x to account for rejection filtering
             #[expect(clippy::cast_precision_loss)]
             let normal_center = (min_size + max_size) as f64 / 2.0;
-            let samples_per_size = distribution.samples_per_size(
-                histogram,
-                min_size,
-                max_size,
-                count * 5,
-                normal_center,
-            );
 
-            tc.sample_unique_root(min_size, max_size, &samples_per_size)
-                .into_iter()
-                .filter(|t| is_frontier(t, prev_raw_egg))
-                .take(count)
-                .collect()
+            let mut result = HashSet::new();
+            let mut oversample = 5;
+            loop {
+                let samples_per_size = distribution.samples_per_size(
+                    histogram,
+                    min_size,
+                    max_size,
+                    count * oversample,
+                    normal_center,
+                );
+                let batch = tc.sample_unique_root(min_size, max_size, &samples_per_size);
+                let prev_len = result.len();
+                result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
+                if result.len() >= count || result.len() == prev_len {
+                    break;
+                }
+                oversample *= 2;
+                log!(
+                    log,
+                    "Have {}/{count} frontier guides, retrying with {oversample}x oversample...",
+                    result.len()
+                );
+            }
+            result.into_iter().take(count).collect()
         }
         // SampleStrategy::Overlap => {
         //     let min_size = histogram.keys().min().copied().unwrap_or(1);
@@ -457,19 +463,33 @@ fn get_goal_term(
     }
 
     let min_size = histogram.keys().min().copied().unwrap_or(1);
-    // Oversample 5x to account for rejection filtering
-    let total_samples = count * 5;
-
     #[expect(clippy::cast_precision_loss)]
     let normal_center = (min_size + max_size) as f64 / 2.0;
-    let samples_per_size =
-        distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
 
-    tc.sample_unique_root(min_size, max_size, &samples_per_size)
-        .into_iter()
-        .filter(|t| is_frontier(t, prev_raw_egg))
-        .take(count)
-        .collect()
+    let mut result = HashSet::new();
+    let mut oversample = 5;
+    loop {
+        let samples_per_size = distribution.samples_per_size(
+            histogram,
+            min_size,
+            max_size,
+            count * oversample,
+            normal_center,
+        );
+        let batch = tc.sample_unique_root(min_size, max_size, &samples_per_size);
+        let prev_len = result.len();
+        result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
+        if result.len() >= count || result.len() == prev_len {
+            break;
+        }
+        oversample *= 2;
+        log!(
+            log,
+            "Have {}/{count} frontier goals, retrying with {oversample}x oversample...",
+            result.len()
+        );
+    }
+    result.into_iter().take(count).collect()
 }
 
 /// Helper function to check if something is in the frontier
