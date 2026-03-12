@@ -95,6 +95,7 @@ struct Cli {
 struct VerifyResult {
     guide: RankedGuide,
     iterations_to_reach: Option<usize>,
+    nodes_to_reach: Option<usize>,
 }
 
 fn main() {
@@ -274,7 +275,7 @@ fn run_eval(
             .into_par_iter()
             .progress_with_style(pb_style)
             .map(|ranked_guide| {
-                let iters = verify_reachability(
+                let result = verify_reachability(
                     std::slice::from_ref(&ranked_guide.guide),
                     &goal_recexpr,
                     rules,
@@ -282,7 +283,8 @@ fn run_eval(
                 );
                 VerifyResult {
                     guide: ranked_guide,
-                    iterations_to_reach: iters,
+                    iterations_to_reach: result.map(|(i, _)| i),
+                    nodes_to_reach: result.map(|(_, n)| n),
                 }
             })
             .collect::<Vec<_>>();
@@ -312,6 +314,7 @@ struct CsvRow {
     zs_rank: usize,
     structural_rank: usize,
     iterations_to_reach: Option<usize>,
+    nodes_to_reach: Option<usize>,
 }
 
 impl CsvRow {
@@ -325,6 +328,7 @@ impl CsvRow {
             zs_rank: r.guide.zs_rank,
             structural_rank: r.guide.structural_rank,
             iterations_to_reach: r.iterations_to_reach,
+            nodes_to_reach: r.nodes_to_reach,
         }
     }
 }
@@ -524,7 +528,7 @@ fn verify_reachability(
     goal: &RecExpr<Math>,
     rules: &[Rewrite<Math, ConstantFold>],
     max_iters: usize,
-) -> Option<usize> {
+) -> Option<(usize, usize)> {
     assert!(!guides.is_empty(), "must have at least one guide");
 
     let goal_clone = goal.clone();
@@ -551,10 +555,11 @@ fn verify_reachability(
 
     let runner = runner.run(rules);
 
+    let n_nodes = runner.egraph.nodes().len();
     runner
         .egraph
         .lookup_expr(goal)
-        .map(|_| runner.iterations.len())
+        .map(|_| runner.iterations.len()).map(|i|(i,n_nodes))
 }
 
 const TOP_K: [usize; 6] = [1, 2, 5, 10, 50, 100];
@@ -581,9 +586,8 @@ fn verify_top_k(
         log!(log, "STRUCTURAL DISTANCE:");
         successful.sort_unstable_by_key(|v| v.guide.structural_rank);
         top_k(rules, max_iters, log, &successful, &go);
-        log!(log, "RANDOM:");
-        successful.shuffle(&mut ChaCha12Rng::seed_from_u64(0));
-        top_k(rules, max_iters, log, &successful, &go);
+        log!(log, "RANDOM (10 trials averaged):");
+        top_k_random(rules, max_iters, log, &mut successful, &go, 10);
         log!(log, "KNOWN ITERATIONS:");
         successful.sort_unstable_by_key(|v| v.iterations_to_reach);
         top_k(rules, max_iters, log, &successful, &go);
@@ -612,10 +616,73 @@ fn top_k(
         } else {
             log!(log, "No single guide in top {k} could reach it");
         }
-        if let Some(i) = could_reach {
-            log!(log, "Could reach with top {k} guides: {i}");
+        if let Some((i, n)) = could_reach {
+            log!(log, "Could reach with top {k} guides: {i} ({n} nodes)");
         } else {
             log!(log, "Could NOT reach with top {k} guides");
+        }
+    }
+}
+
+#[expect(clippy::cast_precision_loss)]
+fn top_k_random(
+    rules: &[Rewrite<Math, ConstantFold>],
+    max_iters: usize,
+    log: &mut File,
+    successful: &mut [&VerifyResult],
+    go: &RecExpr<Math>,
+    n_trials: u64,
+) {
+    let mut rng = ChaCha12Rng::seed_from_u64(0);
+    for k in TOP_K {
+        if k > successful.len() {
+            continue;
+        }
+        let mut best_single_sum: f64 = 0.0;
+        let mut best_single_count: u64 = 0;
+        let mut combined_iter_sum: f64 = 0.0;
+        let mut combined_node_sum: f64 = 0.0;
+        let mut combined_count: u64 = 0;
+
+        for _ in 0..n_trials {
+            successful.shuffle(&mut rng);
+            let top_guides = successful[0..k]
+                .iter()
+                .map(|v| v.guide.guide.clone())
+                .collect::<Vec<_>>();
+            if let Some(i) = successful[0..k]
+                .iter()
+                .filter_map(|v| v.iterations_to_reach)
+                .min()
+            {
+                best_single_sum += i as f64;
+                best_single_count += 1;
+            }
+            if let Some((i, n)) = verify_reachability(&top_guides, go, rules, max_iters) {
+                combined_iter_sum += i as f64;
+                combined_node_sum += n as f64;
+                combined_count += 1;
+            }
+        }
+
+        if best_single_count > 0 {
+            log!(
+                log,
+                "Best single guide in top {k}: avg {:.1} iters ({best_single_count}/{n_trials} trials reached)",
+                best_single_sum / best_single_count as f64,
+            );
+        } else {
+            log!(log, "No single guide in top {k} could reach it (0/{n_trials} trials)");
+        }
+        if combined_count > 0 {
+            log!(
+                log,
+                "Combined top {k}: avg {:.1} iters, avg {:.0} nodes ({combined_count}/{n_trials} trials reached)",
+                combined_iter_sum / combined_count as f64,
+                combined_node_sum / combined_count as f64,
+            );
+        } else {
+            log!(log, "Could NOT reach with top {k} guides (0/{n_trials} trials)");
         }
     }
 }
