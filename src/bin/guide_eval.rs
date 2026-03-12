@@ -69,9 +69,6 @@ struct Cli {
     #[arg(long)]
     max_size: Option<usize>,
 
-    // /// Distance metric to use for ranking
-    // #[arg(long)] // default_value_t = DistanceMetric::ZhangShasha
-    // distance: DistanceMetric,
     /// How to distribute the sample budget across sizes.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
     #[arg(long, default_value_t = SampleDistribution::Uniform)]
@@ -208,7 +205,7 @@ fn main() {
 /// inside a `output/` directory (created if needed), where `N` is one higher
 /// than the largest existing run number.
 fn output_folder(cli: &Cli) -> PathBuf {
-    cli.output.as_deref().map_or_else(
+    let this_run_dir = cli.output.as_deref().map_or_else(
         || {
             let runs_dir = current_dir().unwrap().join("data").join("guide_eval");
             std::fs::create_dir_all(&runs_dir).expect("Failed to create output directory");
@@ -229,18 +226,14 @@ fn output_folder(cli: &Cli) -> PathBuf {
                 })
                 .max()
                 .unwrap_or(0);
-            let this_run_dir = runs_dir
+            runs_dir
                 .join(pat)
-                .with_extension((max_existing + 1).to_string());
-            std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
-            this_run_dir
+                .with_extension((max_existing + 1).to_string())
         },
-        |c| {
-            let this_run_dir = PathBuf::from(c);
-            std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
-            this_run_dir
-        },
-    )
+        PathBuf::from,
+    );
+    std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
+    this_run_dir
 }
 
 fn run_eval(
@@ -410,24 +403,6 @@ fn get_guide_terms(
             }
             result.into_iter().take(count).collect()
         }
-        // SampleStrategy::Overlap => {
-        //     let min_size = histogram.keys().min().copied().unwrap_or(1);
-        //     // Oversample 5x to account for rejection filtering
-        //     #[expect(clippy::cast_precision_loss)]
-        //     let normal_center = (min_size + max_size) as f64 / 2.0;
-        //     let samples_per_size = distribution.samples_per_size(
-        //         histogram,
-        //         min_size,
-        //         max_size,
-        //         count * 5,
-        //         normal_center,
-        //     );
-        //     tc.sample_unique_root_overlap(goal, min_size, max_size, &samples_per_size)
-        //         .into_iter()
-        //         .filter(|t| is_frontier(t, prev_raw_egg))
-        //         .take(count)
-        //         .collect()
-        // }
     };
     log!(
         log,
