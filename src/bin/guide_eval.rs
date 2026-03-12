@@ -681,6 +681,7 @@ fn top_k(
     entries
 }
 
+#[expect(clippy::cast_precision_loss)]
 fn top_k_random(
     rules: &[Rewrite<Math, ConstantFold>],
     max_iters: usize,
@@ -717,10 +718,19 @@ fn top_k_random(
 
         let n_best = trials.iter().filter(|t| t.best_single_iters.is_some()).count();
         let n_combined = trials.iter().filter(|t| t.combined_iters.is_some()).count();
-        log!(
-            log,
-            "Top {k}: {n_best}/{n_trials} trials had a reachable single guide, {n_combined}/{n_trials} reached combined",
-        );
+        if n_best > 0 {
+            let avg_best = trials.iter().filter_map(|t| t.best_single_iters).sum::<usize>() as f64 / n_best as f64;
+            log!(log, "Best single guide in top {k} guides: {avg_best:.1} (avg over {n_best}/{n_trials} trials)");
+        } else {
+            log!(log, "No single guide in top {k} could reach it");
+        }
+        if n_combined > 0 {
+            let avg_iters = trials.iter().filter_map(|t| t.combined_iters).sum::<usize>() as f64 / n_combined as f64;
+            let avg_nodes = trials.iter().filter_map(|t| t.combined_nodes).sum::<usize>() as f64 / n_combined as f64;
+            log!(log, "Could reach with top {k} guides: {avg_iters:.1} ({avg_nodes:.0} nodes) (avg over {n_combined}/{n_trials} trials)");
+        } else {
+            log!(log, "Could NOT reach with top {k} guides");
+        }
 
         entries.push(TopKRandomEntry { k, trials });
     }
