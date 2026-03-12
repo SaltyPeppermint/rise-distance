@@ -21,8 +21,8 @@ impl Display for DistanceMetric {
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum SampleStrategy {
-    /// Use the `sample_with_overlap`
-    Overlap,
+    // /// Use the `sample_with_overlap`
+    // Overlap,
     /// Sample fully random
     Random,
     /// Enumerate all terms up to the limit
@@ -32,7 +32,7 @@ pub enum SampleStrategy {
 impl Display for SampleStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Overlap => write!(f, "overlap"),
+            // Self::Overlap => write!(f, "overlap"),
             Self::Random => write!(f, "random"),
             Self::Enumerate => write!(f, "enumerate"),
         }

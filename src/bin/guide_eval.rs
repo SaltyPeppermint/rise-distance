@@ -159,42 +159,41 @@ fn main() {
     }
     log!(log, "Sampled {} goal(s)", goals.len());
 
-    let mut guides_per_goal = HashMap::new();
-
-    for (id, goal) in goals.into_iter().enumerate() {
-        // Step 3: Get guides from the iteration-(n-1) frontier
-        log!(log, "Looking at goal {id}: {goal}");
+    // Step 3: Get guides from the iteration-(n-1) frontier (shared across all goals)
+    log!(
+        log,
+        "\nGetting guides from iteration-{} frontier...",
+        cli.guide_iters
+    );
+    let guide_count = if let SampleStrategy::Enumerate = cli.strategy {
+        usize::MAX
+    } else {
+        cli.guides
+            .expect("-g/--guides is required when not using --strategy enumerate")
+    };
+    let guides = get_guide_terms(
+        &eg_guide,
+        &prev_eg_guide,
+        guide_count,
+        max_size,
+        cli.distribution,
+        cli.strategy,
+        &mut log,
+    );
+    if guides.is_empty() {
         log!(
             log,
-            "\nGetting guides from iteration-{} frontier...",
+            "No frontier terms found at iteration {}.",
             cli.guide_iters
         );
-        let guide_count = if let SampleStrategy::Enumerate = cli.strategy {
-            usize::MAX
-        } else {
-            cli.guides
-                .expect("-g/--guides is required when not using --strategy enumerate")
-        };
-        let guides = get_guide_terms(
-            &eg_guide,
-            &prev_eg_guide,
-            guide_count,
-            max_size,
-            cli.distribution,
-            cli.strategy,
-            &goal,
-            &mut log,
-        );
-        if guides.is_empty() {
-            log!(
-                log,
-                "No frontier terms found at iteration {}.",
-                cli.guide_iters
-            );
-        } else {
-            log!(log, "Found {} guide(s)", guides.len());
-        }
-        guides_per_goal.insert(goal, guides);
+    } else {
+        log!(log, "Found {} guide(s)", guides.len());
+    }
+
+    let mut guides_per_goal = HashMap::new();
+    for (id, goal) in goals.into_iter().enumerate() {
+        log!(log, "Looking at goal {id}: {goal}");
+        guides_per_goal.insert(goal, guides.clone());
     }
 
     run_eval(
@@ -346,7 +345,6 @@ impl CsvRow {
 ///
 /// When `enumerate` is true, enumerates all terms exhaustively.
 /// Otherwise, samples terms using the given distribution.
-#[expect(clippy::too_many_arguments)]
 fn get_guide_terms(
     egraph: &EGraph<MathLabel>,
     prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
@@ -354,7 +352,6 @@ fn get_guide_terms(
     max_size: usize,
     distribution: SampleDistribution,
     strategy: SampleStrategy,
-    goal: &TreeNode<MathLabel>,
     log: &mut File,
 ) -> Vec<TreeNode<MathLabel>> {
     let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
@@ -365,7 +362,7 @@ fn get_guide_terms(
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
     sorted_hist.sort_unstable();
-    log!(log, "Terms in goal frontier:");
+    log!(log, "Terms in guide frontier:");
     for (k, v) in &sorted_hist {
         log!(log, "{v} terms of size {k}");
     }
@@ -407,24 +404,24 @@ fn get_guide_terms(
                 .take(count)
                 .collect()
         }
-        SampleStrategy::Overlap => {
-            let min_size = histogram.keys().min().copied().unwrap_or(1);
-            // Oversample 5x to account for rejection filtering
-            #[expect(clippy::cast_precision_loss)]
-            let normal_center = (min_size + max_size) as f64 / 2.0;
-            let samples_per_size = distribution.samples_per_size(
-                histogram,
-                min_size,
-                max_size,
-                count * 5,
-                normal_center,
-            );
-            tc.sample_unique_root_overlap(goal, min_size, max_size, &samples_per_size)
-                .into_iter()
-                .filter(|t| is_frontier(t, prev_raw_egg))
-                .take(count)
-                .collect()
-        }
+        // SampleStrategy::Overlap => {
+        //     let min_size = histogram.keys().min().copied().unwrap_or(1);
+        //     // Oversample 5x to account for rejection filtering
+        //     #[expect(clippy::cast_precision_loss)]
+        //     let normal_center = (min_size + max_size) as f64 / 2.0;
+        //     let samples_per_size = distribution.samples_per_size(
+        //         histogram,
+        //         min_size,
+        //         max_size,
+        //         count * 5,
+        //         normal_center,
+        //     );
+        //     tc.sample_unique_root_overlap(goal, min_size, max_size, &samples_per_size)
+        //         .into_iter()
+        //         .filter(|t| is_frontier(t, prev_raw_egg))
+        //         .take(count)
+        //         .collect()
+        // }
     };
     log!(
         log,
