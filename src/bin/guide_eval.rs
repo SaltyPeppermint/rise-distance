@@ -124,9 +124,10 @@ fn main() {
         cli.goal_iters
     );
     let start = Instant::now();
-    let [(prev_eg_guide, eg_guide), (prev_eg_goal, eg_goal)] =
-        run_guide_goal(&seed, &rules, cli.guide_iters, cli.goal_iters);
+    let result = run_guide_goal(&seed, &rules, cli.guide_iters, cli.goal_iters);
+
     log!(log, "Eqsat completed in {:.2?}", start.elapsed());
+    log!(log, "Final egraph had {} nodes", result.goal_eg_size);
 
     // Step 2: Sample goals from the iteration-n frontier
     log!(
@@ -140,8 +141,8 @@ fn main() {
         m
     });
     let goals = get_goal_term(
-        &eg_goal,
-        &prev_eg_goal,
+        &result.goal,
+        &result.prev_goal,
         cli.goals,
         max_size,
         cli.distribution,
@@ -170,8 +171,8 @@ fn main() {
             .expect("-g/--guides is required when not using --strategy enumerate")
     };
     let guides = get_guide_terms(
-        &eg_guide,
-        &prev_eg_guide,
+        &result.guide,
+        &result.prev_guide,
         guide_count,
         max_size,
         cli.distribution,
@@ -716,18 +717,39 @@ fn top_k_random(
             })
             .collect::<Vec<_>>();
 
-        let n_best = trials.iter().filter(|t| t.best_single_iters.is_some()).count();
+        let n_best = trials
+            .iter()
+            .filter(|t| t.best_single_iters.is_some())
+            .count();
         let n_combined = trials.iter().filter(|t| t.combined_iters.is_some()).count();
         if n_best > 0 {
-            let avg_best = trials.iter().filter_map(|t| t.best_single_iters).sum::<usize>() as f64 / n_best as f64;
-            log!(log, "Best single guide in top {k} guides: {avg_best:.1} (avg over {n_best}/{n_trials} trials)");
+            let avg_best = trials
+                .iter()
+                .filter_map(|t| t.best_single_iters)
+                .sum::<usize>() as f64
+                / n_best as f64;
+            log!(
+                log,
+                "Best single guide in top {k} guides: {avg_best:.1} (avg over {n_best}/{n_trials} trials)"
+            );
         } else {
             log!(log, "No single guide in top {k} could reach it");
         }
         if n_combined > 0 {
-            let avg_iters = trials.iter().filter_map(|t| t.combined_iters).sum::<usize>() as f64 / n_combined as f64;
-            let avg_nodes = trials.iter().filter_map(|t| t.combined_nodes).sum::<usize>() as f64 / n_combined as f64;
-            log!(log, "Could reach with top {k} guides: {avg_iters:.1} ({avg_nodes:.0} nodes) (avg over {n_combined}/{n_trials} trials)");
+            let avg_iters = trials
+                .iter()
+                .filter_map(|t| t.combined_iters)
+                .sum::<usize>() as f64
+                / n_combined as f64;
+            let avg_nodes = trials
+                .iter()
+                .filter_map(|t| t.combined_nodes)
+                .sum::<usize>() as f64
+                / n_combined as f64;
+            log!(
+                log,
+                "Could reach with top {k} guides: {avg_iters:.1} ({avg_nodes:.0} nodes) (avg over {n_combined}/{n_trials} trials)"
+            );
         } else {
             log!(log, "Could NOT reach with top {k} guides");
         }

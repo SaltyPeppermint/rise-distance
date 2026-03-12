@@ -11,6 +11,21 @@ use crate::{EClass, EGraph, Label};
 
 pub use math::{Math, MathLabel};
 
+/// Result of [`run_guide_goal`]: egraph snapshots at guide and goal iterations,
+/// plus the total node count of the final egraph.
+pub struct GuideGoalResult<L: Language, N: Analysis<L>, LL: Label> {
+    /// Raw egg egraph at `n_guide - 1` (rebuilt), for frontier membership checks.
+    pub prev_guide: egg::EGraph<L, N>,
+    /// Converted egraph at iteration `n_guide`.
+    pub guide: EGraph<LL>,
+    /// Raw egg egraph at `n_goal - 1` (rebuilt), for frontier membership checks.
+    pub prev_goal: egg::EGraph<L, N>,
+    /// Converted egraph at iteration `n_goal`.
+    pub goal: EGraph<LL>,
+    /// Number of nodes in the final egraph.
+    pub goal_eg_size: usize,
+}
+
 pub fn convert<L, N, LL>(egg_graph: &egg::EGraph<L, N>, root: Id) -> EGraph<LL>
 where
     L: Language,
@@ -88,7 +103,7 @@ pub fn run_guide_goal<'a, L, N, LL, R>(
     rules: R,
     n_guide: usize,
     n_goal: usize,
-) -> [(egg::EGraph<L, N>, EGraph<LL>); 2]
+) -> GuideGoalResult<L, N, LL>
 where
     L: Language + 'static,
     N: Analysis<L> + Default + Clone + 'static,
@@ -153,10 +168,14 @@ where
     let mut eg_goal_min_1 = eg_goal_min_1.unwrap();
     eg_goal_min_1.rebuild();
 
-    [
-        (eg_guide_min_1, convert(&eg_guide.unwrap(), root)),
-        (eg_goal_min_1, convert(&eg_goal, root)),
-    ]
+    let goal_eg_size = eg_goal.nodes().len();
+    GuideGoalResult {
+        prev_guide: eg_guide_min_1,
+        guide: convert(&eg_guide.unwrap(), root),
+        prev_goal: eg_goal_min_1,
+        goal: convert(&eg_goal, root),
+        goal_eg_size,
+    }
 }
 
 #[cfg(test)]

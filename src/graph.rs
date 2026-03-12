@@ -103,6 +103,19 @@ impl<L: Label> EGraph<L> {
             .expect("Root has not been set. This is necessary after deserializing the egraph!")
     }
 
+    #[must_use]
+    pub fn nodes(&self) -> usize {
+        self.data_ty_nodes.len()
+            + self.nat_nodes.len()
+            + self.fun_ty_nodes.len()
+            + self.classes.values().map(|c| c.nodes.len()).sum::<usize>()
+    }
+
+    #[must_use]
+    pub fn classes(&self) -> usize {
+        self.classes.len()
+    }
+
     /// Parse an `EGraph` from a JSON file, extracting the root ID from the filename.
     ///
     /// Expects filename format: `..._root_<id>.json` (e.g., `ser_egraph_root_129.json`).
