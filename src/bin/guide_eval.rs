@@ -2,7 +2,8 @@ use std::env::current_dir;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use clap::Parser;
@@ -16,7 +17,7 @@ use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
 use rise_distance::cli::{SampleDistribution, SampleStrategy, log};
-use rise_distance::egg::math::{ConstantFold, Math, MathLabel};
+use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
 use rise_distance::egg::run_guide_goal;
 use rise_distance::{
     EGraph, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit,
@@ -89,21 +90,30 @@ struct Cli {
     /// Sample Strategy
     #[arg(long)]
     strategy: SampleStrategy,
+
+    /// Sample Strategy
+    #[arg(long)]
+    eval_all: bool,
+
+    /// Sample Strategy
+    #[arg(long)]
+    top_k: bool,
 }
 
 #[derive(Serialize, Debug)]
-struct VerifyResult {
-    guide: RankedGuide,
+struct EvalResult<'a> {
+    guide: &'a RankedGuide,
     iterations_to_reach: Option<usize>,
     nodes_to_reach: Option<usize>,
 }
 
+static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
+
 fn main() {
     let cli = Cli::parse();
-    let out_folder = output_folder(&cli);
-    let mut log = File::create(out_folder.join("out.log")).expect("Failed to create output file");
+    let run_folder = get_run_folder(&cli);
+    let mut log = File::create(run_folder.join("out.log")).expect("Failed to create output file");
 
-    let rules = rise_distance::egg::math::rules();
     let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
 
     let seed = cli
@@ -124,7 +134,12 @@ fn main() {
         cli.goal_iters
     );
     let start = Instant::now();
-    let result = run_guide_goal(&seed, &rules, cli.guide_iters, cli.goal_iters);
+    let result = run_guide_goal(
+        &seed,
+        RULES.get_or_init(math::rules),
+        cli.guide_iters,
+        cli.goal_iters,
+    );
 
     log!(log, "Eqsat completed in {:.2?}", start.elapsed());
     log!(log, "Final egraph had {} nodes", result.goal_eg_size);
@@ -192,64 +207,25 @@ fn main() {
     run_eval(
         &goals,
         &guides,
-        &rules,
         verify_iters,
-        File::create(out_folder.join("out.csv")).expect("Failed to create output file"),
-        File::create(out_folder.join("top_k.json")).expect("Failed to create JSON output file"),
+        cli.eval_all,
+        cli.top_k,
+        &run_folder,
         &mut log,
     );
     log.flush().unwrap();
 }
 
-/// Create an output folder for this run.
-///
-/// If `-o` was given, uses that path directly. Otherwise, auto-generates a
-/// filename like `runs/run-{goal_iters}-{strategy}-sampling_{N}`
-/// inside a `output/` directory (created if needed), where `N` is one higher
-/// than the largest existing run number.
-fn output_folder(cli: &Cli) -> PathBuf {
-    let this_run_dir = cli.output.as_deref().map_or_else(
-        || {
-            let runs_dir = current_dir().unwrap().join("data").join("guide_eval");
-            std::fs::create_dir_all(&runs_dir).expect("Failed to create output directory");
-            let pat: OsString = format!(
-                "run-{}-{}-{}-sampling",
-                cli.guide_iters, cli.goal_iters, cli.strategy
-            )
-            .into();
-            let max_existing = runs_dir
-                .read_dir()
-                .unwrap()
-                .filter_map(|e| {
-                    let d = e.ok()?;
-                    if d.file_type().ok()?.is_dir() && pat.as_os_str() == d.path().file_stem()? {
-                        return d.path().extension()?.to_str()?.parse::<usize>().ok();
-                    }
-                    None
-                })
-                .max()
-                .unwrap_or(0);
-            runs_dir
-                .join(pat)
-                .with_extension((max_existing + 1).to_string())
-        },
-        PathBuf::from,
-    );
-    std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
-    this_run_dir
-}
-
 fn run_eval(
     goals: &[TreeNode<MathLabel>],
     guides: &[TreeNode<MathLabel>],
-    rules: &[Rewrite<Math, ConstantFold>],
     verify_iters: usize,
-    output: File,
-    json_output: File,
+    eval_all_guides: bool,
+    eval_top: bool,
+    run_folder: &Path,
     log: &mut File,
 ) {
-    let mut csv_writer = csv::Writer::from_writer(output);
-    let mut all_top_k: Vec<TopKResults> = Vec::new();
+    let mut all_top_k = Vec::new();
     let n_goals = goals.len();
     for (goal_idx, goal) in goals.iter().enumerate() {
         log!(
@@ -261,52 +237,70 @@ fn run_eval(
         );
         log!(log, "{goal}\n");
 
-        let ranked = rank_guides(guides, goal);
-        log!(
-            log,
-            "Verifying {} guides (max {verify_iters} iters each)...",
-            ranked.len(),
-        );
+        let mut ranked = rank_guides(guides, goal);
 
         let timer = Instant::now();
-        let goal_recexpr = goal.into();
-        let pb_style = ProgressStyle::with_template(
-            "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
-        )
-        .unwrap();
 
-        let results = ranked
-            .into_par_iter()
-            .progress_with_style(pb_style)
-            .map(|ranked_guide| {
-                let result = verify_reachability(
-                    std::slice::from_ref(&ranked_guide.guide),
-                    &goal_recexpr,
-                    rules,
-                    verify_iters,
-                );
-                VerifyResult {
-                    guide: ranked_guide,
-                    iterations_to_reach: result.map(|(i, _)| i),
-                    nodes_to_reach: result.map(|(_, n)| n),
-                }
-            })
-            .collect::<Vec<_>>();
-
+        if eval_all_guides {
+            eval_all(verify_iters, &ranked, goal, run_folder, log);
+        }
         log!(log, "Verification completed in {:.2?}", timer.elapsed());
 
-        print_summary(&results, goal, verify_iters, log);
-        all_top_k.push(verify_top_k(&results, goal, rules, verify_iters, log));
-
-        for r in &results {
-            csv_writer
-                .serialize(CsvRow::new(goal, r))
-                .expect("write CSV row");
+        if eval_top {
+            let top_k = eval_top_k(&mut ranked, goal, verify_iters, log);
+            all_top_k.push(top_k);
         }
-        log!(log, "Wrote goal {}/{} to CSV", goal_idx + 1, n_goals);
     }
-    csv_writer.flush().expect("flush output");
+    let json_output =
+        File::create(run_folder.join("top_k.json")).expect("Failed to create JSON output file");
     serde_json::to_writer_pretty(json_output, &all_top_k).expect("write top-k JSON");
+}
+
+fn eval_all(
+    verify_iters: usize,
+    ranked: &[RankedGuide],
+    goal: &TreeNode<MathLabel>,
+    run_folder: &Path,
+    log: &mut File,
+) {
+    let csv_output =
+        File::create(run_folder.join("out.csv")).expect("Failed to create output file");
+    let mut csv_writer = csv::Writer::from_writer(csv_output);
+    let goal_recexpr = goal.into();
+    let pb_style = ProgressStyle::with_template(
+        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
+    )
+    .unwrap();
+    log!(
+        log,
+        "Verifying {} guides (max {verify_iters} iters each)...",
+        ranked.len(),
+    );
+    let results = ranked
+        .par_iter()
+        .progress_with_style(pb_style)
+        .map(|guide| {
+            let result = verify_reachability(
+                std::slice::from_ref(&guide.guide),
+                &goal_recexpr,
+                verify_iters,
+            );
+            EvalResult {
+                guide,
+                iterations_to_reach: result.map(|(i, _)| i),
+                nodes_to_reach: result.map(|(_, n)| n),
+            }
+        })
+        .collect::<Vec<_>>();
+    print_summary(&results, goal, verify_iters, log);
+    for r in &results {
+        csv_writer
+            .serialize(CsvRow::new(goal, r))
+            .expect("write CSV row");
+    }
+    log!(log, "Wrote goal to CSV");
+    csv_writer.flush().expect("flush output");
+    // results
 }
 
 #[derive(Serialize)]
@@ -323,7 +317,7 @@ struct CsvRow {
 }
 
 impl CsvRow {
-    fn new(goal: &TreeNode<MathLabel>, r: &VerifyResult) -> CsvRow {
+    fn new(goal: &TreeNode<MathLabel>, r: &EvalResult) -> CsvRow {
         CsvRow {
             goal: goal.to_string(),
             guide: r.guide.guide.to_string(),
@@ -531,11 +525,10 @@ fn rank_guides(guides: &[TreeNode<MathLabel>], goal: &TreeNode<MathLabel>) -> Ve
 fn verify_reachability(
     guides: &[TreeNode<MathLabel>],
     goal: &RecExpr<Math>,
-    rules: &[Rewrite<Math, ConstantFold>],
     max_iters: usize,
 ) -> Option<(usize, usize)> {
     assert!(!guides.is_empty(), "must have at least one guide");
-
+    let rules = RULES.get_or_init(math::rules);
     let goal_clone = goal.clone();
 
     let mut runner = Runner::default()
@@ -581,6 +574,7 @@ struct TopKEntry {
 #[derive(Serialize)]
 struct TopKRandomTrial {
     best_single_iters: Option<usize>,
+    best_single_nodes: Option<usize>,
     combined_iters: Option<usize>,
     combined_nodes: Option<usize>,
 }
@@ -600,17 +594,12 @@ struct TopKResults {
     known_iters: Vec<TopKEntry>,
 }
 
-fn verify_top_k(
-    results: &[VerifyResult],
+fn eval_top_k(
+    results: &mut [RankedGuide],
     goal: &TreeNode<MathLabel>,
-    rules: &[Rewrite<Math, ConstantFold>],
     max_iters: usize,
     log: &mut File,
 ) -> TopKResults {
-    let mut successful = results
-        .iter()
-        .filter(|r| r.iterations_to_reach.is_some())
-        .collect::<Vec<_>>();
     log!(log, "Testing out top-k to see if that improves things");
     let go = goal.into();
 
@@ -622,45 +611,41 @@ fn verify_top_k(
         known_iters: Vec::new(),
     };
 
-    if !successful.is_empty() {
-        successful.sort_unstable_by_key(|v| v.guide.zs_rank);
+    if !results.is_empty() {
+        results.sort_unstable_by_key(|v| v.zs_rank);
         log!(log, "ZS DISTANCE:");
-        top_k_results.zs = top_k(rules, max_iters, log, &successful, &go);
+        top_k_results.zs = top_k(max_iters, log, results, &go);
         log!(log, "STRUCTURAL DISTANCE:");
-        successful.sort_unstable_by_key(|v| v.guide.structural_rank);
-        top_k_results.structural = top_k(rules, max_iters, log, &successful, &go);
-
-        log!(log, "KNOWN ITERATIONS:");
-        successful.sort_unstable_by_key(|v| v.iterations_to_reach);
-        top_k_results.known_iters = top_k(rules, max_iters, log, &successful, &go);
+        results.sort_unstable_by_key(|v| v.structural_rank);
+        top_k_results.structural = top_k(max_iters, log, results, &go);
 
         log!(log, "RANDOM (10 trials averaged):");
-        top_k_results.random = top_k_random(rules, max_iters, log, &mut successful, &go, 10);
+        top_k_results.random = top_k_random(max_iters, log, results, &go, 10);
     }
 
     top_k_results
 }
 
 fn top_k(
-    rules: &[Rewrite<Math, ConstantFold>],
     max_iters: usize,
     log: &mut File,
-    successful: &[&VerifyResult],
+    ranked: &[RankedGuide],
     go: &RecExpr<Math>,
 ) -> Vec<TopKEntry> {
     let mut entries = Vec::new();
     for k in TOP_K {
-        if k > successful.len() {
+        if k > ranked.len() {
             continue;
         }
-        let top_guides = successful[0..k]
+        let top_guides = ranked[0..k]
             .iter()
-            .map(|k| k.guide.guide.clone())
+            .map(|k| k.guide.clone())
             .collect::<Vec<_>>();
-        let could_reach = verify_reachability(&top_guides, go, rules, max_iters);
-        let best_in_k = successful[0..k]
+        let could_reach = verify_reachability(&top_guides, go, max_iters);
+        let best_in_k = ranked[0..k]
             .iter()
-            .filter_map(|v| v.iterations_to_reach)
+            .filter_map(|v| verify_reachability(std::slice::from_ref(&v.guide), go, max_iters))
+            .map(|(a, _)| a)
             .min();
         if let Some(i) = best_in_k {
             log!(log, "Best single guide in top {k} guides: {i}");
@@ -684,10 +669,9 @@ fn top_k(
 
 #[expect(clippy::cast_precision_loss)]
 fn top_k_random(
-    rules: &[Rewrite<Math, ConstantFold>],
     max_iters: usize,
     log: &mut File,
-    successful: &mut [&VerifyResult],
+    successful: &mut [RankedGuide],
     go: &RecExpr<Math>,
     n_trials: usize,
 ) -> Vec<TopKRandomEntry> {
@@ -702,15 +686,23 @@ fn top_k_random(
                 successful.shuffle(&mut rng);
                 let top_guides = successful[0..k]
                     .iter()
-                    .map(|v| v.guide.guide.clone())
+                    .map(|v| v.guide.clone())
                     .collect::<Vec<_>>();
-                let best_single_iters = successful[0..k]
+                let (best_single_iters, best_single_nodes) = successful[0..k]
                     .iter()
-                    .filter_map(|v| v.iterations_to_reach)
-                    .min();
-                let combined = verify_reachability(&top_guides, go, rules, max_iters);
+                    .filter_map(|v| {
+                        verify_reachability(std::slice::from_ref(&v.guide), go, max_iters)
+                    })
+                    .fold((None, None), |(iter_acc, nodes_acc), (iters, nodes)| {
+                        (
+                            Some(iter_acc.map_or(iters, |a| iters.min(a))),
+                            Some(nodes_acc.map_or(nodes, |a| nodes.min(a))),
+                        )
+                    });
+                let combined = verify_reachability(&top_guides, go, max_iters);
                 TopKRandomTrial {
                     best_single_iters,
+                    best_single_nodes,
                     combined_iters: combined.map(|(i, _)| i),
                     combined_nodes: combined.map(|(_, n)| n),
                 }
@@ -723,14 +715,23 @@ fn top_k_random(
             .count();
         let n_combined = trials.iter().filter(|t| t.combined_iters.is_some()).count();
         if n_best > 0 {
-            let avg_best = trials
+            let avg_best_iters = trials
                 .iter()
                 .filter_map(|t| t.best_single_iters)
                 .sum::<usize>() as f64
                 / n_best as f64;
             log!(
                 log,
-                "Best single guide in top {k} guides: {avg_best:.1} (avg over {n_best}/{n_trials} trials)"
+                "Best single ITERS guide in top {k} guides: {avg_best_iters:.1} (avg over {n_best}/{n_trials} trials)"
+            );
+            let avg_best_nodes = trials
+                .iter()
+                .filter_map(|t| t.best_single_nodes)
+                .sum::<usize>() as f64
+                / n_best as f64;
+            log!(
+                log,
+                "Best single NODES guide in top {k} guides: {avg_best_nodes:.1} (avg over {n_best}/{n_trials} trials)"
             );
         } else {
             log!(log, "No single guide in top {k} could reach it");
@@ -761,7 +762,7 @@ fn top_k_random(
 
 #[expect(clippy::cast_precision_loss, clippy::too_many_lines)]
 fn print_summary(
-    results: &[VerifyResult],
+    results: &[EvalResult],
     goal: &TreeNode<MathLabel>,
     max_iters: usize,
     // top: usize,
@@ -888,4 +889,42 @@ fn print_summary(
             );
         }
     }
+}
+
+/// Create an output folder for this run.
+///
+/// If `-o` was given, uses that path directly. Otherwise, auto-generates a
+/// filename like `runs/run-{goal_iters}-{strategy}-sampling_{N}`
+/// inside a `output/` directory (created if needed), where `N` is one higher
+/// than the largest existing run number.
+fn get_run_folder(cli: &Cli) -> PathBuf {
+    let this_run_dir = cli.output.as_deref().map_or_else(
+        || {
+            let runs_dir = current_dir().unwrap().join("data").join("guide_eval");
+            std::fs::create_dir_all(&runs_dir).expect("Failed to create output directory");
+            let pat: OsString = format!(
+                "run-{}-{}-{}-sampling",
+                cli.guide_iters, cli.goal_iters, cli.strategy
+            )
+            .into();
+            let max_existing = runs_dir
+                .read_dir()
+                .unwrap()
+                .filter_map(|e| {
+                    let d = e.ok()?;
+                    if d.file_type().ok()?.is_dir() && pat.as_os_str() == d.path().file_stem()? {
+                        return d.path().extension()?.to_str()?.parse::<usize>().ok();
+                    }
+                    None
+                })
+                .max()
+                .unwrap_or(0);
+            runs_dir
+                .join(pat)
+                .with_extension((max_existing + 1).to_string())
+        },
+        PathBuf::from,
+    );
+    std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
+    this_run_dir
 }
