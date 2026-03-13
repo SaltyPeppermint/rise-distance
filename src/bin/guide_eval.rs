@@ -15,8 +15,8 @@ use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
 use rise_distance::cli::{SampleDistribution, SampleStrategy, get_run_folder, is_frontier, log};
-use rise_distance::egg::math::{ConstantFold, Math, MathLabel, self};
-use rise_distance::egg::{run_guide_goal, verify_reachability};
+use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
+use rise_distance::egg::{VerifyResult, run_guide_goal, verify_reachability};
 use rise_distance::{
     EGraph, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit,
 };
@@ -101,16 +101,17 @@ struct Cli {
 #[derive(Serialize, Debug)]
 struct EvalResult<'a> {
     guide: &'a RankedGuide,
-    iterations_to_reach: Option<usize>,
-    nodes_to_reach: Option<usize>,
+    values: Option<VerifyResult>,
 }
 
 static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
 
-
 fn main() {
     let cli = Cli::parse();
-    let prefix = format!("run-{}-{}-{}", cli.guide_iters, cli.goal_iters, cli.strategy);
+    let prefix = format!(
+        "run-{}-{}-{}",
+        cli.guide_iters, cli.goal_iters, cli.strategy
+    );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     let mut log = File::create(run_folder.join("out.log")).expect("Failed to create output file");
 
@@ -279,18 +280,14 @@ fn eval_all(
     let results = ranked
         .par_iter()
         .progress_with_style(pb_style)
-        .map(|guide| {
-            let result = verify_reachability(
+        .map(|guide| EvalResult {
+            guide,
+            values: verify_reachability(
                 std::slice::from_ref(&guide.guide),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
                 verify_iters,
-            );
-            EvalResult {
-                guide,
-                iterations_to_reach: result.map(|(i, _)| i),
-                nodes_to_reach: result.map(|(_, n)| n),
-            }
+            ),
         })
         .collect::<Vec<_>>();
     print_summary(&results, goal, verify_iters, log);
@@ -327,8 +324,8 @@ impl CsvRow {
             structural_zs_sum: r.guide.structural_distance.zs_sum(),
             zs_rank: r.guide.zs_rank,
             structural_rank: r.guide.structural_rank,
-            iterations_to_reach: r.iterations_to_reach,
-            nodes_to_reach: r.nodes_to_reach,
+            iterations_to_reach: r.values.map(|v| v.iters),
+            nodes_to_reach: r.values.map(|v| v.nodes),
         }
     }
 }
@@ -528,8 +525,7 @@ struct TopKEntry {
 
 #[derive(Serialize)]
 struct TopKRandomTrial {
-    best_single_iters: Option<usize>,
-    best_single_nodes: Option<usize>,
+    single_iters: Vec<Option<VerifyResult>>,
     combined_iters: Option<usize>,
     combined_nodes: Option<usize>,
 }
@@ -623,27 +619,38 @@ fn top_k(
             .iter()
             .map(|k| k.guide.clone())
             .collect::<Vec<_>>();
-        let could_reach = verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
+        let could_reach =
+            verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
         let best_in_k = ranked[0..k]
             .iter()
-            .filter_map(|v| verify_reachability(std::slice::from_ref(&v.guide), go, RULES.get_or_init(math::rules), max_iters))
-            .map(|(a, _)| a)
+            .filter_map(|v| {
+                verify_reachability(
+                    std::slice::from_ref(&v.guide),
+                    go,
+                    RULES.get_or_init(math::rules),
+                    max_iters,
+                )
+            })
+            .map(|a| a.iters)
             .min();
         if let Some(i) = best_in_k {
             log!(log, "Best single guide in top {k} guides: {i}");
         } else {
             log!(log, "No single guide in top {k} could reach it");
         }
-        if let Some((i, n)) = could_reach {
-            log!(log, "Could reach with top {k} guides: {i} ({n} nodes)");
+        if let Some(VerifyResult { iters, nodes }) = could_reach {
+            log!(
+                log,
+                "Could reach with top {k} guides: {iters} ({nodes} nodes)"
+            );
         } else {
             log!(log, "Could NOT reach with top {k} guides");
         }
         entries.push(TopKEntry {
             k,
             best_single_iters: best_in_k,
-            combined_iters: could_reach.map(|(i, _)| i),
-            combined_nodes: could_reach.map(|(_, n)| n),
+            combined_iters: could_reach.map(|v| v.iters),
+            combined_nodes: could_reach.map(|v| v.nodes),
         });
     }
     entries
@@ -671,43 +678,48 @@ fn top_k_random(
         let trials = (0..n_trials)
             .map(|_| {
                 successful.shuffle(&mut rng);
-                let mut top_guides: Vec<_> = successful[0..k]
-                    .iter()
-                    .map(|v| v.guide.clone())
-                    .collect();
+                let mut top_guides: Vec<_> =
+                    successful[0..k].iter().map(|v| v.guide.clone()).collect();
                 if let Some((_, h)) = &helper {
                     top_guides.push((*h).clone());
                 }
-                let (best_single_iters, best_single_nodes) = successful[0..k]
+                let single_iters = successful[0..k]
                     .iter()
-                    .filter_map(|v| {
-                        verify_reachability(std::slice::from_ref(&v.guide), go, RULES.get_or_init(math::rules), max_iters)
-                    })
-                    .fold((None, None), |(iter_acc, nodes_acc), (iters, nodes)| {
-                        (
-                            Some(iter_acc.map_or(iters, |a| iters.min(a))),
-                            Some(nodes_acc.map_or(nodes, |a| nodes.min(a))),
+                    .map(|v| {
+                        verify_reachability(
+                            std::slice::from_ref(&v.guide),
+                            go,
+                            RULES.get_or_init(math::rules),
+                            max_iters,
                         )
-                    });
-                let combined = verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
+                    })
+                    .collect();
+                let combined =
+                    verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
                 TopKRandomTrial {
-                    best_single_iters,
-                    best_single_nodes,
-                    combined_iters: combined.map(|(i, _)| i),
-                    combined_nodes: combined.map(|(_, n)| n),
+                    single_iters,
+                    combined_iters: combined.map(|v| v.iters),
+                    combined_nodes: combined.map(|v| v.nodes),
                 }
             })
             .collect::<Vec<_>>();
 
         let n_best = trials
             .iter()
-            .filter(|t| t.best_single_iters.is_some())
+            .filter(|t| t.single_iters.iter().any(|i| i.is_some()))
             .count();
         let n_combined = trials.iter().filter(|t| t.combined_iters.is_some()).count();
         if n_best > 0 {
             let avg_best_iters = trials
                 .iter()
-                .filter_map(|t| t.best_single_iters)
+                .map(|t| {
+                    t.single_iters
+                        .iter()
+                        .flatten()
+                        .map(|v| v.iters)
+                        .min()
+                        .unwrap()
+                })
                 .sum::<usize>() as f64
                 / n_best as f64;
             log!(
@@ -716,7 +728,14 @@ fn top_k_random(
             );
             let avg_best_nodes = trials
                 .iter()
-                .filter_map(|t| t.best_single_nodes)
+                .map(|t| {
+                    t.single_iters
+                        .iter()
+                        .flatten()
+                        .map(|v| v.nodes)
+                        .min()
+                        .unwrap()
+                })
                 .sum::<usize>() as f64
                 / n_best as f64;
             log!(
@@ -724,7 +743,10 @@ fn top_k_random(
                 "Best single NODES guide in top {k} guides (helper={helper_label}): {avg_best_nodes:.1} (avg over {n_best}/{n_trials} trials)"
             );
         } else {
-            log!(log, "No single guide in top {k} could reach it (helper={helper_label})");
+            log!(
+                log,
+                "No single guide in top {k} could reach it (helper={helper_label})"
+            );
         }
         if n_combined > 0 {
             let avg_iters = trials
@@ -742,7 +764,10 @@ fn top_k_random(
                 "Could reach with top {k} guides (helper={helper_label}): {avg_iters:.1} ({avg_nodes:.0} nodes) (avg over {n_combined}/{n_trials} trials)"
             );
         } else {
-            log!(log, "Could NOT reach with top {k} guides (helper={helper_label})");
+            log!(
+                log,
+                "Could NOT reach with top {k} guides (helper={helper_label})"
+            );
         }
 
         entries.push(TopKRandomEntry { k, trials });
@@ -760,7 +785,7 @@ fn print_summary(
 ) {
     let mut successful = results
         .iter()
-        .filter(|r| r.iterations_to_reach.is_some())
+        .filter(|r| r.values.is_some())
         .collect::<Vec<_>>();
     let total = results.len();
     let n_reached = successful.len();
@@ -806,15 +831,13 @@ fn print_summary(
                 "  Iterations to reach:         min={}, median={}, max={}",
                 successful
                     .iter()
-                    .filter_map(|v| v.iterations_to_reach)
+                    .filter_map(|v| v.values.map(|v| v.iters))
                     .min()
                     .unwrap(),
-                successful[successful.len() / 2]
-                    .iterations_to_reach
-                    .unwrap(),
+                successful[successful.len() / 2].values.unwrap().iters,
                 successful
                     .iter()
-                    .filter_map(|v| v.iterations_to_reach)
+                    .filter_map(|v| v.values.map(|v| v.iters))
                     .max()
                     .unwrap(),
             );
@@ -857,15 +880,13 @@ fn print_summary(
                 "  Iterations to reach:         min={}, median={}, max={}",
                 successful
                     .iter()
-                    .filter_map(|v| v.iterations_to_reach)
+                    .filter_map(|v| v.values.map(|v| v.iters))
                     .min()
                     .unwrap(),
-                successful[successful.len() / 2]
-                    .iterations_to_reach
-                    .unwrap(),
+                successful[successful.len() / 2].values.unwrap().iters,
                 successful
                     .iter()
-                    .filter_map(|v| v.iterations_to_reach)
+                    .filter_map(|v| v.values.map(|v| v.iters))
                     .max()
                     .unwrap(),
             );
@@ -880,4 +901,3 @@ fn print_summary(
         }
     }
 }
-

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use egg::{Analysis, Id, Language, RecExpr, Rewrite, Runner, SimpleScheduler, StopReason};
 use hashbrown::HashMap;
+use serde::Serialize;
 
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::ENode;
@@ -178,6 +179,12 @@ where
     }
 }
 
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct VerifyResult {
+    pub nodes: usize,
+    pub iters: usize,
+}
+
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
 /// Returns `Some((iterations, nodes))` if reached, `None` otherwise.
 ///
@@ -189,7 +196,7 @@ pub fn verify_reachability<L, N, LL>(
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     max_iters: usize,
-) -> Option<(usize, usize)>
+) -> Option<VerifyResult>
 where
     L: Language + 'static,
     N: Analysis<L> + Default + 'static,
@@ -227,7 +234,10 @@ where
         .egraph
         .lookup_expr(goal)
         .map(|_| runner.iterations.len())
-        .map(|i| (i, n_nodes))
+        .map(|i| VerifyResult {
+            nodes: n_nodes,
+            iters: i,
+        })
 }
 
 #[cfg(test)]
