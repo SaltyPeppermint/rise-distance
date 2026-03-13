@@ -756,7 +756,7 @@ fn top_k_random(
     entries
 }
 
- fn min_med_max<T: Ord + Copy, F: Fn(&&EvalResult) -> T>(items: &[&EvalResult], f: F) -> (T, T, T) {
+fn min_med_max<T: Ord + Copy, F: Fn(&&EvalResult) -> T>(items: &[&EvalResult], f: F) -> (T, T, T) {
     let min = items.iter().map(&f).min().unwrap();
     let max = items.iter().map(&f).max().unwrap();
     let med = f(&items[items.len() / 2]);
@@ -789,60 +789,68 @@ fn print_summary(
     );
 
     if !successful.is_empty() {
-        successful.sort_unstable_by_key(|v| v.guide.zs_rank);
-        log!(log, "RAW ZS");
-
-        let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_rank);
-        log!(
-            log,
-            "  Successful guide zs_ranks:      min={min}, median={med}, max={max}"
-        );
-
-        let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
-        log!(
-            log,
-            "  Successful guide zs_dists:  min={min}, median={med}, max={max}"
-        );
-
-        let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
-        log!(
-            log,
-            "  Iterations to reach:         min={min}, median={med}, max={max}"
-        );
-
-        log!(
-            log,
-            "  First viable guide at zs_rank: {} (zs_distance {})",
-            successful[0].guide.zs_rank,
-            successful[0].guide.zs_distance,
-        );
-
-        successful.sort_unstable_by_key(|v| v.guide.structural_rank);
-        log!(log, "STRUCTURAL");
-
-        let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_rank);
-        log!(
-            log,
-            "  Successful guide structural_rank:      min={min}, median={med}, max={max}"
-        );
-
-        let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_distance);
-        log!(
-            log,
-            "  Successful guide structural_dist:  min={min}, median={med}, max={max}"
-        );
-
-        let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
-        log!(
-            log,
-            "  Iterations to reach:         min={min}, median={med}, max={max}"
-        );
-
-        log!(
-            log,
-            "  First viable guide at structural_rank: {} (structural_distance {})",
-            successful[0].guide.structural_rank,
-            successful[0].guide.structural_distance,
-        );
+        return;
     }
+
+    successful.sort_unstable_by_key(|v| v.guide.zs_rank);
+    log!(log, "RAW ZS");
+
+    let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_rank);
+    log!(
+        log,
+        "  {:<30} min={min}, median={med}, max={max}",
+        "Successful guide zs_ranks:"
+    );
+
+    let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
+    log!(
+        log,
+        "  {:<30} min={min}, median={med}, max={max}",
+        "Successful guide zs_dists:"
+    );
+
+    let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
+    log!(
+        log,
+        "  {:<30} min={min}, median={med}, max={max}",
+        "Iterations to reach:"
+    );
+
+    log!(
+        log,
+        "  First viable guide at zs_rank: {} (zs_distance {})",
+        successful[0].guide.zs_rank,
+        successful[0].guide.zs_distance,
+    );
+
+    successful.sort_unstable_by_key(|v| v.guide.structural_rank);
+    log!(log, "STRUCTURAL");
+
+    let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_rank);
+    log!(
+        log,
+        "  {:<30} min={min}, median={med}, max={max}",
+        "Successful guide struct_rank:"
+    );
+
+    let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_distance);
+    log!(
+        log,
+        "  {:<30} min={min}, median={med}, max={max}",
+        "Successful guide struct_dist:"
+    );
+
+    let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
+    log!(
+        log,
+        "  {:<30} min={min}, median={med}, max={max}",
+        "Iterations to reach:"
+    );
+
+    log!(
+        log,
+        "  First viable guide at structural_rank: {} (structural_distance {})",
+        successful[0].guide.structural_rank,
+        successful[0].guide.structural_distance,
+    );
 }
