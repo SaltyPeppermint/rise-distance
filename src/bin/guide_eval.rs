@@ -536,7 +536,6 @@ struct TopKResults {
     random: Vec<RandomEntry>,
     random_with_best_zs: Vec<RandomEntry>,
     random_with_best_structural: Vec<RandomEntry>,
-    known_iters: Vec<TopKEntry>,
 }
 
 fn eval_top_k(
@@ -555,7 +554,6 @@ fn eval_top_k(
         random: Vec::new(),
         random_with_best_zs: Vec::new(),
         random_with_best_structural: Vec::new(),
-        known_iters: Vec::new(),
     };
 
     if results.is_empty() {
