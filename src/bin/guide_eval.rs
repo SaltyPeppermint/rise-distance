@@ -1,13 +1,11 @@
-use std::env::current_dir;
-use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Instant;
 
 use clap::Parser;
-use egg::{AstSize, CostFunction, RecExpr, Rewrite, Runner, SimpleScheduler};
+use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use hashbrown::HashSet;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
@@ -16,9 +14,9 @@ use rand::seq::SliceRandom;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
-use rise_distance::cli::{SampleDistribution, SampleStrategy, log};
-use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
-use rise_distance::egg::run_guide_goal;
+use rise_distance::cli::{SampleDistribution, SampleStrategy, get_run_folder, is_frontier, log};
+use rise_distance::egg::math::{ConstantFold, Math, MathLabel, self};
+use rise_distance::egg::{run_guide_goal, verify_reachability};
 use rise_distance::{
     EGraph, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit,
 };
@@ -109,9 +107,11 @@ struct EvalResult<'a> {
 
 static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
 
+
 fn main() {
     let cli = Cli::parse();
-    let run_folder = get_run_folder(&cli);
+    let prefix = format!("run-{}-{}-{}", cli.guide_iters, cli.goal_iters, cli.strategy);
+    let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     let mut log = File::create(run_folder.join("out.log")).expect("Failed to create output file");
 
     let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
@@ -283,6 +283,7 @@ fn eval_all(
             let result = verify_reachability(
                 std::slice::from_ref(&guide.guide),
                 &goal_recexpr,
+                RULES.get_or_init(math::rules),
                 verify_iters,
             );
             EvalResult {
@@ -470,11 +471,6 @@ fn get_goal_term(
     result.into_iter().take(count).collect()
 }
 
-/// Helper function to check if something is in the frontier
-fn is_frontier(tree: &TreeNode<MathLabel>, prev_raw_egg: &egg::EGraph<Math, ConstantFold>) -> bool {
-    prev_raw_egg.lookup_expr(&tree.into()).is_none()
-}
-
 #[derive(Serialize, Debug)]
 struct RankedGuide {
     guide: TreeNode<MathLabel>,
@@ -518,47 +514,6 @@ fn rank_guides(guides: &[TreeNode<MathLabel>], goal: &TreeNode<MathLabel>) -> Ve
             structural_rank,
         })
         .collect()
-}
-
-/// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
-/// Returns `Some(iteration)` if reached, `None` otherwise.
-fn verify_reachability(
-    guides: &[TreeNode<MathLabel>],
-    goal: &RecExpr<Math>,
-    max_iters: usize,
-) -> Option<(usize, usize)> {
-    assert!(!guides.is_empty(), "must have at least one guide");
-    let rules = RULES.get_or_init(math::rules);
-    let goal_clone = goal.clone();
-
-    let mut runner = Runner::default()
-        .with_scheduler(SimpleScheduler)
-        .with_iter_limit(max_iters)
-        .with_hook(move |runner| {
-            if runner.egraph.lookup_expr(&goal_clone).is_some() {
-                return Err("goal found".to_owned());
-            }
-            Ok(())
-        });
-
-    for expr in guides.iter().map(|g| g.into()) {
-        runner = runner.with_expr(&expr);
-    }
-
-    // Union all guide roots together before running
-    for &root in &runner.roots[1..] {
-        runner.egraph.union(runner.roots[0], root);
-    }
-    runner.egraph.rebuild();
-
-    let runner = runner.run(rules);
-
-    let n_nodes = runner.egraph.nodes().len();
-    runner
-        .egraph
-        .lookup_expr(goal)
-        .map(|_| runner.iterations.len())
-        .map(|i| (i, n_nodes))
 }
 
 const TOP_K: [usize; 6] = [1, 2, 5, 10, 50, 100];
@@ -668,10 +623,10 @@ fn top_k(
             .iter()
             .map(|k| k.guide.clone())
             .collect::<Vec<_>>();
-        let could_reach = verify_reachability(&top_guides, go, max_iters);
+        let could_reach = verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
         let best_in_k = ranked[0..k]
             .iter()
-            .filter_map(|v| verify_reachability(std::slice::from_ref(&v.guide), go, max_iters))
+            .filter_map(|v| verify_reachability(std::slice::from_ref(&v.guide), go, RULES.get_or_init(math::rules), max_iters))
             .map(|(a, _)| a)
             .min();
         if let Some(i) = best_in_k {
@@ -726,7 +681,7 @@ fn top_k_random(
                 let (best_single_iters, best_single_nodes) = successful[0..k]
                     .iter()
                     .filter_map(|v| {
-                        verify_reachability(std::slice::from_ref(&v.guide), go, max_iters)
+                        verify_reachability(std::slice::from_ref(&v.guide), go, RULES.get_or_init(math::rules), max_iters)
                     })
                     .fold((None, None), |(iter_acc, nodes_acc), (iters, nodes)| {
                         (
@@ -734,7 +689,7 @@ fn top_k_random(
                             Some(nodes_acc.map_or(nodes, |a| nodes.min(a))),
                         )
                     });
-                let combined = verify_reachability(&top_guides, go, max_iters);
+                let combined = verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
                 TopKRandomTrial {
                     best_single_iters,
                     best_single_nodes,
@@ -926,40 +881,3 @@ fn print_summary(
     }
 }
 
-/// Create an output folder for this run.
-///
-/// If `-o` was given, uses that path directly. Otherwise, auto-generates a
-/// filename like `runs/run-{goal_iters}-{strategy}-sampling_{N}`
-/// inside a `output/` directory (created if needed), where `N` is one higher
-/// than the largest existing run number.
-fn get_run_folder(cli: &Cli) -> PathBuf {
-    let this_run_dir = cli.output.as_deref().map_or_else(
-        || {
-            let runs_dir = current_dir().unwrap().join("data").join("guide_eval");
-            std::fs::create_dir_all(&runs_dir).expect("Failed to create output directory");
-            let pat: OsString = format!(
-                "run-{}-{}-{}-sampling",
-                cli.guide_iters, cli.goal_iters, cli.strategy
-            )
-            .into();
-            let max_existing = runs_dir
-                .read_dir()
-                .unwrap()
-                .filter_map(|e| {
-                    let d = e.ok()?;
-                    if d.file_type().ok()?.is_dir() && pat.as_os_str() == d.path().file_stem()? {
-                        return d.path().extension()?.to_str()?.parse::<usize>().ok();
-                    }
-                    None
-                })
-                .max()
-                .unwrap_or(0);
-            runs_dir
-                .join(pat)
-                .with_extension((max_existing + 1).to_string())
-        },
-        PathBuf::from,
-    );
-    std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
-    this_run_dir
-}

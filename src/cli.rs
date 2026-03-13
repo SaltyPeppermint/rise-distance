@@ -1,8 +1,14 @@
+use std::env::current_dir;
+use std::ffi::OsString;
 use std::fmt::Display;
+use std::path::PathBuf;
 use std::str::FromStr;
 
+use egg::{Analysis, Language};
 use hashbrown::HashMap;
 use num::{BigUint, ToPrimitive};
+
+use crate::{Label, TreeNode};
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum DistanceMetric {
@@ -154,6 +160,51 @@ impl SampleDistribution {
             }
         }
     }
+}
+
+/// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
+pub fn is_frontier<L, N, LL>(tree: &TreeNode<LL>, prev_raw_egg: &egg::EGraph<L, N>) -> bool
+where
+    L: Language,
+    N: Analysis<L>,
+    LL: Label,
+    for<'a> &'a TreeNode<LL>: Into<egg::RecExpr<L>>,
+{
+    prev_raw_egg.lookup_expr(&tree.into()).is_none()
+}
+
+/// Create an output folder for a run.
+///
+/// If `output` is `Some`, uses that path directly. Otherwise, auto-generates a
+/// path like `data/<subdir>/run-<prefix>-sampling.<N>` where `<N>` is one higher
+/// than the largest existing run number.
+#[expect(clippy::missing_panics_doc)]
+pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathBuf {
+    let this_run_dir = output.map_or_else(
+        || {
+            let runs_dir = current_dir().unwrap().join("data").join(subdir);
+            std::fs::create_dir_all(&runs_dir).expect("Failed to create output directory");
+            let pat: OsString = format!("{prefix}-sampling").into();
+            let max_existing = runs_dir
+                .read_dir()
+                .unwrap()
+                .filter_map(|e| {
+                    let d = e.ok()?;
+                    if d.file_type().ok()?.is_dir() && pat.as_os_str() == d.path().file_stem()? {
+                        return d.path().extension()?.to_str()?.parse::<usize>().ok();
+                    }
+                    None
+                })
+                .max()
+                .unwrap_or(0);
+            runs_dir
+                .join(pat)
+                .with_extension((max_existing + 1).to_string())
+        },
+        PathBuf::from,
+    );
+    std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
+    this_run_dir
 }
 
 /// Log to both a file and stderr. Wraps `writeln!` + `eprintln!`.

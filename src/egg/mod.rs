@@ -178,6 +178,58 @@ where
     }
 }
 
+/// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
+/// Returns `Some((iterations, nodes))` if reached, `None` otherwise.
+///
+/// # Panics
+///
+/// Panics if no guides given
+pub fn verify_reachability<L, N, LL>(
+    guides: &[crate::TreeNode<LL>],
+    goal: &RecExpr<L>,
+    rules: &[Rewrite<L, N>],
+    max_iters: usize,
+) -> Option<(usize, usize)>
+where
+    L: Language + 'static,
+    N: Analysis<L> + Default + 'static,
+    LL: crate::Label,
+    for<'a> &'a crate::TreeNode<LL>: Into<RecExpr<L>>,
+{
+    assert!(!guides.is_empty(), "must have at least one guide");
+    let goal_clone = goal.clone();
+
+    let mut runner = Runner::default()
+        .with_scheduler(SimpleScheduler)
+        .with_iter_limit(max_iters)
+        .with_hook(move |runner| {
+            if runner.egraph.lookup_expr(&goal_clone).is_some() {
+                return Err("goal found".to_owned());
+            }
+            Ok(())
+        });
+
+    for guide in guides {
+        let expr: RecExpr<L> = guide.into();
+        runner = runner.with_expr(&expr);
+    }
+
+    // Union all guide roots together before running
+    for &root in &runner.roots[1..] {
+        runner.egraph.union(runner.roots[0], root);
+    }
+    runner.egraph.rebuild();
+
+    let runner = runner.run(rules);
+
+    let n_nodes = runner.egraph.nodes().len();
+    runner
+        .egraph
+        .lookup_expr(goal)
+        .map(|_| runner.iterations.len())
+        .map(|i| (i, n_nodes))
+}
+
 #[cfg(test)]
 mod tests {
     use egg::{RecExpr, Runner};
