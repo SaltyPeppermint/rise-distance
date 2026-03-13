@@ -505,7 +505,7 @@ fn rank_guides(guides: &[TreeNode<MathLabel>], goal: &TreeNode<MathLabel>) -> Ve
         .collect()
 }
 
-const TOP_K: [usize; 6] = [1, 2, 5, 10, 50, 100];
+const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
 
 #[derive(Serialize)]
 struct TopKEntry {
@@ -516,16 +516,16 @@ struct TopKEntry {
 }
 
 #[derive(Serialize)]
-struct TopKRandomTrial {
+struct RandomTrial {
     single_iters: Vec<Option<VerifyResult>>,
     combined_iters: Option<usize>,
     combined_nodes: Option<usize>,
 }
 
 #[derive(Serialize)]
-struct TopKRandomEntry {
+struct RandomEntry {
     k: usize,
-    trials: Vec<TopKRandomTrial>,
+    trials: Vec<RandomTrial>,
 }
 
 #[derive(Serialize)]
@@ -533,9 +533,9 @@ struct TopKResults {
     goal: String,
     zs: Vec<TopKEntry>,
     structural: Vec<TopKEntry>,
-    random: Vec<TopKRandomEntry>,
-    random_with_best_zs: Vec<TopKRandomEntry>,
-    random_with_best_structural: Vec<TopKRandomEntry>,
+    random: Vec<RandomEntry>,
+    random_with_best_zs: Vec<RandomEntry>,
+    random_with_best_structural: Vec<RandomEntry>,
     known_iters: Vec<TopKEntry>,
 }
 
@@ -558,40 +558,42 @@ fn eval_top_k(
         known_iters: Vec::new(),
     };
 
-    if !results.is_empty() {
-        results.sort_unstable_by_key(|v| v.zs_rank);
-        let best_zs_guide = results[0].guide.clone();
-        log!(log, "ZS DISTANCE:");
-        top_k_results.zs = top_k(max_iters, log, results, &go);
-
-        results.sort_unstable_by_key(|v| v.structural_rank);
-        let best_structural_guide = results[0].guide.clone();
-        log!(log, "STRUCTURAL DISTANCE:");
-        top_k_results.structural = top_k(max_iters, log, results, &go);
-
-        log!(log, "RANDOM (10 trials averaged):");
-        top_k_results.random = top_k_random(max_iters, log, results, &go, 10, None);
-
-        log!(log, "RANDOM + best ZS helper (10 trials):");
-        top_k_results.random_with_best_zs = top_k_random(
-            max_iters,
-            log,
-            results,
-            &go,
-            10,
-            Some(("best_zs", &best_zs_guide)),
-        );
-
-        log!(log, "RANDOM + best structural helper (10 trials):");
-        top_k_results.random_with_best_structural = top_k_random(
-            max_iters,
-            log,
-            results,
-            &go,
-            10,
-            Some(("best_structural", &best_structural_guide)),
-        );
+    if results.is_empty() {
+        return top_k_results;
     }
+
+    results.sort_unstable_by_key(|v| v.zs_rank);
+    let best_zs_guide = results[0].guide.clone();
+    log!(log, "ZS DISTANCE:");
+    top_k_results.zs = top_k(max_iters, log, results, &go);
+
+    results.sort_unstable_by_key(|v| v.structural_rank);
+    let best_structural_guide = results[0].guide.clone();
+    log!(log, "STRUCTURAL DISTANCE:");
+    top_k_results.structural = top_k(max_iters, log, results, &go);
+
+    log!(log, "RANDOM (10 trials averaged):");
+    top_k_results.random = random_k(max_iters, log, results, &go, 10, None);
+
+    log!(log, "RANDOM + best ZS helper (10 trials):");
+    top_k_results.random_with_best_zs = random_k(
+        max_iters,
+        log,
+        results,
+        &go,
+        10,
+        Some(("best_zs", &best_zs_guide)),
+    );
+
+    log!(log, "RANDOM + best structural helper (10 trials):");
+    top_k_results.random_with_best_structural = random_k(
+        max_iters,
+        log,
+        results,
+        &go,
+        10,
+        Some(("best_structural", &best_structural_guide)),
+    );
 
     top_k_results
 }
@@ -603,7 +605,7 @@ fn top_k(
     go: &RecExpr<Math>,
 ) -> Vec<TopKEntry> {
     let mut entries = Vec::new();
-    for k in TOP_K {
+    for k in N_RANDOM {
         if k > ranked.len() {
             continue;
         }
@@ -614,7 +616,7 @@ fn top_k(
         let could_reach =
             verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
         let best_in_k = ranked[0..k]
-            .iter()
+            .par_iter()
             .filter_map(|v| {
                 verify_reachability(
                     std::slice::from_ref(&v.guide),
@@ -649,8 +651,8 @@ fn top_k(
 }
 
 #[expect(clippy::cast_precision_loss)]
-fn trial_avg<F: Fn(&TopKRandomTrial) -> Option<usize>>(
-    trials: &[TopKRandomTrial],
+fn trial_avg<F: Fn(&RandomTrial) -> Option<usize>>(
+    trials: &[RandomTrial],
     f: F,
 ) -> Option<(f64, usize)> {
     let values: Vec<usize> = trials.iter().filter_map(&f).collect();
@@ -661,37 +663,39 @@ fn trial_avg<F: Fn(&TopKRandomTrial) -> Option<usize>>(
     Some((avg, values.len()))
 }
 
-fn top_k_random(
+fn random_k(
     max_iters: usize,
     log: &mut File,
-    successful: &mut [RankedGuide],
+    successful: &[RankedGuide],
     go: &RecExpr<Math>,
     n_trials: usize,
     helper: Option<(&str, &TreeNode<MathLabel>)>,
-) -> Vec<TopKRandomEntry> {
+) -> Vec<RandomEntry> {
     if let Some((name, h)) = &helper {
         log!(log, "  Helper guide ({name}): {h}");
     }
-    let mut rng = ChaCha12Rng::seed_from_u64(0);
     let mut entries = Vec::new();
     let helper_label = helper.as_ref().map_or("none", |(name, _)| name);
-    for k in TOP_K {
+    for k in N_RANDOM {
         if k > successful.len() {
             continue;
         }
         let trials = (0..n_trials)
-            .map(|_| {
-                successful.shuffle(&mut rng);
-                let mut top_guides: Vec<_> =
-                    successful[0..k].iter().map(|v| v.guide.clone()).collect();
+            .into_par_iter()
+            .map(|trial_idx| {
+                let mut rng = ChaCha12Rng::seed_from_u64(trial_idx as u64);
+                let mut subset = successful
+                    .choose_multiple(&mut rng, k)
+                    .map(|v| v.guide.clone())
+                    .collect::<Vec<_>>();
                 if let Some((_, h)) = &helper {
-                    top_guides.push((*h).clone());
+                    subset.push((*h).clone());
                 }
-                let single_iters = successful[0..k]
+                let single_iters = subset
                     .iter()
-                    .map(|v| {
+                    .map(|guide| {
                         verify_reachability(
-                            std::slice::from_ref(&v.guide),
+                            std::slice::from_ref(guide),
                             go,
                             RULES.get_or_init(math::rules),
                             max_iters,
@@ -699,8 +703,8 @@ fn top_k_random(
                     })
                     .collect();
                 let combined =
-                    verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
-                TopKRandomTrial {
+                    verify_reachability(&subset, go, RULES.get_or_init(math::rules), max_iters);
+                RandomTrial {
                     single_iters,
                     combined_iters: combined.map(|v| v.iters),
                     combined_nodes: combined.map(|v| v.nodes),
@@ -743,7 +747,7 @@ fn top_k_random(
             );
         }
 
-        entries.push(TopKRandomEntry { k, trials });
+        entries.push(RandomEntry { k, trials });
     }
     entries
 }
