@@ -657,6 +657,18 @@ fn top_k(
 }
 
 #[expect(clippy::cast_precision_loss)]
+fn trial_avg<F: Fn(&TopKRandomTrial) -> Option<usize>>(
+    trials: &[TopKRandomTrial],
+    f: F,
+) -> Option<(f64, usize)> {
+    let values: Vec<usize> = trials.iter().filter_map(&f).collect();
+    if values.is_empty() {
+        return None;
+    }
+    let avg = values.iter().sum::<usize>() as f64 / values.len() as f64;
+    Some((avg, values.len()))
+}
+
 fn top_k_random(
     max_iters: usize,
     log: &mut File,
@@ -704,43 +716,20 @@ fn top_k_random(
             })
             .collect::<Vec<_>>();
 
-        let n_best = trials
-            .iter()
-            .filter(|t| t.single_iters.iter().any(|i| i.is_some()))
-            .count();
-        let n_combined = trials.iter().filter(|t| t.combined_iters.is_some()).count();
-        if n_best > 0 {
-            let avg_best_iters = trials
-                .iter()
-                .map(|t| {
-                    t.single_iters
-                        .iter()
-                        .flatten()
-                        .map(|v| v.iters)
-                        .min()
-                        .unwrap()
-                })
-                .sum::<usize>() as f64
-                / n_best as f64;
+        let best_single_iters = trial_avg(&trials, |t| {
+            t.single_iters.iter().flatten().map(|v| v.iters).min()
+        });
+        let best_single_nodes = trial_avg(&trials, |t| {
+            t.single_iters.iter().flatten().map(|v| v.nodes).min()
+        });
+        if let (Some((avg_i, n_i)), Some((avg_n, _))) = (best_single_iters, best_single_nodes) {
             log!(
                 log,
-                "Best single ITERS guide in top {k} guides (helper={helper_label}): {avg_best_iters:.1} (avg over {n_best}/{n_trials} trials)"
+                "Best single ITERS guide in top {k} guides (helper={helper_label}): {avg_i:.1} (avg over {n_i}/{n_trials} trials)"
             );
-            let avg_best_nodes = trials
-                .iter()
-                .map(|t| {
-                    t.single_iters
-                        .iter()
-                        .flatten()
-                        .map(|v| v.nodes)
-                        .min()
-                        .unwrap()
-                })
-                .sum::<usize>() as f64
-                / n_best as f64;
             log!(
                 log,
-                "Best single NODES guide in top {k} guides (helper={helper_label}): {avg_best_nodes:.1} (avg over {n_best}/{n_trials} trials)"
+                "Best single NODES guide in top {k} guides (helper={helper_label}): {avg_n:.1} (avg over {n_i}/{n_trials} trials)"
             );
         } else {
             log!(
@@ -748,20 +737,12 @@ fn top_k_random(
                 "No single guide in top {k} could reach it (helper={helper_label})"
             );
         }
-        if n_combined > 0 {
-            let avg_iters = trials
-                .iter()
-                .filter_map(|t| t.combined_iters)
-                .sum::<usize>() as f64
-                / n_combined as f64;
-            let avg_nodes = trials
-                .iter()
-                .filter_map(|t| t.combined_nodes)
-                .sum::<usize>() as f64
-                / n_combined as f64;
+        let combined_iters = trial_avg(&trials, |t| t.combined_iters);
+        let combined_nodes = trial_avg(&trials, |t| t.combined_nodes);
+        if let (Some((avg_i, n)), Some((avg_n, _))) = (combined_iters, combined_nodes) {
             log!(
                 log,
-                "Could reach with top {k} guides (helper={helper_label}): {avg_iters:.1} ({avg_nodes:.0} nodes) (avg over {n_combined}/{n_trials} trials)"
+                "Could reach with top {k} guides (helper={helper_label}): {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{n_trials} trials)"
             );
         } else {
             log!(
@@ -775,7 +756,14 @@ fn top_k_random(
     entries
 }
 
-#[expect(clippy::cast_precision_loss, clippy::too_many_lines)]
+ fn min_med_max<T: Ord + Copy, F: Fn(&&EvalResult) -> T>(items: &[&EvalResult], f: F) -> (T, T, T) {
+    let min = items.iter().map(&f).min().unwrap();
+    let max = items.iter().map(&f).max().unwrap();
+    let med = f(&items[items.len() / 2]);
+    (min, med, max)
+}
+
+#[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
 fn print_summary(
     results: &[EvalResult],
     goal: &TreeNode<MathLabel>,
@@ -803,101 +791,58 @@ fn print_summary(
     if !successful.is_empty() {
         successful.sort_unstable_by_key(|v| v.guide.zs_rank);
         log!(log, "RAW ZS");
+
+        let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_rank);
         log!(
             log,
-            "  Successful guide zs_ranks:      min={}, median={}, max={}",
-            successful.first().unwrap().guide.zs_rank,
-            successful[successful.len() / 2].guide.zs_rank,
-            successful.last().unwrap().guide.zs_rank,
+            "  Successful guide zs_ranks:      min={min}, median={med}, max={max}"
         );
+
+        let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
         log!(
             log,
-            "  Successful guide zs_dists:  min={}, median={}, max={}",
-            successful
-                .iter()
-                .map(|v| v.guide.zs_distance)
-                .min()
-                .unwrap(),
-            successful[successful.len() / 2].guide.zs_distance,
-            successful
-                .iter()
-                .map(|v| v.guide.zs_distance)
-                .max()
-                .unwrap(),
+            "  Successful guide zs_dists:  min={min}, median={med}, max={max}"
         );
-        if !successful.is_empty() {
-            log!(
-                log,
-                "  Iterations to reach:         min={}, median={}, max={}",
-                successful
-                    .iter()
-                    .filter_map(|v| v.values.map(|v| v.iters))
-                    .min()
-                    .unwrap(),
-                successful[successful.len() / 2].values.unwrap().iters,
-                successful
-                    .iter()
-                    .filter_map(|v| v.values.map(|v| v.iters))
-                    .max()
-                    .unwrap(),
-            );
-            // First successful rank (how far down the ranking before finding a viable guide)
-            log!(
-                log,
-                "  First viable guide at zs_rank: {} (zs_distance {})",
-                successful[0].guide.zs_rank,
-                successful[0].guide.zs_distance,
-            );
-        }
+
+        let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
+        log!(
+            log,
+            "  Iterations to reach:         min={min}, median={med}, max={max}"
+        );
+
+        log!(
+            log,
+            "  First viable guide at zs_rank: {} (zs_distance {})",
+            successful[0].guide.zs_rank,
+            successful[0].guide.zs_distance,
+        );
 
         successful.sort_unstable_by_key(|v| v.guide.structural_rank);
         log!(log, "STRUCTURAL");
-        log!(
-            log,
-            "  Successful guide structural_rank:      min={}, median={}, max={}",
-            successful.first().unwrap().guide.structural_rank,
-            successful[successful.len() / 2].guide.structural_rank,
-            successful.last().unwrap().guide.structural_rank,
-        );
-        log!(
-            log,
-            "  Successful guide structural_dist:  min={}, median={}, max={}",
-            successful
-                .iter()
-                .map(|v| v.guide.structural_distance)
-                .min()
-                .unwrap(),
-            successful[successful.len() / 2].guide.structural_distance,
-            successful
-                .iter()
-                .map(|v| v.guide.structural_distance)
-                .max()
-                .unwrap(),
-        );
-        if !successful.is_empty() {
-            log!(
-                log,
-                "  Iterations to reach:         min={}, median={}, max={}",
-                successful
-                    .iter()
-                    .filter_map(|v| v.values.map(|v| v.iters))
-                    .min()
-                    .unwrap(),
-                successful[successful.len() / 2].values.unwrap().iters,
-                successful
-                    .iter()
-                    .filter_map(|v| v.values.map(|v| v.iters))
-                    .max()
-                    .unwrap(),
-            );
 
-            // First successful rank (how far down the ranking before finding a viable guide)
-            log!(
-                log,
-                "  First viable guide at structural_rank: {} (structural_distance {})",
-                successful[0].guide.structural_rank,
-                successful[0].guide.structural_distance,
-            );
-        }
+        let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_rank);
+        log!(
+            log,
+            "  Successful guide structural_rank:      min={min}, median={med}, max={max}"
+        );
+
+        let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_distance);
+        log!(
+            log,
+            "  Successful guide structural_dist:  min={min}, median={med}, max={max}"
+        );
+
+        let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
+        log!(
+            log,
+            "  Iterations to reach:         min={min}, median={med}, max={max}"
+        );
+
+        log!(
+            log,
+            "  First viable guide at structural_rank: {} (structural_distance {})",
+            successful[0].guide.structural_rank,
+            successful[0].guide.structural_distance,
+        );
     }
 }
