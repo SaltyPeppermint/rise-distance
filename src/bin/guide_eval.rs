@@ -591,6 +591,8 @@ struct TopKResults {
     zs: Vec<TopKEntry>,
     structural: Vec<TopKEntry>,
     random: Vec<TopKRandomEntry>,
+    random_with_best_zs: Vec<TopKRandomEntry>,
+    random_with_best_structural: Vec<TopKRandomEntry>,
     known_iters: Vec<TopKEntry>,
 }
 
@@ -608,19 +610,44 @@ fn eval_top_k(
         zs: Vec::new(),
         structural: Vec::new(),
         random: Vec::new(),
+        random_with_best_zs: Vec::new(),
+        random_with_best_structural: Vec::new(),
         known_iters: Vec::new(),
     };
 
     if !results.is_empty() {
         results.sort_unstable_by_key(|v| v.zs_rank);
+        let best_zs_guide = results[0].guide.clone();
         log!(log, "ZS DISTANCE:");
         top_k_results.zs = top_k(max_iters, log, results, &go);
-        log!(log, "STRUCTURAL DISTANCE:");
+
         results.sort_unstable_by_key(|v| v.structural_rank);
+        let best_structural_guide = results[0].guide.clone();
+        log!(log, "STRUCTURAL DISTANCE:");
         top_k_results.structural = top_k(max_iters, log, results, &go);
 
         log!(log, "RANDOM (10 trials averaged):");
-        top_k_results.random = top_k_random(max_iters, log, results, &go, 10);
+        top_k_results.random = top_k_random(max_iters, log, results, &go, 10, None);
+
+        log!(log, "RANDOM + best ZS helper (10 trials):");
+        top_k_results.random_with_best_zs = top_k_random(
+            max_iters,
+            log,
+            results,
+            &go,
+            10,
+            Some(("best_zs", &best_zs_guide)),
+        );
+
+        log!(log, "RANDOM + best structural helper (10 trials):");
+        top_k_results.random_with_best_structural = top_k_random(
+            max_iters,
+            log,
+            results,
+            &go,
+            10,
+            Some(("best_structural", &best_structural_guide)),
+        );
     }
 
     top_k_results
@@ -674,9 +701,14 @@ fn top_k_random(
     successful: &mut [RankedGuide],
     go: &RecExpr<Math>,
     n_trials: usize,
+    helper: Option<(&str, &TreeNode<MathLabel>)>,
 ) -> Vec<TopKRandomEntry> {
+    if let Some((name, h)) = &helper {
+        log!(log, "  Helper guide ({name}): {h}");
+    }
     let mut rng = ChaCha12Rng::seed_from_u64(0);
     let mut entries = Vec::new();
+    let helper_label = helper.as_ref().map_or("none", |(name, _)| name);
     for k in TOP_K {
         if k > successful.len() {
             continue;
@@ -684,10 +716,13 @@ fn top_k_random(
         let trials = (0..n_trials)
             .map(|_| {
                 successful.shuffle(&mut rng);
-                let top_guides = successful[0..k]
+                let mut top_guides: Vec<_> = successful[0..k]
                     .iter()
                     .map(|v| v.guide.clone())
-                    .collect::<Vec<_>>();
+                    .collect();
+                if let Some((_, h)) = &helper {
+                    top_guides.push((*h).clone());
+                }
                 let (best_single_iters, best_single_nodes) = successful[0..k]
                     .iter()
                     .filter_map(|v| {
@@ -722,7 +757,7 @@ fn top_k_random(
                 / n_best as f64;
             log!(
                 log,
-                "Best single ITERS guide in top {k} guides: {avg_best_iters:.1} (avg over {n_best}/{n_trials} trials)"
+                "Best single ITERS guide in top {k} guides (helper={helper_label}): {avg_best_iters:.1} (avg over {n_best}/{n_trials} trials)"
             );
             let avg_best_nodes = trials
                 .iter()
@@ -731,10 +766,10 @@ fn top_k_random(
                 / n_best as f64;
             log!(
                 log,
-                "Best single NODES guide in top {k} guides: {avg_best_nodes:.1} (avg over {n_best}/{n_trials} trials)"
+                "Best single NODES guide in top {k} guides (helper={helper_label}): {avg_best_nodes:.1} (avg over {n_best}/{n_trials} trials)"
             );
         } else {
-            log!(log, "No single guide in top {k} could reach it");
+            log!(log, "No single guide in top {k} could reach it (helper={helper_label})");
         }
         if n_combined > 0 {
             let avg_iters = trials
@@ -749,10 +784,10 @@ fn top_k_random(
                 / n_combined as f64;
             log!(
                 log,
-                "Could reach with top {k} guides: {avg_iters:.1} ({avg_nodes:.0} nodes) (avg over {n_combined}/{n_trials} trials)"
+                "Could reach with top {k} guides (helper={helper_label}): {avg_iters:.1} ({avg_nodes:.0} nodes) (avg over {n_combined}/{n_trials} trials)"
             );
         } else {
-            log!(log, "Could NOT reach with top {k} guides");
+            log!(log, "Could NOT reach with top {k} guides (helper={helper_label})");
         }
 
         entries.push(TopKRandomEntry { k, trials });
