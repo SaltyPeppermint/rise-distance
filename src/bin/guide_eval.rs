@@ -92,10 +92,6 @@ struct Cli {
     /// Sample Strategy
     #[arg(long)]
     eval_all: bool,
-
-    /// Sample Strategy
-    #[arg(long)]
-    top_k: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -210,7 +206,6 @@ fn main() {
         &guides,
         verify_iters,
         cli.eval_all,
-        cli.top_k,
         &run_folder,
         &mut log,
     );
@@ -222,7 +217,6 @@ fn run_eval(
     guides: &[TreeNode<MathLabel>],
     verify_iters: usize,
     eval_all_guides: bool,
-    eval_top: bool,
     run_folder: &Path,
     log: &mut File,
 ) {
@@ -247,10 +241,8 @@ fn run_eval(
         }
         log!(log, "Verification completed in {:.2?}", timer.elapsed());
 
-        if eval_top {
-            let top_k = eval_top_k(&mut ranked, goal, verify_iters, log);
-            all_top_k.push(top_k);
-        }
+        let top_k = eval_top_k(&mut ranked, goal, verify_iters, log);
+        all_top_k.push(top_k);
     }
     let json_output =
         File::create(run_folder.join("top_k.json")).expect("Failed to create JSON output file");
