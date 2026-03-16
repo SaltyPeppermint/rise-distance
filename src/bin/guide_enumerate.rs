@@ -5,21 +5,21 @@ use std::time::Instant;
 
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
-use hashbrown::HashSet;
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
-use num::{BigUint, ToPrimitive};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
+use serde::Serialize;
 
-use rise_distance::cli::{SampleDistribution, get_run_folder, is_frontier};
+use rise_distance::TreeNode;
+use rise_distance::cli::{
+    CsvRow, N_RANDOM, RandomEntry, RandomTrial, RankedGuide, SampleDistribution,
+    enumerate_frontier_terms, get_run_folder, measure_guides, min_med_max, sample_frontier_terms,
+    trial_avg,
+};
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
 use rise_distance::egg::{VerifyResult, run_guide_goal, verify_reachability};
-use rise_distance::{
-    EGraph, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit,
-};
-use serde::Serialize;
 
 #[derive(Parser)]
 #[command(
@@ -82,9 +82,11 @@ struct Cli {
     eval_all: bool,
 }
 
+type MathRankedGuide = RankedGuide<MathLabel>;
+
 #[derive(Serialize, Debug)]
 struct EvalResult<'a> {
-    guide: &'a RankedGuide,
+    guide: &'a MathRankedGuide,
     values: Option<VerifyResult>,
 }
 
@@ -126,7 +128,7 @@ fn main() {
         "\nSampling goals from iteration-{} frontier...",
         cli.goal_iters
     );
-    let goals = get_goal_term(
+    let goals = sample_frontier_terms(
         &result.goal,
         &result.prev_goal,
         cli.goals,
@@ -145,7 +147,7 @@ fn main() {
         cli.guide_iters
     );
 
-    let guides = get_guide_terms(&result.guide, &result.prev_guide, cli.max_size);
+    let guides = enumerate_frontier_terms(&result.guide, &result.prev_guide, cli.max_size);
     assert!(!guides.is_empty(), "No frontier terms found");
     println!("Found {} guide(s)", guides.len());
 
@@ -160,7 +162,7 @@ fn main() {
         );
         println!("{goal}\n");
 
-        let mut ranked = rank_guides(&guides, goal);
+        let mut ranked = measure_guides(&guides, goal);
 
         let timer = Instant::now();
 
@@ -179,7 +181,7 @@ fn main() {
 
 fn eval_all(
     verify_iters: usize,
-    ranked: &[RankedGuide],
+    ranked: &[MathRankedGuide],
     goal: &TreeNode<MathLabel>,
     run_folder: &Path,
 ) {
@@ -211,183 +213,12 @@ fn eval_all(
     print_summary(&results, goal, verify_iters);
     for r in &results {
         csv_writer
-            .serialize(CsvRow::new(goal, r))
+            .serialize(CsvRow::new(goal, r.guide, r.values))
             .expect("write CSV row");
     }
     println!("Wrote goal to CSV");
     csv_writer.flush().expect("flush output");
-    // results
 }
-
-#[derive(Serialize)]
-struct CsvRow {
-    goal: String,
-    guide: String,
-    zs_distance: usize,
-    structural_overlap: usize,
-    structural_zs_sum: usize,
-    zs_rank: usize,
-    structural_rank: usize,
-    iterations_to_reach: Option<usize>,
-    nodes_to_reach: Option<usize>,
-}
-
-impl CsvRow {
-    fn new(goal: &TreeNode<MathLabel>, r: &EvalResult) -> CsvRow {
-        CsvRow {
-            goal: goal.to_string(),
-            guide: r.guide.guide.to_string(),
-            zs_distance: r.guide.zs_distance,
-            structural_overlap: r.guide.structural_distance.overlap(),
-            structural_zs_sum: r.guide.structural_distance.zs_sum(),
-            zs_rank: r.guide.zs_rank,
-            structural_rank: r.guide.structural_rank,
-            iterations_to_reach: r.values.map(|v| v.iters),
-            nodes_to_reach: r.values.map(|v| v.nodes),
-        }
-    }
-}
-
-/// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
-///
-/// When `enumerate` is true, enumerates all terms exhaustively.
-/// Otherwise, samples terms using the given distribution.
-fn get_guide_terms(
-    egraph: &EGraph<MathLabel>,
-    prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
-    max_size: usize,
-) -> Vec<TreeNode<MathLabel>> {
-    let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
-
-    let Some(histogram) = tc.of_root() else {
-        return Vec::new();
-    };
-
-    let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
-    sorted_hist.sort_unstable();
-    println!("Terms in guide frontier:");
-    for (k, v) in &sorted_hist {
-        println!("{v} terms of size {k}");
-    }
-    let start = Instant::now();
-    let total_terms = histogram.values().cloned().sum::<BigUint>();
-    println!("Enumerating all {total_terms} terms up to size {max_size}");
-    assert!(
-        total_terms.to_usize().is_some(),
-        "Cannot enumerate more than usize!"
-    );
-
-    let result = tc
-        .enumerate_root(max_size, Some(ProgressBar::new(max_size as u64)))
-        .into_iter()
-        .filter(|t| is_frontier(t, prev_raw_egg))
-        .collect::<Vec<_>>();
-    println!(
-        "Spent {} seconds enumerating/sampling the terms",
-        start.elapsed().as_secs()
-    );
-    result
-}
-
-/// Get frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
-///
-/// When `enumerate` is true, enumerates all terms exhaustively.
-/// Otherwise, samples terms using the given distribution.
-fn get_goal_term(
-    egraph: &EGraph<MathLabel>,
-    prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
-    count: usize,
-    max_size: usize,
-    distribution: SampleDistribution,
-) -> Vec<TreeNode<MathLabel>> {
-    let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
-
-    let Some(histogram) = tc.of_root() else {
-        return Vec::new();
-    };
-
-    let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
-    sorted_hist.sort_unstable();
-    println!("Terms in guide frontier:");
-    for (k, v) in &sorted_hist {
-        println!("{v} terms of size {k}");
-    }
-
-    let min_size = histogram.keys().min().copied().unwrap_or(1);
-    #[expect(clippy::cast_precision_loss)]
-    let normal_center = (min_size + max_size) as f64 / 2.0;
-
-    let mut result = HashSet::new();
-    let mut oversample = 5;
-    loop {
-        let samples_per_size = distribution.samples_per_size(
-            histogram,
-            min_size,
-            max_size,
-            count * oversample,
-            normal_center,
-        );
-        let batch = tc.sample_unique_root(min_size, max_size, &samples_per_size);
-        let prev_len = result.len();
-        result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
-        if result.len() >= count || result.len() == prev_len {
-            break;
-        }
-        oversample *= 2;
-        println!(
-            "Have {}/{count} frontier goals, retrying with {oversample}x oversample...",
-            result.len()
-        );
-    }
-    result.into_iter().take(count).collect()
-}
-
-#[derive(Serialize, Debug)]
-struct RankedGuide {
-    guide: TreeNode<MathLabel>,
-    zs_distance: usize,
-    #[serde(flatten)]
-    structural_distance: StructuralDistance,
-    zs_rank: usize,
-    structural_rank: usize,
-}
-
-/// Rank guides by distance to the goal. Returns `(distance, guide)` pairs sorted ascending.
-fn rank_guides(guides: &[TreeNode<MathLabel>], goal: &TreeNode<MathLabel>) -> Vec<RankedGuide> {
-    let goal_flat = goal.flatten(false);
-    let pb_style = ProgressStyle::with_template(
-        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
-    )
-    .unwrap();
-    let r = guides
-        .par_iter()
-        .progress_with_style(pb_style)
-        .map(|guide| {
-            let guide_flat = guide.flatten(false);
-
-            let zs_dist = tree_distance_unit(&guide_flat, &goal_flat);
-            let structural_dist = structural_diff(&goal_flat, &guide_flat, &UnitCost);
-            (zs_dist, structural_dist, guide.clone())
-        })
-        .collect::<Vec<_>>();
-    let mut zs_ranks = (0..r.len()).collect::<Vec<_>>();
-    zs_ranks.sort_by(|&a, &b| r[a].0.cmp(&r[b].0));
-    let mut structural_ranks = (0..r.len()).collect::<Vec<_>>();
-    structural_ranks.sort_by(|&a, &b| r[a].1.cmp(&r[b].1));
-    r.into_iter()
-        .zip(zs_ranks)
-        .zip(structural_ranks)
-        .map(|((a, zs_rank), structural_rank)| RankedGuide {
-            guide: a.2,
-            zs_distance: a.0,
-            structural_distance: a.1,
-            zs_rank,
-            structural_rank,
-        })
-        .collect()
-}
-
-const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
 
 #[derive(Serialize)]
 struct TopKEntry {
@@ -395,19 +226,6 @@ struct TopKEntry {
     best_single_iters: Option<usize>,
     combined_iters: Option<usize>,
     combined_nodes: Option<usize>,
-}
-
-#[derive(Serialize)]
-struct RandomTrial {
-    single_iters: Vec<Option<VerifyResult>>,
-    combined_iters: Option<usize>,
-    combined_nodes: Option<usize>,
-}
-
-#[derive(Serialize)]
-struct RandomEntry {
-    k: usize,
-    trials: Vec<RandomTrial>,
 }
 
 #[derive(Serialize)]
@@ -421,7 +239,7 @@ struct TopKResults {
 }
 
 fn eval_top_k(
-    results: &mut [RankedGuide],
+    results: &mut [MathRankedGuide],
     goal: &TreeNode<MathLabel>,
     max_iters: usize,
 ) -> TopKResults {
@@ -441,12 +259,12 @@ fn eval_top_k(
         return top_k_results;
     }
 
-    results.sort_unstable_by_key(|v| v.zs_rank);
+    results.sort_unstable_by_key(|v| v.zs_distance);
     let best_zs_guide = results[0].guide.clone();
     println!("ZS DISTANCE:");
     top_k_results.zs = top_k(max_iters, results, &go);
 
-    results.sort_unstable_by_key(|v| v.structural_rank);
+    results.sort_unstable_by_key(|v| v.structural_distance);
     let best_structural_guide = results[0].guide.clone();
     println!("STRUCTURAL DISTANCE:");
     top_k_results.structural = top_k(max_iters, results, &go);
@@ -475,7 +293,7 @@ fn eval_top_k(
     top_k_results
 }
 
-fn top_k(max_iters: usize, ranked: &[RankedGuide], go: &RecExpr<Math>) -> Vec<TopKEntry> {
+fn top_k(max_iters: usize, ranked: &[MathRankedGuide], go: &RecExpr<Math>) -> Vec<TopKEntry> {
     let mut entries = Vec::new();
     for k in N_RANDOM {
         if k > ranked.len() {
@@ -519,23 +337,9 @@ fn top_k(max_iters: usize, ranked: &[RankedGuide], go: &RecExpr<Math>) -> Vec<To
     entries
 }
 
-#[expect(clippy::cast_precision_loss)]
-fn trial_avg<F: Fn(&RandomTrial) -> Option<usize>>(
-    trials: &[RandomTrial],
-    f: F,
-) -> Option<(f64, usize)> {
-    let values: Vec<usize> = trials.iter().filter_map(&f).collect();
-    if values.is_empty() {
-        return None;
-    }
-    let avg = values.iter().sum::<usize>() as f64 / values.len() as f64;
-    Some((avg, values.len()))
-}
-
 fn random_k(
     max_iters: usize,
-
-    successful: &[RankedGuide],
+    successful: &[MathRankedGuide],
     go: &RecExpr<Math>,
     n_trials: usize,
     helper: Option<(&str, &TreeNode<MathLabel>)>,
@@ -612,20 +416,8 @@ fn random_k(
     entries
 }
 
-fn min_med_max<T: Ord + Copy, F: Fn(&&EvalResult) -> T>(items: &[&EvalResult], f: F) -> (T, T, T) {
-    let min = items.iter().map(&f).min().unwrap();
-    let max = items.iter().map(&f).max().unwrap();
-    let med = f(&items[items.len() / 2]);
-    (min, med, max)
-}
-
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-fn print_summary(
-    results: &[EvalResult],
-    goal: &TreeNode<MathLabel>,
-    max_iters: usize,
-    // top: usize,
-) {
+fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: usize) {
     let mut successful = results
         .iter()
         .filter(|r| r.values.is_some())
@@ -642,18 +434,12 @@ fn print_summary(
         100.0 * n_reached as f64 / total.max(1) as f64
     );
 
-    if !successful.is_empty() {
+    if successful.is_empty() {
         return;
     }
 
-    successful.sort_unstable_by_key(|v| v.guide.zs_rank);
+    successful.sort_unstable_by_key(|v| v.guide.zs_distance);
     println!("RAW ZS");
-
-    let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_rank);
-    println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Successful guide zs_ranks:"
-    );
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
     println!(
@@ -668,18 +454,12 @@ fn print_summary(
     );
 
     println!(
-        "  First viable guide at zs_rank: {} (zs_distance {})",
-        successful[0].guide.zs_rank, successful[0].guide.zs_distance,
+        "  First viable guide zs_distance: {}",
+        successful[0].guide.zs_distance,
     );
 
-    successful.sort_unstable_by_key(|v| v.guide.structural_rank);
+    successful.sort_unstable_by_key(|v| v.guide.structural_distance);
     println!("STRUCTURAL");
-
-    let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_rank);
-    println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Successful guide struct_rank:"
-    );
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_distance);
     println!(
@@ -694,7 +474,7 @@ fn print_summary(
     );
 
     println!(
-        "  First viable guide at structural_rank: {} (structural_distance {})",
-        successful[0].guide.structural_rank, successful[0].guide.structural_distance,
+        "  First viable guide structural_distance: {}",
+        successful[0].guide.structural_distance,
     );
 }

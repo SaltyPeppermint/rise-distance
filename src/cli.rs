@@ -3,12 +3,22 @@ use std::ffi::OsString;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Instant;
 
 use egg::{Analysis, Language};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
+use rayon::prelude::*;
+use serde::Serialize;
 
-use crate::{Label, TreeNode};
+use crate::egg::VerifyResult;
+use crate::{
+    EGraph, Label, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff,
+    tree_distance_unit,
+};
+
+pub const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum DistanceMetric {
@@ -24,26 +34,6 @@ impl Display for DistanceMetric {
         }
     }
 }
-
-// #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-// pub enum SampleStrategy {
-//     // /// Use the `sample_with_overlap`
-//     // Overlap,
-//     /// Sample fully random
-//     Random,
-//     /// Enumerate all terms up to the limit
-//     Enumerate,
-// }
-
-// impl Display for SampleStrategy {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         match self {
-//             // Self::Overlap => write!(f, "overlap"),
-//             Self::Random => write!(f, "random"),
-//             Self::Enumerate => write!(f, "enumerate"),
-//         }
-//     }
-// }
 
 #[derive(Debug, Clone, Copy)]
 pub enum SampleDistribution {
@@ -205,4 +195,200 @@ pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathB
     );
     std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
     this_run_dir
+}
+
+#[derive(Serialize)]
+pub struct CsvRow {
+    pub goal: String,
+    pub guide: String,
+    pub zs_distance: usize,
+    pub structural_overlap: usize,
+    pub structural_zs_sum: usize,
+    pub iterations_to_reach: Option<usize>,
+    pub nodes_to_reach: Option<usize>,
+}
+
+impl CsvRow {
+    pub fn new<L: Label>(
+        goal: &TreeNode<L>,
+        guide: &RankedGuide<L>,
+        values: Option<VerifyResult>,
+    ) -> Self {
+        Self {
+            goal: goal.to_string(),
+            guide: guide.guide.to_string(),
+            zs_distance: guide.zs_distance,
+            structural_overlap: guide.structural_distance.overlap(),
+            structural_zs_sum: guide.structural_distance.zs_sum(),
+            iterations_to_reach: values.map(|v| v.iters),
+            nodes_to_reach: values.map(|v| v.nodes),
+        }
+    }
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
+pub struct RankedGuide<L: Label> {
+    pub guide: TreeNode<L>,
+    pub zs_distance: usize,
+    #[serde(flatten)]
+    pub structural_distance: StructuralDistance,
+}
+
+#[derive(Serialize, PartialEq, Eq)]
+pub struct RandomTrial {
+    pub single_iters: Vec<Option<VerifyResult>>,
+    pub combined_iters: Option<usize>,
+    pub combined_nodes: Option<usize>,
+}
+
+#[derive(Serialize, PartialEq, Eq)]
+pub struct RandomEntry {
+    pub k: usize,
+    pub trials: Vec<RandomTrial>,
+}
+
+#[expect(clippy::cast_precision_loss)]
+pub fn trial_avg<F: Fn(&RandomTrial) -> Option<usize>>(
+    trials: &[RandomTrial],
+    f: F,
+) -> Option<(f64, usize)> {
+    let values: Vec<usize> = trials.iter().filter_map(&f).collect();
+    if values.is_empty() {
+        return None;
+    }
+    let avg = values.iter().sum::<usize>() as f64 / values.len() as f64;
+    Some((avg, values.len()))
+}
+
+#[expect(clippy::missing_panics_doc)]
+pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T, T) {
+    let min = items.iter().map(&f).min().unwrap();
+    let max = items.iter().map(&f).max().unwrap();
+    let med = f(&items[items.len() / 2]);
+    (min, med, max)
+}
+
+/// Measure guides by distance to the goal.
+pub fn measure_guides<L: Label>(guides: &[TreeNode<L>], goal: &TreeNode<L>) -> Vec<RankedGuide<L>> {
+    let goal_flat = goal.flatten(false);
+    #[expect(clippy::missing_panics_doc)]
+    let pb_style = ProgressStyle::with_template(
+        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
+    )
+    .unwrap();
+    guides
+        .par_iter()
+        .progress_with_style(pb_style)
+        .map(|guide| {
+            let guide_flat = guide.flatten(false);
+            let zs_dist = tree_distance_unit(&guide_flat, &goal_flat);
+            let structural_dist = structural_diff(&goal_flat, &guide_flat, &UnitCost);
+            RankedGuide {
+                guide: guide.clone(),
+                zs_distance: zs_dist,
+                structural_distance: structural_dist,
+            }
+        })
+        .collect()
+}
+
+/// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
+pub fn sample_frontier_terms<L, N, LL>(
+    egraph: &EGraph<LL>,
+    prev_raw_egg: &egg::EGraph<L, N>,
+    count: usize,
+    max_size: usize,
+    distribution: SampleDistribution,
+) -> Vec<TreeNode<LL>>
+where
+    L: Language,
+    N: Analysis<L>,
+    LL: Label,
+    for<'a> &'a TreeNode<LL>: Into<egg::RecExpr<L>>,
+{
+    let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
+
+    let Some(histogram) = tc.of_root() else {
+        return Vec::new();
+    };
+
+    let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
+    sorted_hist.sort_unstable();
+    println!("Terms in frontier:");
+    for (k, v) in &sorted_hist {
+        println!("{v} terms of size {k}");
+    }
+
+    let min_size = histogram.keys().min().copied().unwrap_or(1);
+    #[expect(clippy::cast_precision_loss)]
+    let normal_center = (min_size + max_size) as f64 / 2.0;
+
+    let mut result = HashSet::new();
+    let mut oversample = 5;
+    loop {
+        let samples_per_size = distribution.samples_per_size(
+            histogram,
+            min_size,
+            max_size,
+            count * oversample,
+            normal_center,
+        );
+        let batch = tc.sample_unique_root(min_size, max_size, &samples_per_size);
+        let prev_len = result.len();
+        result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
+        if result.len() >= count || result.len() == prev_len {
+            break;
+        }
+        oversample *= 2;
+        println!(
+            "Have {}/{count} frontier terms, retrying with {oversample}x oversample...",
+            result.len()
+        );
+    }
+    result.into_iter().take(count).collect()
+}
+
+/// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
+#[expect(clippy::missing_panics_doc)]
+pub fn enumerate_frontier_terms<L, N, LL>(
+    egraph: &EGraph<LL>,
+    prev_raw_egg: &egg::EGraph<L, N>,
+    max_size: usize,
+) -> Vec<TreeNode<LL>>
+where
+    L: Language,
+    N: Analysis<L>,
+    LL: Label,
+    for<'a> &'a TreeNode<LL>: Into<egg::RecExpr<L>>,
+{
+    let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
+
+    let Some(histogram) = tc.of_root() else {
+        return Vec::new();
+    };
+
+    let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
+    sorted_hist.sort_unstable();
+    println!("Terms in frontier:");
+    for (k, v) in &sorted_hist {
+        println!("{v} terms of size {k}");
+    }
+    let start = Instant::now();
+    let total_terms = histogram.values().cloned().sum::<BigUint>();
+    println!("Enumerating all {total_terms} terms up to size {max_size}");
+    assert!(
+        total_terms.to_usize().is_some(),
+        "Cannot enumerate more than usize!"
+    );
+
+    let result = tc
+        .enumerate_root(max_size, Some(ProgressBar::new(max_size as u64)))
+        .into_iter()
+        .filter(|t| is_frontier(t, prev_raw_egg))
+        .collect::<Vec<_>>();
+    println!(
+        "Spent {} seconds enumerating the terms",
+        start.elapsed().as_secs()
+    );
+    result
 }
