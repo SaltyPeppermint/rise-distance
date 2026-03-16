@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::io::Write;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -8,13 +7,13 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use hashbrown::HashSet;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
-use num::{BigUint};
+use num::BigUint;
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
-use rise_distance::cli::{SampleDistribution, get_run_folder, is_frontier, log};
+use rise_distance::cli::{SampleDistribution, get_run_folder, is_frontier};
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
 use rise_distance::egg::{VerifyResult, run_guide_goal, verify_reachability};
 use rise_distance::{
@@ -102,7 +101,6 @@ fn main() {
     let cli = Cli::parse();
     let prefix = format!("run-{}-{}-random", cli.guide_iters, cli.goal_iters);
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
-    let mut log = File::create(run_folder.join("out.log")).expect("Failed to create output file");
 
     let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
 
@@ -111,15 +109,13 @@ fn main() {
         .parse::<RecExpr<Math>>()
         .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
 
-    log!(log, "Seed: {seed}");
-    log!(log, "Goal Iterations: {}", cli.goal_iters);
-    log!(log, "Guide Iterations: {}", cli.guide_iters);
-    // log!(log, "Distance metric: {}", cli.distance);
-    log!(log, "Distribution: {}", cli.distribution);
+    println!("Seed: {seed}");
+    println!("Goal Iterations: {}", cli.goal_iters);
+    println!("Guide Iterations: {}", cli.guide_iters);
+    println!("Distribution: {}", cli.distribution);
 
     // Step 1: Grow egraph and capture snapshots at guide and target iterations
-    log!(
-        log,
+    println!(
         "Running equality saturation for {} iterations...",
         cli.goal_iters
     );
@@ -131,18 +127,17 @@ fn main() {
         cli.goal_iters,
     );
 
-    log!(log, "Eqsat completed in {:.2?}", start.elapsed());
-    log!(log, "Final egraph had {} nodes", result.goal_eg_size);
+    println!("Eqsat completed in {:.2?}", start.elapsed());
+    println!("Final egraph had {} nodes", result.goal_eg_size);
 
     // Step 2: Sample goals from the iteration-n frontier
-    log!(
-        log,
+    println!(
         "\nSampling goals from iteration-{} frontier...",
         cli.goal_iters
     );
     let max_size = cli.max_size.unwrap_or_else(|| {
         let m = AstSize.cost_rec(&seed);
-        log!(log, "No max_size was given, using 1 goal size (={m})");
+        println!("No max_size was given, using 1 goal size (={m})");
         m
     });
     let goals = get_goal_term(
@@ -151,54 +146,38 @@ fn main() {
         cli.goals,
         max_size,
         cli.distribution,
-        &mut log,
     );
     if goals.is_empty() {
-        log!(
-            log,
+        println!(
             "No frontier terms found at iteration {}. Try more iterations or a larger max-size.",
             cli.goal_iters
         );
         return;
     }
-    log!(log, "Sampled {} goal(s)", goals.len());
+    println!("Sampled {} goal(s)", goals.len());
 
     // Step 3: Get guides from the iteration-(n-1) frontier (shared across all goals)
-    log!(
-        log,
+    println!(
         "\nGetting guides from iteration-{} frontier...",
         cli.guide_iters
     );
-    let guide_count =
-        cli.guides
-            .expect("-g/--guides is required when not using --strategy enumerate");
+    let guide_count = cli
+        .guides
+        .expect("-g/--guides is required when not using --strategy enumerate");
     let guides = get_guide_terms(
         &result.guide,
         &result.prev_guide,
         guide_count,
         max_size,
         cli.distribution,
-        &mut log,
     );
     if guides.is_empty() {
-        log!(
-            log,
-            "No frontier terms found at iteration {}.",
-            cli.guide_iters
-        );
+        println!("No frontier terms found at iteration {}.", cli.guide_iters);
     } else {
-        log!(log, "Found {} guide(s)", guides.len());
+        println!("Found {} guide(s)", guides.len());
     }
 
-    run_eval(
-        &goals,
-        &guides,
-        verify_iters,
-        cli.eval_all,
-        &run_folder,
-        &mut log,
-    );
-    log.flush().unwrap();
+    run_eval(&goals, &guides, verify_iters, cli.eval_all, &run_folder);
 }
 
 fn run_eval(
@@ -207,30 +186,28 @@ fn run_eval(
     verify_iters: usize,
     eval_all_guides: bool,
     run_folder: &Path,
-    log: &mut File,
 ) {
     let mut all_top_k = Vec::new();
     let n_goals = goals.len();
     for (goal_idx, goal) in goals.iter().enumerate() {
-        log!(
-            log,
+        println!(
             "\n=== Goal {}/{} (size {})===",
             goal_idx + 1,
             n_goals,
             goal.size_without_types()
         );
-        log!(log, "{goal}\n");
+        println!("{goal}\n");
 
         let mut ranked = rank_guides(guides, goal);
 
         let timer = Instant::now();
 
         if eval_all_guides {
-            eval_all(verify_iters, &ranked, goal, run_folder, log);
+            eval_all(verify_iters, &ranked, goal, run_folder);
         }
-        log!(log, "Verification completed in {:.2?}", timer.elapsed());
+        println!("Verification completed in {:.2?}", timer.elapsed());
 
-        let top_k = eval_top_k(&mut ranked, goal, verify_iters, log);
+        let top_k = eval_top_k(&mut ranked, goal, verify_iters);
         all_top_k.push(top_k);
     }
     let json_output =
@@ -243,7 +220,6 @@ fn eval_all(
     ranked: &[RankedGuide],
     goal: &TreeNode<MathLabel>,
     run_folder: &Path,
-    log: &mut File,
 ) {
     let csv_output =
         File::create(run_folder.join("out.csv")).expect("Failed to create output file");
@@ -253,8 +229,7 @@ fn eval_all(
         "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
     )
     .unwrap();
-    log!(
-        log,
+    println!(
         "Verifying {} guides (max {verify_iters} iters each)...",
         ranked.len(),
     );
@@ -271,13 +246,13 @@ fn eval_all(
             ),
         })
         .collect::<Vec<_>>();
-    print_summary(&results, goal, verify_iters, log);
+    print_summary(&results, goal, verify_iters);
     for r in &results {
         csv_writer
             .serialize(CsvRow::new(goal, r))
             .expect("write CSV row");
     }
-    log!(log, "Wrote goal to CSV");
+    println!("Wrote goal to CSV");
     csv_writer.flush().expect("flush output");
     // results
 }
@@ -321,7 +296,6 @@ fn get_guide_terms(
     count: usize,
     max_size: usize,
     distribution: SampleDistribution,
-    log: &mut File,
 ) -> Vec<TreeNode<MathLabel>> {
     let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
 
@@ -331,45 +305,40 @@ fn get_guide_terms(
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
     sorted_hist.sort_unstable();
-    log!(log, "Terms in guide frontier:");
+    println!("Terms in guide frontier:");
     for (k, v) in &sorted_hist {
-        log!(log, "{v} terms of size {k}");
+        println!("{v} terms of size {k}");
     }
 
     let start = Instant::now();
-    let result = {
-            let min_size = histogram.keys().min().copied().unwrap_or(1);
-            #[expect(clippy::cast_precision_loss)]
-            let normal_center = (min_size + max_size) as f64 / 2.0;
+    let min_size = histogram.keys().min().copied().unwrap_or(1);
+    #[expect(clippy::cast_precision_loss)]
+    let normal_center = (min_size + max_size) as f64 / 2.0;
 
-            let mut result = HashSet::new();
-            let mut oversample = 5;
-            loop {
-                let samples_per_size = distribution.samples_per_size(
-                    histogram,
-                    min_size,
-                    max_size,
-                    count * oversample,
-                    normal_center,
-                );
-                let batch = tc.sample_unique_root(min_size, max_size, &samples_per_size);
-                let prev_len = result.len();
-                result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
-                if result.len() >= count || result.len() == prev_len {
-                    break;
-                }
-                oversample *= 2;
-                log!(
-                    log,
-                    "Have {}/{count} frontier guides, retrying with {oversample}x oversample...",
-                    result.len()
-                );
-            }
-            result.into_iter().take(count).collect()
+    let mut result = HashSet::new();
+    let mut oversample = 5;
+    loop {
+        let samples_per_size = distribution.samples_per_size(
+            histogram,
+            min_size,
+            max_size,
+            count * oversample,
+            normal_center,
+        );
+        let batch = tc.sample_unique_root(min_size, max_size, &samples_per_size);
+        let prev_len = result.len();
+        result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
+        if result.len() >= count || result.len() == prev_len {
+            break;
         }
-    ;
-    log!(
-        log,
+        oversample *= 2;
+        println!(
+            "Have {}/{count} frontier guides, retrying with {oversample}x oversample...",
+            result.len()
+        );
+    }
+    let result = result.into_iter().take(count).collect();
+    println!(
         "Spent {} seconds enumerating/sampling the terms",
         start.elapsed().as_secs()
     );
@@ -386,7 +355,6 @@ fn get_goal_term(
     count: usize,
     max_size: usize,
     distribution: SampleDistribution,
-    log: &mut File,
 ) -> Vec<TreeNode<MathLabel>> {
     let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
 
@@ -396,9 +364,9 @@ fn get_goal_term(
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
     sorted_hist.sort_unstable();
-    log!(log, "Terms in guide frontier:");
+    println!("Terms in guide frontier:");
     for (k, v) in &sorted_hist {
-        log!(log, "{v} terms of size {k}");
+        println!("{v} terms of size {k}");
     }
 
     let min_size = histogram.keys().min().copied().unwrap_or(1);
@@ -422,8 +390,7 @@ fn get_goal_term(
             break;
         }
         oversample *= 2;
-        log!(
-            log,
+        println!(
             "Have {}/{count} frontier goals, retrying with {oversample}x oversample...",
             result.len()
         );
@@ -513,9 +480,8 @@ fn eval_top_k(
     results: &mut [RankedGuide],
     goal: &TreeNode<MathLabel>,
     max_iters: usize,
-    log: &mut File,
 ) -> TopKResults {
-    log!(log, "Testing out top-k to see if that improves things");
+    println!("Testing out top-k to see if that improves things");
     let go = goal.into();
 
     let mut top_k_results = TopKResults {
@@ -533,31 +499,29 @@ fn eval_top_k(
 
     results.sort_unstable_by_key(|v| v.zs_rank);
     let best_zs_guide = results[0].guide.clone();
-    log!(log, "ZS DISTANCE:");
-    top_k_results.zs = top_k(max_iters, log, results, &go);
+    println!("ZS DISTANCE:");
+    top_k_results.zs = top_k(max_iters, results, &go);
 
     results.sort_unstable_by_key(|v| v.structural_rank);
     let best_structural_guide = results[0].guide.clone();
-    log!(log, "STRUCTURAL DISTANCE:");
-    top_k_results.structural = top_k(max_iters, log, results, &go);
+    println!("STRUCTURAL DISTANCE:");
+    top_k_results.structural = top_k(max_iters, results, &go);
 
-    log!(log, "RANDOM (10 trials averaged):");
-    top_k_results.random = random_k(max_iters, log, results, &go, 10, None);
+    println!("RANDOM (10 trials averaged):");
+    top_k_results.random = random_k(max_iters, results, &go, 10, None);
 
-    log!(log, "RANDOM + best ZS helper (10 trials):");
+    println!("RANDOM + best ZS helper (10 trials):");
     top_k_results.random_with_best_zs = random_k(
         max_iters,
-        log,
         results,
         &go,
         10,
         Some(("best_zs", &best_zs_guide)),
     );
 
-    log!(log, "RANDOM + best structural helper (10 trials):");
+    println!("RANDOM + best structural helper (10 trials):");
     top_k_results.random_with_best_structural = random_k(
         max_iters,
-        log,
         results,
         &go,
         10,
@@ -567,12 +531,7 @@ fn eval_top_k(
     top_k_results
 }
 
-fn top_k(
-    max_iters: usize,
-    log: &mut File,
-    ranked: &[RankedGuide],
-    go: &RecExpr<Math>,
-) -> Vec<TopKEntry> {
+fn top_k(max_iters: usize, ranked: &[RankedGuide], go: &RecExpr<Math>) -> Vec<TopKEntry> {
     let mut entries = Vec::new();
     for k in N_RANDOM {
         if k > ranked.len() {
@@ -597,17 +556,14 @@ fn top_k(
             .map(|a| a.iters)
             .min();
         if let Some(i) = best_in_k {
-            log!(log, "Best single guide in top {k} guides: {i}");
+            println!("Best single guide in top {k} guides: {i}");
         } else {
-            log!(log, "No single guide in top {k} could reach it");
+            println!("No single guide in top {k} could reach it");
         }
         if let Some(VerifyResult { iters, nodes }) = could_reach {
-            log!(
-                log,
-                "Could reach with top {k} guides: {iters} ({nodes} nodes)"
-            );
+            println!("Could reach with top {k} guides: {iters} ({nodes} nodes)");
         } else {
-            log!(log, "Could NOT reach with top {k} guides");
+            println!("Could NOT reach with top {k} guides");
         }
         entries.push(TopKEntry {
             k,
@@ -634,14 +590,13 @@ fn trial_avg<F: Fn(&RandomTrial) -> Option<usize>>(
 
 fn random_k(
     max_iters: usize,
-    log: &mut File,
     successful: &[RankedGuide],
     go: &RecExpr<Math>,
     n_trials: usize,
     helper: Option<(&str, &TreeNode<MathLabel>)>,
 ) -> Vec<RandomEntry> {
     if let Some((name, h)) = &helper {
-        log!(log, "  Helper guide ({name}): {h}");
+        println!("  Helper guide ({name}): {h}");
     }
     let mut entries = Vec::new();
     let helper_label = helper.as_ref().map_or("none", |(name, _)| name);
@@ -688,32 +643,23 @@ fn random_k(
             t.single_iters.iter().flatten().map(|v| v.nodes).min()
         });
         if let (Some((avg_i, n_i)), Some((avg_n, _))) = (best_single_iters, best_single_nodes) {
-            log!(
-                log,
+            println!(
                 "Best single ITERS guide in top {k} guides (helper={helper_label}): {avg_i:.1} (avg over {n_i}/{n_trials} trials)"
             );
-            log!(
-                log,
+            println!(
                 "Best single NODES guide in top {k} guides (helper={helper_label}): {avg_n:.1} (avg over {n_i}/{n_trials} trials)"
             );
         } else {
-            log!(
-                log,
-                "No single guide in top {k} could reach it (helper={helper_label})"
-            );
+            println!("No single guide in top {k} could reach it (helper={helper_label})");
         }
         let combined_iters = trial_avg(&trials, |t| t.combined_iters);
         let combined_nodes = trial_avg(&trials, |t| t.combined_nodes);
         if let (Some((avg_i, n)), Some((avg_n, _))) = (combined_iters, combined_nodes) {
-            log!(
-                log,
+            println!(
                 "Could reach with top {k} guides (helper={helper_label}): {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{n_trials} trials)"
             );
         } else {
-            log!(
-                log,
-                "Could NOT reach with top {k} guides (helper={helper_label})"
-            );
+            println!("Could NOT reach with top {k} guides (helper={helper_label})");
         }
 
         entries.push(RandomEntry { k, trials });
@@ -729,13 +675,7 @@ fn min_med_max<T: Ord + Copy, F: Fn(&&EvalResult) -> T>(items: &[&EvalResult], f
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-fn print_summary(
-    results: &[EvalResult],
-    goal: &TreeNode<MathLabel>,
-    max_iters: usize,
-    // top: usize,
-    log: &mut File,
-) {
+fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: usize) {
     let mut successful = results
         .iter()
         .filter(|r| r.values.is_some())
@@ -743,12 +683,11 @@ fn print_summary(
     let total = results.len();
     let n_reached = successful.len();
 
-    log!(log, "\nSummary for goal: {goal}");
-    log!(log, "  Goal size: {}", goal.size_without_types());
-    log!(log, "  Total guides evaluated: {total}");
-    log!(log, "  Max verify iterations: {max_iters}");
-    log!(
-        log,
+    println!("\nSummary for goal: {goal}");
+    println!("  Goal size: {}", goal.size_without_types());
+    println!("  Total guides evaluated: {total}");
+    println!("  Max verify iterations: {max_iters}");
+    println!(
         "  Guides that reached goal: {n_reached}/{total} ({:.1}%)",
         100.0 * n_reached as f64 / total.max(1) as f64
     );
@@ -758,64 +697,54 @@ fn print_summary(
     }
 
     successful.sort_unstable_by_key(|v| v.guide.zs_rank);
-    log!(log, "RAW ZS");
+    println!("RAW ZS");
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_rank);
-    log!(
-        log,
+    println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Successful guide zs_ranks:"
     );
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
-    log!(
-        log,
+    println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Successful guide zs_dists:"
     );
 
     let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
-    log!(
-        log,
+    println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Iterations to reach:"
     );
 
-    log!(
-        log,
+    println!(
         "  First viable guide at zs_rank: {} (zs_distance {})",
-        successful[0].guide.zs_rank,
-        successful[0].guide.zs_distance,
+        successful[0].guide.zs_rank, successful[0].guide.zs_distance,
     );
 
     successful.sort_unstable_by_key(|v| v.guide.structural_rank);
-    log!(log, "STRUCTURAL");
+    println!("STRUCTURAL");
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_rank);
-    log!(
-        log,
+    println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Successful guide struct_rank:"
     );
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_distance);
-    log!(
-        log,
+    println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Successful guide struct_dist:"
     );
 
     let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
-    log!(
-        log,
+    println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Iterations to reach:"
     );
 
-    log!(
-        log,
+    println!(
         "  First viable guide at structural_rank: {} (structural_distance {})",
-        successful[0].guide.structural_rank,
-        successful[0].guide.structural_distance,
+        successful[0].guide.structural_rank, successful[0].guide.structural_distance,
     );
 }

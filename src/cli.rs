@@ -25,25 +25,25 @@ impl Display for DistanceMetric {
     }
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum SampleStrategy {
-    // /// Use the `sample_with_overlap`
-    // Overlap,
-    /// Sample fully random
-    Random,
-    /// Enumerate all terms up to the limit
-    Enumerate,
-}
+// #[derive(Debug, Clone, Copy, clap::ValueEnum)]
+// pub enum SampleStrategy {
+//     // /// Use the `sample_with_overlap`
+//     // Overlap,
+//     /// Sample fully random
+//     Random,
+//     /// Enumerate all terms up to the limit
+//     Enumerate,
+// }
 
-impl Display for SampleStrategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            // Self::Overlap => write!(f, "overlap"),
-            Self::Random => write!(f, "random"),
-            Self::Enumerate => write!(f, "enumerate"),
-        }
-    }
-}
+// impl Display for SampleStrategy {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         match self {
+//             // Self::Overlap => write!(f, "overlap"),
+//             Self::Random => write!(f, "random"),
+//             Self::Enumerate => write!(f, "enumerate"),
+//         }
+//     }
+// }
 
 #[derive(Debug, Clone, Copy)]
 pub enum SampleDistribution {
@@ -207,14 +207,3 @@ pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathB
     this_run_dir
 }
 
-/// Log to both a file and stderr. Wraps `writeln!` + `eprintln!`.
-#[macro_export]
-macro_rules! log {
-    ($dst:expr, $($arg:tt)*) => {{
-        use std::io::Write as _;
-        writeln!($dst, $($arg)*).unwrap();
-        eprintln!($($arg)*);
-    }};
-}
-
-pub use log;
