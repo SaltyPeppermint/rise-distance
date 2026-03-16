@@ -78,5 +78,9 @@ name = "distance"
 path = "src/bin/distance.rs"
 
 [[bin]]
-name = "guide-eval"
-path = "src/bin/guide_eval.rs"
+name = "guide-enumerate"
+path = "src/bin/guide_enumerate.rs"
+
+[[bin]]
+name = "guide-random"
+path = "src/bin/guide_random.rs"

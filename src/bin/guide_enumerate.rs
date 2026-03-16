@@ -14,7 +14,7 @@ use rand::seq::SliceRandom;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
-use rise_distance::cli::{SampleDistribution, SampleStrategy, get_run_folder, is_frontier, log};
+use rise_distance::cli::{SampleDistribution, get_run_folder, is_frontier, log};
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
 use rise_distance::egg::{VerifyResult, run_guide_goal, verify_reachability};
 use rise_distance::{
@@ -29,9 +29,6 @@ use serde::Serialize;
 Examples:
   # Basic evaluation with Zhang-Shasha distance
   guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -d zhang-shasha
-
-  # Guide from an earlier iteration
-  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 3 -g 100 --goals 5 -d structural
 
   # Write JSON output to a file
   guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -o results.json
@@ -56,10 +53,6 @@ struct Cli {
     #[arg(short = 'i', long)]
     guide_iters: usize,
 
-    /// Number of guide candidates to sample from the n-1 frontier
-    #[arg(short, long, conflicts_with = "enumerate")]
-    guides: Option<usize>,
-
     /// Number of goal terms to sample from the n frontier
     #[arg(long, default_value_t = 1)]
     goals: usize,
@@ -68,7 +61,7 @@ struct Cli {
     #[arg(long)]
     max_size: Option<usize>,
 
-    /// How to distribute the sample budget across sizes.
+    /// How to distribute the sample budget across sizes for goals.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
     #[arg(long, default_value_t = SampleDistribution::Uniform)]
     distribution: SampleDistribution,
@@ -87,10 +80,6 @@ struct Cli {
 
     /// Sample Strategy
     #[arg(long)]
-    strategy: SampleStrategy,
-
-    /// Sample Strategy
-    #[arg(long)]
     eval_all: bool,
 }
 
@@ -104,10 +93,7 @@ static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
 
 fn main() {
     let cli = Cli::parse();
-    let prefix = format!(
-        "run-{}-{}-{}",
-        cli.guide_iters, cli.goal_iters, cli.strategy
-    );
+    let prefix = format!("run-{}-{}-enumerate", cli.guide_iters, cli.goal_iters);
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     let mut log = File::create(run_folder.join("out.log")).expect("Failed to create output file");
 
@@ -176,21 +162,8 @@ fn main() {
         "\nGetting guides from iteration-{} frontier...",
         cli.guide_iters
     );
-    let guide_count = if let SampleStrategy::Enumerate = cli.strategy {
-        usize::MAX
-    } else {
-        cli.guides
-            .expect("-g/--guides is required when not using --strategy enumerate")
-    };
-    let guides = get_guide_terms(
-        &result.guide,
-        &result.prev_guide,
-        guide_count,
-        max_size,
-        cli.distribution,
-        cli.strategy,
-        &mut log,
-    );
+
+    let guides = get_guide_terms(&result.guide, &result.prev_guide, max_size, &mut log);
     if guides.is_empty() {
         log!(
             log,
@@ -329,10 +302,7 @@ impl CsvRow {
 fn get_guide_terms(
     egraph: &EGraph<MathLabel>,
     prev_raw_egg: &egg::EGraph<Math, ConstantFold>,
-    count: usize,
     max_size: usize,
-    distribution: SampleDistribution,
-    strategy: SampleStrategy,
     log: &mut File,
 ) -> Vec<TreeNode<MathLabel>> {
     let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
@@ -347,56 +317,22 @@ fn get_guide_terms(
     for (k, v) in &sorted_hist {
         log!(log, "{v} terms of size {k}");
     }
-
     let start = Instant::now();
-    let result = match strategy {
-        SampleStrategy::Enumerate => {
-            let total_terms = histogram.values().cloned().sum::<BigUint>();
-            log!(
-                log,
-                "Enumerating all {total_terms} terms up to size {max_size}"
-            );
-            assert!(
-                total_terms.to_usize().is_some(),
-                "Cannot enumerate more than usize!"
-            );
+    let total_terms = histogram.values().cloned().sum::<BigUint>();
+    log!(
+        log,
+        "Enumerating all {total_terms} terms up to size {max_size}"
+    );
+    assert!(
+        total_terms.to_usize().is_some(),
+        "Cannot enumerate more than usize!"
+    );
 
-            tc.enumerate_root(max_size, Some(ProgressBar::new(max_size as u64)))
-                .into_iter()
-                .filter(|t| is_frontier(t, prev_raw_egg))
-                .collect::<Vec<_>>()
-        }
-        SampleStrategy::Random => {
-            let min_size = histogram.keys().min().copied().unwrap_or(1);
-            #[expect(clippy::cast_precision_loss)]
-            let normal_center = (min_size + max_size) as f64 / 2.0;
-
-            let mut result = HashSet::new();
-            let mut oversample = 5;
-            loop {
-                let samples_per_size = distribution.samples_per_size(
-                    histogram,
-                    min_size,
-                    max_size,
-                    count * oversample,
-                    normal_center,
-                );
-                let batch = tc.sample_unique_root(min_size, max_size, &samples_per_size);
-                let prev_len = result.len();
-                result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
-                if result.len() >= count || result.len() == prev_len {
-                    break;
-                }
-                oversample *= 2;
-                log!(
-                    log,
-                    "Have {}/{count} frontier guides, retrying with {oversample}x oversample...",
-                    result.len()
-                );
-            }
-            result.into_iter().take(count).collect()
-        }
-    };
+    let result = tc
+        .enumerate_root(max_size, Some(ProgressBar::new(max_size as u64)))
+        .into_iter()
+        .filter(|t| is_frontier(t, prev_raw_egg))
+        .collect::<Vec<_>>();
     log!(
         log,
         "Spent {} seconds enumerating/sampling the terms",
