@@ -114,7 +114,6 @@ fn main() {
     println!("Guide Iterations: {}", cli.guide_iters);
     println!("Distribution: {}", cli.distribution);
 
-    // Step 1: Grow egraph and capture snapshots at guide and target iterations
     println!(
         "Running equality saturation for {} iterations...",
         cli.goal_iters
@@ -130,7 +129,6 @@ fn main() {
     println!("Eqsat completed in {:.2?}", start.elapsed());
     println!("Final egraph had {} nodes", result.goal_eg_size);
 
-    // Step 2: Sample goals from the iteration-n frontier
     println!(
         "\nSampling goals from iteration-{} frontier...",
         cli.goal_iters
@@ -147,16 +145,12 @@ fn main() {
         max_size,
         cli.distribution,
     );
-    if goals.is_empty() {
-        println!(
-            "No frontier terms found at iteration {}. Try more iterations or a larger max-size.",
-            cli.goal_iters
-        );
-        return;
-    }
+    assert!(
+        !goals.is_empty(),
+        "No frontier terms found. Try more iterations or a larger max-size.",
+    );
     println!("Sampled {} goal(s)", goals.len());
 
-    // Step 3: Get guides from the iteration-(n-1) frontier (shared across all goals)
     println!(
         "\nGetting guides from iteration-{} frontier...",
         cli.guide_iters
@@ -177,16 +171,6 @@ fn main() {
         println!("Found {} guide(s)", guides.len());
     }
 
-    run_eval(&goals, &guides, verify_iters, cli.eval_all, &run_folder);
-}
-
-fn run_eval(
-    goals: &[TreeNode<MathLabel>],
-    guides: &[TreeNode<MathLabel>],
-    verify_iters: usize,
-    eval_all_guides: bool,
-    run_folder: &Path,
-) {
     let mut all_top_k = Vec::new();
     let n_goals = goals.len();
     for (goal_idx, goal) in goals.iter().enumerate() {
@@ -198,12 +182,12 @@ fn run_eval(
         );
         println!("{goal}\n");
 
-        let mut ranked = rank_guides(guides, goal);
+        let mut ranked = rank_guides(&guides, goal);
 
         let timer = Instant::now();
 
-        if eval_all_guides {
-            eval_all(verify_iters, &ranked, goal, run_folder);
+        if cli.eval_all {
+            eval_all(verify_iters, &ranked, goal, &run_folder);
         }
         println!("Verification completed in {:.2?}", timer.elapsed());
 
@@ -214,6 +198,8 @@ fn run_eval(
         File::create(run_folder.join("top_k.json")).expect("Failed to create JSON output file");
     serde_json::to_writer_pretty(json_output, &all_top_k).expect("write top-k JSON");
 }
+
+
 
 fn eval_all(
     verify_iters: usize,

@@ -206,4 +206,3 @@ pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathB
     std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
     this_run_dir
 }
-
