@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use clap::Parser;
-use egg::{AstSize, CostFunction, RecExpr, Rewrite};
+use egg::{RecExpr, Rewrite};
 use hashbrown::HashSet;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
@@ -56,9 +56,9 @@ struct Cli {
     #[arg(long, default_value_t = 1)]
     goals: usize,
 
-    /// Max term size for counting/sampling (derived from egraph if omitted)
+    /// Max term size for counting/sampling
     #[arg(long)]
-    max_size: Option<usize>,
+    max_size: usize,
 
     /// How to distribute the sample budget across sizes for goals.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
@@ -126,16 +126,11 @@ fn main() {
         "\nSampling goals from iteration-{} frontier...",
         cli.goal_iters
     );
-    let max_size = cli.max_size.unwrap_or_else(|| {
-        let m = AstSize.cost_rec(&seed);
-        println!("No max_size was given, using 1 goal size (={m})");
-        m
-    });
     let goals = get_goal_term(
         &result.goal,
         &result.prev_goal,
         cli.goals,
-        max_size,
+        cli.max_size,
         cli.distribution,
     );
     assert!(
@@ -150,7 +145,7 @@ fn main() {
         cli.guide_iters
     );
 
-    let guides = get_guide_terms(&result.guide, &result.prev_guide, max_size);
+    let guides = get_guide_terms(&result.guide, &result.prev_guide, cli.max_size);
     assert!(!guides.is_empty(), "No frontier terms found");
     println!("Found {} guide(s)", guides.len());
 

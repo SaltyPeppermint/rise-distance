@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use clap::Parser;
-use egg::{AstSize, CostFunction, RecExpr, Rewrite};
+use egg::{RecExpr, Rewrite};
 use hashbrown::HashSet;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use num::BigUint;
@@ -59,9 +59,9 @@ struct Cli {
     #[arg(long, default_value_t = 1)]
     goals: usize,
 
-    /// Max term size for counting/sampling (derived from egraph if omitted)
+    /// Max term size for counting/sampling
     #[arg(long)]
-    max_size: Option<usize>,
+    max_size: usize,
 
     /// How to distribute the sample budget across sizes.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
@@ -94,7 +94,6 @@ struct EvalResult {
 static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
 
 const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
-
 const N_TRIALS: usize = const { N_RANDOM[N_RANDOM.len() - 1] };
 
 fn main() {
@@ -133,16 +132,12 @@ fn main() {
         "\nSampling goals from iteration-{} frontier...",
         cli.goal_iters
     );
-    let max_size = cli.max_size.unwrap_or_else(|| {
-        let m = AstSize.cost_rec(&seed);
-        println!("No max_size was given, using 1 goal size (={m})");
-        m
-    });
+
     let goals = get_goal_term(
         &result.goal,
         &result.prev_goal,
         cli.goals,
-        max_size,
+        cli.max_size,
         cli.distribution,
     );
     assert!(
@@ -159,12 +154,11 @@ fn main() {
         .guides
         .expect("-g/--guides is required when not using --strategy enumerate");
 
-    let mut all_top_k = Vec::new();
-
     let csv_output =
         File::create(run_folder.join("out.csv")).expect("Failed to create output file");
 
     let mut csv_writer = csv::Writer::from_writer(csv_output);
+    let mut all_top_k = Vec::new();
     for goal in &goals {
         let goal_recexpr = goal.into();
 
@@ -172,16 +166,18 @@ fn main() {
             &result.guide,
             &result.prev_guide,
             guide_count,
-            max_size,
+            cli.max_size,
             cli.distribution,
         );
 
         let entries = take_n_trials(&cli, guide_count, &goal_recexpr, &sampled_guides);
         all_top_k.push(TopKResults {
             goal: goal.to_string(),
-            random: entries,
+            entries,
         });
-        let measured: HashSet<_> = measure_guides(&sampled_guides, goal).into_iter().collect();
+        let measured = measure_guides(&sampled_guides, goal)
+            .into_iter()
+            .collect::<HashSet<_>>();
 
         let results = measured
             .into_par_iter()
@@ -222,8 +218,7 @@ fn take_n_trials(
     let mut entries = Vec::new();
     for k in N_RANDOM {
         let trials = sampled_guides
-            .windows(guide_count / N_TRIALS)
-            .par_bridge()
+            .par_windows(guide_count / N_TRIALS)
             .map(|guides_here| {
                 let subset = &guides_here[..k];
 
@@ -258,24 +253,28 @@ fn take_n_trials(
         let best_single_nodes = trial_avg(&trials, |t| {
             t.single_iters.iter().flatten().map(|v| v.nodes).min()
         });
+        println!("Looking at a random subset of {k} guides.");
         if let (Some((avg_i, n_i)), Some((avg_n, _))) = (best_single_iters, best_single_nodes) {
-            println!(
-                "Best single ITERS guide in top {k} guides): {avg_i:.1} (avg over {n_i}/{N_TRIALS} trials)"
-            );
-            println!(
-                "Best single NODES guide in top {k} guides): {avg_n:.1} (avg over {n_i}/{N_TRIALS} trials)"
-            );
+            println!("Best single ITERS guide: {avg_i:.1} (avg over {n_i}/{N_TRIALS} trials)");
+            println!("Best single NODES guide: {avg_n:.1} (avg over {n_i}/{N_TRIALS} trials)");
         } else {
-            println!("No single guide in top {k} could reach it");
+            println!("No single guide could reach it");
         }
+
+        let total = trials.iter().map(|v| v.single_iters.len()).sum::<usize>();
+        let reached = trials
+            .iter()
+            .map(|v| v.single_iters.iter().filter(|u| u.is_some()).count())
+            .sum::<usize>();
+        println!("{reached} out of {total} reached the goal");
         let combined_iters = trial_avg(&trials, |t| t.combined_iters);
         let combined_nodes = trial_avg(&trials, |t| t.combined_nodes);
         if let (Some((avg_i, n)), Some((avg_n, _))) = (combined_iters, combined_nodes) {
             println!(
-                "Could reach with top {k} guides): {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{N_TRIALS} trials)"
+                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{N_TRIALS} trials)"
             );
         } else {
-            println!("Could NOT reach with top {k} guides");
+            println!("Could NOT reach with {k} guides");
         }
 
         entries.push(RandomEntry { k, trials });
@@ -290,7 +289,6 @@ struct CsvRow {
     zs_distance: usize,
     structural_overlap: usize,
     structural_zs_sum: usize,
-
     iterations_to_reach: Option<usize>,
     nodes_to_reach: Option<usize>,
 }
@@ -303,7 +301,6 @@ impl CsvRow {
             zs_distance: r.guide.zs_distance,
             structural_overlap: r.guide.structural_distance.overlap(),
             structural_zs_sum: r.guide.structural_distance.zs_sum(),
-
             iterations_to_reach: r.values.map(|v| v.iters),
             nodes_to_reach: r.values.map(|v| v.nodes),
         }
@@ -470,7 +467,7 @@ struct RandomEntry {
 #[derive(Serialize, PartialEq, Eq)]
 struct TopKResults {
     goal: String,
-    random: Vec<RandomEntry>,
+    entries: Vec<RandomEntry>,
 }
 
 #[expect(clippy::cast_precision_loss)]
