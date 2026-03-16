@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -8,9 +7,6 @@ use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use hashbrown::HashSet;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use num::BigUint;
-use rand::SeedableRng;
-use rand::seq::SliceRandom;
-use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
 use rise_distance::cli::{SampleDistribution, get_run_folder, is_frontier};
@@ -89,13 +85,17 @@ struct Cli {
     eval_all: bool,
 }
 
-#[derive(Serialize, Debug)]
-struct EvalResult<'a> {
-    guide: &'a RankedGuide,
+#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
+struct EvalResult {
+    guide: RankedGuide,
     values: Option<VerifyResult>,
 }
 
 static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
+
+const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
+
+const N_TRIALS: usize = const { N_RANDOM[N_RANDOM.len() - 1] };
 
 fn main() {
     let cli = Cli::parse();
@@ -158,89 +158,129 @@ fn main() {
     let guide_count = cli
         .guides
         .expect("-g/--guides is required when not using --strategy enumerate");
-    let guides = get_guide_terms(
-        &result.guide,
-        &result.prev_guide,
-        guide_count,
-        max_size,
-        cli.distribution,
-    );
-    if guides.is_empty() {
-        println!("No frontier terms found at iteration {}.", cli.guide_iters);
-    } else {
-        println!("Found {} guide(s)", guides.len());
-    }
 
     let mut all_top_k = Vec::new();
-    let n_goals = goals.len();
-    for (goal_idx, goal) in goals.iter().enumerate() {
-        println!(
-            "\n=== Goal {}/{} (size {})===",
-            goal_idx + 1,
-            n_goals,
-            goal.size_without_types()
+
+    let csv_output =
+        File::create(run_folder.join("out.csv")).expect("Failed to create output file");
+
+    let mut csv_writer = csv::Writer::from_writer(csv_output);
+    for goal in &goals {
+        let goal_recexpr = goal.into();
+
+        let sampled_guides = get_guide_terms(
+            &result.guide,
+            &result.prev_guide,
+            guide_count,
+            max_size,
+            cli.distribution,
         );
-        println!("{goal}\n");
 
-        let mut ranked = rank_guides(&guides, goal);
+        let entries = take_n_trials(&cli, guide_count, &goal_recexpr, &sampled_guides);
+        all_top_k.push(TopKResults {
+            goal: goal.to_string(),
+            random: entries,
+        });
+        let measured: HashSet<_> = measure_guides(&sampled_guides, goal).into_iter().collect();
 
-        let timer = Instant::now();
-
-        if cli.eval_all {
-            eval_all(verify_iters, &ranked, goal, &run_folder);
+        let results = measured
+            .into_par_iter()
+            .map(|ranked| {
+                let values = verify_reachability(
+                    std::slice::from_ref(&ranked.guide),
+                    &goal_recexpr,
+                    RULES.get_or_init(math::rules),
+                    verify_iters,
+                );
+                EvalResult {
+                    guide: ranked,
+                    values,
+                }
+            })
+            .collect::<Vec<_>>();
+        print_summary(&results, goal, verify_iters);
+        for r in &results {
+            csv_writer
+                .serialize(CsvRow::new(goal, r))
+                .expect("write CSV row");
         }
-        println!("Verification completed in {:.2?}", timer.elapsed());
-
-        let top_k = eval_top_k(&mut ranked, goal, verify_iters);
-        all_top_k.push(top_k);
+        println!("Wrote goal to CSV");
+        csv_writer.flush().expect("flush output");
     }
+
     let json_output =
         File::create(run_folder.join("top_k.json")).expect("Failed to create JSON output file");
     serde_json::to_writer_pretty(json_output, &all_top_k).expect("write top-k JSON");
 }
 
+fn take_n_trials(
+    cli: &Cli,
+    guide_count: usize,
+    goal_recexpr: &RecExpr<Math>,
+    sampled_guides: &[TreeNode<MathLabel>],
+) -> Vec<RandomEntry> {
+    let mut entries = Vec::new();
+    for k in N_RANDOM {
+        let trials = sampled_guides
+            .windows(guide_count / N_TRIALS)
+            .par_bridge()
+            .map(|guides_here| {
+                let subset = &guides_here[..k];
 
+                let single_iters = subset
+                    .iter()
+                    .map(|guide| {
+                        verify_reachability(
+                            std::slice::from_ref(guide),
+                            goal_recexpr,
+                            RULES.get_or_init(math::rules),
+                            cli.goal_iters,
+                        )
+                    })
+                    .collect();
+                let combined = verify_reachability(
+                    subset,
+                    goal_recexpr,
+                    RULES.get_or_init(math::rules),
+                    cli.goal_iters,
+                );
+                RandomTrial {
+                    single_iters,
+                    combined_iters: combined.map(|v| v.iters),
+                    combined_nodes: combined.map(|v| v.nodes),
+                }
+            })
+            .collect::<Vec<_>>();
 
-fn eval_all(
-    verify_iters: usize,
-    ranked: &[RankedGuide],
-    goal: &TreeNode<MathLabel>,
-    run_folder: &Path,
-) {
-    let csv_output =
-        File::create(run_folder.join("out.csv")).expect("Failed to create output file");
-    let mut csv_writer = csv::Writer::from_writer(csv_output);
-    let goal_recexpr = goal.into();
-    let pb_style = ProgressStyle::with_template(
-        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
-    )
-    .unwrap();
-    println!(
-        "Verifying {} guides (max {verify_iters} iters each)...",
-        ranked.len(),
-    );
-    let results = ranked
-        .par_iter()
-        .progress_with_style(pb_style)
-        .map(|guide| EvalResult {
-            guide,
-            values: verify_reachability(
-                std::slice::from_ref(&guide.guide),
-                &goal_recexpr,
-                RULES.get_or_init(math::rules),
-                verify_iters,
-            ),
-        })
-        .collect::<Vec<_>>();
-    print_summary(&results, goal, verify_iters);
-    for r in &results {
-        csv_writer
-            .serialize(CsvRow::new(goal, r))
-            .expect("write CSV row");
+        let best_single_iters = trial_avg(&trials, |t| {
+            t.single_iters.iter().flatten().map(|v| v.iters).min()
+        });
+        let best_single_nodes = trial_avg(&trials, |t| {
+            t.single_iters.iter().flatten().map(|v| v.nodes).min()
+        });
+        if let (Some((avg_i, n_i)), Some((avg_n, _))) = (best_single_iters, best_single_nodes) {
+            println!(
+                "Best single ITERS guide in top {k} guides): {avg_i:.1} (avg over {n_i}/{N_TRIALS} trials)"
+            );
+            println!(
+                "Best single NODES guide in top {k} guides): {avg_n:.1} (avg over {n_i}/{N_TRIALS} trials)"
+            );
+        } else {
+            println!("No single guide in top {k} could reach it");
+        }
+        let combined_iters = trial_avg(&trials, |t| t.combined_iters);
+        let combined_nodes = trial_avg(&trials, |t| t.combined_nodes);
+        if let (Some((avg_i, n)), Some((avg_n, _))) = (combined_iters, combined_nodes) {
+            println!(
+                "Could reach with top {k} guides): {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{N_TRIALS} trials)"
+            );
+        } else {
+            println!("Could NOT reach with top {k} guides");
+        }
+
+        entries.push(RandomEntry { k, trials });
     }
-    println!("Wrote goal to CSV");
-    csv_writer.flush().expect("flush output");
-    // results
+    entries
 }
 
 #[derive(Serialize)]
@@ -250,8 +290,7 @@ struct CsvRow {
     zs_distance: usize,
     structural_overlap: usize,
     structural_zs_sum: usize,
-    zs_rank: usize,
-    structural_rank: usize,
+
     iterations_to_reach: Option<usize>,
     nodes_to_reach: Option<usize>,
 }
@@ -264,8 +303,7 @@ impl CsvRow {
             zs_distance: r.guide.zs_distance,
             structural_overlap: r.guide.structural_distance.overlap(),
             structural_zs_sum: r.guide.structural_distance.zs_sum(),
-            zs_rank: r.guide.zs_rank,
-            structural_rank: r.guide.structural_rank,
+
             iterations_to_reach: r.values.map(|v| v.iters),
             nodes_to_reach: r.values.map(|v| v.nodes),
         }
@@ -384,24 +422,22 @@ fn get_goal_term(
     result.into_iter().take(count).collect()
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
 struct RankedGuide {
     guide: TreeNode<MathLabel>,
     zs_distance: usize,
     #[serde(flatten)]
     structural_distance: StructuralDistance,
-    zs_rank: usize,
-    structural_rank: usize,
 }
 
 /// Rank guides by distance to the goal. Returns `(distance, guide)` pairs sorted ascending.
-fn rank_guides(guides: &[TreeNode<MathLabel>], goal: &TreeNode<MathLabel>) -> Vec<RankedGuide> {
+fn measure_guides(guides: &[TreeNode<MathLabel>], goal: &TreeNode<MathLabel>) -> Vec<RankedGuide> {
     let goal_flat = goal.flatten(false);
     let pb_style = ProgressStyle::with_template(
         "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
     )
     .unwrap();
-    let r = guides
+    guides
         .par_iter()
         .progress_with_style(pb_style)
         .map(|guide| {
@@ -409,156 +445,32 @@ fn rank_guides(guides: &[TreeNode<MathLabel>], goal: &TreeNode<MathLabel>) -> Ve
 
             let zs_dist = tree_distance_unit(&guide_flat, &goal_flat);
             let structural_dist = structural_diff(&goal_flat, &guide_flat, &UnitCost);
-            (zs_dist, structural_dist, guide.clone())
-        })
-        .collect::<Vec<_>>();
-    let mut zs_ranks = (0..r.len()).collect::<Vec<_>>();
-    zs_ranks.sort_by(|&a, &b| r[a].0.cmp(&r[b].0));
-    let mut structural_ranks = (0..r.len()).collect::<Vec<_>>();
-    structural_ranks.sort_by(|&a, &b| r[a].1.cmp(&r[b].1));
-    r.into_iter()
-        .zip(zs_ranks)
-        .zip(structural_ranks)
-        .map(|((a, zs_rank), structural_rank)| RankedGuide {
-            guide: a.2,
-            zs_distance: a.0,
-            structural_distance: a.1,
-            zs_rank,
-            structural_rank,
+            RankedGuide {
+                guide: guide.clone(),
+                zs_distance: zs_dist,
+                structural_distance: structural_dist,
+            }
         })
         .collect()
 }
 
-const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
-
-#[derive(Serialize)]
-struct TopKEntry {
-    k: usize,
-    best_single_iters: Option<usize>,
-    combined_iters: Option<usize>,
-    combined_nodes: Option<usize>,
-}
-
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq, Eq)]
 struct RandomTrial {
     single_iters: Vec<Option<VerifyResult>>,
     combined_iters: Option<usize>,
     combined_nodes: Option<usize>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq, Eq)]
 struct RandomEntry {
     k: usize,
     trials: Vec<RandomTrial>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq, Eq)]
 struct TopKResults {
     goal: String,
-    zs: Vec<TopKEntry>,
-    structural: Vec<TopKEntry>,
     random: Vec<RandomEntry>,
-    random_with_best_zs: Vec<RandomEntry>,
-    random_with_best_structural: Vec<RandomEntry>,
-}
-
-fn eval_top_k(
-    results: &mut [RankedGuide],
-    goal: &TreeNode<MathLabel>,
-    max_iters: usize,
-) -> TopKResults {
-    println!("Testing out top-k to see if that improves things");
-    let go = goal.into();
-
-    let mut top_k_results = TopKResults {
-        goal: goal.to_string(),
-        zs: Vec::new(),
-        structural: Vec::new(),
-        random: Vec::new(),
-        random_with_best_zs: Vec::new(),
-        random_with_best_structural: Vec::new(),
-    };
-
-    if results.is_empty() {
-        return top_k_results;
-    }
-
-    results.sort_unstable_by_key(|v| v.zs_rank);
-    let best_zs_guide = results[0].guide.clone();
-    println!("ZS DISTANCE:");
-    top_k_results.zs = top_k(max_iters, results, &go);
-
-    results.sort_unstable_by_key(|v| v.structural_rank);
-    let best_structural_guide = results[0].guide.clone();
-    println!("STRUCTURAL DISTANCE:");
-    top_k_results.structural = top_k(max_iters, results, &go);
-
-    println!("RANDOM (10 trials averaged):");
-    top_k_results.random = random_k(max_iters, results, &go, 10, None);
-
-    println!("RANDOM + best ZS helper (10 trials):");
-    top_k_results.random_with_best_zs = random_k(
-        max_iters,
-        results,
-        &go,
-        10,
-        Some(("best_zs", &best_zs_guide)),
-    );
-
-    println!("RANDOM + best structural helper (10 trials):");
-    top_k_results.random_with_best_structural = random_k(
-        max_iters,
-        results,
-        &go,
-        10,
-        Some(("best_structural", &best_structural_guide)),
-    );
-
-    top_k_results
-}
-
-fn top_k(max_iters: usize, ranked: &[RankedGuide], go: &RecExpr<Math>) -> Vec<TopKEntry> {
-    let mut entries = Vec::new();
-    for k in N_RANDOM {
-        if k > ranked.len() {
-            continue;
-        }
-        let top_guides = ranked[0..k]
-            .iter()
-            .map(|k| k.guide.clone())
-            .collect::<Vec<_>>();
-        let could_reach =
-            verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
-        let best_in_k = ranked[0..k]
-            .par_iter()
-            .filter_map(|v| {
-                verify_reachability(
-                    std::slice::from_ref(&v.guide),
-                    go,
-                    RULES.get_or_init(math::rules),
-                    max_iters,
-                )
-            })
-            .map(|a| a.iters)
-            .min();
-        if let Some(i) = best_in_k {
-            println!("Best single guide in top {k} guides: {i}");
-        } else {
-            println!("No single guide in top {k} could reach it");
-        }
-        if let Some(VerifyResult { iters, nodes }) = could_reach {
-            println!("Could reach with top {k} guides: {iters} ({nodes} nodes)");
-        } else {
-            println!("Could NOT reach with top {k} guides");
-        }
-        entries.push(TopKEntry {
-            k,
-            best_single_iters: best_in_k,
-            combined_iters: could_reach.map(|v| v.iters),
-            combined_nodes: could_reach.map(|v| v.nodes),
-        });
-    }
-    entries
 }
 
 #[expect(clippy::cast_precision_loss)]
@@ -574,85 +486,6 @@ fn trial_avg<F: Fn(&RandomTrial) -> Option<usize>>(
     Some((avg, values.len()))
 }
 
-fn random_k(
-    max_iters: usize,
-    successful: &[RankedGuide],
-    go: &RecExpr<Math>,
-    n_trials: usize,
-    helper: Option<(&str, &TreeNode<MathLabel>)>,
-) -> Vec<RandomEntry> {
-    if let Some((name, h)) = &helper {
-        println!("  Helper guide ({name}): {h}");
-    }
-    let mut entries = Vec::new();
-    let helper_label = helper.as_ref().map_or("none", |(name, _)| name);
-    for k in N_RANDOM {
-        if k > successful.len() {
-            continue;
-        }
-        let trials = (0..n_trials)
-            .into_par_iter()
-            .map(|trial_idx| {
-                let mut rng = ChaCha12Rng::seed_from_u64(trial_idx as u64);
-                let mut subset = successful
-                    .choose_multiple(&mut rng, k)
-                    .map(|v| v.guide.clone())
-                    .collect::<Vec<_>>();
-                if let Some((_, h)) = &helper {
-                    subset.push((*h).clone());
-                }
-                let single_iters = subset
-                    .iter()
-                    .map(|guide| {
-                        verify_reachability(
-                            std::slice::from_ref(guide),
-                            go,
-                            RULES.get_or_init(math::rules),
-                            max_iters,
-                        )
-                    })
-                    .collect();
-                let combined =
-                    verify_reachability(&subset, go, RULES.get_or_init(math::rules), max_iters);
-                RandomTrial {
-                    single_iters,
-                    combined_iters: combined.map(|v| v.iters),
-                    combined_nodes: combined.map(|v| v.nodes),
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let best_single_iters = trial_avg(&trials, |t| {
-            t.single_iters.iter().flatten().map(|v| v.iters).min()
-        });
-        let best_single_nodes = trial_avg(&trials, |t| {
-            t.single_iters.iter().flatten().map(|v| v.nodes).min()
-        });
-        if let (Some((avg_i, n_i)), Some((avg_n, _))) = (best_single_iters, best_single_nodes) {
-            println!(
-                "Best single ITERS guide in top {k} guides (helper={helper_label}): {avg_i:.1} (avg over {n_i}/{n_trials} trials)"
-            );
-            println!(
-                "Best single NODES guide in top {k} guides (helper={helper_label}): {avg_n:.1} (avg over {n_i}/{n_trials} trials)"
-            );
-        } else {
-            println!("No single guide in top {k} could reach it (helper={helper_label})");
-        }
-        let combined_iters = trial_avg(&trials, |t| t.combined_iters);
-        let combined_nodes = trial_avg(&trials, |t| t.combined_nodes);
-        if let (Some((avg_i, n)), Some((avg_n, _))) = (combined_iters, combined_nodes) {
-            println!(
-                "Could reach with top {k} guides (helper={helper_label}): {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{n_trials} trials)"
-            );
-        } else {
-            println!("Could NOT reach with top {k} guides (helper={helper_label})");
-        }
-
-        entries.push(RandomEntry { k, trials });
-    }
-    entries
-}
-
 fn min_med_max<T: Ord + Copy, F: Fn(&&EvalResult) -> T>(items: &[&EvalResult], f: F) -> (T, T, T) {
     let min = items.iter().map(&f).min().unwrap();
     let max = items.iter().map(&f).max().unwrap();
@@ -662,7 +495,7 @@ fn min_med_max<T: Ord + Copy, F: Fn(&&EvalResult) -> T>(items: &[&EvalResult], f
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
 fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: usize) {
-    let mut successful = results
+    let successful = results
         .iter()
         .filter(|r| r.values.is_some())
         .collect::<Vec<_>>();
@@ -682,15 +515,6 @@ fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: 
         return;
     }
 
-    successful.sort_unstable_by_key(|v| v.guide.zs_rank);
-    println!("RAW ZS");
-
-    let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_rank);
-    println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Successful guide zs_ranks:"
-    );
-
     let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
     println!(
         "  {:<30} min={min}, median={med}, max={max}",
@@ -703,20 +527,6 @@ fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: 
         "Iterations to reach:"
     );
 
-    println!(
-        "  First viable guide at zs_rank: {} (zs_distance {})",
-        successful[0].guide.zs_rank, successful[0].guide.zs_distance,
-    );
-
-    successful.sort_unstable_by_key(|v| v.guide.structural_rank);
-    println!("STRUCTURAL");
-
-    let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_rank);
-    println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Successful guide struct_rank:"
-    );
-
     let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_distance);
     println!(
         "  {:<30} min={min}, median={med}, max={max}",
@@ -727,10 +537,5 @@ fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: 
     println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Iterations to reach:"
-    );
-
-    println!(
-        "  First viable guide at structural_rank: {} (structural_distance {})",
-        successful[0].guide.structural_rank, successful[0].guide.structural_distance,
     );
 }

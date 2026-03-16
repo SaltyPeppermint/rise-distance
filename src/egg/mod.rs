@@ -179,7 +179,7 @@ where
     }
 }
 
-#[derive(Serialize, Clone, Copy, Debug)]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VerifyResult {
     pub nodes: usize,
     pub iters: usize,
