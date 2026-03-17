@@ -53,7 +53,9 @@ macro_rules! tee_println {
         $crate::cli::_tee_print(format_args!("\n"))
     };
     ($($arg:tt)*) => {{
+        #[allow(clippy::used_underscore_items)]
         $crate::cli::_tee_print(format_args!($($arg)*));
+        #[allow(clippy::used_underscore_items)]
         $crate::cli::_tee_print(format_args!("\n"));
     }};
 }
@@ -352,9 +354,9 @@ where
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
     sorted_hist.sort_unstable();
-    println!("Terms in frontier:");
+    tee_println!("Terms in frontier:");
     for (k, v) in &sorted_hist {
-        println!("{v} terms of size {k}");
+        tee_println!("{v} terms of size {k}");
     }
 
     let min_size = histogram.keys().min().copied().unwrap_or(1);
@@ -378,7 +380,7 @@ where
             break;
         }
         oversample *= 2;
-        println!(
+        tee_println!(
             "Have {}/{count} frontier terms, retrying with {oversample}x oversample...",
             result.len()
         );
@@ -407,13 +409,13 @@ where
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
     sorted_hist.sort_unstable();
-    println!("Terms in frontier:");
+    tee_println!("Terms in frontier:");
     for (k, v) in &sorted_hist {
-        println!("{v} terms of size {k}");
+        tee_println!("{v} terms of size {k}");
     }
     let start = Instant::now();
     let total_terms = histogram.values().cloned().sum::<BigUint>();
-    println!("Enumerating all {total_terms} terms up to size {max_size}");
+    tee_println!("Enumerating all {total_terms} terms up to size {max_size}");
     assert!(
         total_terms.to_usize().is_some(),
         "Cannot enumerate more than usize!"
@@ -424,7 +426,7 @@ where
         .into_iter()
         .filter(|t| is_frontier(t, prev_raw_egg))
         .collect::<Vec<_>>();
-    println!(
+    tee_println!(
         "Spent {} seconds enumerating the terms",
         start.elapsed().as_secs()
     );
