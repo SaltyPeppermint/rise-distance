@@ -13,8 +13,8 @@ use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    CsvRow, N_RANDOM, RULES, RandomEntry, RandomTrial, RankedGuide, SampleDistribution,
-    enumerate_frontier_terms, get_run_folder, init_log, measure_guides, min_med_max,
+    EvalResult, MeasuredGuide, N_RANDOM, RULES, RandomEntry, RandomTrial, SampleDistribution,
+    dump_to_csv, enumerate_frontier_terms, get_run_folder, init_log, measure_guides, min_med_max,
     sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
@@ -82,13 +82,7 @@ struct Cli {
     eval_all: bool,
 }
 
-type MathRankedGuide = RankedGuide<MathLabel>;
-
-#[derive(Serialize, Debug)]
-struct EvalResult<'a> {
-    guide: &'a MathRankedGuide,
-    values: Option<VerifyResult>,
-}
+type MathRankedGuide = MeasuredGuide<MathLabel>;
 
 fn main() {
     let cli = Cli::parse();
@@ -184,9 +178,6 @@ fn eval_all(
     goal: &TreeNode<MathLabel>,
     run_folder: &Path,
 ) {
-    let csv_output =
-        File::create(run_folder.join("out.csv")).expect("Failed to create output file");
-    let mut csv_writer = csv::Writer::from_writer(csv_output);
     let goal_recexpr = goal.into();
     let pb_style = ProgressStyle::with_template(
         "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
@@ -210,13 +201,7 @@ fn eval_all(
         })
         .collect::<Vec<_>>();
     print_summary(&results, goal, verify_iters);
-    for r in &results {
-        csv_writer
-            .serialize(CsvRow::new(goal, r.guide, r.values))
-            .expect("write CSV row");
-    }
-    tee_println!("Wrote goal to CSV");
-    csv_writer.flush().expect("flush output");
+    dump_to_csv(run_folder, goal, &results);
 }
 
 #[derive(Serialize)]
@@ -416,7 +401,7 @@ fn random_k(
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: usize) {
+fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, max_iters: usize) {
     let mut successful = results
         .iter()
         .filter(|r| r.values.is_some())

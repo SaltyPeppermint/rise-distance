@@ -9,11 +9,11 @@ use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    CsvRow, N_RANDOM, RULES, RandomEntry, RandomTrial, RankedGuide, SampleDistribution,
+    EvalResult, N_RANDOM, RULES, RandomEntry, RandomTrial, SampleDistribution, dump_to_csv,
     get_run_folder, init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
-use rise_distance::egg::{VerifyResult, run_guide_goal, verify_reachability};
+use rise_distance::egg::{run_guide_goal, verify_reachability};
 use rise_distance::tee_println;
 
 #[derive(Parser)]
@@ -84,14 +84,6 @@ struct Cli {
     eval_all: bool,
 }
 
-type MathRankedGuide = RankedGuide<MathLabel>;
-
-#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
-struct EvalResult {
-    guide: MathRankedGuide,
-    values: Option<VerifyResult>,
-}
-
 const N_TRIALS: usize = const { N_RANDOM[N_RANDOM.len() - 1] };
 
 fn main() {
@@ -153,10 +145,6 @@ fn main() {
         .guides
         .expect("-g/--guides is required when not using --strategy enumerate");
 
-    let csv_output =
-        File::create(run_folder.join("out.csv")).expect("Failed to create output file");
-
-    let mut csv_writer = csv::Writer::from_writer(csv_output);
     let mut all_top_k = Vec::new();
     for goal in &goals {
         let goal_recexpr = goal.into();
@@ -179,28 +167,22 @@ fn main() {
             .collect::<HashSet<_>>();
 
         let results = measured
-            .into_par_iter()
-            .map(|ranked| {
+            .par_iter()
+            .map(|measured| {
                 let values = verify_reachability(
-                    std::slice::from_ref(&ranked.guide),
+                    std::slice::from_ref(&measured.guide),
                     &goal_recexpr,
                     RULES.get_or_init(math::rules),
                     verify_iters,
                 );
                 EvalResult {
-                    guide: ranked,
+                    guide: measured,
                     values,
                 }
             })
             .collect::<Vec<_>>();
         print_summary(&results, goal, verify_iters);
-        for r in &results {
-            csv_writer
-                .serialize(CsvRow::new(goal, &r.guide, r.values))
-                .expect("write CSV row");
-        }
-        tee_println!("Wrote goal to CSV");
-        csv_writer.flush().expect("flush output");
+        dump_to_csv(&run_folder, goal, &results);
     }
 
     let json_output =
@@ -288,7 +270,7 @@ struct TopKResults {
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: usize) {
+fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, max_iters: usize) {
     let successful = results
         .iter()
         .filter(|r| r.values.is_some())

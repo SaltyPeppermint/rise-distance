@@ -1,13 +1,14 @@
 use std::env::current_dir;
 use std::ffi::OsString;
 use std::fmt::Display;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+use csv::WriterBuilder;
 use egg::{Analysis, Language, Rewrite};
 use hashbrown::{HashMap, HashSet};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
@@ -237,21 +238,52 @@ pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathB
     this_run_dir
 }
 
+#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
+pub struct EvalResult<'a, L: Label> {
+    pub guide: &'a MeasuredGuide<L>,
+    pub values: Option<VerifyResult>,
+}
+
+/// Dump the eval of every term to the csv, appending if the file already exists
+///
+/// # Panics
+///
+/// Panics if it cant create/open the file
+pub fn dump_to_csv<L: Label>(run_folder: &Path, goal: &TreeNode<L>, results: &[EvalResult<'_, L>]) {
+    let csv_path = run_folder.join("out.csv");
+    let file_exists = csv_path.exists();
+    let csv_output = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&csv_path)
+        .expect("Failed to open output file");
+    let mut csv_writer = WriterBuilder::new()
+        .has_headers(!file_exists)
+        .from_writer(csv_output);
+    for r in results {
+        csv_writer
+            .serialize(CsvRow::new(goal, r.guide, r.values))
+            .expect("write CSV row");
+    }
+    tee_println!("Wrote goal to CSV");
+    csv_writer.flush().expect("flush output");
+}
+
 #[derive(Serialize)]
-pub struct CsvRow {
-    pub goal: String,
-    pub guide: String,
-    pub zs_distance: usize,
-    pub structural_overlap: usize,
-    pub structural_zs_sum: usize,
-    pub iterations_to_reach: Option<usize>,
-    pub nodes_to_reach: Option<usize>,
+struct CsvRow {
+    goal: String,
+    guide: String,
+    zs_distance: usize,
+    structural_overlap: usize,
+    structural_zs_sum: usize,
+    iterations_to_reach: Option<usize>,
+    nodes_to_reach: Option<usize>,
 }
 
 impl CsvRow {
-    pub fn new<L: Label>(
+    fn new<L: Label>(
         goal: &TreeNode<L>,
-        guide: &RankedGuide<L>,
+        guide: &MeasuredGuide<L>,
         values: Option<VerifyResult>,
     ) -> Self {
         Self {
@@ -267,7 +299,7 @@ impl CsvRow {
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq, Hash)]
-pub struct RankedGuide<L: Label> {
+pub struct MeasuredGuide<L: Label> {
     pub guide: TreeNode<L>,
     pub zs_distance: usize,
     #[serde(flatten)]
@@ -309,7 +341,10 @@ pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T
 }
 
 /// Measure guides by distance to the goal.
-pub fn measure_guides<L: Label>(guides: &[TreeNode<L>], goal: &TreeNode<L>) -> Vec<RankedGuide<L>> {
+pub fn measure_guides<L: Label>(
+    guides: &[TreeNode<L>],
+    goal: &TreeNode<L>,
+) -> Vec<MeasuredGuide<L>> {
     let goal_flat = goal.flatten(false);
     #[expect(clippy::missing_panics_doc)]
     let pb_style = ProgressStyle::with_template(
@@ -323,7 +358,7 @@ pub fn measure_guides<L: Label>(guides: &[TreeNode<L>], goal: &TreeNode<L>) -> V
             let guide_flat = guide.flatten(false);
             let zs_dist = tree_distance_unit(&guide_flat, &goal_flat);
             let structural_dist = structural_diff(&goal_flat, &guide_flat, &UnitCost);
-            RankedGuide {
+            MeasuredGuide {
                 guide: guide.clone(),
                 zs_distance: zs_dist,
                 structural_distance: structural_dist,
