@@ -26,17 +26,17 @@ use rise_distance::egg::{VerifyResult, run_guide_goal, verify_reachability};
     about = "Evaluate distance metrics as guide predictors for equality saturation",
     after_help = "\
 Examples:
-  # Basic evaluation with Zhang-Shasha distance
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -d zhang-shasha
+  # Enumerate all guides up to size 150
+  guide-enumerate -s '(d x (+ (* x x) 1))' -n 5 -i 4 --max-size 150
 
   # Write JSON output to a file
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -o results.json
+  guide-enumerate -s '(d x (+ (* x x) 1))' -n 5 -i 4 --max-size 150 -o results.json
 
   # Limit verification iterations separately from goal iterations
-  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 4 -g 100 --max-size 150 --verify-iters 5
+  guide-enumerate -s '(d x (+ (* x x) 1))' -n 8 -i 4 --max-size 150 --verify-iters 5
 
-  # Print top 20 guides in the summary table (default: 10)
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -d zhang-shasha --top 20
+  # Evaluate all guides and write CSV, print top 20 in summary
+  guide-enumerate -s '(d x (+ (* x x) 1))' -n 5 -i 4 --max-size 150 --eval-all --top 20
 "
 )]
 struct Cli {
@@ -65,7 +65,7 @@ struct Cli {
     #[arg(long, default_value_t = SampleDistribution::Uniform)]
     distribution: SampleDistribution,
 
-    /// JSON output file (generated if omitted)
+    /// Output folder (generated if omitted)
     #[arg(short, long)]
     output: Option<String>,
 

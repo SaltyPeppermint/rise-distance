@@ -21,20 +21,20 @@ use rise_distance::egg::{VerifyResult, run_guide_goal, verify_reachability};
     about = "Evaluate distance metrics as guide predictors for equality saturation",
     after_help = "\
 Examples:
-  # Basic evaluation with Zhang-Shasha distance
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -d zhang-shasha
+  # Basic evaluation with 100 random guides
+  guide-random -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150
 
-  # Guide from an earlier iteration
-  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 3 -g 100 --goals 5 -d structural
+  # Sample 5 goals and 100 guides
+  guide-random -s '(d x (+ (* x x) 1))' -n 8 -i 3 -g 100 --goals 5 --max-size 150
 
   # Write JSON output to a file
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -o results.json
+  guide-random -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -o results.json
 
   # Limit verification iterations separately from goal iterations
-  guide-eval -s '(d x (+ (* x x) 1))' -n 8 -i 4 -g 100 --max-size 150 --verify-iters 5
+  guide-random -s '(d x (+ (* x x) 1))' -n 8 -i 4 -g 100 --max-size 150 --verify-iters 5
 
   # Print top 20 guides in the summary table (default: 10)
-  guide-eval -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -d zhang-shasha --top 20
+  guide-random -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 --top 20
 "
 )]
 struct Cli {
@@ -51,7 +51,7 @@ struct Cli {
     guide_iters: usize,
 
     /// Number of guide candidates to sample from the n-1 frontier
-    #[arg(short, long, conflicts_with = "enumerate")]
+    #[arg(short, long)]
     guides: Option<usize>,
 
     /// Number of goal terms to sample from the n frontier
@@ -67,7 +67,7 @@ struct Cli {
     #[arg(long, default_value_t = SampleDistribution::Uniform)]
     distribution: SampleDistribution,
 
-    /// JSON output file (generated if omitted)
+    /// Output folder (generated if omitted)
     #[arg(short, long)]
     output: Option<String>,
 
