@@ -23,6 +23,8 @@ pub struct GuideGoalResult<L: Language, N: Analysis<L>, LL: Label> {
     pub prev_goal: egg::EGraph<L, N>,
     /// Converted egraph at iteration `n_goal`.
     pub goal: EGraph<LL>,
+    /// Number of nodes in the guide egraph.
+    pub guide_eg_size: usize,
     /// Number of nodes in the final egraph.
     pub goal_eg_size: usize,
 }
@@ -170,11 +172,13 @@ where
     eg_goal_min_1.rebuild();
 
     let goal_eg_size = eg_goal.nodes().len();
+    let guide_eg_size = eg_guide.as_ref().unwrap().nodes().len();
     GuideGoalResult {
         prev_guide: eg_guide_min_1,
         guide: convert(&eg_guide.unwrap(), root),
         prev_goal: eg_goal_min_1,
         goal: convert(&eg_goal, root),
+        guide_eg_size,
         goal_eg_size,
     }
 }

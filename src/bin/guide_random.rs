@@ -117,6 +117,7 @@ fn main() {
     );
 
     tee_println!("Eqsat completed in {:.2?}", start.elapsed());
+    tee_println!("Guide egraph had {} nodes", result.guide_eg_size);
     tee_println!("Final egraph had {} nodes", result.goal_eg_size);
 
     tee_println!(
