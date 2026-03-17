@@ -1,24 +1,62 @@
 use std::env::current_dir;
 use std::ffi::OsString;
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use egg::{Analysis, Language};
+use egg::{Analysis, Language, Rewrite};
 use hashbrown::{HashMap, HashSet};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::egg::VerifyResult;
+use crate::egg::math::ConstantFold;
+use crate::egg::{Math, VerifyResult};
 use crate::{
     EGraph, Label, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff,
     tree_distance_unit,
 };
 
 pub const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
+
+static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+
+pub static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
+
+/// Initialize the global log file. Call once at the start of `main` after creating the run folder.
+///
+/// # Panics
+/// Panics if the log file cannot be created.
+pub fn init_log(run_folder: &Path) {
+    let file = File::create(run_folder.join("run.log")).expect("Failed to create run.log");
+    *LOG_FILE.lock().unwrap() = Some(file);
+}
+
+/// Write a formatted message to both stdout and the log file.
+#[doc(hidden)]
+pub fn _tee_print(args: std::fmt::Arguments<'_>) {
+    print!("{args}");
+    if let Some(f) = LOG_FILE.lock().unwrap().as_mut() {
+        let _ = f.write_fmt(args);
+    }
+}
+
+/// Like `println!`, but also writes to the run log file.
+#[macro_export]
+macro_rules! tee_println {
+    () => {
+        $crate::cli::_tee_print(format_args!("\n"))
+    };
+    ($($arg:tt)*) => {{
+        $crate::cli::_tee_print(format_args!($($arg)*));
+        $crate::cli::_tee_print(format_args!("\n"));
+    }};
+}
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum DistanceMetric {

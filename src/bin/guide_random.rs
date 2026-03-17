@@ -1,20 +1,20 @@
 use std::fs::File;
-use std::sync::OnceLock;
 use std::time::Instant;
 
 use clap::Parser;
-use egg::{RecExpr, Rewrite};
+use egg::RecExpr;
 use hashbrown::HashSet;
 use rayon::prelude::*;
 use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    CsvRow, N_RANDOM, RandomEntry, RandomTrial, RankedGuide, SampleDistribution, get_run_folder,
-    measure_guides, min_med_max, sample_frontier_terms, trial_avg,
+    CsvRow, N_RANDOM, RULES, RandomEntry, RandomTrial, RankedGuide, SampleDistribution,
+    get_run_folder, init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
-use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
+use rise_distance::egg::math::{self, Math, MathLabel};
 use rise_distance::egg::{VerifyResult, run_guide_goal, verify_reachability};
+use rise_distance::tee_println;
 
 #[derive(Parser)]
 #[command(
@@ -92,14 +92,13 @@ struct EvalResult {
     values: Option<VerifyResult>,
 }
 
-static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
-
 const N_TRIALS: usize = const { N_RANDOM[N_RANDOM.len() - 1] };
 
 fn main() {
     let cli = Cli::parse();
     let prefix = format!("run-{}-{}-random", cli.guide_iters, cli.goal_iters);
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
+    init_log(&run_folder);
 
     let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
 
@@ -108,12 +107,12 @@ fn main() {
         .parse::<RecExpr<Math>>()
         .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
 
-    println!("Seed: {seed}");
-    println!("Goal Iterations: {}", cli.goal_iters);
-    println!("Guide Iterations: {}", cli.guide_iters);
-    println!("Distribution: {}", cli.distribution);
+    tee_println!("Seed: {seed}");
+    tee_println!("Goal Iterations: {}", cli.goal_iters);
+    tee_println!("Guide Iterations: {}", cli.guide_iters);
+    tee_println!("Distribution: {}", cli.distribution);
 
-    println!(
+    tee_println!(
         "Running equality saturation for {} iterations...",
         cli.goal_iters
     );
@@ -125,10 +124,10 @@ fn main() {
         cli.goal_iters,
     );
 
-    println!("Eqsat completed in {:.2?}", start.elapsed());
-    println!("Final egraph had {} nodes", result.goal_eg_size);
+    tee_println!("Eqsat completed in {:.2?}", start.elapsed());
+    tee_println!("Final egraph had {} nodes", result.goal_eg_size);
 
-    println!(
+    tee_println!(
         "\nSampling goals from iteration-{} frontier...",
         cli.goal_iters
     );
@@ -144,9 +143,9 @@ fn main() {
         !goals.is_empty(),
         "No frontier terms found. Try more iterations or a larger max-size.",
     );
-    println!("Sampled {} goal(s)", goals.len());
+    tee_println!("Sampled {} goal(s)", goals.len());
 
-    println!(
+    tee_println!(
         "\nGetting guides from iteration-{} frontier...",
         cli.guide_iters
     );
@@ -200,7 +199,7 @@ fn main() {
                 .serialize(CsvRow::new(goal, &r.guide, r.values))
                 .expect("write CSV row");
         }
-        println!("Wrote goal to CSV");
+        tee_println!("Wrote goal to CSV");
         csv_writer.flush().expect("flush output");
     }
 
@@ -253,12 +252,12 @@ fn take_n_trials(
         let best_single_nodes = trial_avg(&trials, |t| {
             t.single_iters.iter().flatten().map(|v| v.nodes).min()
         });
-        println!("Looking at a random subset of {k} guides.");
+        tee_println!("Looking at a random subset of {k} guides.");
         if let (Some((avg_i, n_i)), Some((avg_n, _))) = (best_single_iters, best_single_nodes) {
-            println!("Best single ITERS guide: {avg_i:.1} (avg over {n_i}/{N_TRIALS} trials)");
-            println!("Best single NODES guide: {avg_n:.1} (avg over {n_i}/{N_TRIALS} trials)");
+            tee_println!("Best single ITERS guide: {avg_i:.1} (avg over {n_i}/{N_TRIALS} trials)");
+            tee_println!("Best single NODES guide: {avg_n:.1} (avg over {n_i}/{N_TRIALS} trials)");
         } else {
-            println!("No single guide could reach it");
+            tee_println!("No single guide could reach it");
         }
 
         let total = trials.iter().map(|v| v.single_iters.len()).sum::<usize>();
@@ -266,15 +265,15 @@ fn take_n_trials(
             .iter()
             .map(|v| v.single_iters.iter().filter(|u| u.is_some()).count())
             .sum::<usize>();
-        println!("{reached} out of {total} reached the goal");
+        tee_println!("{reached} out of {total} reached the goal");
         let combined_iters = trial_avg(&trials, |t| t.combined_iters);
         let combined_nodes = trial_avg(&trials, |t| t.combined_nodes);
         if let (Some((avg_i, n)), Some((avg_n, _))) = (combined_iters, combined_nodes) {
-            println!(
+            tee_println!(
                 "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{N_TRIALS} trials)"
             );
         } else {
-            println!("Could NOT reach with {k} guides");
+            tee_println!("Could NOT reach with {k} guides");
         }
 
         entries.push(RandomEntry { k, trials });
@@ -297,11 +296,11 @@ fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: 
     let total = results.len();
     let n_reached = successful.len();
 
-    println!("\nSummary for goal: {goal}");
-    println!("  Goal size: {}", goal.size_without_types());
-    println!("  Total guides evaluated: {total}");
-    println!("  Max verify iterations: {max_iters}");
-    println!(
+    tee_println!("\nSummary for goal: {goal}");
+    tee_println!("  Goal size: {}", goal.size_without_types());
+    tee_println!("  Total guides evaluated: {total}");
+    tee_println!("  Max verify iterations: {max_iters}");
+    tee_println!(
         "  Guides that reached goal: {n_reached}/{total} ({:.1}%)",
         100.0 * n_reached as f64 / total.max(1) as f64
     );
@@ -311,25 +310,25 @@ fn print_summary(results: &[EvalResult], goal: &TreeNode<MathLabel>, max_iters: 
     }
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
-    println!(
+    tee_println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Successful guide zs_dists:"
     );
 
     let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
-    println!(
+    tee_println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Iterations to reach:"
     );
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_distance);
-    println!(
+    tee_println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Successful guide struct_dist:"
     );
 
     let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
-    println!(
+    tee_println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Iterations to reach:"
     );
