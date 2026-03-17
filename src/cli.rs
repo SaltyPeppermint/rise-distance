@@ -1,5 +1,4 @@
 use std::env::current_dir;
-use std::ffi::OsString;
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -215,13 +214,12 @@ pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathB
         || {
             let runs_dir = current_dir().unwrap().join("data").join(subdir);
             std::fs::create_dir_all(&runs_dir).expect("Failed to create output directory");
-            let pat: OsString = format!("{prefix}-sampling").into();
             let max_existing = runs_dir
                 .read_dir()
                 .unwrap()
                 .filter_map(|e| {
                     let d = e.ok()?;
-                    if d.file_type().ok()?.is_dir() && pat.as_os_str() == d.path().file_stem()? {
+                    if d.file_type().ok()?.is_dir() && prefix == d.path().file_stem()? {
                         return d.path().extension()?.to_str()?.parse::<usize>().ok();
                     }
                     None
@@ -229,7 +227,7 @@ pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathB
                 .max()
                 .unwrap_or(0);
             runs_dir
-                .join(pat)
+                .join(prefix)
                 .with_extension((max_existing + 1).to_string())
         },
         PathBuf::from,
