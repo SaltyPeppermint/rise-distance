@@ -52,7 +52,7 @@ struct Cli {
 
     /// Number of guide candidates to sample from the n-1 frontier
     #[arg(short, long)]
-    guides: Option<usize>,
+    guides: usize,
 
     /// Number of goal terms to sample from the n frontier
     #[arg(long, default_value_t = 1)]
@@ -141,9 +141,6 @@ fn main() {
         "\nGetting guides from iteration-{} frontier...",
         cli.guide_iters
     );
-    let guide_count = cli
-        .guides
-        .expect("-g/--guides is required when not using --strategy enumerate");
 
     let mut all_top_k = Vec::new();
     for goal in &goals {
@@ -152,12 +149,12 @@ fn main() {
         let sampled_guides = sample_frontier_terms(
             &result.guide,
             &result.prev_guide,
-            guide_count,
+            cli.guides,
             cli.max_size,
             cli.distribution,
         );
 
-        let entries = take_n_trials(&cli, guide_count, &goal_recexpr, &sampled_guides);
+        let entries = take_n_trials(&cli, cli.guides, &goal_recexpr, &sampled_guides);
         all_top_k.push(TopKResults {
             goal: goal.to_string(),
             entries,
@@ -236,8 +233,12 @@ fn take_n_trials(
         });
         tee_println!("Looking at a random subset of {k} guides.");
         if let (Some((avg_i, n_i)), Some((avg_n, _))) = (best_single_iters, best_single_nodes) {
-            tee_println!("Best single ITERS guide: {avg_i:.1} (avg over {n_i}/{N_TRIALS} trials)");
-            tee_println!("Best single NODES guide: {avg_n:.1} (avg over {n_i}/{N_TRIALS} trials)");
+            tee_println!(
+                "Best single ITERS guide: {avg_i:.1} (avg over {n_i} in {N_TRIALS} trials)"
+            );
+            tee_println!(
+                "Best single NODES guide: {avg_n:.1} (avg over {n_i} in {N_TRIALS} trials)"
+            );
         } else {
             tee_println!("No single guide could reach it");
         }
@@ -252,7 +253,7 @@ fn take_n_trials(
         let combined_nodes = trial_avg(&trials, |t| t.combined_nodes);
         if let (Some((avg_i, n)), Some((avg_n, _))) = (combined_iters, combined_nodes) {
             tee_println!(
-                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{N_TRIALS} trials)"
+                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {n} in {N_TRIALS} trials)"
             );
         } else {
             tee_println!("Could NOT reach with {k} guides");
