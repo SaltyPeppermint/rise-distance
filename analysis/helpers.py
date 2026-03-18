@@ -172,6 +172,52 @@ def plot_predictor_vs_iters(
     return ax
 
 
+def find_latest_run(pattern: str) -> Path:
+    """Find the most recently modified run directory matching `pattern` in DATA_DIR."""
+    data_dir = Path(__file__).parent / "../data/guide_eval"
+    candidates = sorted(
+        [f for f in data_dir.iterdir() if f.is_dir() and pattern in f.name],
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not candidates:
+        raise FileNotFoundError(f"No '{pattern}' directories in {data_dir.resolve()}")
+    return candidates[-1]
+
+
+def best_single_from_trial(trial: dict) -> tuple[int | None, int | None]:
+    """Extract best single iters and nodes from a trial's single_iters list."""
+    reachable = [s for s in trial["single_iters"] if s is not None]
+    if not reachable:
+        return None, None
+    return min(s["iters"] for s in reachable), min(s["nodes"] for s in reachable)
+
+
+def parse_random_trials(raw: list[dict], strategy_name: str, key: str) -> list[dict]:
+    """Flatten random trial entries into rows suitable for a polars DataFrame.
+
+    Each row has: goal, strategy, k, best_single_iters, best_single_nodes,
+    combined_iters, combined_nodes.
+    """
+    rows = []
+    for entry in raw:
+        goal = entry["goal"]
+        for item in entry.get(key, []):
+            for trial in item["trials"]:
+                best_i, best_n = best_single_from_trial(trial)
+                rows.append(
+                    {
+                        "goal": goal,
+                        "strategy": strategy_name,
+                        "k": item["k"],
+                        "best_single_iters": best_i,
+                        "best_single_nodes": best_n,
+                        "combined_iters": trial["combined_iters"],
+                        "combined_nodes": trial["combined_nodes"],
+                    }
+                )
+    return rows
+
+
 def load_guide_eval(path: Path) -> pl.DataFrame:
     """Load a guide-eval CSV file into a DataFrame.
 
