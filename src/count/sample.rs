@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 
 use hashbrown::{HashMap, HashSet};
 use rand::distributions::WeightedIndex;
@@ -8,13 +7,13 @@ use rayon::prelude::*;
 
 use super::Counter;
 use super::TermCount;
+use crate::Sampler;
 use crate::TreeNode;
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;
 
-impl<C: Counter, L: Label> TermCount<'_, C, L> {
-    #[must_use]
-    pub(crate) fn sample_root(
+impl<C: Counter, L: Label> Sampler< L> for TermCount<'_, C, L> {
+    fn sample_root(
         &self,
         size: usize,
         samples: u64,
@@ -23,7 +22,6 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         self.sample_class(self.graph.root(), size, samples, seed)
     }
 
-    #[must_use]
     fn sample_class(
         &self,
         id: EClassId,
@@ -41,8 +39,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// Sample unique terms across a range of sizes from root.
     ///
     /// See `sample_unique` for more info
-    #[must_use]
-    pub fn sample_unique_root(
+    fn sample_unique_root(
         &self,
         min_size: usize,
         max_size: usize,
@@ -60,8 +57,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// may have gaps in its reachable sizes (e.g. terms only at sizes 5, 7, 9),
     /// and calling `sample` with a size that has no terms would cause all node
     /// weights to be zero, panicking with `AllWeightsZero`.
-    #[must_use]
-    pub fn sample_unique(
+    fn sample_unique(
         &self,
         id: EClassId,
         min_size: usize,
@@ -78,8 +74,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             .collect()
     }
 
-    #[must_use]
-    pub(crate) fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
         let canonical_id = self.graph.canonicalize(id);
         let eclass = self.graph.class(canonical_id);
         let nodes = eclass.nodes();
@@ -149,21 +144,5 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         )
     }
 
-    /// Get the histogram for a child (size -> count).
-    pub(crate) fn child_histogram(&self, child_id: ExprChildId) -> Cow<'_, HashMap<usize, C>> {
-        match child_id {
-            ExprChildId::Nat(nat_id) => Cow::Owned(HashMap::from([(
-                self.type_sizes.get_nat_size(nat_id),
-                C::one(),
-            )])),
-            ExprChildId::Data(data_id) => Cow::Owned(HashMap::from([(
-                self.type_sizes.get_data_size(data_id),
-                C::one(),
-            )])),
-            ExprChildId::EClass(eclass_id) => match self.of_eclass(eclass_id) {
-                Some(h) => Cow::Borrowed(h),
-                None => Cow::Owned(HashMap::default()),
-            },
-        }
-    }
+
 }

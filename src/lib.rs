@@ -9,6 +9,7 @@ mod graph;
 mod ids;
 mod min;
 mod nodes;
+mod sampler;
 mod overlap;
 pub mod rise;
 mod structural;
@@ -20,6 +21,7 @@ mod zs;
 
 pub use choices::ChoiceIter;
 pub use count::TermCount;
+pub use sampler::Sampler;
 pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
 pub use euler_str::tree_distance_euler_bound;
 pub use graph::{EClass, EGraph};

@@ -2,7 +2,7 @@
 //!
 //! Counts the number of terms up to a given size that can be extracted from each e-class.
 
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::iter::{Product, Sum};
 
 use hashbrown::{HashMap, HashSet};
@@ -370,6 +370,25 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     #[must_use]
     pub fn with_types(&self) -> bool {
         self.with_types
+    }
+
+
+    /// Get the histogram for a child (size -> count).
+    pub(crate) fn child_histogram(&self, child_id: ExprChildId) -> Cow<'_, HashMap<usize, C>> {
+        match child_id {
+            ExprChildId::Nat(nat_id) => Cow::Owned(HashMap::from([(
+                self.type_sizes.get_nat_size(nat_id),
+                C::one(),
+            )])),
+            ExprChildId::Data(data_id) => Cow::Owned(HashMap::from([(
+                self.type_sizes.get_data_size(data_id),
+                C::one(),
+            )])),
+            ExprChildId::EClass(eclass_id) => match self.of_eclass(eclass_id) {
+                Some(h) => Cow::Borrowed(h),
+                None => Cow::Owned(HashMap::default()),
+            },
+        }
     }
 }
 

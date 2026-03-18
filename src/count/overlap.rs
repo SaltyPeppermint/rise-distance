@@ -6,6 +6,7 @@ use rayon::prelude::*;
 
 use super::Counter;
 use super::TermCount;
+use crate::Sampler;
 use crate::TreeNode;
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;

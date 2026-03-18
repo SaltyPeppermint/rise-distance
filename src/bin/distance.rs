@@ -9,8 +9,7 @@ use rayon::prelude::*;
 
 use rise_distance::cli::{DistanceMetric, SampleDistribution};
 use rise_distance::{
-    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, StructuralDistance, TermCount, TreeNode,
-    UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
+    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, Sampler, StructuralDistance, TermCount, TreeNode, UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit
 };
 
 #[derive(Parser)]
