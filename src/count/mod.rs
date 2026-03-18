@@ -10,14 +10,14 @@ use num_traits::{NumAssignRef, NumRef};
 use rand::distributions::uniform::SampleUniform;
 use rayon::prelude::*;
 
-use super::graph::{EClass, EGraph};
-use super::ids::{EClassId, ExprChildId};
-use super::nodes::Label;
+use crate::graph::{EClass, EGraph};
+use crate::ids::{EClassId, ExprChildId};
+use crate::nodes::Label;
 use crate::utils::UniqueQueue;
 
 mod enumerate;
 // mod overlap;
-mod sample;
+// mod count;
 
 mod type_cache;
 

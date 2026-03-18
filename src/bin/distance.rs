@@ -8,10 +8,12 @@ use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
 use rise_distance::cli::{DistanceMetric, SampleDistribution};
+use rise_distance::count::TermCount;
+use rise_distance::sampling::Sampler;
+use rise_distance::sampling::count::CountSampler;
 use rise_distance::{
-    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, Sampler, StructuralDistance, TermCount,
-    TreeNode, UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree,
-    tree_distance_unit,
+    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, StructuralDistance, TreeNode, UnitCost,
+    ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -278,7 +280,8 @@ fn run_count_extraction<L: Label>(
     let normal_center = (ref_tree.size(with_types) - min_size) as f64;
     let samples_per_size =
         distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
-    let candidates = term_count.sample_unique_root(min_size, max_size, &samples_per_size);
+    let candidates =
+        CountSampler::new(term_count).sample_unique_root(min_size, max_size, &samples_per_size);
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");
 

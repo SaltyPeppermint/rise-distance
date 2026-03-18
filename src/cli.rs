@@ -15,11 +15,13 @@ use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 use serde::Serialize;
 
+use crate::count::TermCount;
 use crate::egg::math::ConstantFold;
 use crate::egg::{Math, VerifyResult};
+use crate::sampling::Sampler;
+use crate::sampling::count::CountSampler;
 use crate::{
-    EGraph, Label, Sampler, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff,
-    tree_distance_unit,
+    EGraph, Label, StructuralDistance, TreeNode, UnitCost, structural_diff, tree_distance_unit,
 };
 
 pub const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
@@ -406,7 +408,8 @@ where
             count * oversample,
             normal_center,
         );
-        let batch = tc.sample_unique_root(min_size, max_size, &samples_per_size);
+        let batch =
+            CountSampler::new(&tc).sample_unique_root(min_size, max_size, &samples_per_size);
         let prev_len = result.len();
         result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
         if result.len() >= count || result.len() == prev_len {

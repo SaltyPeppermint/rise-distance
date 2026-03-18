@@ -1,50 +1,26 @@
 use hashbrown::{HashMap, HashSet};
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
-use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
-use super::Counter;
-use super::TermCount;
-use crate::Sampler;
 use crate::TreeNode;
+use crate::count::{Counter, TermCount};
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;
+use crate::sampling::Sampler;
 
-impl<C: Counter, L: Label> Sampler<L> for TermCount<'_, C, L> {
-    fn sample_root(
-        &self,
-        size: usize,
-        samples: u64,
-        seed: u64,
-    ) -> impl ParallelIterator<Item = TreeNode<L>> {
-        self.sample_class(self.graph.root(), size, samples, seed)
+pub struct CountSampler<'a, C: Counter, L: Label>(&'a TermCount<'a, C, L>);
+
+impl<'a, C: Counter, L: Label> CountSampler<'a, C, L> {
+    #[must_use]
+    pub fn new(term_count: &'a TermCount<'a, C, L>) -> Self {
+        Self(term_count)
     }
+}
 
-    fn sample_class(
-        &self,
-        id: EClassId,
-        size: usize,
-        samples: u64,
-        seed: u64,
-    ) -> impl ParallelIterator<Item = TreeNode<L>> {
-        (0..samples).into_par_iter().map(move |sample| {
-            let mut rng = ChaCha12Rng::seed_from_u64(seed);
-            rng.set_stream(sample);
-            self.sample(id, size, &mut rng)
-        })
-    }
-
-    /// Sample unique terms across a range of sizes from root.
-    ///
-    /// See `sample_unique` for more info
-    fn sample_unique_root(
-        &self,
-        min_size: usize,
-        max_size: usize,
-        samples_per_size: &HashMap<usize, u64>,
-    ) -> HashSet<TreeNode<L>> {
-        self.sample_unique(self.graph.root(), min_size, max_size, samples_per_size)
+impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, C, L> {
+    fn root(&self) -> EClassId {
+        self.0.graph.root()
     }
 
     /// Sample unique terms across a range of sizes.
@@ -63,8 +39,9 @@ impl<C: Counter, L: Label> Sampler<L> for TermCount<'_, C, L> {
         max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<TreeNode<L>> {
-        let canon_id = self.graph.canonicalize(id);
-        self.data
+        let canon_id = self.0.graph.canonicalize(id);
+        self.0
+            .data
             .get(&canon_id)
             .into_iter()
             .flat_map(|h| h.keys().filter(|&&s| s >= min_size && s <= max_size))
@@ -74,12 +51,12 @@ impl<C: Counter, L: Label> Sampler<L> for TermCount<'_, C, L> {
     }
 
     fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
-        let canonical_id = self.graph.canonicalize(id);
-        let eclass = self.graph.class(canonical_id);
+        let canonical_id = self.0.graph.canonicalize(id);
+        let eclass = self.0.graph.class(canonical_id);
         let nodes = eclass.nodes();
-        let type_overhead = self.type_overhead(eclass);
+        let type_overhead = self.0.type_overhead(eclass);
         let child_budget = size - 1 - type_overhead;
-        let cached = &self.suffix_cache[&canonical_id];
+        let cached = &self.0.suffix_cache[&canonical_id];
 
         // Pick a node weighted by how many terms of the target size it produces.
         let weights = cached
@@ -101,7 +78,7 @@ impl<C: Counter, L: Label> Sampler<L> for TermCount<'_, C, L> {
             return TreeNode::new_typed(
                 pick.label().clone(),
                 vec![],
-                TreeNode::from_eclass(self.graph, canonical_id),
+                TreeNode::from_eclass(self.0.graph, canonical_id),
             );
         }
         // Sequentially sample a size for each child, weighting by:
@@ -110,7 +87,7 @@ impl<C: Counter, L: Label> Sampler<L> for TermCount<'_, C, L> {
         let mut child_sizes = Vec::with_capacity(children.len());
 
         for (i, &c_id) in children.iter().enumerate() {
-            let histogram = self.child_histogram(c_id);
+            let histogram = self.0.child_histogram(c_id);
             let candidates = histogram
                 .iter()
                 .filter_map(|(&s, count)| {
@@ -134,12 +111,12 @@ impl<C: Counter, L: Label> Sampler<L> for TermCount<'_, C, L> {
                 .iter()
                 .zip(child_sizes)
                 .map(|(c_id, s)| match c_id {
-                    ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.graph, *nat_id),
-                    ExprChildId::Data(data_id) => TreeNode::from_data(self.graph, *data_id),
+                    ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.0.graph, *nat_id),
+                    ExprChildId::Data(data_id) => TreeNode::from_data(self.0.graph, *data_id),
                     ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
                 })
                 .collect(),
-            TreeNode::from_eclass(self.graph, canonical_id),
+            TreeNode::from_eclass(self.0.graph, canonical_id),
         )
     }
 }

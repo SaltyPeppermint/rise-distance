@@ -1,7 +1,7 @@
 // mod boltzmann;
 mod choices;
 pub mod cli;
-mod count;
+pub mod count;
 mod diversity;
 pub mod egg;
 mod euler_str;
@@ -12,6 +12,7 @@ mod nodes;
 mod overlap;
 pub mod rise;
 mod sampler;
+pub mod sampling;
 mod structural;
 #[cfg(test)]
 mod test_utils;
@@ -20,7 +21,6 @@ mod utils;
 mod zs;
 
 pub use choices::ChoiceIter;
-pub use count::TermCount;
 pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
 pub use euler_str::tree_distance_euler_bound;
 pub use graph::{EClass, EGraph};
@@ -29,7 +29,6 @@ pub use min::{ZSStats, find_min_struct, find_min_zs};
 pub use nodes::Label;
 pub use overlap::{match_ref_tree, prune_by_ref_tree};
 pub use rise::{Expr, Nat, RiseLabel, Type};
-pub use sampler::Sampler;
 pub use structural::{StructuralDistance, structural_diff};
 pub use tree::{PartialChild, PartialTree, TreeNode, tree_node_to_partial};
 pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};
