@@ -1,4 +1,3 @@
-
 use hashbrown::{HashMap, HashSet};
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
@@ -12,7 +11,7 @@ use crate::TreeNode;
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;
 
-impl<C: Counter, L: Label> Sampler< L> for TermCount<'_, C, L> {
+impl<C: Counter, L: Label> Sampler<L> for TermCount<'_, C, L> {
     fn sample_root(
         &self,
         size: usize,
@@ -143,6 +142,4 @@ impl<C: Counter, L: Label> Sampler< L> for TermCount<'_, C, L> {
             TreeNode::from_eclass(self.graph, canonical_id),
         )
     }
-
-
 }

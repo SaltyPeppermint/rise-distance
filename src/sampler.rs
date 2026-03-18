@@ -4,7 +4,7 @@ use rayon::iter::ParallelIterator;
 
 use crate::{EClassId, Label, TreeNode};
 
-pub trait Sampler< L: Label> {
+pub trait Sampler<L: Label> {
     #[must_use]
     fn sample_root(
         &self,
@@ -53,6 +53,4 @@ pub trait Sampler< L: Label> {
 
     #[must_use]
     fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L>;
-
-
 }

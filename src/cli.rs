@@ -18,7 +18,8 @@ use serde::Serialize;
 use crate::egg::math::ConstantFold;
 use crate::egg::{Math, VerifyResult};
 use crate::{
-    EGraph, Label, Sampler, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff, tree_distance_unit
+    EGraph, Label, Sampler, StructuralDistance, TermCount, TreeNode, UnitCost, structural_diff,
+    tree_distance_unit,
 };
 
 pub const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];

@@ -16,7 +16,7 @@ use super::nodes::Label;
 use crate::utils::UniqueQueue;
 
 mod enumerate;
-mod overlap;
+// mod overlap;
 mod sample;
 
 mod type_cache;
@@ -371,7 +371,6 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     pub fn with_types(&self) -> bool {
         self.with_types
     }
-
 
     /// Get the histogram for a child (size -> count).
     pub(crate) fn child_histogram(&self, child_id: ExprChildId) -> Cow<'_, HashMap<usize, C>> {

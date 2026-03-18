@@ -9,7 +9,9 @@ use rayon::prelude::*;
 
 use rise_distance::cli::{DistanceMetric, SampleDistribution};
 use rise_distance::{
-    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, Sampler, StructuralDistance, TermCount, TreeNode, UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit
+    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, Sampler, StructuralDistance, TermCount,
+    TreeNode, UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree,
+    tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -78,11 +80,6 @@ Examples:
         /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
         #[arg(short = 'p', long, requires = "budget", default_value_t = SampleDistribution::Uniform)]
         distribution: SampleDistribution,
-
-        /// Use overlap sampling: lock in shared structure with the reference tree
-        /// before sampling holes
-        #[arg(long, requires = "budget")]
-        overlap: bool,
     },
 
     /// Prune the e-graph by overlap with a reference tree and output the result
@@ -136,7 +133,6 @@ fn main() {
             display,
             budget: samples,
             distribution,
-            overlap,
         } => {
             let ref_tree = parse_ref(&cli.reference);
             let max_size = max_size.unwrap_or_else(|| ref_tree.size(*with_types));
@@ -180,7 +176,6 @@ fn main() {
                         distribution: *distribution,
                         with_types: *with_types,
                         distance: *distance,
-                        overlap: *overlap,
                     },
                 );
             }
@@ -256,7 +251,6 @@ struct CountSampleConfig {
     distribution: SampleDistribution,
     with_types: bool,
     distance: DistanceMetric,
-    overlap: bool,
 }
 
 fn run_count_extraction<L: Label>(
@@ -271,7 +265,6 @@ fn run_count_extraction<L: Label>(
         distribution,
         with_types,
         distance,
-        overlap,
     } = *config;
     let ref_node_count = ref_tree.size_with_types();
     let ref_stripped_count = ref_tree.size_without_types();
@@ -280,20 +273,12 @@ fn run_count_extraction<L: Label>(
     let start = Instant::now();
     eprintln!("{distance} extraction (count-based sampling)");
 
-    if overlap {
-        eprintln!("Using overlap sampling");
-    }
-
     let histogram = term_count.of_root().expect("Root e-class has no terms");
     #[expect(clippy::cast_precision_loss)]
     let normal_center = (ref_tree.size(with_types) - min_size) as f64;
     let samples_per_size =
         distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
-    let candidates = if overlap {
-        term_count.sample_unique_root_overlap(ref_tree, min_size, max_size, &samples_per_size)
-    } else {
-        term_count.sample_unique_root(min_size, max_size, &samples_per_size)
-    };
+    let candidates = term_count.sample_unique_root(min_size, max_size, &samples_per_size);
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");
 
