@@ -1,8 +1,11 @@
 use crate::count::{Counter, TermCount};
+use crate::ids::ExprChildId;
 use crate::sampling::Sampler;
 use crate::{EClassId, Label, TreeNode};
 
 use hashbrown::{HashMap, HashSet};
+use rand::Rng;
+use rand::prelude::*;
 use rayon::prelude::*;
 
 pub struct NaiveSampler<'a, C: Counter, L: Label>(&'a TermCount<'a, C, L>);
@@ -46,7 +49,58 @@ impl<C: Counter, L: Label> Sampler<L> for NaiveSampler<'_, C, L> {
             .collect()
     }
 
-    fn sample<R: rand::Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
-        todo!()
+    /// Here we sample with no regard for how many terms of a given size are in the
+    /// `EClass` / `ENodes` children
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
+        let canonical_id = self.0.graph.canonicalize(id);
+        let eclass = self.0.graph.class(canonical_id);
+        let child_budget = size - 1 - self.0.type_overhead(eclass);
+        let cached = &self.0.suffix_cache[&canonical_id];
+
+        // Pick a node from all the children that support the remaining budget.
+        let pick_idx = cached
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, suffix)| suffix[0].contains_key(&child_budget).then_some(idx))
+            .choose(rng)
+            .unwrap();
+
+        let pick = &eclass.nodes()[pick_idx];
+        let suffix = &cached[pick_idx];
+
+        // Sequentially sample a size for each child,
+        // always making sure that the child supports that size
+        let mut remaining = child_budget;
+        let mut child_sizes = Vec::with_capacity(pick.children().len());
+
+        for (i, &c_id) in pick.children().iter().enumerate() {
+            let histogram = self.0.child_histogram(c_id);
+            let chosen_size = histogram
+                .iter()
+                .filter_map(|(&s, _)| {
+                    remaining
+                        .checked_sub(s)
+                        .and_then(|r| suffix[i + 1].contains_key(&r).then_some(r))
+                })
+                .choose(rng)
+                .unwrap();
+
+            child_sizes.push(chosen_size);
+            remaining -= chosen_size;
+        }
+
+        TreeNode::new_typed(
+            pick.label().clone(),
+            pick.children()
+                .iter()
+                .zip(child_sizes)
+                .map(|(c_id, s)| match c_id {
+                    ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.0.graph, *nat_id),
+                    ExprChildId::Data(data_id) => TreeNode::from_data(self.0.graph, *data_id),
+                    ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
+                })
+                .collect(),
+            TreeNode::from_eclass(self.0.graph, canonical_id),
+        )
     }
 }

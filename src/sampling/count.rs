@@ -53,9 +53,7 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, C, L> {
     fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
         let canonical_id = self.0.graph.canonicalize(id);
         let eclass = self.0.graph.class(canonical_id);
-        let nodes = eclass.nodes();
-        let type_overhead = self.0.type_overhead(eclass);
-        let child_budget = size - 1 - type_overhead;
+        let child_budget = size - 1 - self.0.type_overhead(eclass);
         let cached = &self.0.suffix_cache[&canonical_id];
 
         // Pick a node weighted by how many terms of the target size it produces.
@@ -70,23 +68,15 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, C, L> {
             .collect::<Vec<_>>();
         let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
 
-        let pick = &nodes[pick_idx];
-        let children = pick.children();
+        let pick = &eclass.nodes()[pick_idx];
         let suffix = &cached[pick_idx];
 
-        if children.is_empty() {
-            return TreeNode::new_typed(
-                pick.label().clone(),
-                vec![],
-                TreeNode::from_eclass(self.0.graph, canonical_id),
-            );
-        }
         // Sequentially sample a size for each child, weighting by:
         //   count(child_i, s) * suffix_count(i+1, remaining - s)
         let mut remaining = child_budget;
-        let mut child_sizes = Vec::with_capacity(children.len());
+        let mut child_sizes = Vec::with_capacity(pick.children().len());
 
-        for (i, &c_id) in children.iter().enumerate() {
+        for (i, &c_id) in pick.children().iter().enumerate() {
             let histogram = self.0.child_histogram(c_id);
             let candidates = histogram
                 .iter()
@@ -107,7 +97,7 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, C, L> {
 
         TreeNode::new_typed(
             pick.label().clone(),
-            children
+            pick.children()
                 .iter()
                 .zip(child_sizes)
                 .map(|(c_id, s)| match c_id {
