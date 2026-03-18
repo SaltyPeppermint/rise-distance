@@ -77,9 +77,12 @@ struct Cli {
     #[arg(long, default_value_t = 10)]
     top: usize,
 
-    /// Sample Strategy
     #[arg(long)]
     eval_all: bool,
+
+    /// How often to evaluate the trial
+    #[arg(long, default_value_t = 10_000)]
+    n_trials: usize,
 }
 
 type MathRankedGuide = MeasuredGuide<MathLabel>;
@@ -165,7 +168,7 @@ fn main() {
         }
         tee_println!("Verification completed in {:.2?}", timer.elapsed());
 
-        let top_k = eval_top_k(&mut ranked, goal, verify_iters);
+        let top_k = eval_top_k(&mut ranked, goal, verify_iters, cli.n_trials);
         all_top_k.push(top_k);
     }
     let json_output =
@@ -227,6 +230,7 @@ fn eval_top_k(
     results: &mut [MathRankedGuide],
     goal: &TreeNode<MathLabel>,
     max_iters: usize,
+    n_trials: usize,
 ) -> TopKResults {
     tee_println!("Testing out top-k to see if that improves things");
     let go = goal.into();
@@ -254,24 +258,24 @@ fn eval_top_k(
     tee_println!("STRUCTURAL DISTANCE:");
     top_k_results.structural = top_k(max_iters, results, &go);
 
-    tee_println!("RANDOM (10 trials averaged):");
-    top_k_results.random = random_k(max_iters, results, &go, 10, None);
+    tee_println!("RANDOM ({n_trials} trials averaged):");
+    top_k_results.random = random_k(max_iters, results, &go, n_trials, None);
 
-    tee_println!("RANDOM + best ZS helper (10 trials):");
+    tee_println!("RANDOM + best ZS helper ({n_trials} trials):");
     top_k_results.random_with_best_zs = random_k(
         max_iters,
         results,
         &go,
-        10,
+        n_trials,
         Some(("best_zs", &best_zs_guide)),
     );
 
-    tee_println!("RANDOM + best structural helper (10 trials):");
+    tee_println!("RANDOM + best structural helper ({n_trials} trials):");
     top_k_results.random_with_best_structural = random_k(
         max_iters,
         results,
         &go,
-        10,
+        n_trials,
         Some(("best_structural", &best_structural_guide)),
     );
 
