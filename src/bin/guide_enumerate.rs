@@ -85,8 +85,6 @@ struct Cli {
     n_trials: usize,
 }
 
-type MathRankedGuide = MeasuredGuide<MathLabel>;
-
 fn main() {
     let cli = Cli::parse();
     let prefix = format!("run-{}-{}-enumerate", cli.guide_iters, cli.goal_iters);
@@ -178,7 +176,7 @@ fn main() {
 
 fn eval_all(
     verify_iters: usize,
-    ranked: &[MathRankedGuide],
+    ranked: &[MeasuredGuide<MathLabel>],
     goal: &TreeNode<MathLabel>,
     run_folder: &Path,
 ) {
@@ -227,7 +225,7 @@ struct TopKResults {
 }
 
 fn eval_top_k(
-    results: &mut [MathRankedGuide],
+    results: &mut [MeasuredGuide<MathLabel>],
     goal: &TreeNode<MathLabel>,
     max_iters: usize,
     n_trials: usize,
@@ -282,7 +280,11 @@ fn eval_top_k(
     top_k_results
 }
 
-fn top_k(max_iters: usize, ranked: &[MathRankedGuide], go: &RecExpr<Math>) -> Vec<TopKEntry> {
+fn top_k(
+    max_iters: usize,
+    ranked: &[MeasuredGuide<MathLabel>],
+    go: &RecExpr<Math>,
+) -> Vec<TopKEntry> {
     let mut entries = Vec::new();
     for k in N_RANDOM {
         if k > ranked.len() {
@@ -328,7 +330,7 @@ fn top_k(max_iters: usize, ranked: &[MathRankedGuide], go: &RecExpr<Math>) -> Ve
 
 fn random_k(
     max_iters: usize,
-    successful: &[MathRankedGuide],
+    successful: &[MeasuredGuide<MathLabel>],
     go: &RecExpr<Math>,
     n_trials: usize,
     helper: Option<(&str, &TreeNode<MathLabel>)>,
