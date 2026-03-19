@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    EvalResult, MeasuredGuide, N_RANDOM, RULES, RandomEntry, RandomTrial, SampleDistribution,
+    EvalResult, MeasuredGuide, N_RANDOM, RULES, RandomEntry, RandomTrial, SizeDistribution,
     dump_to_csv, enumerate_frontier_terms, get_run_folder, init_log, measure_guides, min_med_max,
     sample_frontier_terms, trial_avg,
 };
@@ -62,8 +62,8 @@ struct Cli {
 
     /// How to distribute the sample budget across sizes for goals.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
-    #[arg(long, default_value_t = SampleDistribution::Uniform)]
-    distribution: SampleDistribution,
+    #[arg(long, default_value_t = SizeDistribution::Uniform)]
+    distribution: SizeDistribution,
 
     /// Output folder (generated if omitted)
     #[arg(short, long)]

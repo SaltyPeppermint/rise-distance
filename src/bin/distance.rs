@@ -7,12 +7,12 @@ use indicatif::ParallelProgressIterator;
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
-use rise_distance::cli::{DistanceMetric, SampleDistribution};
+use rise_distance::cli::{DistanceMetric, SizeDistribution};
 use rise_distance::count::TermCount;
 use rise_distance::sampling::Sampler;
 use rise_distance::sampling::count::CountSampler;
 use rise_distance::{
-    EClassId, Graph, Expr, Label, NumericId, RiseLabel, StructuralDistance, TreeNode, UnitCost,
+    EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, TreeNode, UnitCost,
     ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
 };
 
@@ -80,8 +80,8 @@ Examples:
 
         /// How to distribute the sample budget across sizes.
         /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
-        #[arg(short = 'p', long, requires = "budget", default_value_t = SampleDistribution::Uniform)]
-        distribution: SampleDistribution,
+        #[arg(short = 'p', long, requires = "budget", default_value_t = SizeDistribution::Uniform)]
+        distribution: SizeDistribution,
     },
 
     /// Prune the e-graph by overlap with a reference tree and output the result
@@ -250,7 +250,7 @@ struct CountSampleConfig {
     min_size: usize,
     max_size: usize,
     total_samples: usize,
-    distribution: SampleDistribution,
+    distribution: SizeDistribution,
     with_types: bool,
     distance: DistanceMetric,
 }

@@ -78,7 +78,7 @@ impl Display for DistanceMetric {
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
-pub enum SampleDistribution {
+pub enum SizeDistribution {
     /// Uniform accross the term sizes
     Uniform,
     /// Proportional to the number of terms of that size with a minimum number per size
@@ -88,7 +88,7 @@ pub enum SampleDistribution {
     Normal(f64),
 }
 
-impl Display for SampleDistribution {
+impl Display for SizeDistribution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Uniform => write!(f, "uniform"),
@@ -98,7 +98,7 @@ impl Display for SampleDistribution {
     }
 }
 
-impl FromStr for SampleDistribution {
+impl FromStr for SizeDistribution {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -131,7 +131,7 @@ impl FromStr for SampleDistribution {
     }
 }
 
-impl SampleDistribution {
+impl SizeDistribution {
     /// Build a `samples_per_size` map distributing `total_samples` across `[min_size, max_size]`.
     ///
     /// `histogram` maps size -> term count for the root e-class.
@@ -373,7 +373,7 @@ pub fn sample_frontier_terms<L, N, LL>(
     prev_raw_egg: &egg::EGraph<L, N>,
     count: usize,
     max_size: usize,
-    distribution: SampleDistribution,
+    distribution: SizeDistribution,
 ) -> Vec<TreeNode<LL>>
 where
     L: Language,

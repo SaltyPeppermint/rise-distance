@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    EvalResult, N_RANDOM, RULES, RandomEntry, RandomTrial, SampleDistribution, dump_to_csv,
+    EvalResult, N_RANDOM, RULES, RandomEntry, RandomTrial, SizeDistribution, dump_to_csv,
     get_run_folder, init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
@@ -64,8 +64,8 @@ struct Cli {
 
     /// How to distribute the sample budget across sizes.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
-    #[arg(long, default_value_t = SampleDistribution::Uniform)]
-    distribution: SampleDistribution,
+    #[arg(long, default_value_t = SizeDistribution::Uniform)]
+    size_distribution: SizeDistribution,
 
     /// Output folder (generated if omitted)
     #[arg(short, long)]
@@ -102,7 +102,7 @@ fn main() {
     tee_println!("Seed: {seed}");
     tee_println!("Goal Iterations: {}", cli.goal_iters);
     tee_println!("Guide Iterations: {}", cli.guide_iters);
-    tee_println!("Distribution: {}", cli.distribution);
+    tee_println!("Distribution: {}", cli.size_distribution);
 
     tee_println!(
         "Running equality saturation for {} iterations...",
@@ -137,7 +137,7 @@ fn main() {
         result.prev_goal(),
         cli.goals,
         cli.max_size,
-        cli.distribution,
+        cli.size_distribution,
     );
     assert!(
         !goals.is_empty(),
@@ -159,7 +159,7 @@ fn main() {
             result.prev_guide(),
             cli.guides,
             cli.max_size,
-            cli.distribution,
+            cli.size_distribution,
         );
 
         let entries = take_n_trials(&cli, cli.guides, &goal_recexpr, &sampled_guides);
@@ -187,7 +187,9 @@ fn main() {
             })
             .collect::<Vec<_>>();
         print_summary(&results, goal, verify_iters);
-        dump_to_csv(&run_folder, goal, &results);
+        if cli.eval_all {
+            dump_to_csv(&run_folder, goal, &results);
+        }
     }
 
     let json_output =
