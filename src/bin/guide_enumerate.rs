@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    EvalResult, MeasuredGuide, N_RANDOM, RULES, RandomEntry, SizeDistribution, dump_to_cbor,
+    EvalResult, MeasuredGuide, N_RANDOM, RULES, RandomEntry, SizeDistribution, dump_to_csv,
     enumerate_frontier_terms, get_run_folder, init_log, measure_guides, min_med_max,
     sample_frontier_terms, trial_avg,
 };
@@ -214,7 +214,7 @@ fn eval_all(
         })
         .collect::<Vec<_>>();
     print_summary(&results, goal, verify_iters);
-    dump_to_cbor(run_folder, goal, &results);
+    dump_to_csv(run_folder, goal, &results);
 }
 
 #[derive(Serialize)]

@@ -249,11 +249,7 @@ pub struct EvalResult<'a, L: Label> {
 /// # Panics
 ///
 /// Panics if it cant create/open the file
-pub fn dump_to_cbor<L: Label>(
-    run_folder: &Path,
-    goal: &TreeNode<L>,
-    results: &[EvalResult<'_, L>],
-) {
+pub fn dump_to_csv<L: Label>(run_folder: &Path, goal: &TreeNode<L>, results: &[EvalResult<'_, L>]) {
     let csv_path = run_folder.join("out.cbor");
     let file_exists = csv_path.exists();
     let csv_output = OpenOptions::new()
