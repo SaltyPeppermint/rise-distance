@@ -10,7 +10,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use symbolic_expressions::{IntoSexp, Sexp, SexpError};
 
-use super::graph::EGraph;
+use super::graph::Graph;
 use super::ids::{DataChildId, DataId, EClassId, FunId, NatId, TypeChildId};
 use super::nodes::Label;
 
@@ -83,12 +83,12 @@ impl<L: Label> TreeNode<L> {
 
     /// Build a type tree from an e-class's type annotation.
     #[must_use]
-    pub fn from_eclass(graph: &EGraph<L>, id: EClassId) -> Option<Self> {
+    pub fn from_eclass(graph: &Graph<L>, id: EClassId) -> Option<Self> {
         let ty_id = graph.class(id).ty()?;
         Some(Self::from_type(graph, *ty_id))
     }
 
-    fn from_type(graph: &EGraph<L>, id: TypeChildId) -> Self {
+    fn from_type(graph: &Graph<L>, id: TypeChildId) -> Self {
         match id {
             TypeChildId::Nat(nat_id) => Self::from_nat(graph, nat_id),
             TypeChildId::Type(fun_ty_id) => Self::from_fun(graph, fun_ty_id),
@@ -96,7 +96,7 @@ impl<L: Label> TreeNode<L> {
         }
     }
 
-    fn from_fun(graph: &EGraph<L>, id: FunId) -> Self {
+    fn from_fun(graph: &Graph<L>, id: FunId) -> Self {
         let node = graph.fun_ty(id).label().to_owned();
         let children = graph
             .fun_ty(id)
@@ -108,7 +108,7 @@ impl<L: Label> TreeNode<L> {
     }
 
     #[must_use]
-    pub fn from_data(graph: &EGraph<L>, id: DataId) -> Self {
+    pub fn from_data(graph: &Graph<L>, id: DataId) -> Self {
         let node = graph.data_ty(id).label().to_owned();
         let children = graph
             .data_ty(id)
@@ -123,7 +123,7 @@ impl<L: Label> TreeNode<L> {
     }
 
     #[must_use]
-    pub fn from_nat(graph: &EGraph<L>, id: NatId) -> Self {
+    pub fn from_nat(graph: &Graph<L>, id: NatId) -> Self {
         let node = graph.nat(id).label().to_owned();
         let children = graph
             .nat(id)

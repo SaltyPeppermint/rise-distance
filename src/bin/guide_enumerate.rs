@@ -18,7 +18,7 @@ use rise_distance::cli::{
     sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
-use rise_distance::egg::{VerifyResult, run_guide_goal, verify_reachability};
+use rise_distance::egg::{VerifyResult, convert, run_guide_goal, verify_reachability};
 use rise_distance::tee_println;
 
 #[derive(Parser)]
@@ -116,16 +116,23 @@ fn main() {
     );
 
     tee_println!("Eqsat completed in {:.2?}", start.elapsed());
-    tee_println!("Guide egraph had {} nodes", result.guide_eg_size);
-    tee_println!("Final egraph had {} nodes", result.goal_eg_size);
+    tee_println!(
+        "Guide egraph had {} nodes",
+        result.guide().total_number_of_nodes()
+    );
+    tee_println!(
+        "Final egraph had {} nodes",
+        result.goal().total_number_of_nodes()
+    );
 
     tee_println!(
         "\nSampling goals from iteration-{} frontier...",
         cli.goal_iters
     );
+    let root = result.root();
     let goals = sample_frontier_terms(
-        &result.goal,
-        &result.prev_goal,
+        &convert(result.goal(), root),
+        result.prev_goal(),
         cli.goals,
         cli.max_size,
         cli.distribution,
@@ -142,7 +149,11 @@ fn main() {
         cli.guide_iters
     );
 
-    let guides = enumerate_frontier_terms(&result.guide, &result.prev_guide, cli.max_size);
+    let guides = enumerate_frontier_terms(
+        &convert(result.guide(), root),
+        result.prev_guide(),
+        cli.max_size,
+    );
     assert!(!guides.is_empty(), "No frontier terms found");
     tee_println!("Found {} guide(s)", guides.len());
 

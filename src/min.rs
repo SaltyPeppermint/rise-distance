@@ -166,8 +166,8 @@ mod tests {
     use rayon::iter::ParallelBridge;
 
     use super::*;
-    use crate::EGraph;
-    use crate::graph::EClass;
+    use crate::Graph;
+    use crate::graph::Class;
     use crate::ids::EClassId;
     use crate::nodes::ENode;
     use crate::zs::UnitCost;
@@ -176,14 +176,14 @@ mod tests {
 
     #[test]
     fn min_distance_exact_match() {
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("a".to_owned(), vec![eid(1), eid(2)])],
                     dummy_ty(),
                 ),
-                EClass::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-                EClass::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -228,8 +228,8 @@ mod tests {
 
     #[test]
     fn min_distance_chooses_best() {
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned()), ENode::leaf("x".to_owned())],
                 dummy_ty(),
             )]),
@@ -262,17 +262,17 @@ mod tests {
 
     #[test]
     fn min_distance_with_structure_choice() {
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![
                         ENode::new("a".to_owned(), vec![eid(1)]),
                         ENode::new("a".to_owned(), vec![eid(1), eid(2)]),
                     ],
                     dummy_ty(),
                 ),
-                EClass::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-                EClass::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -314,14 +314,14 @@ mod tests {
 
     #[test]
     fn min_distance_extract_fast_exact_match() {
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("a".to_owned(), vec![eid(1), eid(2)])],
                     dummy_ty(),
                 ),
-                EClass::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-                EClass::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -366,8 +366,8 @@ mod tests {
 
     #[test]
     fn min_distance_extract_fast_chooses_best() {
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned()), ENode::leaf("x".to_owned())],
                 dummy_ty(),
             )]),
@@ -400,8 +400,8 @@ mod tests {
 
     #[test]
     fn min_distance_extract_filtered_prunes_bad_trees() {
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned()), ENode::leaf("x".to_owned())],
                 dummy_ty(),
             )]),

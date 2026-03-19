@@ -12,7 +12,7 @@ use rise_distance::count::TermCount;
 use rise_distance::sampling::Sampler;
 use rise_distance::sampling::count::CountSampler;
 use rise_distance::{
-    EClassId, EGraph, Expr, Label, NumericId, RiseLabel, StructuralDistance, TreeNode, UnitCost,
+    EClassId, Graph, Expr, Label, NumericId, RiseLabel, StructuralDistance, TreeNode, UnitCost,
     ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
 };
 
@@ -123,7 +123,7 @@ fn main() {
     let cli = Cli::parse();
 
     std::eprintln!("Loading e-graph from: {}", cli.egraph);
-    let graph = EGraph::<RiseLabel>::parse_from_file(Path::new(&cli.egraph));
+    let graph = Graph::<RiseLabel>::parse_from_file(Path::new(&cli.egraph));
     let root = graph.root();
     std::eprintln!("Root e-class: {root:?}");
 

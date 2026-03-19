@@ -23,12 +23,12 @@ use super::tree::TreeNode;
 /// Must have at least one child
 #[derive(Debug, Clone, Hash, Serialize, Deserialize)]
 #[serde(bound(deserialize = "L: Label"))]
-pub struct EClass<L: Label> {
+pub struct Class<L: Label> {
     nodes: Vec<ENode<L>>,
     ty: Option<TypeChildId>,
 }
 
-impl<L: Label> EClass<L> {
+impl<L: Label> Class<L> {
     #[must_use]
     pub fn new(nodes: Vec<ENode<L>>, ty: Option<TypeChildId>) -> Self {
         Self { nodes, ty }
@@ -52,9 +52,9 @@ impl<L: Label> EClass<L> {
 /// E-graph with type annotations for tree extraction and edit distance computation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(deserialize = "L: Label"))]
-pub struct EGraph<L: Label> {
+pub struct Graph<L: Label> {
     #[serde(with = "numeric_key_map")]
-    classes: HashMap<EClassId, EClass<L>>,
+    classes: HashMap<EClassId, Class<L>>,
     #[serde(skip)]
     root: Option<EClassId>,
     #[serde(rename = "unionFind", with = "eclass_id_vec")]
@@ -67,10 +67,10 @@ pub struct EGraph<L: Label> {
     data_ty_nodes: HashMap<DataId, DataTyNode<L>>,
 }
 
-impl<L: Label> EGraph<L> {
+impl<L: Label> Graph<L> {
     #[must_use]
     pub fn new(
-        classes: HashMap<EClassId, EClass<L>>,
+        classes: HashMap<EClassId, Class<L>>,
         root: EClassId,
         union_find: Vec<EClassId>,
         fun_ty_nodes: HashMap<FunId, FunTyNode<L>>,
@@ -123,7 +123,7 @@ impl<L: Label> EGraph<L> {
     /// # Panics
     /// Panics if the file cannot be read, parsed, or if the filename doesn't match the expected format.
     #[must_use]
-    pub fn parse_from_file(file: &Path) -> EGraph<L> {
+    pub fn parse_from_file(file: &Path) -> Graph<L> {
         let mut graph =
             serde_json::from_reader::<_, Self>(BufReader::new(File::open(file).unwrap())).unwrap();
         // Pattern: ..._root_123.json
@@ -148,7 +148,7 @@ impl<L: Label> EGraph<L> {
 
     #[must_use]
     /// Returns the corresponding `EClass`. Can take a non-canonical Id
-    pub fn class(&self, id: EClassId) -> &EClass<L> {
+    pub fn class(&self, id: EClassId) -> &Class<L> {
         let canonical = self.canonicalize(id);
         &self.classes[&canonical]
     }
@@ -264,9 +264,9 @@ mod tests {
     use super::*;
 
     /// Helper to build a simple graph with one class containing one node
-    fn single_node_graph(label: &str) -> EGraph<String> {
-        EGraph::new(
-            cfv(vec![EClass::new(
+    fn single_node_graph(label: &str) -> Graph<String> {
+        Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf(label.to_owned())],
                 dummy_ty(),
             )]),
@@ -295,8 +295,8 @@ mod tests {
     #[test]
     fn choice_iter_with_or_choice() {
         // Graph with one class containing two node choices
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
                 dummy_ty(),
             )]),
@@ -324,14 +324,14 @@ mod tests {
         // Class 0: root, has node "a" pointing to classes 1 and 2
         // Class 1: leaf "b"
         // Class 2: leaf "c"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("a".to_owned(), vec![eid(1), eid(2)])],
                     dummy_ty(),
                 ),
-                EClass::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-                EClass::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -357,8 +357,8 @@ mod tests {
     #[test]
     fn choice_iter_with_cycle_no_revisits() {
         // Graph with a cycle: class 0 -> node -> class 0
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![
                     ENode::new("a".to_owned(), vec![eid(0)]), // points back to self
                     ENode::leaf("leaf".to_owned()),
@@ -384,8 +384,8 @@ mod tests {
     #[test]
     fn choice_iter_with_cycle_one_revisit() {
         // Graph with a cycle: class 0 -> node -> class 0
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![
                     ENode::new("rec".to_owned(), vec![eid(0)]), // points back to self
                     ENode::leaf("leaf".to_owned()),
@@ -430,8 +430,8 @@ mod tests {
     #[test]
     fn tree_from_choices_or_choice_first() {
         // Graph with two OR choices
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
                 dummy_ty(),
             )]),
@@ -451,8 +451,8 @@ mod tests {
     #[test]
     fn tree_from_choices_or_choice_second() {
         // Graph with two OR choices
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
                 dummy_ty(),
             )]),
@@ -472,14 +472,14 @@ mod tests {
     #[test]
     fn tree_from_choices_with_and_children() {
         // Graph: root -> node with two child classes
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("a".to_owned(), vec![eid(1), eid(2)])],
                     dummy_ty(),
                 ),
-                EClass::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-                EClass::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -507,16 +507,16 @@ mod tests {
         //   Node "x" -> points to Class 1
         //   Node "y" -> points to Class 1
         // Class 1: two leaf options "a" or "b"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![
                         ENode::new("x".to_owned(), vec![eid(1)]),
                         ENode::new("y".to_owned(), vec![eid(1)]),
                     ],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
                     dummy_ty(),
                 ),
@@ -559,17 +559,17 @@ mod tests {
         // Class 0: root -> "p" with children [Class 1, Class 2]
         // Class 1: "a" or "b"
         // Class 2: "x" or "y"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("p".to_owned(), vec![eid(1), eid(2)])],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![ENode::leaf("x".to_owned()), ENode::leaf("y".to_owned())],
                     dummy_ty(),
                 ),
@@ -616,17 +616,17 @@ mod tests {
         // Class 0: root -> "a" with child [Class 1]
         // Class 1: "b1" or "b2", both with child [Class 2]
         // Class 2: "c1" or "c2"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(vec![ENode::new("a".to_owned(), vec![eid(1)])], dummy_ty()),
-                EClass::new(
+                Class::new(vec![ENode::new("a".to_owned(), vec![eid(1)])], dummy_ty()),
+                Class::new(
                     vec![
                         ENode::new("b1".to_owned(), vec![eid(2)]),
                         ENode::new("b2".to_owned(), vec![eid(2)]),
                     ],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![ENode::leaf("c1".to_owned()), ENode::leaf("c2".to_owned())],
                     dummy_ty(),
                 ),
@@ -670,15 +670,15 @@ mod tests {
     #[test]
     fn tree_from_choices_three_and_children() {
         // Test with three AND children
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(2), eid(3)])],
                     dummy_ty(),
                 ),
-                EClass::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
-                EClass::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-                EClass::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -701,16 +701,16 @@ mod tests {
     #[test]
     fn tree_from_choices_matches_choice_iter() {
         // Verify that tree_from_choices produces correct trees for each choice vector
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![
                         ENode::new("x".to_owned(), vec![eid(1)]),
                         ENode::leaf("y".to_owned()),
                     ],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
                     dummy_ty(),
                 ),
@@ -743,7 +743,7 @@ mod tests {
 
     #[test]
     fn deserialize_json_file() {
-        let graph = EGraph::<String>::parse_from_file(Path::new(
+        let graph = Graph::<String>::parse_from_file(Path::new(
             "data/egraph_jsons/ser_egraph_vectorization_SRL_step_2_iteration_0_root_150.json",
         ));
 

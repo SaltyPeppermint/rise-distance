@@ -227,7 +227,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{EClass, EGraph};
+    use crate::graph::{Class, Graph};
     use crate::nodes::ENode;
     use crate::test_utils::*;
     use hashbrown::HashMap;
@@ -235,8 +235,8 @@ mod tests {
 
     #[test]
     fn enumerate_single_leaf() {
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned())],
                 dummy_ty(),
             )]),
@@ -255,8 +255,8 @@ mod tests {
 
     #[test]
     fn enumerate_two_leaves() {
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
                 dummy_ty(),
             )]),
@@ -277,10 +277,10 @@ mod tests {
 
     #[test]
     fn enumerate_parent_child() {
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-                EClass::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
+                Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -301,17 +301,17 @@ mod tests {
         // Class 0: f(class1, class2)
         // Class 1: "a1", "a2"
         // Class 2: "b1", "b2", "b3"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(2)])],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![ENode::leaf("a1".to_owned()), ENode::leaf("a2".to_owned())],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![
                         ENode::leaf("b1".to_owned()),
                         ENode::leaf("b2".to_owned()),
@@ -335,10 +335,10 @@ mod tests {
 
     #[test]
     fn enumerate_respects_max_size() {
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-                EClass::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
+                Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -358,13 +358,13 @@ mod tests {
         // Class 0: f(class1, class1) -> same child twice
         // Class 1: "a", "b", g(class2)
         // Class 2: "c"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(1)])],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![
                         ENode::leaf("a".to_owned()),
                         ENode::leaf("b".to_owned()),
@@ -372,7 +372,7 @@ mod tests {
                     ],
                     dummy_ty(),
                 ),
-                EClass::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),

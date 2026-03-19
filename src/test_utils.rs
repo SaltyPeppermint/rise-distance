@@ -1,6 +1,6 @@
 use hashbrown::HashMap;
 
-use crate::graph::EClass;
+use crate::graph::Class;
 use crate::ids::{EClassId, ExprChildId, NatId, TypeChildId};
 use crate::nodes::Label;
 use crate::nodes::NatNode;
@@ -21,7 +21,7 @@ pub fn dummy_nat_nodes() -> HashMap<NatId, NatNode<String>> {
     nats
 }
 
-pub fn cfv(classes: Vec<EClass<String>>) -> HashMap<EClassId, EClass<String>> {
+pub fn cfv(classes: Vec<Class<String>>) -> HashMap<EClassId, Class<String>> {
     classes
         .into_iter()
         .enumerate()

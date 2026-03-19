@@ -23,7 +23,7 @@ mod zs;
 pub use choices::ChoiceIter;
 pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
 pub use euler_str::tree_distance_euler_bound;
-pub use graph::{EClass, EGraph};
+pub use graph::{Class, Graph};
 pub use ids::{EClassId, NumericId};
 pub use min::{ZSStats, find_min_struct, find_min_zs};
 pub use nodes::Label;

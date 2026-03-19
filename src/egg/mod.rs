@@ -2,34 +2,53 @@ pub mod math;
 
 use std::sync::{Arc, Mutex};
 
-use egg::{Analysis, Id, Language, RecExpr, Rewrite, Runner, SimpleScheduler, StopReason};
+use egg::{Analysis, EGraph, Id, Language, RecExpr, Rewrite, Runner, SimpleScheduler, StopReason};
 use hashbrown::HashMap;
 use serde::Serialize;
 
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::ENode;
-use crate::{EClass, EGraph, Label};
+use crate::{Class, Graph, Label};
 
 pub use math::{Math, MathLabel};
 
 /// Result of [`run_guide_goal`]: egraph snapshots at guide and goal iterations,
 /// plus the total node count of the final egraph.
-pub struct GuideGoalResult<L: Language, N: Analysis<L>, LL: Label> {
-    /// Raw egg egraph at `n_guide - 1` (rebuilt), for frontier membership checks.
-    pub prev_guide: egg::EGraph<L, N>,
-    /// Converted egraph at iteration `n_guide`.
-    pub guide: EGraph<LL>,
-    /// Raw egg egraph at `n_goal - 1` (rebuilt), for frontier membership checks.
-    pub prev_goal: egg::EGraph<L, N>,
-    /// Converted egraph at iteration `n_goal`.
-    pub goal: EGraph<LL>,
-    /// Number of nodes in the guide egraph.
-    pub guide_eg_size: usize,
-    /// Number of nodes in the final egraph.
-    pub goal_eg_size: usize,
+pub struct GuideGoalResult<L: Language, N: Analysis<L>> {
+    /// Egraph at `n_guide - 1` (rebuilt), for frontier membership checks.
+    graphs: Vec<EGraph<L, N>>,
+    /// Root (valid for all egraphs)
+    root: Id,
 }
 
-pub fn convert<L, N, LL>(egg_graph: &egg::EGraph<L, N>, root: Id) -> EGraph<LL>
+impl<L: Language, N: Analysis<L>> GuideGoalResult<L, N> {
+    #[must_use]
+    pub fn root(&self) -> Id {
+        self.root
+    }
+
+    #[must_use]
+    pub fn guide(&self) -> &EGraph<L, N> {
+        &self.graphs[self.graphs.len() / 2 + 1]
+    }
+
+    #[must_use]
+    pub fn prev_guide(&self) -> &EGraph<L, N> {
+        &self.graphs[self.graphs.len() / 2]
+    }
+
+    #[must_use]
+    pub fn goal(&self) -> &EGraph<L, N> {
+        &self.graphs[self.graphs.len() - 1]
+    }
+
+    #[must_use]
+    pub fn prev_goal(&self) -> &EGraph<L, N> {
+        &self.graphs[self.graphs.len() - 2]
+    }
+}
+
+pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>
 where
     L: Language,
     N: Analysis<L>,
@@ -55,7 +74,7 @@ where
                     ENode::new(math_node.into(), children)
                 })
                 .collect();
-            (eclass_id, EClass::new(nodes, None))
+            (eclass_id, Class::new(nodes, None))
         })
         .collect::<HashMap<_, _>>();
 
@@ -78,7 +97,7 @@ where
         .map(|i| EClassId::new(usize::from(egg_graph.find(Id::from(i)))))
         .collect::<Vec<_>>();
 
-    EGraph::new(
+    Graph::new(
         classes,
         EClassId::new(root.into()),
         union_find,
@@ -101,23 +120,22 @@ where
 ///
 /// Panics if `n_guide == 0`, `n_goal <= n_guide`, or if the runner
 /// saturates before reaching `n_goal` iterations.
-pub fn run_guide_goal<'a, L, N, LL, R>(
+pub fn run_guide_goal<'a, L, N, R>(
     start: &RecExpr<L>,
     rules: R,
     n_guide: usize,
     n_goal: usize,
-) -> GuideGoalResult<L, N, LL>
+) -> GuideGoalResult<L, N>
 where
     L: Language + 'static,
     N: Analysis<L> + Default + Clone + 'static,
     N::Data: Clone,
-    LL: Label + for<'b> From<&'b L>,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
     assert!(n_guide > 0);
     assert!(n_goal > n_guide);
 
-    let egs = Arc::new(Mutex::new([const { None }; 3]));
+    let egs = Arc::new(Mutex::new(Vec::new()));
     let eg_ref = egs.clone();
 
     let runner = Runner::default()
@@ -125,17 +143,8 @@ where
         .with_iter_limit(n_goal)
         .with_expr(start)
         .with_hook(move |runner| {
-            let i = runner.iterations.len();
             let mut r = eg_ref.lock().unwrap();
-            if i == n_guide - 1 {
-                r[0] = Some(runner.egraph.clone());
-            }
-            if i == n_guide {
-                r[1] = Some(runner.egraph.clone());
-            }
-            if i == n_goal - 1 {
-                r[2] = Some(runner.egraph.clone());
-            }
+            r.push(runner.egraph.clone());
             Ok(())
         })
         .run(rules);
@@ -143,7 +152,7 @@ where
     assert!(runner.iterations.len() >= 3);
 
     let root = runner.roots[0];
-    let mut eg_goal = runner.egraph.clone();
+    let eg_goal = runner.egraph;
     assert!(
         matches!(
             &runner.stop_reason.clone().unwrap(),
@@ -152,35 +161,28 @@ where
         "Failed cause stopped with {:?}",
         runner.stop_reason.clone()
     );
-    eg_goal.rebuild();
 
     // The runner owns the hook closure which holds the second Arc clone of `ring`.
     // Dropping the runner releases that clone, leaving ours as the sole owner so
     // that `try_unwrap` succeeds.
-    drop(runner);
 
-    let egs = Arc::try_unwrap(egs)
+    let mut graphs = Arc::try_unwrap(egs)
         .expect("runner dropped, no other Arc holders")
         .into_inner()
         .unwrap();
 
-    let [eg_guide_min_1, eg_guide, eg_goal_min_1] = egs;
+    graphs.push(eg_goal);
 
-    let mut eg_guide_min_1 = eg_guide_min_1.unwrap();
-    eg_guide_min_1.rebuild();
-    let mut eg_goal_min_1 = eg_goal_min_1.unwrap();
-    eg_goal_min_1.rebuild();
-
-    let goal_eg_size = eg_goal.nodes().len();
-    let guide_eg_size = eg_guide.as_ref().unwrap().nodes().len();
-    GuideGoalResult {
-        prev_guide: eg_guide_min_1,
-        guide: convert(&eg_guide.unwrap(), root),
-        prev_goal: eg_goal_min_1,
-        goal: convert(&eg_goal, root),
-        guide_eg_size,
-        goal_eg_size,
+    for g in &mut graphs {
+        g.rebuild();
     }
+
+    assert!(
+        graphs.len() >= 3,
+        "Needs more than 3 iterations to be meaningful"
+    );
+
+    GuideGoalResult { graphs, root }
 }
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]

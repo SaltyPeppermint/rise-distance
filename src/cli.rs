@@ -21,7 +21,7 @@ use crate::egg::{Math, VerifyResult};
 use crate::sampling::Sampler;
 use crate::sampling::count::CountSampler;
 use crate::{
-    EGraph, Label, StructuralDistance, TreeNode, UnitCost, structural_diff, tree_distance_unit,
+    Graph, Label, StructuralDistance, TreeNode, UnitCost, structural_diff, tree_distance_unit,
 };
 
 pub const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
@@ -369,7 +369,7 @@ pub fn measure_guides<L: Label>(
 
 /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
 pub fn sample_frontier_terms<L, N, LL>(
-    egraph: &EGraph<LL>,
+    egraph: &Graph<LL>,
     prev_raw_egg: &egg::EGraph<L, N>,
     count: usize,
     max_size: usize,
@@ -427,7 +427,7 @@ where
 /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
 #[expect(clippy::missing_panics_doc)]
 pub fn enumerate_frontier_terms<L, N, LL>(
-    egraph: &EGraph<LL>,
+    egraph: &Graph<LL>,
     prev_raw_egg: &egg::EGraph<L, N>,
     max_size: usize,
 ) -> Vec<TreeNode<LL>>

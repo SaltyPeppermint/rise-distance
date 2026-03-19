@@ -4,7 +4,7 @@
 
 use hashbrown::HashMap;
 
-use super::graph::EGraph;
+use super::graph::Graph;
 use super::ids::{EClassId, ExprChildId};
 use super::nodes::Label;
 
@@ -14,12 +14,12 @@ use super::nodes::Label;
 pub struct ChoiceIter<'a, L: Label> {
     choices: Vec<usize>,
     path: PathTracker,
-    graph: &'a EGraph<L>,
+    graph: &'a Graph<L>,
 }
 
 impl<'a, L: Label> ChoiceIter<'a, L> {
     #[must_use]
-    pub fn new(graph: &'a EGraph<L>, max_revisits: usize) -> Self {
+    pub fn new(graph: &'a Graph<L>, max_revisits: usize) -> Self {
         Self {
             choices: Vec::new(),
             path: PathTracker::new(max_revisits),
@@ -141,12 +141,12 @@ impl<L: Label> Iterator for ChoiceIter<'_, L> {
 
 /// Count the number of trees in an e-graph with the given revisit limit.
 #[must_use]
-pub fn count_trees<L: Label>(graph: &EGraph<L>, max_revisits: usize) -> usize {
+pub fn count_trees<L: Label>(graph: &Graph<L>, max_revisits: usize) -> usize {
     let mut path = PathTracker::new(max_revisits);
     count_trees_rec(graph, graph.root(), &mut path)
 }
 
-fn count_trees_rec<L: Label>(graph: &EGraph<L>, id: EClassId, path: &mut PathTracker) -> usize {
+fn count_trees_rec<L: Label>(graph: &Graph<L>, id: EClassId, path: &mut PathTracker) -> usize {
     // Cycle detection
     if !path.can_visit(id) {
         return 0;
@@ -219,21 +219,21 @@ impl PathTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::EClass;
+    use crate::graph::Class;
     use crate::nodes::ENode;
     use crate::test_utils::*;
 
     #[test]
     fn choice_iter_enumerates_all_trees_diamond_cycle() {
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("a".to_owned(), vec![eid(1), eid(2)])],
                     dummy_ty(),
                 ),
-                EClass::new(vec![ENode::new("b".to_owned(), vec![eid(3)])], dummy_ty()),
-                EClass::new(vec![ENode::new("c".to_owned(), vec![eid(3)])], dummy_ty()),
-                EClass::new(
+                Class::new(vec![ENode::new("b".to_owned(), vec![eid(3)])], dummy_ty()),
+                Class::new(vec![ENode::new("c".to_owned(), vec![eid(3)])], dummy_ty()),
+                Class::new(
                     vec![
                         ENode::new("rec".to_owned(), vec![eid(3)]),
                         ENode::leaf("d".to_owned()),

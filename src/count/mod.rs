@@ -10,7 +10,7 @@ use num_traits::{NumAssignRef, NumRef};
 use rand::distributions::uniform::SampleUniform;
 use rayon::prelude::*;
 
-use crate::graph::{EClass, EGraph};
+use crate::graph::{Class, Graph};
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;
 use crate::utils::UniqueQueue;
@@ -67,7 +67,7 @@ pub struct TermCount<'a, C: Counter, L: Label> {
     /// `suffix_cache[eclass][node_idx][i]` = convolution of children `i..n`,
     /// mapping budget -> count. Computed once at max budget (`max_size - 1`).
     pub(crate) suffix_cache: HashMap<EClassId, Vec<Vec<HashMap<usize, C>>>>,
-    pub(crate) graph: &'a EGraph<L>,
+    pub(crate) graph: &'a Graph<L>,
     pub(crate) type_sizes: TypeSizeCache,
     pub(crate) with_types: bool,
 }
@@ -80,7 +80,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// * `with_types` - If true, include type annotations in size calculations
     #[must_use]
     #[expect(clippy::missing_panics_doc)]
-    pub fn new(max_size: usize, with_types: bool, graph: &EGraph<L>) -> TermCount<'_, C, L> {
+    pub fn new(max_size: usize, with_types: bool, graph: &Graph<L>) -> TermCount<'_, C, L> {
         // Build parent map and type size cache
         let parents = Self::build_parent_map(graph);
         let type_cache = TypeSizeCache::build(graph);
@@ -182,7 +182,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// Compute term counts for a single e-node, reading from a plain `HashMap`.
     fn make_node_data_from_map(
         max_size: usize,
-        graph: &EGraph<L>,
+        graph: &Graph<L>,
         children: &[ExprChildId],
         data: &HashMap<EClassId, HashMap<usize, C>>,
         type_cache: &TypeSizeCache,
@@ -220,7 +220,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     /// Build a map from child e-class to parent e-classes.
-    fn build_parent_map(graph: &EGraph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
+    fn build_parent_map(graph: &Graph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
         let mut parents = HashMap::<EClassId, HashSet<EClassId>>::new();
 
         for id in graph.class_ids() {
@@ -239,7 +239,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
     /// Get the count data for a child, reading from a plain `HashMap`.
     fn get_child_data_from_map(
-        graph: &EGraph<L>,
+        graph: &Graph<L>,
         child_id: ExprChildId,
         data: &HashMap<EClassId, HashMap<usize, C>>,
         type_cache: &TypeSizeCache,
@@ -298,7 +298,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         self.of_eclass(self.graph.root())
     }
 
-    pub(crate) fn type_overhead(&self, eclass: &EClass<L>) -> usize {
+    pub(crate) fn type_overhead(&self, eclass: &Class<L>) -> usize {
         if self.with_types
             && let Some(t) = eclass.ty()
         {
@@ -311,7 +311,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// Build suffix convolution tables for all e-classes at the maximum budget.
     fn build_suffix_cache_from_map(
         max_size: usize,
-        graph: &EGraph<L>,
+        graph: &Graph<L>,
         data: &HashMap<EClassId, HashMap<usize, C>>,
         type_cache: &TypeSizeCache,
     ) -> HashMap<EClassId, Vec<Vec<HashMap<usize, C>>>> {
@@ -394,15 +394,15 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::EClass;
+    use crate::graph::Class;
     use crate::nodes::ENode;
     use crate::test_utils::*;
     use num::BigUint;
 
     #[test]
     fn single_leaf_no_types() {
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned())],
                 dummy_ty(),
             )]),
@@ -422,8 +422,8 @@ mod tests {
 
     #[test]
     fn single_leaf_with_types() {
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned())],
                 dummy_ty(),
             )]),
@@ -444,8 +444,8 @@ mod tests {
 
     #[test]
     fn two_choices_no_types() {
-        let graph = EGraph::new(
-            cfv(vec![EClass::new(
+        let graph = Graph::new(
+            cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
                 dummy_ty(),
             )]),
@@ -466,10 +466,10 @@ mod tests {
     fn parent_child_no_types() {
         // Class 0: has node "f" pointing to class 1
         // Class 1: has leaf "a"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-                EClass::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
+                Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -491,10 +491,10 @@ mod tests {
     fn parent_with_multiple_child_choices() {
         // Class 0: has node "f" pointing to class 1
         // Class 1: has two leaves "a" and "b"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-                EClass::new(
+                Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
+                Class::new(
                     vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
                     dummy_ty(),
                 ),
@@ -520,14 +520,14 @@ mod tests {
         // Class 0: has node "f" pointing to classes 1 and 2
         // Class 1: leaf "a"
         // Class 2: leaf "b"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(2)])],
                     dummy_ty(),
                 ),
-                EClass::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
-                EClass::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),
@@ -547,17 +547,17 @@ mod tests {
         // Class 0: has node "f" pointing to classes 1 and 2
         // Class 1: two leaves "a1", "a2"
         // Class 2: three leaves "b1", "b2", "b3"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(
+                Class::new(
                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(2)])],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![ENode::leaf("a1".to_owned()), ENode::leaf("a2".to_owned())],
                     dummy_ty(),
                 ),
-                EClass::new(
+                Class::new(
                     vec![
                         ENode::leaf("b1".to_owned()),
                         ENode::leaf("b2".to_owned()),
@@ -582,10 +582,10 @@ mod tests {
     fn max_size_filters() {
         // Class 0: has node "f" pointing to class 1
         // Class 1: leaf "a"
-        let graph = EGraph::new(
+        let graph = Graph::new(
             cfv(vec![
-                EClass::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-                EClass::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
+                Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
+                Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
             ]),
             EClassId::new(0),
             Vec::new(),

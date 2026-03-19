@@ -1,6 +1,6 @@
 use hashbrown::HashMap;
 
-use crate::graph::EGraph;
+use crate::graph::Graph;
 use crate::ids::{DataChildId, DataId, FunId, NatId, TypeChildId};
 use crate::nodes::Label;
 
@@ -17,7 +17,7 @@ pub(crate) struct TypeSizeCache {
 
 impl TypeSizeCache {
     /// Pre-compute sizes for every nat, data, and fun type node in the e-graph.
-    pub(crate) fn build<L: Label>(graph: &EGraph<L>) -> Self {
+    pub(crate) fn build<L: Label>(graph: &Graph<L>) -> Self {
         let mut cache = Self::default();
         for id in graph.nat_ids() {
             cache.ensure_nat(graph, id);
@@ -49,7 +49,7 @@ impl TypeSizeCache {
 
     // -- eager population helpers (called only during `build`) --
 
-    fn ensure_nat<L: Label>(&mut self, graph: &EGraph<L>, id: NatId) {
+    fn ensure_nat<L: Label>(&mut self, graph: &Graph<L>, id: NatId) {
         if self.nats.contains_key(&id) {
             return;
         }
@@ -65,7 +65,7 @@ impl TypeSizeCache {
         self.nats.insert(id, size);
     }
 
-    fn ensure_data<L: Label>(&mut self, graph: &EGraph<L>, id: DataId) {
+    fn ensure_data<L: Label>(&mut self, graph: &Graph<L>, id: DataId) {
         if self.data.contains_key(&id) {
             return;
         }
@@ -87,7 +87,7 @@ impl TypeSizeCache {
         self.data.insert(id, size);
     }
 
-    fn ensure_fun<L: Label>(&mut self, graph: &EGraph<L>, id: FunId) {
+    fn ensure_fun<L: Label>(&mut self, graph: &Graph<L>, id: FunId) {
         if self.funs.contains_key(&id) {
             return;
         }
