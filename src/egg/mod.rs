@@ -1,8 +1,9 @@
 pub mod math;
 
-use std::sync::{Arc, Mutex};
-
-use egg::{Analysis, EGraph, Id, Language, RecExpr, Rewrite, Runner, SimpleScheduler, StopReason};
+use egg::{
+    Analysis, EGraph, Id, IterationData, Language, RecExpr, Rewrite, Runner, SimpleScheduler,
+    StopReason,
+};
 use hashbrown::HashMap;
 
 use crate::ids::{EClassId, ExprChildId};
@@ -18,6 +19,8 @@ pub struct GuideGoalResult<L: Language, N: Analysis<L>> {
     graphs: Vec<EGraph<L, N>>,
     /// Root (valid for all egraphs)
     root: Id,
+    /// Guide Iteration
+    guide_iteration: usize,
 }
 
 impl<L: Language, N: Analysis<L>> GuideGoalResult<L, N> {
@@ -38,12 +41,12 @@ impl<L: Language, N: Analysis<L>> GuideGoalResult<L, N> {
 
     #[must_use]
     pub fn goal(&self) -> &EGraph<L, N> {
-        &self.graphs[self.graphs.len() - 1]
+        &self.graphs[self.guide_iteration]
     }
 
     #[must_use]
     pub fn prev_goal(&self) -> &EGraph<L, N> {
-        &self.graphs[self.graphs.len() - 2]
+        &self.graphs[self.guide_iteration - 1]
     }
 }
 
@@ -106,6 +109,23 @@ where
     )
 }
 
+struct EGraphHolder<L, N>(EGraph<L, N>)
+where
+    L: Language,
+    N: Analysis<L> + Clone,
+    N::Data: Clone;
+
+impl<L, N> IterationData<L, N> for EGraphHolder<L, N>
+where
+    L: Language,
+    N: Analysis<L> + Clone,
+    N::Data: Clone,
+{
+    fn make(runner: &Runner<L, N, Self>) -> Self {
+        Self(runner.egraph.clone())
+    }
+}
+
 /// Run equality saturation for `n_goal` iterations, capturing egraphs at two
 /// points: `n_guide` and `n_goal`.
 ///
@@ -133,55 +153,39 @@ where
 {
     assert!(n_guide > 0);
     assert!(n_goal > n_guide);
+    assert!(n_goal >= 3, "Needs 3 or more iterations to be meaningful");
 
-    let egs = Arc::new(Mutex::new(Vec::new()));
-    let eg_ref = egs.clone();
-
-    let runner = Runner::default()
+    let runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
         .with_scheduler(SimpleScheduler)
         .with_iter_limit(n_goal)
         .with_expr(start)
-        .with_hook(move |runner| {
-            let mut r = eg_ref.lock().unwrap();
-            r.push(runner.egraph.clone());
-            Ok(())
-        })
         .run(rules);
 
-    assert!(runner.iterations.len() >= 3);
-
-    let root = runner.roots[0];
-    let eg_goal = runner.egraph;
     assert!(
         matches!(
-            &runner.stop_reason.clone().unwrap(),
-            &StopReason::IterationLimit(_)
+            runner.stop_reason.as_ref().unwrap(),
+            StopReason::IterationLimit(_)
         ),
         "Failed cause stopped with {:?}",
-        runner.stop_reason.clone()
+        runner.stop_reason
     );
 
-    // The runner owns the hook closure which holds the second Arc clone of `ring`.
-    // Dropping the runner releases that clone, leaving ours as the sole owner so
-    // that `try_unwrap` succeeds.
+    let root = runner.roots[0];
+    let graphs = runner
+        .iterations
+        .into_iter()
+        .map(|i| {
+            let mut eg = i.data.0;
+            eg.rebuild();
+            eg
+        })
+        .collect::<Vec<_>>();
 
-    let mut graphs = Arc::try_unwrap(egs)
-        .expect("runner dropped, no other Arc holders")
-        .into_inner()
-        .unwrap();
-
-    graphs.push(eg_goal);
-
-    for g in &mut graphs {
-        g.rebuild();
+    GuideGoalResult {
+        graphs,
+        root,
+        guide_iteration: n_guide,
     }
-
-    assert!(
-        graphs.len() >= 3,
-        "Needs more than 3 iterations to be meaningful"
-    );
-
-    GuideGoalResult { graphs, root }
 }
 
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
