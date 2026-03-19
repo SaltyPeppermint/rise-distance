@@ -9,8 +9,8 @@ use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    EvalResult, N_RANDOM, RULES, RandomEntry, RandomTrial, SizeDistribution, dump_to_csv,
-    get_run_folder, init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
+    EvalResult, N_RANDOM, RULES, RandomEntry, SizeDistribution, dump_to_cbor, get_run_folder,
+    init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
 use rise_distance::egg::{convert, run_guide_goal, verify_reachability};
@@ -182,13 +182,13 @@ fn main() {
                 );
                 EvalResult {
                     guide: measured,
-                    values,
+                    iterations: values,
                 }
             })
             .collect::<Vec<_>>();
         print_summary(&results, goal, verify_iters);
         if cli.eval_all {
-            dump_to_csv(&run_folder, goal, &results);
+            dump_to_cbor(&run_folder, goal, &results);
         }
     }
 
@@ -205,65 +205,26 @@ fn take_n_trials(
 ) -> Vec<RandomEntry> {
     let mut entries = Vec::new();
     for k in N_RANDOM {
-        let trials = sampled_guides
+        let trials: Vec<_> = sampled_guides
             .par_windows(guide_count / N_TRIALS)
             .map(|guides_here| {
                 let subset = &guides_here[..k];
-
-                let single_iters = subset
-                    .iter()
-                    .map(|guide| {
-                        verify_reachability(
-                            std::slice::from_ref(guide),
-                            goal_recexpr,
-                            RULES.get_or_init(math::rules),
-                            cli.goal_iters,
-                        )
-                    })
-                    .collect();
-                let combined = verify_reachability(
+                verify_reachability(
                     subset,
                     goal_recexpr,
                     RULES.get_or_init(math::rules),
                     cli.goal_iters,
-                );
-                RandomTrial {
-                    single_iters,
-                    combined_iters: combined.map(|v| v.iters),
-                    combined_nodes: combined.map(|v| v.nodes),
-                }
+                )
             })
             .collect::<Vec<_>>();
 
-        let best_single_iters = trial_avg(&trials, |t| {
-            t.single_iters.iter().flatten().map(|v| v.iters).min()
-        });
-        let best_single_nodes = trial_avg(&trials, |t| {
-            t.single_iters.iter().flatten().map(|v| v.nodes).min()
-        });
-        tee_println!("Looking at a random subset of {k} guides.");
-        if let (Some((avg_i, n_i)), Some((avg_n, _))) = (best_single_iters, best_single_nodes) {
+        let reached = trials.iter().filter(|v| v.is_some()).count();
+        tee_println!("{reached} out of {} reached the goal", trials.len());
+        let combined_iters = trial_avg(trials.as_slice(), |t| Some(t.len()));
+        let combined_nodes = trial_avg(&trials, |t| t.last().map(|i| i.egraph_nodes));
+        if let (Some(avg_i), Some(avg_n)) = (combined_iters, combined_nodes) {
             tee_println!(
-                "Best single ITERS guide: {avg_i:.1} (avg over {n_i} in {N_TRIALS} trials)"
-            );
-            tee_println!(
-                "Best single NODES guide: {avg_n:.1} (avg over {n_i} in {N_TRIALS} trials)"
-            );
-        } else {
-            tee_println!("No single guide could reach it");
-        }
-
-        let total = trials.iter().map(|v| v.single_iters.len()).sum::<usize>();
-        let reached = trials
-            .iter()
-            .map(|v| v.single_iters.iter().filter(|u| u.is_some()).count())
-            .sum::<usize>();
-        tee_println!("{reached} out of {total} reached the goal");
-        let combined_iters = trial_avg(&trials, |t| t.combined_iters);
-        let combined_nodes = trial_avg(&trials, |t| t.combined_nodes);
-        if let (Some((avg_i, n)), Some((avg_n, _))) = (combined_iters, combined_nodes) {
-            tee_println!(
-                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {n} in {N_TRIALS} trials)"
+                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {reached} in {N_TRIALS} trials)"
             );
         } else {
             tee_println!("Could NOT reach with {k} guides");
@@ -274,7 +235,7 @@ fn take_n_trials(
     entries
 }
 
-#[derive(Serialize, PartialEq, Eq)]
+#[derive(Serialize)]
 struct TopKResults {
     goal: String,
     entries: Vec<RandomEntry>,
@@ -284,7 +245,7 @@ struct TopKResults {
 fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, max_iters: usize) {
     let successful = results
         .iter()
-        .filter(|r| r.values.is_some())
+        .filter(|r| r.iterations.is_some())
         .collect::<Vec<_>>();
     let total = results.len();
     let n_reached = successful.len();
@@ -308,7 +269,7 @@ fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, 
         "Successful guide zs_dists:"
     );
 
-    let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
+    let (min, med, max) = min_med_max(&successful, |v| v.iterations.as_ref().unwrap().len());
     tee_println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Iterations to reach:"
@@ -320,7 +281,7 @@ fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, 
         "Successful guide struct_dist:"
     );
 
-    let (min, med, max) = min_med_max(&successful, |v| v.values.unwrap().iters);
+    let (min, med, max) = min_med_max(&successful, |v| v.iterations.as_ref().unwrap().len());
     tee_println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Iterations to reach:"

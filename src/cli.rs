@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use csv::WriterBuilder;
-use egg::{Analysis, Language, Rewrite};
+use egg::{Analysis, Iteration, Language, Rewrite};
 use hashbrown::{HashMap, HashSet};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
@@ -16,8 +16,8 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::count::TermCount;
+use crate::egg::Math;
 use crate::egg::math::ConstantFold;
-use crate::egg::{Math, VerifyResult};
 use crate::sampling::Sampler;
 use crate::sampling::count::CountSampler;
 use crate::{
@@ -238,10 +238,10 @@ pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathB
     this_run_dir
 }
 
-#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Debug)]
 pub struct EvalResult<'a, L: Label> {
     pub guide: &'a MeasuredGuide<L>,
-    pub values: Option<VerifyResult>,
+    pub iterations: Option<Vec<Iteration<()>>>,
 }
 
 /// Dump the eval of every term to the csv, appending if the file already exists
@@ -249,8 +249,12 @@ pub struct EvalResult<'a, L: Label> {
 /// # Panics
 ///
 /// Panics if it cant create/open the file
-pub fn dump_to_csv<L: Label>(run_folder: &Path, goal: &TreeNode<L>, results: &[EvalResult<'_, L>]) {
-    let csv_path = run_folder.join("out.csv");
+pub fn dump_to_cbor<L: Label>(
+    run_folder: &Path,
+    goal: &TreeNode<L>,
+    results: &[EvalResult<'_, L>],
+) {
+    let csv_path = run_folder.join("out.cbor");
     let file_exists = csv_path.exists();
     let csv_output = OpenOptions::new()
         .append(true)
@@ -262,7 +266,7 @@ pub fn dump_to_csv<L: Label>(run_folder: &Path, goal: &TreeNode<L>, results: &[E
         .from_writer(csv_output);
     for r in results {
         csv_writer
-            .serialize(CsvRow::new(goal, r.guide, r.values))
+            .serialize(CsvRow::new(goal, r.guide, r.iterations.as_deref()))
             .expect("write CSV row");
     }
     tee_println!("Wrote goal to CSV");
@@ -277,14 +281,15 @@ struct CsvRow {
     structural_overlap: usize,
     structural_zs_sum: usize,
     iterations_to_reach: Option<usize>,
-    nodes_to_reach: Option<usize>,
+    nodes_to_reach: Option<Vec<usize>>,
+    classes_to_reach: Option<Vec<usize>>,
 }
 
 impl CsvRow {
     fn new<L: Label>(
         goal: &TreeNode<L>,
         guide: &MeasuredGuide<L>,
-        values: Option<VerifyResult>,
+        iterations: Option<&[Iteration<()>]>,
     ) -> Self {
         Self {
             goal: goal.to_string(),
@@ -292,8 +297,11 @@ impl CsvRow {
             zs_distance: guide.zs_distance,
             structural_overlap: guide.structural_distance.overlap(),
             structural_zs_sum: guide.structural_distance.zs_sum(),
-            iterations_to_reach: values.map(|v| v.iters),
-            nodes_to_reach: values.map(|v| v.nodes),
+            iterations_to_reach: iterations.map(|i| i.len()),
+            nodes_to_reach: iterations
+                .map(|i| i.iter().map(|i| i.egraph_nodes).collect::<Vec<_>>()),
+            classes_to_reach: iterations
+                .map(|i| i.iter().map(|i| i.egraph_classes).collect::<Vec<_>>()),
         }
     }
 }
@@ -306,30 +314,29 @@ pub struct MeasuredGuide<L: Label> {
     pub structural_distance: StructuralDistance,
 }
 
-#[derive(Serialize, PartialEq, Eq)]
 pub struct RandomTrial {
-    pub single_iters: Vec<Option<VerifyResult>>,
-    pub combined_iters: Option<usize>,
-    pub combined_nodes: Option<usize>,
+    pub data: Vec<Iteration<()>>,
 }
-
-#[derive(Serialize, PartialEq, Eq)]
+#[derive(Serialize)]
 pub struct RandomEntry {
     pub k: usize,
-    pub trials: Vec<RandomTrial>,
+    pub trials: Vec<Option<Vec<Iteration<()>>>>,
 }
 
 #[expect(clippy::cast_precision_loss)]
-pub fn trial_avg<F: Fn(&RandomTrial) -> Option<usize>>(
-    trials: &[RandomTrial],
+pub fn trial_avg<F: Fn(&Vec<Iteration<()>>) -> Option<usize>>(
+    trials: &[Option<Vec<Iteration<()>>>],
     f: F,
-) -> Option<(f64, usize)> {
-    let values: Vec<usize> = trials.iter().filter_map(&f).collect();
+) -> Option<f64> {
+    let values: Vec<usize> = trials
+        .iter()
+        .filter_map(|x| x.as_ref().and_then(&f))
+        .collect();
     if values.is_empty() {
         return None;
     }
     let avg = values.iter().sum::<usize>() as f64 / values.len() as f64;
-    Some((avg, values.len()))
+    Some(avg)
 }
 
 #[expect(clippy::missing_panics_doc)]
