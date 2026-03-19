@@ -16,7 +16,7 @@ use rise_distance::egg::math::{self, Math, MathLabel};
 use rise_distance::egg::{convert, run_guide_goal, verify_reachability};
 use rise_distance::tee_println;
 
-#[derive(Parser)]
+#[derive(Parser, Serialize)]
 #[command(
     about = "Evaluate distance metrics as guide predictors for equality saturation",
     after_help = "\

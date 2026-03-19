@@ -77,7 +77,7 @@ impl Display for DistanceMetric {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum SampleDistribution {
     /// Uniform accross the term sizes
     Uniform,

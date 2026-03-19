@@ -21,7 +21,7 @@ use rise_distance::egg::math::{self, Math, MathLabel};
 use rise_distance::egg::{VerifyResult, convert, run_guide_goal, verify_reachability};
 use rise_distance::tee_println;
 
-#[derive(Parser)]
+#[derive(Parser, Serialize)]
 #[command(
     about = "Evaluate distance metrics as guide predictors for equality saturation",
     after_help = "\
@@ -81,7 +81,7 @@ struct Cli {
     eval_all: bool,
 
     /// How often to evaluate the trial
-    #[arg(long, default_value_t = 10_000)]
+    #[arg(long, default_value_t = 100)]
     n_trials: usize,
 }
 
@@ -258,35 +258,15 @@ fn eval_top_k(
     }
 
     results.sort_unstable_by_key(|v| v.zs_distance);
-    let best_zs_guide = results[0].guide.clone();
     tee_println!("ZS DISTANCE:");
     top_k_results.zs = top_k(max_iters, results, &go);
 
     results.sort_unstable_by_key(|v| v.structural_distance);
-    let best_structural_guide = results[0].guide.clone();
     tee_println!("STRUCTURAL DISTANCE:");
     top_k_results.structural = top_k(max_iters, results, &go);
 
     tee_println!("RANDOM ({n_trials} trials averaged):");
-    top_k_results.random = random_k(max_iters, results, &go, n_trials, None);
-
-    tee_println!("RANDOM + best ZS helper ({n_trials} trials):");
-    top_k_results.random_with_best_zs = random_k(
-        max_iters,
-        results,
-        &go,
-        n_trials,
-        Some(("best_zs", &best_zs_guide)),
-    );
-
-    tee_println!("RANDOM + best structural helper ({n_trials} trials):");
-    top_k_results.random_with_best_structural = random_k(
-        max_iters,
-        results,
-        &go,
-        n_trials,
-        Some(("best_structural", &best_structural_guide)),
-    );
+    top_k_results.random = random_k(max_iters, results, &go, n_trials);
 
     top_k_results
 }
@@ -344,13 +324,8 @@ fn random_k(
     successful: &[MeasuredGuide<MathLabel>],
     go: &RecExpr<Math>,
     n_trials: usize,
-    helper: Option<(&str, &TreeNode<MathLabel>)>,
 ) -> Vec<RandomEntry> {
-    if let Some((name, h)) = &helper {
-        tee_println!("  Helper guide ({name}): {h}");
-    }
     let mut entries = Vec::new();
-    let helper_label = helper.as_ref().map_or("none", |(name, _)| name);
     for k in N_RANDOM {
         if k > successful.len() {
             continue;
@@ -359,13 +334,10 @@ fn random_k(
             .into_par_iter()
             .map(|trial_idx| {
                 let mut rng = ChaCha12Rng::seed_from_u64(trial_idx as u64);
-                let mut subset = successful
+                let subset = successful
                     .choose_multiple(&mut rng, k)
                     .map(|v| v.guide.clone())
                     .collect::<Vec<_>>();
-                if let Some((_, h)) = &helper {
-                    subset.push((*h).clone());
-                }
                 let single_iters = subset
                     .iter()
                     .map(|guide| {
@@ -395,22 +367,22 @@ fn random_k(
         });
         if let (Some((avg_i, n_i)), Some((avg_n, _))) = (best_single_iters, best_single_nodes) {
             tee_println!(
-                "Best single ITERS guide in top {k} guides (helper={helper_label}): {avg_i:.1} (avg over {n_i}/{n_trials} trials)"
+                "Best single ITERS guide in top {k} guides: {avg_i:.1} (avg over {n_i}/{n_trials} trials)"
             );
             tee_println!(
-                "Best single NODES guide in top {k} guides (helper={helper_label}): {avg_n:.1} (avg over {n_i}/{n_trials} trials)"
+                "Best single NODES guide in top {k} guides: {avg_n:.1} (avg over {n_i}/{n_trials} trials)"
             );
         } else {
-            tee_println!("No single guide in top {k} could reach it (helper={helper_label})");
+            tee_println!("No single guide in top {k} could reach it");
         }
         let combined_iters = trial_avg(&trials, |t| t.combined_iters);
         let combined_nodes = trial_avg(&trials, |t| t.combined_nodes);
         if let (Some((avg_i, n)), Some((avg_n, _))) = (combined_iters, combined_nodes) {
             tee_println!(
-                "Could reach with top {k} guides (helper={helper_label}): {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{n_trials} trials)"
+                "Could reach with top {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {n}/{n_trials} trials)"
             );
         } else {
-            tee_println!("Could NOT reach with top {k} guides (helper={helper_label})");
+            tee_println!("Could NOT reach with top {k} guides");
         }
 
         entries.push(RandomEntry { k, trials });
@@ -441,7 +413,7 @@ fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, 
     }
 
     successful.sort_unstable_by_key(|v| v.guide.zs_distance);
-    tee_println!("RAW ZS");
+    tee_println!("ZHANG SHASHA");
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
     tee_println!(
