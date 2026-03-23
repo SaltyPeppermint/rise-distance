@@ -218,6 +218,40 @@ def parse_random_trials(raw: list[dict], strategy_name: str, key: str) -> list[d
     return rows
 
 
+def parse_top_k_trials(raw: list[dict], strategy_name: str) -> list[dict]:
+    """Parse the top_k msgpack/json format into flat rows.
+
+    New format: each trial is either null (unreachable) or an array of
+    iteration records. Metrics are derived:
+      - iters = len(trial)
+      - nodes = trial[-1]["egraph_nodes"]
+
+    Each row has: goal, strategy, k, iters, nodes.
+    """
+    rows = []
+    for entry in raw:
+        goal = entry["goal"]
+        for item in entry["entries"]:
+            k = item["k"]
+            for trial in item["trials"]:
+                if trial is None:
+                    iters = None
+                    nodes = None
+                else:
+                    iters = len(trial)
+                    nodes = trial[-1]["egraph_nodes"]
+                rows.append(
+                    {
+                        "goal": goal,
+                        "strategy": strategy_name,
+                        "k": k,
+                        "iters": iters,
+                        "nodes": nodes,
+                    }
+                )
+    return rows
+
+
 def load_guide_eval(path: Path) -> pl.DataFrame:
     """Load a guide-eval CSV file into a DataFrame.
 

@@ -16,6 +16,7 @@ dependencies = [
     "flash-linear-attention",
     "torch-tb-profiler",
     "causal-conv1d",
+    "msgpack",
 ]
 
 [dependency-groups]
