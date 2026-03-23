@@ -252,6 +252,61 @@ def parse_top_k_trials(raw: list[dict], strategy_name: str) -> list[dict]:
     return rows
 
 
+def parse_top_k_summary(raw: list[dict], strategy_name: str) -> list[dict]:
+    """Parse a top_k_summary.json (pre-computed by Rust) into flat rows.
+
+    Each row has: goal, strategy, k, iters, nodes, classes, total_applied, total_time.
+    """
+    rows = []
+    for entry in raw:
+        goal = entry["goal"]
+        for item in entry["entries"]:
+            k = item["k"]
+            for trial in item["trials"]:
+                if trial is None:
+                    rows.append(
+                        {
+                            "goal": goal,
+                            "strategy": strategy_name,
+                            "k": k,
+                            "iters": None,
+                            "nodes": None,
+                            "classes": None,
+                            "total_applied": None,
+                            "total_time": None,
+                        }
+                    )
+                else:
+                    rows.append(
+                        {
+                            "goal": goal,
+                            "strategy": strategy_name,
+                            "k": k,
+                            "iters": trial["iters"],
+                            "nodes": trial["nodes"],
+                            "classes": trial["classes"],
+                            "total_applied": trial["total_applied"],
+                            "total_time": trial["total_time"],
+                        }
+                    )
+    return rows
+
+
+def load_top_k(run_dir: Path, strategy_name: str) -> list[dict]:
+    """Load trial rows from a run directory, preferring the summary file."""
+    import json
+
+    summary_path = run_dir / "top_k_summary.json"
+    if summary_path.exists():
+        with open(summary_path, encoding="utf-8") as f:
+            raw = json.load(f)
+        return parse_top_k_summary(raw, strategy_name)
+
+    with open(run_dir / "top_k.json", encoding="utf-8") as f:
+        raw = json.load(f)
+    return parse_top_k_trials(raw, strategy_name)
+
+
 def load_guide_eval(path: Path) -> pl.DataFrame:
     """Load a guide-eval CSV file into a DataFrame.
 

@@ -393,6 +393,72 @@ pub struct RandomEntry {
     pub trials: Vec<Option<Vec<Iteration<()>>>>,
 }
 
+/// Pre-computed per-trial summary. Much smaller than the full `Iteration`
+/// vectors, so Python can load it instantly.
+#[derive(Serialize)]
+pub struct TrialSummary {
+    /// Number of eqsat iterations to reach the goal.
+    pub iters: usize,
+    /// Egraph node count at the final iteration.
+    pub nodes: usize,
+    /// Egraph e-class count at the final iteration.
+    pub classes: usize,
+    /// Total number of rule applications across all iterations.
+    pub total_applied: usize,
+    /// Total wall-clock time (seconds) across all iterations.
+    pub total_time: f64,
+}
+
+#[derive(Serialize)]
+pub struct SummaryEntry {
+    pub k: usize,
+    pub trials: Vec<Option<TrialSummary>>,
+}
+
+#[derive(Serialize)]
+pub struct TopKSummary {
+    pub goal: String,
+    pub entries: Vec<SummaryEntry>,
+}
+
+impl TopKSummary {
+    /// Build a summary from the full `RandomEntry` data for a given goal.
+    ///
+    /// # Panics
+    /// Panics if a reachable trial has an empty iteration list.
+    #[must_use]
+    pub fn from_entries(goal: &str, entries: &[RandomEntry]) -> Self {
+        Self {
+            goal: goal.to_owned(),
+            entries: entries
+                .iter()
+                .map(|e| SummaryEntry {
+                    k: e.k,
+                    trials: e
+                        .trials
+                        .iter()
+                        .map(|trial| {
+                            trial.as_ref().map(|iters| {
+                                let last = iters.last().expect("non-empty iteration list");
+                                TrialSummary {
+                                    iters: iters.len(),
+                                    nodes: last.egraph_nodes,
+                                    classes: last.egraph_classes,
+                                    total_applied: iters
+                                        .iter()
+                                        .map(|i| i.applied.values().sum::<usize>())
+                                        .sum(),
+                                    total_time: iters.iter().map(|i| i.total_time).sum(),
+                                }
+                            })
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
 #[expect(clippy::cast_precision_loss)]
 pub fn trial_avg<F: Fn(&Vec<Iteration<()>>) -> Option<usize>>(
     trials: &[Option<Vec<Iteration<()>>>],

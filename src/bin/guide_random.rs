@@ -10,8 +10,8 @@ use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    EvalResult, N_RANDOM, RULES, RandomEntry, SizeDistribution, dump_to_parquet, get_run_folder,
-    init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
+    EvalResult, N_RANDOM, RULES, RandomEntry, SizeDistribution, TopKSummary, dump_to_parquet,
+    get_run_folder, init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
 use rise_distance::egg::{convert, run_guide_goal, verify_reachability};
@@ -119,12 +119,14 @@ fn main() {
 
     tee_println!("Eqsat completed in {:.2?}", start.elapsed());
     tee_println!(
-        "Guide egraph had {} nodes",
-        result.guide().total_number_of_nodes()
+        "Guide egraph had {} nodes, {} classes",
+        result.guide().total_number_of_nodes(),
+        result.guide().classes().len()
     );
     tee_println!(
-        "Final egraph had {} nodes",
-        result.goal().total_number_of_nodes()
+        "Final egraph had {} nodes, {} classes",
+        result.goal().total_number_of_nodes(),
+        result.goal().classes().len()
     );
 
     tee_println!(
@@ -193,10 +195,23 @@ fn main() {
         }
     }
 
+    write_outputs(&run_folder, &all_top_k, &cli);
+}
+
+fn write_outputs(run_folder: &std::path::Path, all_top_k: &[TopKResults], cli: &Cli) {
     let output_path = run_folder.join("top_k.json");
     let output_file = File::create(output_path).expect("Failed to create output json file");
     let mut output_writer = BufWriter::new(output_file);
     serde_json::to_writer(&mut output_writer, &all_top_k).expect("write top-k json");
+
+    let summaries: Vec<TopKSummary> = all_top_k
+        .iter()
+        .map(|tk| TopKSummary::from_entries(&tk.goal, &tk.entries))
+        .collect();
+    let summary_path = run_folder.join("top_k_summary.json");
+    let summary_file = File::create(summary_path).expect("Failed to create summary json file");
+    let summary_writer = BufWriter::new(summary_file);
+    serde_json::to_writer(summary_writer, &summaries).expect("write top-k summary json");
 
     let config_path = run_folder.join("config.json");
     let config_file = File::create(config_path).expect("Failed to create output config.json file");
