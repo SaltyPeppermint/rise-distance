@@ -63,18 +63,17 @@ impl<
 
 /// Map from e-class ID to a map of (size -> count) (histogram).
 #[derive(Debug, Clone)]
-pub struct TermCount<'a, C: Counter, L: Label> {
+pub struct TermCount<C: Counter> {
     pub(crate) data: HashMap<EClassId, HashMap<usize, C>>,
     /// Per e-class, per node index: precomputed suffix convolution tables.
     /// `suffix_cache[eclass][node_idx][i]` = convolution of children `i..n`,
     /// mapping budget -> count. Computed once at max budget (`max_size - 1`).
     pub(crate) suffix_cache: HashMap<EClassId, Vec<Vec<HashMap<usize, C>>>>,
-    pub(crate) graph: &'a Graph<L>,
     pub(crate) type_sizes: TypeSizeCache,
     pub(crate) with_types: bool,
 }
 
-impl<C: Counter, L: Label> TermCount<'_, C, L> {
+impl<C: Counter> TermCount<C> {
     /// Run the term counting analysis on an e-graph.
     ///
     /// # Arguments
@@ -82,7 +81,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     /// * `with_types` - If true, include type annotations in size calculations
     #[must_use]
     #[expect(clippy::missing_panics_doc)]
-    pub fn new(max_size: usize, with_types: bool, graph: &Graph<L>) -> TermCount<'_, C, L> {
+    pub fn new<L: Label>(max_size: usize, with_types: bool, graph: &Graph<L>) -> TermCount<C> {
         // Build parent map and type size cache
         let parents = Self::build_parent_map(graph);
         let type_cache = TypeSizeCache::build(graph);
@@ -168,10 +167,14 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         TermCount {
             data,
             suffix_cache,
-            graph,
             type_sizes: type_cache,
             with_types,
         }
+    }
+
+    #[must_use]
+    pub fn get(&self, id: &EClassId) -> Option<&HashMap<usize, C>> {
+        self.data.get(id)
     }
 
     /// Merge two term count data maps.
@@ -182,7 +185,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     /// Compute term counts for a single e-node, reading from a plain `HashMap`.
-    fn make_node_data_from_map(
+    fn make_node_data_from_map<L: Label>(
         max_size: usize,
         graph: &Graph<L>,
         children: &[ExprChildId],
@@ -222,7 +225,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     /// Build a map from child e-class to parent e-classes.
-    fn build_parent_map(graph: &Graph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
+    fn build_parent_map<L: Label>(graph: &Graph<L>) -> HashMap<EClassId, HashSet<EClassId>> {
         let mut parents = HashMap::<EClassId, HashSet<EClassId>>::new();
 
         for id in graph.class_ids() {
@@ -240,7 +243,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     /// Get the count data for a child, reading from a plain `HashMap`.
-    fn get_child_data_from_map(
+    fn get_child_data_from_map<L: Label>(
         graph: &Graph<L>,
         child_id: ExprChildId,
         data: &HashMap<EClassId, HashMap<usize, C>>,
@@ -290,17 +293,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
         acc
     }
 
-    #[must_use]
-    pub fn of_eclass(&self, id: EClassId) -> Option<&HashMap<usize, C>> {
-        self.data.get(&self.graph.canonicalize(id))
-    }
-
-    #[must_use]
-    pub fn of_root(&self) -> Option<&HashMap<usize, C>> {
-        self.of_eclass(self.graph.root())
-    }
-
-    pub(crate) fn type_overhead(&self, eclass: &Class<L>) -> usize {
+    pub(crate) fn type_overhead<L: Label>(&self, eclass: &Class<L>) -> usize {
         if self.with_types
             && let Some(t) = eclass.ty()
         {
@@ -311,7 +304,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     /// Build suffix convolution tables for all e-classes at the maximum budget.
-    fn build_suffix_cache_from_map(
+    fn build_suffix_cache_from_map<L: Label>(
         max_size: usize,
         graph: &Graph<L>,
         data: &HashMap<EClassId, HashMap<usize, C>>,
@@ -375,7 +368,11 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     /// Get the histogram for a child (size -> count).
-    pub(crate) fn child_histogram(&self, child_id: ExprChildId) -> Cow<'_, HashMap<usize, C>> {
+    pub(crate) fn child_histogram<L: Label>(
+        &self,
+        child_id: ExprChildId,
+        graph: &Graph<L>,
+    ) -> Cow<'_, HashMap<usize, C>> {
         match child_id {
             ExprChildId::Nat(nat_id) => Cow::Owned(HashMap::from([(
                 self.type_sizes.get_nat_size(nat_id),
@@ -385,7 +382,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                 self.type_sizes.get_data_size(data_id),
                 C::one(),
             )])),
-            ExprChildId::EClass(eclass_id) => match self.of_eclass(eclass_id) {
+            ExprChildId::EClass(eclass_id) => match self.get(&graph.canonicalize(eclass_id)) {
                 Some(h) => Cow::Borrowed(h),
                 None => Cow::Owned(HashMap::default()),
             },
@@ -415,7 +412,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         let root_data = &term_count.data[&EClassId::new(0)];
         assert_eq!(root_data.len(), 1);
@@ -436,7 +433,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint, _>::new(10, true, &graph);
+        let term_count = TermCount::<BigUint>::new(10, true, &graph);
 
         let root_data = &term_count.data[&EClassId::new(0)];
         // Size = 1 (node) + 1 (typeOf) + 1 (type "0") = 3
@@ -457,7 +454,7 @@ mod tests {
             dummy_nat_nodes(),
             HashMap::new(),
         );
-        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         let root_data = &term_count.data[&EClassId::new(0)];
         // Two terms of size 1
@@ -480,7 +477,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         // Class 1: one term of size 1
         assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(1u32));
@@ -508,7 +505,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         // Class 1: two terms of size 1
         assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(2u32));
@@ -538,7 +535,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         // Class 0: one term of size 3 (f + a + b)
         assert_eq!(term_count.data[&EClassId::new(0)][&3], BigUint::from(1u32));
@@ -574,7 +571,7 @@ mod tests {
             dummy_nat_nodes(),
             HashMap::new(),
         );
-        let term_count = TermCount::<BigUint, _>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, false, &graph);
 
         // Class 0: 2 * 3 = 6 terms of size 3
         assert_eq!(term_count.data[&EClassId::new(0)][&3], BigUint::from(6u32));
@@ -597,7 +594,7 @@ mod tests {
         );
 
         // max_size = 1, so f(a) with size 2 should be filtered out
-        let term_count = TermCount::<BigUint, _>::new(1, false, &graph);
+        let term_count = TermCount::<BigUint>::new(1, false, &graph);
 
         // Class 1 should have data (size 1)
         assert!(term_count.data.contains_key(&EClassId::new(1)));

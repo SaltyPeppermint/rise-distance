@@ -512,7 +512,7 @@ pub fn measure_guides<L: Label>(
 
 /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
 pub fn sample_frontier_terms<L, N, LL>(
-    egraph: &Graph<LL>,
+    graph: &Graph<LL>,
     prev_raw_egg: &egg::EGraph<L, N>,
     count: usize,
     max_size: usize,
@@ -524,9 +524,9 @@ where
     LL: Label,
     for<'a> &'a TreeNode<LL>: Into<egg::RecExpr<L>>,
 {
-    let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
+    let tc = TermCount::<BigUint>::new(max_size, false, graph);
 
-    let Some(histogram) = tc.of_root() else {
+    let Some(histogram) = tc.data.get(&graph.root()) else {
         return Vec::new();
     };
 
@@ -552,7 +552,7 @@ where
             normal_center,
         );
         let batch =
-            CountSampler::new(&tc).sample_unique_root(min_size, max_size, &samples_per_size);
+            CountSampler::new(&tc, graph).sample_unique_root(min_size, max_size, &samples_per_size);
         let prev_len = result.len();
         result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
         if result.len() >= count || result.len() == prev_len {
@@ -570,7 +570,7 @@ where
 /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
 #[expect(clippy::missing_panics_doc)]
 pub fn enumerate_frontier_terms<L, N, LL>(
-    egraph: &Graph<LL>,
+    graph: &Graph<LL>,
     prev_raw_egg: &egg::EGraph<L, N>,
     max_size: usize,
 ) -> Vec<TreeNode<LL>>
@@ -580,9 +580,9 @@ where
     LL: Label,
     for<'a> &'a TreeNode<LL>: Into<egg::RecExpr<L>>,
 {
-    let tc = TermCount::<BigUint, _>::new(max_size, false, egraph);
+    let tc = TermCount::<BigUint>::new(max_size, false, graph);
 
-    let Some(histogram) = tc.of_root() else {
+    let Some(histogram) = tc.data.get(&graph.root()) else {
         return Vec::new();
     };
 
@@ -602,6 +602,7 @@ where
 
     let result = tc
         .enumerate_root(
+            graph,
             max_size,
             Some(ProgressBar::new(max_size.try_into().unwrap())),
         )

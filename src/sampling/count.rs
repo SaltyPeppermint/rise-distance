@@ -3,24 +3,27 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rayon::prelude::*;
 
-use crate::TreeNode;
 use crate::count::{Counter, TermCount};
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;
 use crate::sampling::Sampler;
+use crate::{Graph, TreeNode};
 
-pub struct CountSampler<'a, C: Counter, L: Label>(&'a TermCount<'a, C, L>);
+pub struct CountSampler<'a, 'b, C: Counter, L: Label> {
+    term_count: &'a TermCount<C>,
+    graph: &'b Graph<L>,
+}
 
-impl<'a, C: Counter, L: Label> CountSampler<'a, C, L> {
+impl<'a, 'b, C: Counter, L: Label> CountSampler<'a, 'b, C, L> {
     #[must_use]
-    pub fn new(term_count: &'a TermCount<'a, C, L>) -> Self {
-        Self(term_count)
+    pub fn new(term_count: &'a TermCount<C>, graph: &'b Graph<L>) -> Self {
+        Self { term_count, graph }
     }
 }
 
-impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, C, L> {
+impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, '_, C, L> {
     fn root(&self) -> EClassId {
-        self.0.graph.root()
+        self.graph.root()
     }
 
     /// Sample unique terms across a range of sizes.
@@ -39,8 +42,8 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, C, L> {
         max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<TreeNode<L>> {
-        let canon_id = self.0.graph.canonicalize(id);
-        self.0
+        let canon_id = self.graph.canonicalize(id);
+        self.term_count
             .data
             .get(&canon_id)
             .into_iter()
@@ -51,10 +54,10 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, C, L> {
     }
 
     fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
-        let canonical_id = self.0.graph.canonicalize(id);
-        let eclass = self.0.graph.class(canonical_id);
-        let child_budget = size - 1 - self.0.type_overhead(eclass);
-        let cached = &self.0.suffix_cache[&canonical_id];
+        let canonical_id = self.graph.canonicalize(id);
+        let eclass = self.graph.class(canonical_id);
+        let child_budget = size - 1 - self.term_count.type_overhead(eclass);
+        let cached = &self.term_count.suffix_cache[&canonical_id];
 
         // Pick a node weighted by how many terms of the target size it produces.
         let weights = cached
@@ -77,7 +80,7 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, C, L> {
         let mut child_sizes = Vec::with_capacity(pick.children().len());
 
         for (i, &c_id) in pick.children().iter().enumerate() {
-            let histogram = self.0.child_histogram(c_id);
+            let histogram = self.term_count.child_histogram(c_id, self.graph);
             let candidates = histogram
                 .iter()
                 .filter_map(|(&s, count)| {
@@ -101,12 +104,12 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, C, L> {
                 .iter()
                 .zip(child_sizes)
                 .map(|(c_id, s)| match c_id {
-                    ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.0.graph, *nat_id),
-                    ExprChildId::Data(data_id) => TreeNode::from_data(self.0.graph, *data_id),
+                    ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.graph, *nat_id),
+                    ExprChildId::Data(data_id) => TreeNode::from_data(self.graph, *data_id),
                     ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
                 })
                 .collect(),
-            TreeNode::from_eclass(self.0.graph, canonical_id),
+            TreeNode::from_eclass(self.graph, canonical_id),
         )
     }
 }

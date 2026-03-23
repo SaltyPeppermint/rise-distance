@@ -4,33 +4,37 @@ use rayon::prelude::*;
 
 use super::Counter;
 use super::TermCount;
+use crate::Graph;
 use crate::TreeNode;
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;
 
-impl<C: Counter, L: Label> TermCount<'_, C, L> {
+impl<C: Counter> TermCount<C> {
     /// Enumerate all terms from the root e-class with sizes in `1..=max_size`.
     #[must_use]
-    pub fn enumerate_root(
+    pub fn enumerate_root<L: Label>(
         &self,
+        graph: &Graph<L>,
         max_size: usize,
         progress: Option<ProgressBar>,
     ) -> Vec<TreeNode<L>> {
-        self.enumerate(self.graph.root(), max_size, progress)
+        self.enumerate(graph, graph.root(), max_size, progress)
     }
 
     /// Enumerate all terms from an e-class with sizes in `1..=max_size`.
     #[must_use]
     #[expect(clippy::missing_panics_doc)]
-    pub fn enumerate(
+    pub fn enumerate<L: Label>(
         &self,
+        graph: &Graph<L>,
         id: EClassId,
         max_size: usize,
         progress: Option<ProgressBar>,
     ) -> Vec<TreeNode<L>> {
-        let canon_id = self.graph.canonicalize(id);
+        let canon_id = graph.canonicalize(id);
         let sum = self
-            .of_eclass(id)
+            .data
+            .get(&canon_id)
             .unwrap()
             .values()
             .sum::<C>()
@@ -39,14 +43,13 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
         // Build (size, node_index) pairs so rayon can distribute work
         // across both sizes and nodes, not just sizes.
-        let canonical_id = self.graph.canonicalize(canon_id);
-        let Some(histogram) = self.data.get(&canonical_id) else {
+        let Some(histogram) = self.get(&canon_id) else {
             return Vec::new();
         };
-        let eclass = self.graph.class(canonical_id);
+        let eclass = graph.class(canon_id);
         let nodes = eclass.nodes();
         let type_overhead = self.type_overhead(eclass);
-        let ty = TreeNode::from_eclass(self.graph, canonical_id);
+        let ty = TreeNode::from_eclass(graph, canon_id);
 
         let cache = DashMap::new();
 
@@ -60,7 +63,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             let node = &nodes[ni];
             let children = node.children();
 
-            self.enumerate_children(children, child_budget, &cache)
+            self.enumerate_children(graph, children, child_budget, &cache)
                 .par_bridge()
                 .map(|child_combo| {
                     TreeNode::new_typed(node.label().clone(), child_combo, ty.clone())
@@ -76,41 +79,43 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     /// Enumerate all terms of exactly `size` from an e-class, using a shared cache.
-    fn enumerate_class_cached(
+    fn enumerate_class_cached<L: Label>(
         &self,
+        graph: &Graph<L>,
         id: EClassId,
         size: usize,
         cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
     ) -> Vec<TreeNode<L>> {
-        let canonical_id = self.graph.canonicalize(id);
-        let key = (canonical_id, size);
+        let canon_id = graph.canonicalize(id);
+        let key = (canon_id, size);
 
         // Cache hit
         if let Some(cached) = cache.get(&key) {
             return cached.clone();
         }
 
-        let result = self.enumerate_class_inner(canonical_id, size, cache);
+        let result = self.enumerate_class_inner(graph, canon_id, size, cache);
         cache.insert(key, result.clone());
         result
     }
 
     /// Inner logic for enumerating all terms of exactly `size` from a canonical e-class.
-    fn enumerate_class_inner(
+    fn enumerate_class_inner<L: Label>(
         &self,
-        canonical_id: EClassId,
+        graph: &Graph<L>,
+        canon_id: EClassId,
         size: usize,
         cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
     ) -> Vec<TreeNode<L>> {
         // Check if this class has any terms at this size
-        let Some(histogram) = self.data.get(&canonical_id) else {
+        let Some(histogram) = self.get(&canon_id) else {
             return Vec::new();
         };
         if !histogram.contains_key(&size) {
             return Vec::new();
         }
 
-        let eclass = self.graph.class(canonical_id);
+        let eclass = graph.class(canon_id);
         let type_overhead = self.type_overhead(eclass);
 
         // Bail if type size overhead is too big
@@ -118,14 +123,14 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             return Vec::new();
         };
 
-        let ty = TreeNode::from_eclass(self.graph, canonical_id);
+        let ty = TreeNode::from_eclass(graph, canon_id);
 
         let mut results = Vec::new();
 
         for node in eclass.nodes() {
             let children = node.children();
 
-            for child_combo in self.enumerate_children(children, child_budget, cache) {
+            for child_combo in self.enumerate_children(graph, children, child_budget, cache) {
                 results.push(TreeNode::new_typed(
                     node.label().clone(),
                     child_combo,
@@ -139,8 +144,9 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
 
     /// Enumerate all ways to fill `children` with exactly `budget` total size,
     /// returning the cartesian product of child terms for each valid size tuple.
-    fn enumerate_children(
+    fn enumerate_children<L: Label>(
         &self,
+        graph: &Graph<L>,
         children: &[ExprChildId],
         budget: usize,
         cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
@@ -155,7 +161,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             let next_acc = acc
                 .into_iter()
                 .flat_map(|(remaining, partial)| {
-                    self.expand_child(child_id, remaining, partial, cache)
+                    self.expand_child(graph, child_id, remaining, partial, cache)
                 })
                 .collect();
 
@@ -169,8 +175,9 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
     }
 
     /// Expand a single partial combo by one child, returning all valid extensions.
-    fn expand_child(
+    fn expand_child<L: Label>(
         &self,
+        graph: &Graph<L>,
         child_id: ExprChildId,
         remaining: usize,
         partial: Vec<TreeNode<L>>,
@@ -180,7 +187,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             ExprChildId::Nat(nat_id) => {
                 let child_size = self.type_sizes.get_nat_size(nat_id);
                 if child_size <= remaining {
-                    let tree = TreeNode::from_nat(self.graph, nat_id);
+                    let tree = TreeNode::from_nat(graph, nat_id);
                     let mut combo = partial;
                     combo.push(tree);
                     vec![(remaining - child_size, combo)]
@@ -191,7 +198,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
             ExprChildId::Data(data_id) => {
                 let child_size = self.type_sizes.get_data_size(data_id);
                 if child_size <= remaining {
-                    let tree = TreeNode::from_data(self.graph, data_id);
+                    let tree = TreeNode::from_data(graph, data_id);
                     let mut combo = partial;
                     combo.push(tree);
                     vec![(remaining - child_size, combo)]
@@ -200,8 +207,8 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                 }
             }
             ExprChildId::EClass(eclass_id) => {
-                let canonical_child = self.graph.canonicalize(eclass_id);
-                let Some(child_histogram) = self.data.get(&canonical_child) else {
+                let canonical_child = graph.canonicalize(eclass_id);
+                let Some(child_histogram) = self.get(&canonical_child) else {
                     return Vec::new();
                 };
 
@@ -211,7 +218,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                         continue;
                     }
                     let child_trees =
-                        self.enumerate_class_cached(canonical_child, child_size, cache);
+                        self.enumerate_class_cached(graph, canonical_child, child_size, cache);
                     for tree in child_trees {
                         let mut combo = partial.clone();
                         combo.push(tree.clone());
@@ -247,8 +254,8 @@ mod tests {
             HashMap::new(),
         );
 
-        let tc = TermCount::<BigUint, _>::new(10, false, &graph);
-        let terms = tc.enumerate_root(10, None);
+        let tc = TermCount::<BigUint>::new(10, false, &graph);
+        let terms = tc.enumerate_root(&graph, 10, None);
         assert_eq!(terms.len(), 1);
         assert_eq!(terms[0].label(), "a");
     }
@@ -267,8 +274,8 @@ mod tests {
             HashMap::new(),
         );
 
-        let tc = TermCount::<BigUint, _>::new(10, false, &graph);
-        let terms = tc.enumerate_root(10, None);
+        let tc = TermCount::<BigUint>::new(10, false, &graph);
+        let terms = tc.enumerate_root(&graph, 10, None);
         assert_eq!(terms.len(), 2);
         let labels: Vec<_> = terms.iter().map(|t| t.label().as_str()).collect();
         assert!(labels.contains(&"a"));
@@ -289,8 +296,8 @@ mod tests {
             HashMap::new(),
         );
 
-        let tc = TermCount::<BigUint, _>::new(10, false, &graph);
-        let terms = tc.enumerate_root(10, None);
+        let tc = TermCount::<BigUint>::new(10, false, &graph);
+        let terms = tc.enumerate_root(&graph, 10, None);
         assert_eq!(terms.len(), 1);
         assert_eq!(terms[0].label(), "f");
         assert_eq!(terms[0].children()[0].label(), "a");
@@ -327,8 +334,8 @@ mod tests {
             HashMap::new(),
         );
 
-        let tc = TermCount::<BigUint, _>::new(10, false, &graph);
-        let terms = tc.enumerate_root(10, None);
+        let tc = TermCount::<BigUint>::new(10, false, &graph);
+        let terms = tc.enumerate_root(&graph, 10, None);
         // 2 * 3 = 6 combinations
         assert_eq!(terms.len(), 6);
     }
@@ -347,9 +354,9 @@ mod tests {
             HashMap::new(),
         );
 
-        let tc = TermCount::<BigUint, _>::new(10, false, &graph);
+        let tc = TermCount::<BigUint>::new(10, false, &graph);
         // max_size=1 should not include f(a) which is size 2
-        let terms = tc.enumerate_root(1, None);
+        let terms = tc.enumerate_root(&graph, 1, None);
         assert_eq!(terms.len(), 0);
     }
 
@@ -382,11 +389,12 @@ mod tests {
         );
 
         let max_size = 10;
-        let tc = TermCount::<BigUint, _>::new(max_size, false, &graph);
+        let tc = TermCount::<BigUint>::new(max_size, false, &graph);
 
-        let terms = tc.enumerate_root(max_size, None);
+        let terms = tc.enumerate_root(&graph, max_size, None);
         let expected_total: BigUint = tc
-            .of_root()
+            .data
+            .get(&graph.root())
             .unwrap()
             .iter()
             .filter(|&(s, _)| *s <= max_size)

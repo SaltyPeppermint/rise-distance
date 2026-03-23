@@ -99,8 +99,10 @@ impl<L: Label> Graph<L> {
     /// Panics if the root has not been set.
     #[must_use]
     pub fn root(&self) -> EClassId {
-        self.root
-            .expect("Root has not been set. This is necessary after deserializing the egraph!")
+        self.canonicalize(
+            self.root
+                .expect("Root has not been set. This is necessary after deserializing the egraph!"),
+        )
     }
 
     #[must_use]

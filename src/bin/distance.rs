@@ -141,7 +141,7 @@ fn main() {
             std::eprintln!("Limit: {max_size}");
 
             let start = Instant::now();
-            let term_count = TermCount::<BigUint, RiseLabel>::new(max_size, *with_types, &graph);
+            let term_count = TermCount::<BigUint>::new(max_size, *with_types, &graph);
             std::eprintln!("Counting completed in {:.2?}", start.elapsed());
 
             if display.histogram {
@@ -159,7 +159,7 @@ fn main() {
 
             if let Some(sample_count) = samples {
                 let Some(min_size) = term_count
-                    .of_eclass(root)
+                    .get(&graph.root())
                     .and_then(|h| h.keys().min().copied())
                 else {
                     std::panic!(
@@ -169,6 +169,7 @@ fn main() {
                     );
                 };
                 run_count_extraction(
+                    &graph,
                     &term_count,
                     &ref_tree,
                     &CountSampleConfig {
@@ -256,7 +257,8 @@ struct CountSampleConfig {
 }
 
 fn run_count_extraction<L: Label>(
-    term_count: &TermCount<BigUint, L>,
+    graph: &Graph<L>,
+    term_count: &TermCount<BigUint>,
     ref_tree: &TreeNode<L>,
     config: &CountSampleConfig,
 ) {
@@ -275,13 +277,18 @@ fn run_count_extraction<L: Label>(
     let start = Instant::now();
     eprintln!("{distance} extraction (count-based sampling)");
 
-    let histogram = term_count.of_root().expect("Root e-class has no terms");
+    let histogram = term_count
+        .get(&graph.root())
+        .expect("Root e-class has no terms");
     #[expect(clippy::cast_precision_loss)]
     let normal_center = (ref_tree.size(with_types) - min_size) as f64;
     let samples_per_size =
         distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
-    let candidates =
-        CountSampler::new(term_count).sample_unique_root(min_size, max_size, &samples_per_size);
+    let candidates = CountSampler::new(term_count, graph).sample_unique_root(
+        min_size,
+        max_size,
+        &samples_per_size,
+    );
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");
 
@@ -415,14 +422,9 @@ fn format_count(n: &BigUint, scientific: bool) -> String {
     format!("{mantissa}e{exponent}")
 }
 
-fn print_histogram<L: Label>(
-    label: &str,
-    id: EClassId,
-    data: &TermCount<BigUint, L>,
-    fmt: &DisplayConfig,
-) {
+fn print_histogram(label: &str, id: EClassId, data: &TermCount<BigUint>, fmt: &DisplayConfig) {
     eprintln!("--- {label} ---");
-    let Some(histogram) = data.of_eclass(id) else {
+    let Some(histogram) = data.get(&id) else {
         eprintln!("  (no data)");
         return;
     };
