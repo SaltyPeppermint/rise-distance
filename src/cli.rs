@@ -15,6 +15,8 @@ use hashbrown::{HashMap, HashSet};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
 use parquet::arrow::ArrowWriter;
+use parquet::basic::{Compression, ZstdLevel};
+use parquet::file::properties::WriterProperties;
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -339,7 +341,13 @@ pub fn dump_to_parquet<L: Label>(
     .expect("build record batch");
 
     let file = File::create(&parquet_path).expect("create parquet file");
-    let mut writer = ArrowWriter::try_new(file, schema, None).expect("create parquet writer");
+    let props = WriterProperties::builder()
+        .set_compression(Compression::ZSTD(
+            ZstdLevel::try_new(3).expect("valid zstd level"),
+        ))
+        .build();
+    let mut writer =
+        ArrowWriter::try_new(file, schema, Some(props)).expect("create parquet writer");
     writer.write(&batch).expect("write parquet batch");
     writer.close().expect("close parquet writer");
 
