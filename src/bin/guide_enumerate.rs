@@ -182,10 +182,10 @@ fn main() {
         all_top_k.push(top_k);
     }
 
-    let output_path = run_folder.join("top_k.msgpack");
-    let output_file = File::create(output_path).expect("Failed to create output msgpack file");
+    let output_path = run_folder.join("top_k.json");
+    let output_file = File::create(output_path).expect("Failed to create output json file");
     let mut output_writer = BufWriter::new(output_file);
-    rmp_serde::encode::write_named(&mut output_writer, &all_top_k).expect("write top-k msgpack");
+    serde_json::to_writer(&mut output_writer, &all_top_k).expect("write top-k json");
 
     let config_path = run_folder.join("config.json");
     let config_file = File::create(config_path).expect("Failed to create output config.json file");
