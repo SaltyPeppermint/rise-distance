@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::io::BufWriter;
 use std::time::Instant;
 
 use clap::Parser;
@@ -192,9 +193,10 @@ fn main() {
         }
     }
 
-    let json_output =
-        File::create(run_folder.join("top_k.json")).expect("Failed to create JSON output file");
-    serde_json::to_writer_pretty(json_output, &all_top_k).expect("write top-k JSON");
+    let output_path = run_folder.join("top_k.json");
+    let output_file = File::create(output_path).expect("Failed to create output JSON file");
+    let output_writer = BufWriter::new(output_file);
+    serde_json::to_writer(output_writer, &all_top_k).expect("write top-k JSON");
 }
 
 fn take_n_trials(
