@@ -18,7 +18,7 @@ use parquet::arrow::ArrowWriter;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::count::TermCount;
+use crate::count::{Counter, TermCount};
 use crate::egg::Math;
 use crate::egg::math::ConstantFold;
 use crate::sampling::Sampler;
@@ -139,10 +139,11 @@ impl SizeDistribution {
     ///
     /// `histogram` maps size -> term count for the root e-class.
     /// `normal_center` is the center of the Gaussian (only used for `Normal`).
+    #[expect(clippy::missing_panics_doc)]
     #[must_use]
-    pub fn samples_per_size(
+    pub fn samples_per_size<C: Counter>(
         self,
-        histogram: &HashMap<usize, BigUint>,
+        histogram: &HashMap<usize, C>,
         min_size: usize,
         max_size: usize,
         total_samples: usize,
@@ -151,44 +152,44 @@ impl SizeDistribution {
         match self {
             Self::Uniform => {
                 let num_sizes = (max_size - min_size).max(1);
-                let s = (total_samples / num_sizes).max(1) as u64;
+                let s = (total_samples / num_sizes).max(1).try_into().unwrap();
                 (min_size..=max_size).map(|size| (size, s)).collect()
             }
             Self::Proportional(min_per_size) => {
-                let total_terms: BigUint = (min_size..=max_size)
+                let total_terms = (min_size..=max_size)
                     .filter_map(|s| histogram.get(&s))
-                    .sum();
-                let budget = BigUint::from(total_samples);
+                    .sum::<C>();
+                let budget = total_samples.try_into().unwrap();
                 (min_size..=max_size)
                     .map(|size| {
                         let n = histogram.get(&size).map_or(0, |count| {
-                            (count * &budget / &total_terms)
-                                .to_u64()
+                            let c = count.to_owned();
+                            (c * &budget / &total_terms)
+                                .try_into()
                                 .unwrap_or(u64::MAX)
-                                .max(min_per_size as u64)
+                                .max(min_per_size.try_into().unwrap())
                         });
                         (size, n)
                     })
                     .collect()
             }
             Self::Normal(sigma) => {
-                let weights: HashMap<usize, f64> = (min_size..=max_size)
+                let weights = (min_size..=max_size)
                     .map(|s| {
                         #[expect(clippy::cast_precision_loss)]
                         let z = (s as f64 - normal_center) / sigma;
                         (s, (-0.5 * z * z).exp())
                     })
-                    .collect();
+                    .collect::<HashMap<_, _>>();
                 let total_weight: f64 = weights.values().sum();
                 (min_size..=max_size)
                     .map(|size| {
                         let w = *weights.get(&size).unwrap_or(&0.0);
-                        #[expect(
-                            clippy::cast_precision_loss,
-                            clippy::cast_possible_truncation,
-                            clippy::cast_sign_loss
-                        )]
-                        let n = (w / total_weight * total_samples as f64).round() as u64;
+                        #[expect(clippy::cast_precision_loss)]
+                        let n = (w / total_weight * total_samples as f64)
+                            .round()
+                            .to_u64()
+                            .unwrap();
                         (size, n)
                     })
                     .collect()
@@ -297,17 +298,21 @@ pub fn dump_to_parquet<L: Label>(
     for r in results {
         goals.append_value(&goal_str);
         guides.append_value(r.guide.guide.to_string());
-        zs_distances.append_value(r.guide.zs_distance as u64);
-        structural_overlaps.append_value(r.guide.structural_distance.overlap() as u64);
-        structural_zs_sums.append_value(r.guide.structural_distance.zs_sum() as u64);
+        zs_distances.append_value(r.guide.zs_distance.try_into().unwrap());
+        structural_overlaps.append_value(r.guide.structural_distance.overlap().try_into().unwrap());
+        structural_zs_sums.append_value(r.guide.structural_distance.zs_sum().try_into().unwrap());
 
         if let Some(iters) = &r.iterations {
-            iterations_to_reach.append_value(iters.len() as u64);
+            iterations_to_reach.append_value(iters.len().try_into().unwrap());
             let t = iters.iter().map(|i| i.total_time).sum::<f64>();
             ms_to_reach.append_value(t);
-            let node_vals = iters.iter().map(|i| Some(i.egraph_nodes as u64));
+            let node_vals = iters
+                .iter()
+                .map(|i| Some(i.egraph_nodes.try_into().unwrap()));
             nodes_to_reach.append_value(node_vals);
-            let class_vals = iters.iter().map(|i| Some(i.egraph_classes as u64));
+            let class_vals = iters
+                .iter()
+                .map(|i| Some(i.egraph_classes.try_into().unwrap()));
             classes_to_reach.append_value(class_vals);
         } else {
             iterations_to_reach.append_null();
@@ -521,7 +526,10 @@ where
     );
 
     let result = tc
-        .enumerate_root(max_size, Some(ProgressBar::new(max_size as u64)))
+        .enumerate_root(
+            max_size,
+            Some(ProgressBar::new(max_size.try_into().unwrap())),
+        )
         .into_iter()
         .filter(|t| is_frontier(t, prev_raw_egg))
         .collect::<Vec<_>>();

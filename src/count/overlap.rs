@@ -71,7 +71,7 @@ impl<C: Counter, L: Label> TermCount<'_, C, L> {
                 let samples = samples_per_size[&size];
                 let thread_partial = &partial;
                 (0..samples).into_par_iter().filter_map(move |sample| {
-                    let mut rng = ChaCha12Rng::seed_from_u64(size as u64);
+                    let mut rng = ChaCha12Rng::seed_from_u64(size.try_into().unwrap());
                     rng.set_stream(sample);
                     self.fill_holes_sampling(remaining, &mut rng, thread_partial.clone())
                 })

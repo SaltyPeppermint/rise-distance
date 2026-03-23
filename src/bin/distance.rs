@@ -287,7 +287,7 @@ fn run_count_extraction<L: Label>(
 
     let iter = candidates
         .into_par_iter()
-        .progress_count(n_candidates as u64);
+        .progress_count(n_candidates.try_into().unwrap());
 
     match distance {
         DistanceMetric::ZhangShasha => {
@@ -479,13 +479,9 @@ fn print_bar_chart(
 
     for (size, count) in sizes {
         let fraction = count.to_f64().unwrap_or(0.0) / max_f64;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss
-        )]
+        #[expect(clippy::cast_precision_loss)]
         let bar_len = if fraction.is_finite() {
-            (fraction * bar_width as f64).round() as usize
+            (fraction * bar_width as f64).round().to_usize().unwrap()
         } else {
             0
         };

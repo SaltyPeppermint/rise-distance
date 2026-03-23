@@ -37,6 +37,7 @@ pub trait Counter:
     + PartialOrd
     + for<'a> Sum<&'a Self>
     + TryInto<u64, Error: std::fmt::Debug>
+    + TryFrom<usize, Error: std::fmt::Debug>
     + Product // + Weight
 {
 }
@@ -54,6 +55,7 @@ impl<
         + PartialOrd
         + for<'a> Sum<&'a Self>
         + TryInto<u64, Error: std::fmt::Debug>
+        + TryFrom<usize, Error: std::fmt::Debug>
         + Product, // + Weight,
 > Counter for T
 {

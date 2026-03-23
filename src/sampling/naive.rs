@@ -45,7 +45,9 @@ impl<C: Counter, L: Label> Sampler<L> for NaiveSampler<'_, C, L> {
             .into_iter()
             .flat_map(|h| h.keys().filter(|&&s| s >= min_size && s <= max_size))
             .par_bridge()
-            .flat_map(|&size| self.sample_root(size, samples_per_size[&size], size as u64))
+            .flat_map(|&size| {
+                self.sample_root(size, samples_per_size[&size], size.try_into().unwrap())
+            })
             .collect()
     }
 

@@ -304,7 +304,7 @@ fn random_k(
         let trials = (0..n_trials)
             .into_par_iter()
             .map(|trial_idx| {
-                let mut rng = ChaCha12Rng::seed_from_u64(trial_idx as u64);
+                let mut rng = ChaCha12Rng::seed_from_u64(trial_idx.try_into().unwrap());
                 let subset = successful
                     .choose_multiple(&mut rng, k)
                     .map(|v| v.guide.clone())
