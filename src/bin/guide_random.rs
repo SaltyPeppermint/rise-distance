@@ -212,7 +212,7 @@ fn take_n_trials(
 ) -> Vec<RandomEntry> {
     let mut entries = Vec::new();
     for k in N_RANDOM {
-        let trials: Vec<_> = sampled_guides
+        let trials = sampled_guides
             .par_windows(guide_count / N_TRIALS)
             .map(|guides_here| {
                 let subset = &guides_here[..k];

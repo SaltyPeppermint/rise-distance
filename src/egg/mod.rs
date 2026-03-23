@@ -8,7 +8,7 @@ use hashbrown::HashMap;
 
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::ENode;
-use crate::{Class, Graph, Label};
+use crate::{Class, Graph, Label, TreeNode};
 
 pub use math::{Math, MathLabel};
 
@@ -195,16 +195,16 @@ where
 ///
 /// Panics if no guides given
 pub fn verify_reachability<L, N, LL>(
-    guides: &[crate::TreeNode<LL>],
+    guides: &[TreeNode<LL>],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     max_iters: usize,
 ) -> Option<Vec<egg::Iteration<()>>>
 where
     L: Language + 'static,
-    N: Analysis<L> + Default + 'static,
-    LL: crate::Label,
-    for<'a> &'a crate::TreeNode<LL>: Into<RecExpr<L>>,
+    N: Analysis<L> + Default,
+    LL: Label,
+    for<'a> &'a TreeNode<LL>: Into<RecExpr<L>>,
 {
     assert!(!guides.is_empty(), "must have at least one guide");
     let goal_clone = goal.clone();
