@@ -331,6 +331,7 @@ pub fn dump_to_parquet<L: Label>(
             Arc::new(structural_overlaps.finish()) as ArrayRef,
             Arc::new(structural_zs_sums.finish()) as ArrayRef,
             Arc::new(iterations_to_reach.finish()) as ArrayRef,
+            Arc::new(ms_to_reach.finish()) as ArrayRef,
             Arc::new(nodes_to_reach.finish()) as ArrayRef,
             Arc::new(classes_to_reach.finish()) as ArrayRef,
         ],
