@@ -13,17 +13,25 @@ pub trait Sampler<L: Label>: Sync + Send {
     fn root(&self) -> EClassId;
 
     #[must_use]
-    fn sample_root(
+    fn possible_size(
+        &self,
+        id: EClassId,
+        min_size: usize,
+        max_size: usize,
+    ) -> impl Iterator<Item = usize> + Send;
+
+    #[must_use]
+    fn sample_many_root(
         &self,
         size: usize,
         samples: u64,
         seed: u64,
     ) -> impl ParallelIterator<Item = TreeNode<L>> {
-        self.sample_class(self.root(), size, samples, seed)
+        self.sample_many(self.root(), size, samples, seed)
     }
 
     #[must_use]
-    fn sample_class(
+    fn sample_many(
         &self,
         id: EClassId,
         size: usize,
@@ -40,13 +48,13 @@ pub trait Sampler<L: Label>: Sync + Send {
     /// Sample unique terms across a range of sizes from root.
     ///
     /// See `sample_unique` for more info
-    fn sample_unique_root(
+    fn sample_constrained_root(
         &self,
         min_size: usize,
         max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<TreeNode<L>> {
-        self.sample_unique(self.root(), min_size, max_size, samples_per_size)
+        self.sample_constrained(self.root(), min_size, max_size, samples_per_size)
     }
 
     /// Sample unique terms across a range of sizes.
@@ -58,14 +66,18 @@ pub trait Sampler<L: Label>: Sync + Send {
     /// may have gaps in its reachable sizes (e.g. terms only at sizes 5, 7, 9),
     /// and calling `sample` with a size that has no terms would cause all node
     /// weights to be zero, panicking with `AllWeightsZero`.
-    #[must_use]
-    fn sample_unique(
+    fn sample_constrained(
         &self,
         id: EClassId,
         min_size: usize,
         max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
-    ) -> HashSet<TreeNode<L>>;
+    ) -> HashSet<TreeNode<L>> {
+        self.possible_size(id, min_size, max_size)
+            .par_bridge()
+            .flat_map(|size| self.sample_many(id, size, samples_per_size[&size], size as u64))
+            .collect()
+    }
 
     #[must_use]
     fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L>;

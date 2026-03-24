@@ -31,22 +31,22 @@ impl<L: Language, N: Analysis<L>> GuideGoalResult<L, N> {
 
     #[must_use]
     pub fn guide(&self) -> &EGraph<L, N> {
-        &self.graphs[self.graphs.len() / 2 + 1]
-    }
-
-    #[must_use]
-    pub fn prev_guide(&self) -> &EGraph<L, N> {
-        &self.graphs[self.graphs.len() / 2]
-    }
-
-    #[must_use]
-    pub fn goal(&self) -> &EGraph<L, N> {
         &self.graphs[self.guide_iteration]
     }
 
     #[must_use]
-    pub fn prev_goal(&self) -> &EGraph<L, N> {
+    pub fn prev_guide(&self) -> &EGraph<L, N> {
         &self.graphs[self.guide_iteration - 1]
+    }
+
+    #[must_use]
+    pub fn goal(&self) -> &EGraph<L, N> {
+        &self.graphs[self.graphs.len() - 1]
+    }
+
+    #[must_use]
+    pub fn prev_goal(&self) -> &EGraph<L, N> {
+        &self.graphs[self.graphs.len() - 2]
     }
 }
 

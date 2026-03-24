@@ -551,8 +551,11 @@ where
             count * oversample,
             normal_center,
         );
-        let batch =
-            CountSampler::new(&tc, graph).sample_unique_root(min_size, max_size, &samples_per_size);
+        let batch = CountSampler::new(&tc, graph).sample_constrained_root(
+            min_size,
+            max_size,
+            &samples_per_size,
+        );
         let prev_len = result.len();
         result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
         if result.len() >= count || result.len() == prev_len {
