@@ -15,8 +15,7 @@ dependencies = [
     "tqdm",
     "flash-linear-attention",
     "torch-tb-profiler",
-    "causal-conv1d",
-    "msgpack",
+    # "causal-conv1d",
 ]
 
 [dependency-groups]
