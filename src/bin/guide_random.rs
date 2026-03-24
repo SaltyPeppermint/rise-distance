@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    EvalResult, N_RANDOM, RULES, RandomEntry, SizeDistribution, TopKSummary, dump_to_parquet,
+    EvalResult, RULES, RandomEntry, SizeDistribution, TRIAL_SIZE, TopKSummary, dump_to_parquet,
     get_run_folder, init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
@@ -85,7 +85,7 @@ struct Cli {
     eval_all: bool,
 }
 
-const N_TRIALS: usize = const { N_RANDOM[N_RANDOM.len() - 1] };
+const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
 
 fn main() {
     let cli = Cli::parse();
@@ -226,13 +226,12 @@ fn take_n_trials(
     sampled_guides: &[TreeNode<MathLabel>],
 ) -> Vec<RandomEntry> {
     let mut entries = Vec::new();
-    for k in N_RANDOM {
+    for k in TRIAL_SIZE {
         let trials = sampled_guides
-            .par_windows(guide_count / N_TRIALS)
+            .par_windows(guide_count / MAX_TRIAL_SIZE)
             .map(|guides_here| {
-                let subset = &guides_here[..k];
                 verify_reachability(
-                    subset,
+                    &guides_here[..k],
                     goal_recexpr,
                     RULES.get_or_init(math::rules),
                     cli.goal_iters,
@@ -246,7 +245,7 @@ fn take_n_trials(
         let combined_nodes = trial_avg(&trials, |t| t.last().map(|i| i.egraph_nodes));
         if let (Some(avg_i), Some(avg_n)) = (combined_iters, combined_nodes) {
             tee_println!(
-                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {reached} in {N_TRIALS} trials)"
+                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {reached} in {MAX_TRIAL_SIZE} trials)"
             );
         } else {
             tee_println!("Could NOT reach with {k} guides");

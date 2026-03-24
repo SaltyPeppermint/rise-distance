@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    EvalResult, MeasuredGuide, N_RANDOM, RULES, RandomEntry, SizeDistribution, dump_to_parquet,
+    EvalResult, MeasuredGuide, RULES, RandomEntry, SizeDistribution, TRIAL_SIZE, dump_to_parquet,
     enumerate_frontier_terms, get_run_folder, init_log, measure_guides, min_med_max,
     sample_frontier_terms, trial_avg,
 };
@@ -283,7 +283,7 @@ fn top_k(
     go: &RecExpr<Math>,
 ) -> Vec<TopKEntry> {
     let mut entries = Vec::new();
-    for k in N_RANDOM {
+    for k in TRIAL_SIZE {
         if k > ranked.len() {
             continue;
         }
@@ -305,7 +305,7 @@ fn random_k(
     n_trials: usize,
 ) -> Vec<RandomEntry> {
     let mut entries = Vec::new();
-    for k in N_RANDOM {
+    for k in TRIAL_SIZE {
         if k > successful.len() {
             continue;
         }

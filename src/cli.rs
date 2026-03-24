@@ -29,7 +29,7 @@ use crate::{
     Graph, Label, StructuralDistance, TreeNode, UnitCost, structural_diff, tree_distance_unit,
 };
 
-pub const N_RANDOM: [usize; 6] = [1, 2, 5, 10, 50, 100];
+pub const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
 
 static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
 
