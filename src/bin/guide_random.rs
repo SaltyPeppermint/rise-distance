@@ -8,6 +8,7 @@ use hashbrown::HashSet;
 use rayon::prelude::*;
 use rise_distance::cli::parquet::{dump_to_parquet, dump_top_k_summary_parquet};
 use serde::Serialize;
+use serde_json::json;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
@@ -118,17 +119,22 @@ fn main() {
         cli.goal_iters,
     );
 
-    tee_println!("Eqsat completed in {:.2?}", start.elapsed());
-    tee_println!(
-        "Guide egraph had {} nodes, {} classes",
-        result.guide().total_number_of_nodes(),
-        result.guide().classes().len()
-    );
-    tee_println!(
-        "Final egraph had {} nodes, {} classes",
-        result.goal().total_number_of_nodes(),
-        result.goal().classes().len()
-    );
+    let eqsat_secs = start.elapsed().as_secs_f64();
+    tee_println!("Eqsat completed in {eqsat_secs:.2}s");
+    let guide_nodes = result.guide().total_number_of_nodes();
+    let guide_classes = result.guide().classes().len();
+    let goal_nodes = result.goal().total_number_of_nodes();
+    let goal_classes = result.goal().classes().len();
+    tee_println!("Guide egraph had {guide_nodes} nodes, {guide_classes} classes");
+    tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes");
+
+    let mut stats = json!({
+        "eqsat_time_secs": eqsat_secs,
+        "guide_egraph_nodes": guide_nodes,
+        "guide_egraph_classes": guide_classes,
+        "goal_egraph_nodes": goal_nodes,
+        "goal_egraph_classes": goal_classes,
+    });
 
     tee_println!(
         "\nSampling goals from iteration-{} frontier...",
@@ -155,6 +161,7 @@ fn main() {
     );
 
     let mut all_top_k = Vec::new();
+    let mut goal_stats = Vec::new();
     for goal in &goals {
         let goal_recexpr = goal.into();
 
@@ -190,16 +197,17 @@ fn main() {
                 }
             })
             .collect::<Vec<_>>();
-        print_summary(&results, goal, verify_iters);
+        goal_stats.push(print_summary(&results, goal, verify_iters));
         if cli.eval_all {
             dump_to_parquet(&run_folder, goal, &results);
         }
     }
 
-    write_outputs(&run_folder, &all_top_k, &cli);
+    stats["goals"] = serde_json::Value::Array(goal_stats);
+    write_outputs(&run_folder, &all_top_k, &cli, &stats);
 }
 
-fn write_outputs(run_folder: &std::path::Path, all_top_k: &[TopKResults], cli: &Cli) {
+fn write_outputs(run_folder: &std::path::Path, all_top_k: &[TopKResults], cli: &Cli, stats: &serde_json::Value) {
     let output_path = run_folder.join("top_k.json");
     let output_file = File::create(output_path).expect("Failed to create output json file");
     let mut output_writer = BufWriter::new(output_file);
@@ -221,6 +229,11 @@ fn write_outputs(run_folder: &std::path::Path, all_top_k: &[TopKResults], cli: &
     let config_file = File::create(config_path).expect("Failed to create output config.json file");
     let config_writer = BufWriter::new(config_file);
     serde_json::to_writer_pretty(config_writer, &cli).unwrap();
+
+    let stats_path = run_folder.join("stats.json");
+    let stats_file = File::create(&stats_path).expect("Failed to create stats.json");
+    let stats_writer = BufWriter::new(stats_file);
+    serde_json::to_writer_pretty(stats_writer, stats).expect("write stats json");
 }
 
 fn take_n_trials(
@@ -267,25 +280,33 @@ struct TopKResults {
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, max_iters: usize) {
+fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, max_iters: usize) -> serde_json::Value {
     let successful = results
         .iter()
         .filter(|r| r.iterations.is_some())
         .collect::<Vec<_>>();
     let total = results.len();
     let n_reached = successful.len();
+    let goal_size = goal.size_without_types();
+    let reach_pct = 100.0 * n_reached as f64 / total.max(1) as f64;
 
     tee_println!("\nSummary for goal: {goal}");
-    tee_println!("  Goal size: {}", goal.size_without_types());
+    tee_println!("  Goal size: {goal_size}");
     tee_println!("  Total guides evaluated: {total}");
     tee_println!("  Max verify iterations: {max_iters}");
-    tee_println!(
-        "  Guides that reached goal: {n_reached}/{total} ({:.1}%)",
-        100.0 * n_reached as f64 / total.max(1) as f64
-    );
+    tee_println!("  Guides that reached goal: {n_reached}/{total} ({reach_pct:.1}%)");
+
+    let mut stat = json!({
+        "goal": goal.to_string(),
+        "goal_size": goal_size,
+        "total_guides": total,
+        "max_verify_iters": max_iters,
+        "reached": n_reached,
+        "reach_pct": reach_pct,
+    });
 
     if successful.is_empty() {
-        return;
+        return stat;
     }
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
@@ -293,22 +314,21 @@ fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, 
         "  {:<30} min={min}, median={med}, max={max}",
         "Successful guide zs_dists:"
     );
-
-    let (min, med, max) = min_med_max(&successful, |v| v.iterations.as_ref().unwrap().len());
-    tee_println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Iterations to reach:"
-    );
+    stat["zs_distance"] = json!({"min": min, "median": med, "max": max});
 
     let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_distance);
     tee_println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Successful guide struct_dist:"
     );
+    stat["structural_distance"] = json!({"min": min, "median": med, "max": max});
 
     let (min, med, max) = min_med_max(&successful, |v| v.iterations.as_ref().unwrap().len());
     tee_println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Iterations to reach:"
     );
+    stat["iterations_to_reach"] = json!({"min": min, "median": med, "max": max});
+
+    stat
 }
