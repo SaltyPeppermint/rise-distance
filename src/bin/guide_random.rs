@@ -6,12 +6,13 @@ use clap::Parser;
 use egg::RecExpr;
 use hashbrown::HashSet;
 use rayon::prelude::*;
+use rise_distance::cli::parquet::{dump_to_parquet, dump_top_k_summary_parquet};
 use serde::Serialize;
 
 use rise_distance::TreeNode;
 use rise_distance::cli::{
-    EvalResult, RULES, RandomEntry, SizeDistribution, TRIAL_SIZE, TopKSummary, dump_to_parquet,
-    get_run_folder, init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
+    EvalResult, RULES, RandomEntry, SizeDistribution, TRIAL_SIZE, TopKSummary, get_run_folder,
+    init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
 use rise_distance::egg::{convert, run_guide_goal, verify_reachability};
@@ -212,6 +213,9 @@ fn write_outputs(run_folder: &std::path::Path, all_top_k: &[TopKResults], cli: &
     let summary_file = File::create(summary_path).expect("Failed to create summary json file");
     let summary_writer = BufWriter::new(summary_file);
     serde_json::to_writer(summary_writer, &summaries).expect("write top-k summary json");
+
+    let parquet_path = run_folder.join("top_k_summary.parquet");
+    dump_top_k_summary_parquet(&parquet_path, &summaries);
 
     let config_path = run_folder.join("config.json");
     let config_file = File::create(config_path).expect("Failed to create output config.json file");

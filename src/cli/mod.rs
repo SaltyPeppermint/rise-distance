@@ -1,22 +1,18 @@
+pub mod parquet;
+
 use std::env::current_dir;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use arrow::array::{ArrayRef, Float64Builder, ListBuilder, StringBuilder, UInt64Builder};
-use arrow::datatypes::{DataType, Field, Schema};
-use arrow::record_batch::RecordBatch;
 use egg::{Analysis, Iteration, Language, Rewrite};
 use hashbrown::{HashMap, HashSet};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
-use parquet::arrow::ArrowWriter;
-use parquet::basic::{Compression, ZstdLevel};
-use parquet::file::properties::WriterProperties;
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -244,221 +240,6 @@ pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathB
     this_run_dir
 }
 
-#[derive(Serialize, Debug)]
-pub struct EvalResult<'a, L: Label> {
-    pub guide: &'a MeasuredGuide<L>,
-    pub iterations: Option<Vec<Iteration<()>>>,
-}
-
-/// Dump eval results to a new Parquet file inside `run_folder/out/`.
-///
-/// Each call creates the next numbered file (`0.parquet`, `1.parquet`, …).
-///
-/// # Panics
-///
-/// Panics if it cannot create/open the file or write the data.
-pub fn dump_to_parquet<L: Label>(
-    run_folder: &Path,
-    goal: &TreeNode<L>,
-    results: &[EvalResult<'_, L>],
-) {
-    let out_dir = run_folder.join("out");
-    std::fs::create_dir_all(&out_dir).expect("create out/ directory");
-
-    let next_id = out_dir
-        .read_dir()
-        .expect("read out/ directory")
-        .filter_map(|e| e.ok()?.path().file_stem()?.to_str()?.parse::<usize>().ok())
-        .max()
-        .map_or(0, |m| m + 1);
-
-    let parquet_path = out_dir.join(format!("{next_id}.parquet"));
-    let goal_str = goal.to_string();
-
-    let schema = parquet_schema();
-
-    // Build column arrays
-    let n = results.len();
-    let mut goals = StringBuilder::with_capacity(n, goal_str.len() * n);
-    let mut guides = StringBuilder::new();
-    let mut zs_distances = UInt64Builder::with_capacity(n);
-    let mut structural_overlaps = UInt64Builder::with_capacity(n);
-    let mut structural_zs_sums = UInt64Builder::with_capacity(n);
-    let mut iterations_to_reach = UInt64Builder::with_capacity(n);
-    let mut ms_to_reach = Float64Builder::with_capacity(n);
-    let mut nodes_to_reach = ListBuilder::new(UInt64Builder::new()).with_field(Field::new(
-        "item",
-        DataType::UInt64,
-        false,
-    ));
-    let mut classes_to_reach = ListBuilder::new(UInt64Builder::new()).with_field(Field::new(
-        "item",
-        DataType::UInt64,
-        false,
-    ));
-
-    for r in results {
-        goals.append_value(&goal_str);
-        guides.append_value(r.guide.guide.to_string());
-        zs_distances.append_value(r.guide.zs_distance.try_into().unwrap());
-        structural_overlaps.append_value(r.guide.structural_distance.overlap().try_into().unwrap());
-        structural_zs_sums.append_value(r.guide.structural_distance.zs_sum().try_into().unwrap());
-
-        if let Some(iters) = &r.iterations {
-            iterations_to_reach.append_value(iters.len().try_into().unwrap());
-            let t = iters.iter().map(|i| i.total_time).sum::<f64>();
-            ms_to_reach.append_value(t);
-            let node_vals = iters
-                .iter()
-                .map(|i| Some(i.egraph_nodes.try_into().unwrap()));
-            nodes_to_reach.append_value(node_vals);
-            let class_vals = iters
-                .iter()
-                .map(|i| Some(i.egraph_classes.try_into().unwrap()));
-            classes_to_reach.append_value(class_vals);
-        } else {
-            iterations_to_reach.append_null();
-            ms_to_reach.append_null();
-            nodes_to_reach.append_null();
-            classes_to_reach.append_null();
-        }
-    }
-
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(goals.finish()) as ArrayRef,
-            Arc::new(guides.finish()) as ArrayRef,
-            Arc::new(zs_distances.finish()) as ArrayRef,
-            Arc::new(structural_overlaps.finish()) as ArrayRef,
-            Arc::new(structural_zs_sums.finish()) as ArrayRef,
-            Arc::new(iterations_to_reach.finish()) as ArrayRef,
-            Arc::new(ms_to_reach.finish()) as ArrayRef,
-            Arc::new(nodes_to_reach.finish()) as ArrayRef,
-            Arc::new(classes_to_reach.finish()) as ArrayRef,
-        ],
-    )
-    .expect("build record batch");
-
-    let file = File::create(&parquet_path).expect("create parquet file");
-    let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(
-            ZstdLevel::try_new(3).expect("valid zstd level"),
-        ))
-        .build();
-    let mut writer =
-        ArrowWriter::try_new(file, schema, Some(props)).expect("create parquet writer");
-    writer.write(&batch).expect("write parquet batch");
-    writer.close().expect("close parquet writer");
-
-    tee_println!("Wrote goal to {}", parquet_path.display());
-}
-
-fn parquet_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("goal", DataType::Utf8, false),
-        Field::new("guide", DataType::Utf8, false),
-        Field::new("zs_distance", DataType::UInt64, false),
-        Field::new("structural_overlap", DataType::UInt64, false),
-        Field::new("structural_zs_sum", DataType::UInt64, false),
-        Field::new("iterations_to_reach", DataType::UInt64, true),
-        Field::new("ms_to_reach", DataType::Float64, true),
-        Field::new(
-            "nodes_to_reach",
-            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-            true,
-        ),
-        Field::new(
-            "classes_to_reach",
-            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-            true,
-        ),
-    ]))
-}
-
-#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
-pub struct MeasuredGuide<L: Label> {
-    pub guide: TreeNode<L>,
-    pub zs_distance: usize,
-    #[serde(flatten)]
-    pub structural_distance: StructuralDistance,
-}
-
-pub struct RandomTrial {
-    pub data: Vec<Iteration<()>>,
-}
-#[derive(Serialize)]
-pub struct RandomEntry {
-    pub k: usize,
-    pub trials: Vec<Option<Vec<Iteration<()>>>>,
-}
-
-/// Pre-computed per-trial summary. Much smaller than the full `Iteration`
-/// vectors, so Python can load it instantly.
-#[derive(Serialize)]
-pub struct TrialSummary {
-    /// Number of eqsat iterations to reach the goal.
-    pub iters: usize,
-    /// Egraph node count at the final iteration.
-    pub nodes: usize,
-    /// Egraph e-class count at the final iteration.
-    pub classes: usize,
-    /// Total number of rule applications across all iterations.
-    pub total_applied: usize,
-    /// Total wall-clock time (seconds) across all iterations.
-    pub total_time: f64,
-}
-
-#[derive(Serialize)]
-pub struct SummaryEntry {
-    pub k: usize,
-    pub trials: Vec<Option<TrialSummary>>,
-}
-
-#[derive(Serialize)]
-pub struct TopKSummary {
-    pub goal: String,
-    pub entries: Vec<SummaryEntry>,
-}
-
-impl TopKSummary {
-    /// Build a summary from the full `RandomEntry` data for a given goal.
-    ///
-    /// # Panics
-    /// Panics if a reachable trial has an empty iteration list.
-    #[must_use]
-    pub fn from_entries(goal: &str, entries: &[RandomEntry]) -> Self {
-        Self {
-            goal: goal.to_owned(),
-            entries: entries
-                .iter()
-                .map(|e| SummaryEntry {
-                    k: e.k,
-                    trials: e
-                        .trials
-                        .iter()
-                        .map(|trial| {
-                            trial.as_ref().map(|iters| {
-                                let last = iters.last().expect("non-empty iteration list");
-                                TrialSummary {
-                                    iters: iters.len(),
-                                    nodes: last.egraph_nodes,
-                                    classes: last.egraph_classes,
-                                    total_applied: iters
-                                        .iter()
-                                        .map(|i| i.applied.values().sum::<usize>())
-                                        .sum(),
-                                    total_time: iters.iter().map(|i| i.total_time).sum(),
-                                }
-                            })
-                        })
-                        .collect(),
-                })
-                .collect(),
-        }
-    }
-}
-
 #[expect(clippy::cast_precision_loss)]
 pub fn trial_avg<F: Fn(&Vec<Iteration<()>>) -> Option<usize>>(
     trials: &[Option<Vec<Iteration<()>>>],
@@ -617,4 +398,93 @@ where
         start.elapsed().as_secs()
     );
     result
+}
+
+#[derive(Serialize, Debug)]
+pub struct EvalResult<'a, L: Label> {
+    pub guide: &'a MeasuredGuide<L>,
+    pub iterations: Option<Vec<Iteration<()>>>,
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
+pub struct MeasuredGuide<L: Label> {
+    pub guide: TreeNode<L>,
+    pub zs_distance: usize,
+    #[serde(flatten)]
+    pub structural_distance: StructuralDistance,
+}
+
+pub struct RandomTrial {
+    pub data: Vec<Iteration<()>>,
+}
+#[derive(Serialize)]
+pub struct RandomEntry {
+    pub k: usize,
+    pub trials: Vec<Option<Vec<Iteration<()>>>>,
+}
+
+/// Pre-computed per-trial summary. Much smaller than the full `Iteration`
+/// vectors, so Python can load it instantly.
+#[derive(Serialize)]
+pub struct TrialSummary {
+    /// Number of eqsat iterations to reach the goal.
+    pub iters: usize,
+    /// Egraph node count at the final iteration.
+    pub nodes: usize,
+    /// Egraph e-class count at the final iteration.
+    pub classes: usize,
+    /// Total number of rule applications across all iterations.
+    pub total_applied: usize,
+    /// Total wall-clock time (seconds) across all iterations.
+    pub total_time: f64,
+}
+
+#[derive(Serialize)]
+pub struct SummaryEntry {
+    pub k: usize,
+    pub trials: Vec<Option<TrialSummary>>,
+}
+
+#[derive(Serialize)]
+pub struct TopKSummary {
+    pub goal: String,
+    pub entries: Vec<SummaryEntry>,
+}
+
+impl TopKSummary {
+    /// Build a summary from the full `RandomEntry` data for a given goal.
+    ///
+    /// # Panics
+    /// Panics if a reachable trial has an empty iteration list.
+    #[must_use]
+    pub fn from_entries(goal: &str, entries: &[RandomEntry]) -> Self {
+        Self {
+            goal: goal.to_owned(),
+            entries: entries
+                .iter()
+                .map(|e| SummaryEntry {
+                    k: e.k,
+                    trials: e
+                        .trials
+                        .iter()
+                        .map(|trial| {
+                            trial.as_ref().map(|iters| {
+                                let last = iters.last().expect("non-empty iteration list");
+                                TrialSummary {
+                                    iters: iters.len(),
+                                    nodes: last.egraph_nodes,
+                                    classes: last.egraph_classes,
+                                    total_applied: iters
+                                        .iter()
+                                        .map(|i| i.applied.values().sum::<usize>())
+                                        .sum(),
+                                    total_time: iters.iter().map(|i| i.total_time).sum(),
+                                }
+                            })
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import numpy as np
 import polars as pl
@@ -292,19 +293,18 @@ def parse_top_k_summary(raw: list[dict], strategy_name: str) -> list[dict]:
     return rows
 
 
-def load_top_k(run_dir: Path, strategy_name: str) -> list[dict]:
-    """Load trial rows from a run directory, preferring the summary file."""
-    import json
+def load_top_k(run_dir: Path, strategy_name: str) -> pl.DataFrame:
+    """Load trial rows from a run directory, preferring parquet over JSON summary."""
+    parquet_path = run_dir / "top_k_summary.parquet"
+    if parquet_path.exists():
+        return pl.read_parquet(parquet_path).with_columns(
+            pl.lit(strategy_name).alias("strategy")
+        )
 
     summary_path = run_dir / "top_k_summary.json"
-    if summary_path.exists():
-        with open(summary_path, encoding="utf-8") as f:
-            raw = json.load(f)
-        return parse_top_k_summary(raw, strategy_name)
-
-    with open(run_dir / "top_k.json", encoding="utf-8") as f:
+    with open(summary_path, encoding="utf-8") as f:
         raw = json.load(f)
-    return parse_top_k_trials(raw, strategy_name)
+    return pl.DataFrame(parse_top_k_summary(raw, strategy_name))
 
 
 def load_guide_eval(path: Path) -> pl.DataFrame:
