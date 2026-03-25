@@ -280,19 +280,19 @@ where
     I: IterationData<L, N>,
     TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
 {
-    let mut collector = HashMap::new();
+    let mut origin_to_new_ids = HashMap::new();
 
     for guide in guides {
-        let new_root = add_uncanon_remember(&mut runner.egraph, guide, &mut collector);
+        let new_root = add_uncanon_remember(&mut runner.egraph, guide, &mut origin_to_new_ids);
         runner.roots.push(new_root);
     }
 
-    // Union all guide roots together before running
-    for same_in_old in collector.values() {
-        let mut id_iter = same_in_old.iter();
-        if let Some(repr_id) = id_iter.next() {
+    // Union all nodes that shared an eclass in the original egraph
+    for new_ids in origin_to_new_ids.values() {
+        let mut id_iter = new_ids.iter();
+        if let Some(first) = id_iter.next() {
             for id in id_iter {
-                runner.egraph.union(*repr_id, *id);
+                runner.egraph.union(*first, *id);
             }
         }
     }
@@ -302,7 +302,7 @@ where
 fn add_uncanon_remember<LL, L, N>(
     graph: &mut EGraph<L, N>,
     guide: &TreeNodeWithOrigin<LL>,
-    collector: &mut HashMap<AnyId, HashSet<Id>>,
+    origin_to_new_ids: &mut HashMap<AnyId, HashSet<Id>>,
 ) -> Id
 where
     LL: Label,
@@ -310,13 +310,13 @@ where
     N: Analysis<L>,
     TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
 {
-    let mut adder = |s: &TreeNodeWithOrigin<LL>, x| {
-        let next_id = graph.add_uncanonical(x);
-        collector
-            .entry(s.origin())
+    let mut adder = |node: &TreeNodeWithOrigin<LL>, lang_node| {
+        let new_id = graph.add_uncanonical(lang_node);
+        origin_to_new_ids
+            .entry(node.origin())
             .or_default()
-            .insert(next_id);
-        next_id
+            .insert(new_id);
+        new_id
     };
     guide.add_node(&mut adder)
 }
