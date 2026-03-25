@@ -94,7 +94,10 @@ const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
 
 fn main() {
     let cli = Cli::parse();
-    let prefix = format!("run-{}-{}-random", cli.guide_iters, cli.goal_iters);
+    let prefix = format!(
+        "run-{}-{}-random-fullunion-{}",
+        cli.guide_iters, cli.goal_iters, cli.full_union
+    );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
 
@@ -151,7 +154,7 @@ fn main() {
     );
     assert!(
         !goals.is_empty(),
-        "No frontier terms found. Try more iterations or a larger max-size.",
+        "Frontier empty. Try more iterations or a larger max-size.",
     );
     tee_println!("Sampled {} goal(s)", goals.len());
 
@@ -181,21 +184,17 @@ fn main() {
         let measured = measure_guides(&sampled_guides, goal)
             .into_iter()
             .collect::<HashSet<_>>();
-
         let results = measured
             .par_iter()
-            .map(|measured| {
-                let values = verify_reachability(
+            .map(|measured| EvalResult {
+                guide: measured,
+                iterations: verify_reachability(
                     std::slice::from_ref(&measured.guide),
                     &goal_recexpr,
                     RULES.get_or_init(math::rules),
                     verify_iters,
                     cli.full_union,
-                );
-                EvalResult {
-                    guide: measured,
-                    iterations: values,
-                }
+                ),
             })
             .collect::<Vec<_>>();
         goal_stats.push(print_summary(&results, goal, verify_iters));
