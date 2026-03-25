@@ -61,43 +61,41 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, '_, C, L> {
         let pick = &eclass.nodes()[pick_idx];
         let suffix = &cached[pick_idx];
 
-        // Sequentially sample a size for each child, weighting by:
-        //   count(child_i, s) * suffix_count(i+1, remaining - s)
+        // Sample a size for each child (weighted by count * suffix) and recurse in one pass.
         let mut remaining = child_budget;
-        let mut child_sizes = Vec::with_capacity(pick.children().len());
+        let children = pick
+            .children()
+            .iter()
+            .enumerate()
+            .map(|(i, &c_id)| {
+                let histogram = self.term_count.child_histogram(c_id, self.graph);
+                let candidates = histogram
+                    .iter()
+                    .filter_map(|(&s, count)| {
+                        remaining
+                            .checked_sub(s)
+                            .and_then(|r| suffix[i + 1].get(&r))
+                            .map(|rest_count| (s, count.to_owned() * rest_count))
+                    })
+                    .collect::<Vec<_>>();
 
-        for (i, &c_id) in pick.children().iter().enumerate() {
-            let histogram = self.term_count.child_histogram(c_id, self.graph);
-            let candidates = histogram
-                .iter()
-                .filter_map(|(&s, count)| {
-                    remaining
-                        .checked_sub(s)
-                        .and_then(|r| suffix[i + 1].get(&r))
-                        .map(|rest_count| (s, count.to_owned() * rest_count))
-                })
-                .collect::<Vec<_>>();
+                let dist = WeightedIndex::new(candidates.iter().map(|(_, w)| w)).unwrap();
+                let chosen_size = candidates[dist.sample(rng)].0;
+                remaining -= chosen_size;
 
-            let dist = WeightedIndex::new(candidates.iter().map(|(_, w)| w)).unwrap();
-            let chosen_size = candidates[dist.sample(rng)].0;
-
-            child_sizes.push(chosen_size);
-            remaining -= chosen_size;
-        }
+                match c_id {
+                    ExprChildId::Nat(nat_id) => TreeNodeWithOrigin::from_nat(self.graph, nat_id),
+                    ExprChildId::Data(data_id) => {
+                        TreeNodeWithOrigin::from_data(self.graph, data_id)
+                    }
+                    ExprChildId::EClass(eclass_id) => self.sample(eclass_id, chosen_size, rng),
+                }
+            })
+            .collect();
 
         TreeNodeWithOrigin::new_typed(
             pick.label().clone(),
-            pick.children()
-                .iter()
-                .zip(child_sizes)
-                .map(|(c_id, s)| match c_id {
-                    ExprChildId::Nat(nat_id) => TreeNodeWithOrigin::from_nat(self.graph, *nat_id),
-                    ExprChildId::Data(data_id) => {
-                        TreeNodeWithOrigin::from_data(self.graph, *data_id)
-                    }
-                    ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
-                })
-                .collect(),
+            children,
             TreeNodeWithOrigin::from_eclass(self.graph, canon_id),
             canon_id.into(),
         )

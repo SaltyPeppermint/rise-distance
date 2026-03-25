@@ -1,4 +1,3 @@
-use rand::Rng;
 use rand::prelude::*;
 
 use crate::count::{Counter, TermCount};
@@ -39,15 +38,14 @@ impl<C: Counter, L: Label> Sampler<L> for NaiveSampler<'_, '_, C, L> {
             .copied()
     }
 
-    /// Here we sample with no regard for how many terms of a given size are in the
-    /// `EClass` / `ENodes` children
+    /// Sample uniformly: each feasible choice gets equal weight.
     fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNodeWithOrigin<L> {
         let canon_id = self.graph.canonicalize(id);
         let eclass = self.graph.class(canon_id);
         let child_budget = size - 1 - self.term_count.type_overhead(eclass);
         let cached = &self.term_count.suffix_cache[&canon_id];
 
-        // Pick a node from all the children that support the remaining budget.
+        // Pick a node uniformly from those that can produce the target size.
         let pick_idx = cached
             .iter()
             .enumerate()
@@ -58,40 +56,38 @@ impl<C: Counter, L: Label> Sampler<L> for NaiveSampler<'_, '_, C, L> {
         let pick = &eclass.nodes()[pick_idx];
         let suffix = &cached[pick_idx];
 
-        // Sequentially sample a size for each child,
-        // always making sure that the child supports that size
+        // Sample a feasible size for each child and recurse in one pass.
         let mut remaining = child_budget;
-        let mut child_sizes = Vec::with_capacity(pick.children().len());
+        let children = pick
+            .children()
+            .iter()
+            .enumerate()
+            .map(|(i, &c_id)| {
+                let histogram = self.term_count.child_histogram(c_id, self.graph);
+                let chosen_size = histogram
+                    .iter()
+                    .filter_map(|(&s, _)| {
+                        remaining
+                            .checked_sub(s)
+                            .and_then(|r| suffix[i + 1].contains_key(&r).then_some(s))
+                    })
+                    .choose(rng)
+                    .unwrap();
+                remaining -= chosen_size;
 
-        for (i, &c_id) in pick.children().iter().enumerate() {
-            let histogram = self.term_count.child_histogram(c_id, self.graph);
-            let chosen_size = histogram
-                .iter()
-                .filter_map(|(&s, _)| {
-                    remaining
-                        .checked_sub(s)
-                        .and_then(|r| suffix[i + 1].contains_key(&r).then_some(r))
-                })
-                .choose(rng)
-                .unwrap();
-
-            child_sizes.push(chosen_size);
-            remaining -= chosen_size;
-        }
+                match c_id {
+                    ExprChildId::Nat(nat_id) => TreeNodeWithOrigin::from_nat(self.graph, nat_id),
+                    ExprChildId::Data(data_id) => {
+                        TreeNodeWithOrigin::from_data(self.graph, data_id)
+                    }
+                    ExprChildId::EClass(eclass_id) => self.sample(eclass_id, chosen_size, rng),
+                }
+            })
+            .collect();
 
         TreeNodeWithOrigin::new_typed(
             pick.label().clone(),
-            pick.children()
-                .iter()
-                .zip(child_sizes)
-                .map(|(c_id, s)| match c_id {
-                    ExprChildId::Nat(nat_id) => TreeNodeWithOrigin::from_nat(self.graph, *nat_id),
-                    ExprChildId::Data(data_id) => {
-                        TreeNodeWithOrigin::from_data(self.graph, *data_id)
-                    }
-                    ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
-                })
-                .collect(),
+            children,
             TreeNodeWithOrigin::from_eclass(self.graph, canon_id),
             canon_id.into(),
         )
