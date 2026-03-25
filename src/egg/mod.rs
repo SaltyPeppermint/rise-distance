@@ -314,10 +314,8 @@ where
         let next_id = graph.add_uncanonical(x);
         collector
             .entry(s.origin())
-            .and_modify(|v| {
-                v.insert(next_id);
-            })
-            .or_default();
+            .or_default()
+            .insert(next_id);
         next_id
     };
     guide.add_node(&mut adder)
