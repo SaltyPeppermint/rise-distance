@@ -6,7 +6,7 @@ use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
-use crate::{EClassId, Label, TreeNode};
+use crate::{EClassId, Label, tree::TreeNodeWithOrigin};
 
 pub trait Sampler<L: Label>: Sync + Send {
     #[must_use]
@@ -26,7 +26,7 @@ pub trait Sampler<L: Label>: Sync + Send {
         size: usize,
         samples: u64,
         seed: u64,
-    ) -> impl ParallelIterator<Item = TreeNode<L>> {
+    ) -> impl ParallelIterator<Item = TreeNodeWithOrigin<L>> {
         self.sample_many(self.root(), size, samples, seed)
     }
 
@@ -37,7 +37,7 @@ pub trait Sampler<L: Label>: Sync + Send {
         size: usize,
         samples: u64,
         seed: u64,
-    ) -> impl ParallelIterator<Item = TreeNode<L>> {
+    ) -> impl ParallelIterator<Item = TreeNodeWithOrigin<L>> {
         (0..samples).into_par_iter().map(move |sample| {
             let mut rng = ChaCha12Rng::seed_from_u64(seed);
             rng.set_stream(sample);
@@ -53,7 +53,7 @@ pub trait Sampler<L: Label>: Sync + Send {
         min_size: usize,
         max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
-    ) -> HashSet<TreeNode<L>> {
+    ) -> HashSet<TreeNodeWithOrigin<L>> {
         self.sample_constrained(self.root(), min_size, max_size, samples_per_size)
     }
 
@@ -72,7 +72,7 @@ pub trait Sampler<L: Label>: Sync + Send {
         min_size: usize,
         max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
-    ) -> HashSet<TreeNode<L>> {
+    ) -> HashSet<TreeNodeWithOrigin<L>> {
         self.possible_size(id, min_size, max_size)
             .par_bridge()
             .flat_map(|size| self.sample_many(id, size, samples_per_size[&size], size as u64))
@@ -80,5 +80,5 @@ pub trait Sampler<L: Label>: Sync + Send {
     }
 
     #[must_use]
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L>;
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNodeWithOrigin<L>;
 }

@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use super::Counter;
 use super::TermCount;
 use crate::Graph;
-use crate::TreeNode;
+use crate::TreeNodeWithOrigin;
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;
 
@@ -17,7 +17,7 @@ impl<C: Counter> TermCount<C> {
         graph: &Graph<L>,
         max_size: usize,
         progress: Option<ProgressBar>,
-    ) -> Vec<TreeNode<L>> {
+    ) -> Vec<TreeNodeWithOrigin<L>> {
         self.enumerate(graph, graph.root(), max_size, progress)
     }
 
@@ -30,7 +30,7 @@ impl<C: Counter> TermCount<C> {
         id: EClassId,
         max_size: usize,
         progress: Option<ProgressBar>,
-    ) -> Vec<TreeNode<L>> {
+    ) -> Vec<TreeNodeWithOrigin<L>> {
         let canon_id = graph.canonicalize(id);
         let sum = self
             .data
@@ -49,7 +49,7 @@ impl<C: Counter> TermCount<C> {
         let eclass = graph.class(canon_id);
         let nodes = eclass.nodes();
         let type_overhead = self.type_overhead(eclass);
-        let ty = TreeNode::from_eclass(graph, canon_id);
+        let ty = TreeNodeWithOrigin::from_eclass(graph, canon_id);
 
         let cache = DashMap::new();
 
@@ -66,7 +66,12 @@ impl<C: Counter> TermCount<C> {
             self.enumerate_children(graph, children, child_budget, &cache)
                 .par_bridge()
                 .map(|child_combo| {
-                    TreeNode::new_typed(node.label().clone(), child_combo, ty.clone())
+                    TreeNodeWithOrigin::new_typed(
+                        node.label().clone(),
+                        child_combo,
+                        ty.clone(),
+                        canon_id.into(),
+                    )
                 })
         });
 
@@ -84,8 +89,8 @@ impl<C: Counter> TermCount<C> {
         graph: &Graph<L>,
         id: EClassId,
         size: usize,
-        cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
-    ) -> Vec<TreeNode<L>> {
+        cache: &DashMap<(EClassId, usize), Vec<TreeNodeWithOrigin<L>>>,
+    ) -> Vec<TreeNodeWithOrigin<L>> {
         let canon_id = graph.canonicalize(id);
         let key = (canon_id, size);
 
@@ -105,8 +110,8 @@ impl<C: Counter> TermCount<C> {
         graph: &Graph<L>,
         canon_id: EClassId,
         size: usize,
-        cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
-    ) -> Vec<TreeNode<L>> {
+        cache: &DashMap<(EClassId, usize), Vec<TreeNodeWithOrigin<L>>>,
+    ) -> Vec<TreeNodeWithOrigin<L>> {
         // Check if this class has any terms at this size
         let Some(histogram) = self.get(&canon_id) else {
             return Vec::new();
@@ -123,7 +128,7 @@ impl<C: Counter> TermCount<C> {
             return Vec::new();
         };
 
-        let ty = TreeNode::from_eclass(graph, canon_id);
+        let ty = TreeNodeWithOrigin::from_eclass(graph, canon_id);
 
         let mut results = Vec::new();
 
@@ -131,10 +136,11 @@ impl<C: Counter> TermCount<C> {
             let children = node.children();
 
             for child_combo in self.enumerate_children(graph, children, child_budget, cache) {
-                results.push(TreeNode::new_typed(
+                results.push(TreeNodeWithOrigin::new_typed(
                     node.label().clone(),
                     child_combo,
                     ty.clone(),
+                    canon_id.into(),
                 ));
             }
         }
@@ -149,8 +155,8 @@ impl<C: Counter> TermCount<C> {
         graph: &Graph<L>,
         children: &[ExprChildId],
         budget: usize,
-        cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
-    ) -> impl Iterator<Item = Vec<TreeNode<L>>> {
+        cache: &DashMap<(EClassId, usize), Vec<TreeNodeWithOrigin<L>>>,
+    ) -> impl Iterator<Item = Vec<TreeNodeWithOrigin<L>>> {
         // Accumulate via left-fold: start with the empty tuple at budget=`budget`,
         // then for each child, expand every (remaining_budget, partial_combo) by
         // enumerating that child at each feasible size.
@@ -180,14 +186,14 @@ impl<C: Counter> TermCount<C> {
         graph: &Graph<L>,
         child_id: ExprChildId,
         remaining: usize,
-        partial: Vec<TreeNode<L>>,
-        cache: &DashMap<(EClassId, usize), Vec<TreeNode<L>>>,
-    ) -> Vec<(usize, Vec<TreeNode<L>>)> {
+        partial: Vec<TreeNodeWithOrigin<L>>,
+        cache: &DashMap<(EClassId, usize), Vec<TreeNodeWithOrigin<L>>>,
+    ) -> Vec<(usize, Vec<TreeNodeWithOrigin<L>>)> {
         match child_id {
             ExprChildId::Nat(nat_id) => {
                 let child_size = self.type_sizes.get_nat_size(nat_id);
                 if child_size <= remaining {
-                    let tree = TreeNode::from_nat(graph, nat_id);
+                    let tree = TreeNodeWithOrigin::from_nat(graph, nat_id);
                     let mut combo = partial;
                     combo.push(tree);
                     vec![(remaining - child_size, combo)]
@@ -198,7 +204,7 @@ impl<C: Counter> TermCount<C> {
             ExprChildId::Data(data_id) => {
                 let child_size = self.type_sizes.get_data_size(data_id);
                 if child_size <= remaining {
-                    let tree = TreeNode::from_data(graph, data_id);
+                    let tree = TreeNodeWithOrigin::from_data(graph, data_id);
                     let mut combo = partial;
                     combo.push(tree);
                     vec![(remaining - child_size, combo)]
@@ -237,6 +243,8 @@ mod tests {
     use crate::graph::{Class, Graph};
     use crate::nodes::ENode;
     use crate::test_utils::*;
+    use crate::tree::TreeShaped;
+
     use hashbrown::HashMap;
     use num::BigUint;
 

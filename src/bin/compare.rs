@@ -2,7 +2,7 @@ use std::fs;
 
 use clap::Parser;
 
-use rise_distance::{Expr, Label, TreeNode, tree_distance_unit};
+use rise_distance::{Expr, Label, TreeNode, TreeShaped, tree_distance_unit};
 
 #[derive(Parser)]
 #[command(about = "Compare trees using Zhang-Shasha edit distance")]

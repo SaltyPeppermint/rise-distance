@@ -13,15 +13,14 @@ use rayon::prelude::*;
 use rise_distance::cli::parquet::dump_to_parquet;
 use serde::Serialize;
 
-use rise_distance::TreeNode;
 use rise_distance::cli::{
     EvalResult, MeasuredGuide, RULES, RandomEntry, SizeDistribution, TRIAL_SIZE,
     enumerate_frontier_terms, get_run_folder, init_log, measure_guides, min_med_max,
     sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
-use rise_distance::egg::{convert, run_guide_goal, verify_reachability};
-use rise_distance::tee_println;
+use rise_distance::egg::{ToRecExpr, convert, run_guide_goal, verify_reachability};
+use rise_distance::{TreeNodeWithOrigin, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -197,10 +196,10 @@ fn main() {
 fn eval_all(
     verify_iters: usize,
     ranked: &[MeasuredGuide<MathLabel>],
-    goal: &TreeNode<MathLabel>,
+    goal: &TreeNodeWithOrigin<MathLabel>,
     run_folder: &Path,
 ) {
-    let goal_recexpr = goal.into();
+    let goal_recexpr = goal.to_rec_expr();
     let pb_style = ProgressStyle::with_template(
         "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] verifying guides",
     )
@@ -244,12 +243,12 @@ struct TopKResults {
 
 fn eval_top_k(
     results: &mut [MeasuredGuide<MathLabel>],
-    goal: &TreeNode<MathLabel>,
+    goal: &TreeNodeWithOrigin<MathLabel>,
     max_iters: usize,
     n_trials: usize,
 ) -> TopKResults {
     tee_println!("Testing out top-k to see if that improves things");
-    let go = goal.into();
+    let go = goal.to_rec_expr();
 
     let mut top_k_results = TopKResults {
         goal: goal.to_string(),
@@ -340,7 +339,11 @@ fn random_k(
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, max_iters: usize) {
+fn print_summary(
+    results: &[EvalResult<MathLabel>],
+    goal: &TreeNodeWithOrigin<MathLabel>,
+    max_iters: usize,
+) {
     let mut successful = results
         .iter()
         .filter(|r| r.iterations.is_some())

@@ -3,6 +3,7 @@ use hashbrown::{HashMap, HashSet};
 use crate::graph::Class;
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::{ENode, Label};
+use crate::tree::TreeShaped;
 use crate::{Graph, PartialChild, PartialTree, TreeNode, tree_node_to_partial};
 
 /// Match a reference tree against an e-class, producing a partial tree

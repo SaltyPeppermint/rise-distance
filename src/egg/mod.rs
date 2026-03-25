@@ -8,7 +8,8 @@ use hashbrown::HashMap;
 
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::ENode;
-use crate::{Class, Graph, Label, TreeNode};
+use crate::tree::TreeShaped;
+use crate::{Class, Graph, Label};
 
 pub use math::{Math, MathLabel};
 
@@ -48,6 +49,12 @@ impl<L: Language, N: Analysis<L>> GuideGoalResult<L, N> {
     pub fn prev_goal(&self) -> &EGraph<L, N> {
         &self.graphs[self.graphs.len() - 2]
     }
+}
+
+pub trait ToRecExpr<L: Label>: TreeShaped<L> {
+    type Lang: Language;
+
+    fn to_rec_expr(&self) -> RecExpr<Self::Lang>;
 }
 
 pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>
@@ -194,8 +201,8 @@ where
 /// # Panics
 ///
 /// Panics if no guides given
-pub fn verify_reachability<L, N, LL>(
-    guides: &[TreeNode<LL>],
+pub fn verify_reachability<T, L, N, LL>(
+    guides: &[T],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     max_iters: usize,
@@ -204,7 +211,7 @@ where
     L: Language + 'static,
     N: Analysis<L> + Default,
     LL: Label,
-    for<'a> &'a TreeNode<LL>: Into<RecExpr<L>>,
+    T: ToRecExpr<LL, Lang = L>,
 {
     assert!(!guides.is_empty(), "must have at least one guide");
     let goal_clone = goal.clone();
@@ -220,7 +227,7 @@ where
         });
 
     for guide in guides {
-        let expr: RecExpr<L> = guide.into();
+        let expr = guide.to_rec_expr();
         runner = runner.with_expr(&expr);
     }
 

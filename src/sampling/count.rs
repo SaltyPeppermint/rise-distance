@@ -1,11 +1,12 @@
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 
+use crate::Graph;
 use crate::count::{Counter, TermCount};
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;
 use crate::sampling::Sampler;
-use crate::{Graph, TreeNode};
+use crate::tree::TreeNodeWithOrigin;
 
 pub struct CountSampler<'a, 'b, C: Counter, L: Label> {
     term_count: &'a TermCount<C>,
@@ -39,11 +40,11 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, '_, C, L> {
             .copied()
     }
 
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
-        let canonical_id = self.graph.canonicalize(id);
-        let eclass = self.graph.class(canonical_id);
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNodeWithOrigin<L> {
+        let canon_id = self.graph.canonicalize(id);
+        let eclass = self.graph.class(canon_id);
         let child_budget = size - 1 - self.term_count.type_overhead(eclass);
-        let cached = &self.term_count.suffix_cache[&canonical_id];
+        let cached = &self.term_count.suffix_cache[&canon_id];
 
         // Pick a node weighted by how many terms of the target size it produces.
         let weights = cached
@@ -84,18 +85,21 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, '_, C, L> {
             remaining -= chosen_size;
         }
 
-        TreeNode::new_typed(
+        TreeNodeWithOrigin::new_typed(
             pick.label().clone(),
             pick.children()
                 .iter()
                 .zip(child_sizes)
                 .map(|(c_id, s)| match c_id {
-                    ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.graph, *nat_id),
-                    ExprChildId::Data(data_id) => TreeNode::from_data(self.graph, *data_id),
+                    ExprChildId::Nat(nat_id) => TreeNodeWithOrigin::from_nat(self.graph, *nat_id),
+                    ExprChildId::Data(data_id) => {
+                        TreeNodeWithOrigin::from_data(self.graph, *data_id)
+                    }
                     ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
                 })
                 .collect(),
-            TreeNode::from_eclass(self.graph, canonical_id),
+            TreeNodeWithOrigin::from_eclass(self.graph, canon_id),
+            canon_id.into(),
         )
     }
 }

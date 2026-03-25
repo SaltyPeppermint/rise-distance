@@ -10,14 +10,13 @@ use rise_distance::cli::parquet::{dump_to_parquet, dump_top_k_summary_parquet};
 use serde::Serialize;
 use serde_json::json;
 
-use rise_distance::TreeNode;
 use rise_distance::cli::{
     EvalResult, RULES, RandomEntry, SizeDistribution, TRIAL_SIZE, TopKSummary, get_run_folder,
     init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
-use rise_distance::egg::{convert, run_guide_goal, verify_reachability};
-use rise_distance::tee_println;
+use rise_distance::egg::{ToRecExpr, convert, run_guide_goal, verify_reachability};
+use rise_distance::{TreeNodeWithOrigin, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -107,10 +106,7 @@ fn main() {
     tee_println!("Guide Iterations: {}", cli.guide_iters);
     tee_println!("Distribution: {}", cli.size_distribution);
 
-    tee_println!(
-        "Running equality saturation for {} iterations...",
-        cli.goal_iters
-    );
+    tee_println!("Running eqsat for {} iterations...", cli.goal_iters);
     let start = Instant::now();
     let result = run_guide_goal(
         &seed,
@@ -163,7 +159,7 @@ fn main() {
     let mut all_top_k = Vec::new();
     let mut goal_stats = Vec::new();
     for goal in &goals {
-        let goal_recexpr = goal.into();
+        let goal_recexpr = goal.to_rec_expr();
 
         let sampled_guides = sample_frontier_terms(
             &convert(result.guide(), root),
@@ -207,7 +203,12 @@ fn main() {
     write_outputs(&run_folder, &all_top_k, &cli, &stats);
 }
 
-fn write_outputs(run_folder: &std::path::Path, all_top_k: &[TopKResults], cli: &Cli, stats: &serde_json::Value) {
+fn write_outputs(
+    run_folder: &std::path::Path,
+    all_top_k: &[TopKResults],
+    cli: &Cli,
+    stats: &serde_json::Value,
+) {
     let output_path = run_folder.join("top_k.json");
     let output_file = File::create(output_path).expect("Failed to create output json file");
     let mut output_writer = BufWriter::new(output_file);
@@ -240,7 +241,7 @@ fn take_n_trials(
     cli: &Cli,
     guide_count: usize,
     goal_recexpr: &RecExpr<Math>,
-    sampled_guides: &[TreeNode<MathLabel>],
+    sampled_guides: &[TreeNodeWithOrigin<MathLabel>],
 ) -> Vec<RandomEntry> {
     let mut entries = Vec::new();
     for k in TRIAL_SIZE {
@@ -280,7 +281,11 @@ struct TopKResults {
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-fn print_summary(results: &[EvalResult<MathLabel>], goal: &TreeNode<MathLabel>, max_iters: usize) -> serde_json::Value {
+fn print_summary(
+    results: &[EvalResult<MathLabel>],
+    goal: &TreeNodeWithOrigin<MathLabel>,
+    max_iters: usize,
+) -> serde_json::Value {
     let successful = results
         .iter()
         .filter(|r| r.iterations.is_some())

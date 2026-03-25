@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
 
 use crate::structural::StructuralDistance;
+use crate::tree::TreeShaped;
 
 use super::euler_str::EulerString;
 use super::nodes::Label;
@@ -170,6 +171,7 @@ mod tests {
     use crate::graph::Class;
     use crate::ids::EClassId;
     use crate::nodes::ENode;
+    use crate::tree::TreeShaped;
     use crate::zs::UnitCost;
 
     use crate::test_utils::*;

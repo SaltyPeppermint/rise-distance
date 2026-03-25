@@ -4,7 +4,8 @@ use rand::prelude::*;
 use crate::count::{Counter, TermCount};
 use crate::ids::ExprChildId;
 use crate::sampling::Sampler;
-use crate::{EClassId, Graph, Label, TreeNode};
+use crate::tree::TreeNodeWithOrigin;
+use crate::{EClassId, Graph, Label};
 
 pub struct NaiveSampler<'a, 'b, C: Counter, L: Label> {
     term_count: &'a TermCount<C>,
@@ -40,7 +41,7 @@ impl<C: Counter, L: Label> Sampler<L> for NaiveSampler<'_, '_, C, L> {
 
     /// Here we sample with no regard for how many terms of a given size are in the
     /// `EClass` / `ENodes` children
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNode<L> {
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNodeWithOrigin<L> {
         let canon_id = self.graph.canonicalize(id);
         let eclass = self.graph.class(canon_id);
         let child_budget = size - 1 - self.term_count.type_overhead(eclass);
@@ -78,18 +79,21 @@ impl<C: Counter, L: Label> Sampler<L> for NaiveSampler<'_, '_, C, L> {
             remaining -= chosen_size;
         }
 
-        TreeNode::new_typed(
+        TreeNodeWithOrigin::new_typed(
             pick.label().clone(),
             pick.children()
                 .iter()
                 .zip(child_sizes)
                 .map(|(c_id, s)| match c_id {
-                    ExprChildId::Nat(nat_id) => TreeNode::from_nat(self.graph, *nat_id),
-                    ExprChildId::Data(data_id) => TreeNode::from_data(self.graph, *data_id),
+                    ExprChildId::Nat(nat_id) => TreeNodeWithOrigin::from_nat(self.graph, *nat_id),
+                    ExprChildId::Data(data_id) => {
+                        TreeNodeWithOrigin::from_data(self.graph, *data_id)
+                    }
                     ExprChildId::EClass(eclass_id) => self.sample(*eclass_id, s, rng),
                 })
                 .collect(),
-            TreeNode::from_eclass(self.graph, canon_id),
+            TreeNodeWithOrigin::from_eclass(self.graph, canon_id),
+            canon_id.into(),
         )
     }
 }

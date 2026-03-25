@@ -9,6 +9,8 @@ use std::hash::{Hash, Hasher};
 use ahash::AHasher;
 use hashbrown::HashSet;
 
+use crate::tree::TreeShaped;
+
 use super::nodes::Label;
 use super::tree::TreeNode;
 

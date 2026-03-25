@@ -107,6 +107,40 @@ pub enum DataChildId {
     DataType(DataId),
 }
 
+/// Identifier for nat or datatype nodes.
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AnyId {
+    Nat(NatId),
+    Type(FunId),
+    Data(DataId),
+    EClass(EClassId),
+}
+
+impl From<EClassId> for AnyId {
+    fn from(v: EClassId) -> Self {
+        Self::EClass(v)
+    }
+}
+
+impl From<DataId> for AnyId {
+    fn from(v: DataId) -> Self {
+        Self::Data(v)
+    }
+}
+
+impl From<FunId> for AnyId {
+    fn from(v: FunId) -> Self {
+        Self::Type(v)
+    }
+}
+
+impl From<NatId> for AnyId {
+    fn from(v: NatId) -> Self {
+        Self::Nat(v)
+    }
+}
+
 /// Serde helpers for `Vec<EClassId>` (e.g., `[0, 1, 2]` -> `Vec<EClassId>`)
 pub mod eclass_id_vec {
     use super::EClassId;

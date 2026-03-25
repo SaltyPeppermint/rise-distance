@@ -30,5 +30,7 @@ pub use nodes::Label;
 pub use overlap::{match_ref_tree, prune_by_ref_tree};
 pub use rise::{Expr, Nat, RiseLabel, Type};
 pub use structural::{StructuralDistance, structural_diff};
-pub use tree::{PartialChild, PartialTree, TreeNode, tree_node_to_partial};
+pub use tree::{
+    PartialChild, PartialTree, TreeNode, TreeNodeWithOrigin, TreeShaped, tree_node_to_partial,
+};
 pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};

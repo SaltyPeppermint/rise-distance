@@ -11,8 +11,85 @@ use serde::{Deserialize, Serialize};
 use symbolic_expressions::{IntoSexp, Sexp, SexpError};
 
 use super::graph::Graph;
-use super::ids::{DataChildId, DataId, EClassId, FunId, NatId, TypeChildId};
+use super::ids::{AnyId, DataChildId, DataId, EClassId, FunId, NatId, TypeChildId};
 use super::nodes::Label;
+
+pub trait TreeShaped<L: Label>: Sized {
+    /// Returns true if this node has no children.
+    fn is_leaf(&self) -> bool;
+
+    fn children(&self) -> &[Self];
+
+    fn children_mut(&mut self) -> &mut Vec<Self>;
+
+    fn label(&self) -> &L;
+
+    fn ty(&self) -> Option<&Self>;
+
+    fn flatten(&self, with_types: bool) -> FlattenedTreeNode<L> {
+        if !with_types {
+            return FlattenedTreeNode {
+                label: self.label().clone(),
+                children: self
+                    .children()
+                    .iter()
+                    .map(|c| c.flatten(with_types))
+                    .collect(),
+            };
+        }
+        if let Some(ty) = &self.ty() {
+            FlattenedTreeNode {
+                label: L::type_of(),
+                children: vec![
+                    FlattenedTreeNode {
+                        label: self.label().clone(),
+                        children: self
+                            .children()
+                            .iter()
+                            .map(|c| c.flatten(with_types))
+                            .collect(),
+                    },
+                    ty.flatten(with_types),
+                ],
+            }
+        } else {
+            FlattenedTreeNode {
+                label: self.label().clone(),
+                children: self
+                    .children()
+                    .iter()
+                    .map(|c| c.flatten(with_types))
+                    .collect(),
+            }
+        }
+    }
+
+    fn size(&self, with_types: bool) -> usize {
+        if with_types {
+            self.size_with_types()
+        } else {
+            self.size_without_types()
+        }
+    }
+
+    /// Count total number of nodes in this tree.
+    fn size_without_types(&self) -> usize {
+        1 + self
+            .children()
+            .iter()
+            .map(Self::size_without_types)
+            .sum::<usize>()
+    }
+
+    fn size_with_types(&self) -> usize {
+        1 + self
+            .children()
+            .iter()
+            .map(Self::size_without_types)
+            .sum::<usize>()
+            + self.ty().map_or(0, |t| t.size_without_types())
+    }
+}
 
 /// A node in a labeled, ordered tree.
 #[derive(Debug, Clone, Serialize, Deserialize, std::hash::Hash, PartialEq, Eq)]
@@ -58,27 +135,6 @@ impl<L: Label> TreeNode<L> {
             ty: ty.map(Box::new),
             children,
         }
-    }
-
-    /// Returns true if this node has no children.
-    pub fn is_leaf(&self) -> bool {
-        self.children.is_empty()
-    }
-
-    pub fn children(&self) -> &[Self] {
-        &self.children
-    }
-
-    pub fn children_mut(&mut self) -> &mut Vec<Self> {
-        &mut self.children
-    }
-
-    pub fn label(&self) -> &L {
-        &self.label
-    }
-
-    pub fn ty(&self) -> Option<&TreeNode<L>> {
-        self.ty.as_deref()
     }
 
     /// Build a type tree from an e-class's type annotation.
@@ -133,69 +189,28 @@ impl<L: Label> TreeNode<L> {
             .collect();
         TreeNode::new_untyped(node, children)
     }
+}
 
-    pub fn size(&self, with_types: bool) -> usize {
-        if with_types {
-            self.size_with_types()
-        } else {
-            self.size_without_types()
-        }
+impl<L: Label> TreeShaped<L> for TreeNode<L> {
+    /// Returns true if this node has no children.
+    fn is_leaf(&self) -> bool {
+        self.children.is_empty()
     }
 
-    /// Count total number of nodes in this tree.
-    pub fn size_without_types(&self) -> usize {
-        1 + self
-            .children
-            .iter()
-            .map(Self::size_without_types)
-            .sum::<usize>()
+    fn children(&self) -> &[Self] {
+        &self.children
     }
 
-    pub fn size_with_types(&self) -> usize {
-        1 + self
-            .children
-            .iter()
-            .map(Self::size_without_types)
-            .sum::<usize>()
-            + self.ty.as_deref().map_or(0, |t| t.size_without_types())
+    fn children_mut(&mut self) -> &mut Vec<Self> {
+        &mut self.children
     }
 
-    pub fn flatten(&self, with_types: bool) -> FlattenedTreeNode<L> {
-        if !with_types {
-            return FlattenedTreeNode {
-                label: self.label().clone(),
-                children: self
-                    .children()
-                    .iter()
-                    .map(|c| c.flatten(with_types))
-                    .collect(),
-            };
-        }
-        if let Some(ty) = &self.ty {
-            FlattenedTreeNode {
-                label: L::type_of(),
-                children: vec![
-                    FlattenedTreeNode {
-                        label: self.label.clone(),
-                        children: self
-                            .children()
-                            .iter()
-                            .map(|c| c.flatten(with_types))
-                            .collect(),
-                    },
-                    ty.flatten(with_types),
-                ],
-            }
-        } else {
-            FlattenedTreeNode {
-                label: self.label().clone(),
-                children: self
-                    .children()
-                    .iter()
-                    .map(|c| c.flatten(with_types))
-                    .collect(),
-            }
-        }
+    fn label(&self) -> &L {
+        &self.label
+    }
+
+    fn ty(&self) -> Option<&TreeNode<L>> {
+        self.ty.as_deref()
     }
 }
 
@@ -217,20 +232,6 @@ impl<L: Label + Display> Display for TreeNode<L> {
             write!(f, " {ty})")?;
         }
         Ok(())
-    }
-}
-
-impl<L: Label + Display> Display for FlattenedTreeNode<L> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_leaf() {
-            write!(f, "{}", self.label)
-        } else {
-            write!(f, "({}", self.label)?;
-            for child in &self.children {
-                write!(f, " {child}")?;
-            }
-            write!(f, ")")
-        }
     }
 }
 
@@ -306,6 +307,169 @@ impl IntoSexp for TreeNode<String> {
 
 /// A node in a labeled, ordered tree.
 #[derive(Debug, Clone, std::hash::Hash, PartialEq, Eq)]
+pub struct TreeNodeWithOrigin<L: Label> {
+    label: L,
+    ty: Option<Box<TreeNodeWithOrigin<L>>>,
+    children: Vec<TreeNodeWithOrigin<L>>,
+    origin: AnyId,
+}
+
+impl<L: Label> TreeNodeWithOrigin<L> {
+    /// Create a leaf node with no children.
+    pub fn leaf_untyped(label: L, origin: AnyId) -> Self {
+        TreeNodeWithOrigin {
+            label,
+            ty: None,
+            children: Vec::new(),
+            origin,
+        }
+    }
+
+    /// Create a leaf node with no children.
+    pub fn leaf_typed(label: L, ty: Option<TreeNodeWithOrigin<L>>, origin: AnyId) -> Self {
+        TreeNodeWithOrigin {
+            label,
+            ty: ty.map(Box::new),
+            children: Vec::new(),
+            origin,
+        }
+    }
+
+    /// Create a node with the given children.
+    pub fn new_untyped(label: L, children: Vec<TreeNodeWithOrigin<L>>, origin: AnyId) -> Self {
+        TreeNodeWithOrigin {
+            label,
+            ty: None,
+            children,
+            origin,
+        }
+    }
+
+    /// Create a node with the given children.
+    pub fn new_typed(
+        label: L,
+        children: Vec<TreeNodeWithOrigin<L>>,
+        ty: Option<TreeNodeWithOrigin<L>>,
+        origin: AnyId,
+    ) -> Self {
+        TreeNodeWithOrigin {
+            label,
+            ty: ty.map(Box::new),
+            children,
+            origin,
+        }
+    }
+
+    /// Build a type tree from an e-class's type annotation.
+    #[must_use]
+    pub fn from_eclass(graph: &Graph<L>, id: EClassId) -> Option<Self> {
+        let ty_id = graph.class(id).ty()?;
+        Some(Self::from_type(graph, *ty_id))
+    }
+
+    fn from_type(graph: &Graph<L>, id: TypeChildId) -> Self {
+        match id {
+            TypeChildId::Nat(nat_id) => Self::from_nat(graph, nat_id),
+            TypeChildId::Type(fun_ty_id) => Self::from_fun(graph, fun_ty_id),
+            TypeChildId::Data(data_ty_id) => Self::from_data(graph, data_ty_id),
+        }
+    }
+
+    fn from_fun(graph: &Graph<L>, id: FunId) -> Self {
+        let node = graph.fun_ty(id).label().to_owned();
+        let children = graph
+            .fun_ty(id)
+            .children()
+            .iter()
+            .map(|&c_id| Self::from_type(graph, c_id))
+            .collect();
+        TreeNodeWithOrigin::new_untyped(node, children, id.into())
+    }
+
+    #[must_use]
+    pub fn from_data(graph: &Graph<L>, id: DataId) -> Self {
+        let node = graph.data_ty(id).label().to_owned();
+        let children = graph
+            .data_ty(id)
+            .children()
+            .iter()
+            .map(|&c_id| match c_id {
+                DataChildId::Nat(nat_id) => Self::from_nat(graph, nat_id),
+                DataChildId::DataType(data_ty_id) => Self::from_data(graph, data_ty_id),
+            })
+            .collect();
+        TreeNodeWithOrigin::new_untyped(node, children, id.into())
+    }
+
+    #[must_use]
+    pub fn from_nat(graph: &Graph<L>, id: NatId) -> Self {
+        let node = graph.nat(id).label().to_owned();
+        let children = graph
+            .nat(id)
+            .children()
+            .iter()
+            .map(|&c_id| Self::from_nat(graph, c_id))
+            .collect();
+        TreeNodeWithOrigin::new_untyped(node, children, id.into())
+    }
+}
+
+impl<L: Label> TreeShaped<L> for TreeNodeWithOrigin<L> {
+    /// Returns true if this node has no children.
+    fn is_leaf(&self) -> bool {
+        self.children.is_empty()
+    }
+
+    fn children(&self) -> &[Self] {
+        &self.children
+    }
+
+    fn children_mut(&mut self) -> &mut Vec<Self> {
+        &mut self.children
+    }
+
+    fn label(&self) -> &L {
+        &self.label
+    }
+
+    fn ty(&self) -> Option<&Self> {
+        self.ty.as_deref()
+    }
+}
+
+impl<L: Label + Display> Display for TreeNodeWithOrigin<L> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.ty.is_some() {
+            write!(f, "({} ", L::type_of())?;
+        }
+        if self.is_leaf() {
+            write!(f, "{}", self.label)?;
+        } else {
+            write!(f, "({}", self.label)?;
+            for child in &self.children {
+                write!(f, " {child}")?;
+            }
+            write!(f, ")")?;
+        }
+        if let Some(ty) = &self.ty {
+            write!(f, " {ty})")?;
+        }
+        Ok(())
+    }
+}
+
+impl<L: Label> From<TreeNodeWithOrigin<L>> for TreeNode<L> {
+    fn from(value: TreeNodeWithOrigin<L>) -> Self {
+        TreeNode {
+            label: value.label,
+            ty: value.ty.map(|t| Box::new((*t).into())),
+            children: value.children.into_iter().map(|x| x.into()).collect(),
+        }
+    }
+}
+
+/// A node in a labeled, ordered tree.
+#[derive(Debug, Clone, std::hash::Hash, PartialEq, Eq)]
 pub struct FlattenedTreeNode<L: Label> {
     label: L,
     children: Vec<FlattenedTreeNode<L>>,
@@ -327,6 +491,20 @@ impl<L: Label> FlattenedTreeNode<L> {
 
     pub fn size(&self) -> usize {
         1 + self.children.iter().map(Self::size).sum::<usize>()
+    }
+}
+
+impl<L: Label + Display> Display for FlattenedTreeNode<L> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_leaf() {
+            write!(f, "{}", self.label)
+        } else {
+            write!(f, "({}", self.label)?;
+            for child in &self.children {
+                write!(f, " {child}")?;
+            }
+            write!(f, ")")
+        }
     }
 }
 

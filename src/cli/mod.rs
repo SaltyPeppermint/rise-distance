@@ -17,10 +17,11 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::count::{Counter, TermCount};
-use crate::egg::Math;
 use crate::egg::math::ConstantFold;
+use crate::egg::{Math, ToRecExpr};
 use crate::sampling::Sampler;
 use crate::sampling::count::CountSampler;
+use crate::tree::{TreeNodeWithOrigin, TreeShaped};
 use crate::{
     Graph, Label, StructuralDistance, TreeNode, UnitCost, structural_diff, tree_distance_unit,
 };
@@ -197,14 +198,14 @@ impl SizeDistribution {
 }
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
-pub fn is_frontier<L, N, LL>(tree: &TreeNode<LL>, prev_raw_egg: &egg::EGraph<L, N>) -> bool
+pub fn is_frontier<T, L, N, LL>(tree: &T, prev_raw_egg: &egg::EGraph<L, N>) -> bool
 where
     L: Language,
     N: Analysis<L>,
     LL: Label,
-    for<'a> &'a TreeNode<LL>: Into<egg::RecExpr<L>>,
+    T: ToRecExpr<LL, Lang = L>,
 {
-    prev_raw_egg.lookup_expr(&tree.into()).is_none()
+    prev_raw_egg.lookup_expr(&tree.to_rec_expr()).is_none()
 }
 
 /// Create an output folder for a run.
@@ -266,8 +267,8 @@ pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T
 
 /// Measure guides by distance to the goal.
 pub fn measure_guides<L: Label>(
-    guides: &[TreeNode<L>],
-    goal: &TreeNode<L>,
+    guides: &[TreeNodeWithOrigin<L>],
+    goal: &TreeNodeWithOrigin<L>,
 ) -> Vec<MeasuredGuide<L>> {
     let goal_flat = goal.flatten(false);
     #[expect(clippy::missing_panics_doc)]
@@ -283,7 +284,7 @@ pub fn measure_guides<L: Label>(
             let zs_dist = tree_distance_unit(&guide_flat, &goal_flat);
             let structural_dist = structural_diff(&goal_flat, &guide_flat, &UnitCost);
             MeasuredGuide {
-                guide: guide.clone(),
+                guide: guide.clone().into(),
                 zs_distance: zs_dist,
                 structural_distance: structural_dist,
             }
@@ -298,12 +299,12 @@ pub fn sample_frontier_terms<L, N, LL>(
     count: usize,
     max_size: usize,
     distribution: SizeDistribution,
-) -> Vec<TreeNode<LL>>
+) -> Vec<TreeNodeWithOrigin<LL>>
 where
     L: Language,
     N: Analysis<L>,
     LL: Label,
-    for<'a> &'a TreeNode<LL>: Into<egg::RecExpr<L>>,
+    TreeNodeWithOrigin<LL>: ToRecExpr<LL, Lang = L>,
 {
     let tc = TermCount::<BigUint>::new(max_size, false, graph);
 
@@ -357,12 +358,13 @@ pub fn enumerate_frontier_terms<L, N, LL>(
     graph: &Graph<LL>,
     prev_raw_egg: &egg::EGraph<L, N>,
     max_size: usize,
-) -> Vec<TreeNode<LL>>
+) -> Vec<TreeNodeWithOrigin<LL>>
 where
     L: Language,
     N: Analysis<L>,
     LL: Label,
-    for<'a> &'a TreeNode<LL>: Into<egg::RecExpr<L>>,
+    TreeNodeWithOrigin<LL>: ToRecExpr<LL, Lang = L>,
+    TreeNode<LL>: ToRecExpr<LL, Lang = L>,
 {
     let tc = TermCount::<BigUint>::new(max_size, false, graph);
 

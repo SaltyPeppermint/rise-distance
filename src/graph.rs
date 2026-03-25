@@ -262,6 +262,7 @@ mod tests {
 
     use crate::ids::NumericId;
     use crate::test_utils::*;
+    use crate::tree::TreeShaped;
 
     use super::*;
 

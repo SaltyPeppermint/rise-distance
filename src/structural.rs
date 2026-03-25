@@ -129,6 +129,7 @@ mod tests {
     use crate::UnitCost;
 
     use crate::test_utils::*;
+    use crate::tree::TreeShaped;
 
     fn sd(overlap: usize, zs_sum: usize) -> StructuralDistance {
         StructuralDistance::new(overlap, zs_sum)

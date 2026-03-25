@@ -1,7 +1,7 @@
 use ordered_float::NotNan;
 use rand::Rng;
 
-use crate::tree::TreeNode;
+use crate::tree::{TreeNode, TreeShaped};
 
 use super::label::MathLabel;
 

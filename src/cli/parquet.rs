@@ -10,7 +10,7 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 
 use super::{EvalResult, TopKSummary};
-use crate::{Label, TreeNode, tee_println};
+use crate::{Label, TreeNodeWithOrigin, tee_println};
 
 /// Dump eval results to a new Parquet file inside `run_folder/out/`.
 ///
@@ -21,7 +21,7 @@ use crate::{Label, TreeNode, tee_println};
 /// Panics if it cannot create/open the file or write the data.
 pub fn dump_to_parquet<L: Label>(
     run_folder: &Path,
-    goal: &TreeNode<L>,
+    goal: &TreeNodeWithOrigin<L>,
     results: &[EvalResult<'_, L>],
 ) {
     let out_dir = run_folder.join("out");

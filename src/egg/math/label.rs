@@ -5,7 +5,8 @@ use egg::{Id, RecExpr, Symbol};
 use serde::{Deserialize, Serialize};
 
 use crate::Label;
-use crate::tree::TreeNode;
+use crate::egg::ToRecExpr;
+use crate::tree::TreeShaped;
 
 use super::{Constant, Math};
 
@@ -28,6 +29,12 @@ impl From<&Math> for MathLabel {
         }
     }
 }
+
+// impl From<Math> for MathLabel {
+//     fn from(value: Math) -> Self {
+//         Self::from(&value)
+//     }
+// }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, Hash, PartialEq, Eq)]
 pub enum MathLabel {
@@ -99,15 +106,33 @@ impl FromStr for MathLabel {
     }
 }
 
-impl From<&TreeNode<MathLabel>> for RecExpr<Math> {
-    fn from(tree: &TreeNode<MathLabel>) -> Self {
+// impl From<&TreeNode<MathLabel>> for RecExpr<Math> {
+//     fn from(tree: &TreeNode<MathLabel>) -> Self {
+//         let mut expr = RecExpr::default();
+//         add_node(tree, &mut expr);
+//         expr
+//     }
+// }
+
+// impl From<&TreeNodeWithOrigin<MathLabel>> for RecExpr<Math> {
+//     fn from(tree: &TreeNodeWithOrigin<MathLabel>) -> Self {
+//         let mut expr = RecExpr::default();
+//         add_node(tree, &mut expr);
+//         expr
+//     }
+// }
+
+impl<T: TreeShaped<MathLabel>> ToRecExpr<MathLabel> for T {
+    type Lang = Math;
+
+    fn to_rec_expr(&self) -> RecExpr<Self::Lang> {
         let mut expr = RecExpr::default();
-        add_node(tree, &mut expr);
+        add_node(self, &mut expr);
         expr
     }
 }
 
-fn add_node(node: &TreeNode<MathLabel>, expr: &mut RecExpr<Math>) -> Id {
+fn add_node<T: TreeShaped<MathLabel>>(node: &T, expr: &mut RecExpr<Math>) -> Id {
     let child_ids: Vec<Id> = node.children().iter().map(|c| add_node(c, expr)).collect();
     let math_node = match node.label() {
         MathLabel::Diff => Math::Diff([child_ids[0], child_ids[1]]),
@@ -129,6 +154,8 @@ fn add_node(node: &TreeNode<MathLabel>, expr: &mut RecExpr<Math>) -> Id {
 
 #[cfg(test)]
 mod tests {
+    use crate::TreeNode;
+
     use super::*;
 
     fn leaf(label: MathLabel) -> TreeNode<MathLabel> {
@@ -145,7 +172,7 @@ mod tests {
 
     /// Build tree, convert to `RecExpr`, check it matches the directly parsed `RecExpr`.
     fn assert_eq_recexpr(tree: &TreeNode<MathLabel>, expected_str: &str) {
-        let from_tree: RecExpr<Math> = (tree).into();
+        let from_tree: RecExpr<Math> = (tree).to_rec_expr();
         let direct: RecExpr<Math> = expected_str.parse().unwrap();
         assert_eq!(from_tree, direct, "mismatch for {expected_str}");
     }

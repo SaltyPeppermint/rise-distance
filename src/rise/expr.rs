@@ -459,7 +459,7 @@ fn parse_expr_atom(s: &str) -> Result<ExprNode, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rise::types::ScalarType;
+    use crate::{rise::types::ScalarType, tree::TreeShaped};
 
     #[test]
     fn parse_simple_expr() {

@@ -12,8 +12,8 @@ use rise_distance::count::TermCount;
 use rise_distance::sampling::Sampler;
 use rise_distance::sampling::count::CountSampler;
 use rise_distance::{
-    EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, TreeNode, UnitCost,
-    ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
+    EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, TreeNode, TreeShaped,
+    UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -294,6 +294,7 @@ fn run_count_extraction<L: Label>(
 
     let iter = candidates
         .into_par_iter()
+        .map(|x| x.into())
         .progress_count(n_candidates.try_into().unwrap());
 
     match distance {

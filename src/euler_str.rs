@@ -143,6 +143,7 @@ impl<'a, L: Label> EulerString<'a, L> {
 mod tests {
     use super::*;
     use crate::TreeNode;
+    use crate::tree::TreeShaped;
     use crate::zs::UnitCost;
 
     fn leaf(label: &str) -> TreeNode<String> {

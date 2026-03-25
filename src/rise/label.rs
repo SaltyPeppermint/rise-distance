@@ -12,7 +12,7 @@ use super::nat::Nat;
 use super::primitive::Primitive;
 use super::types::{DataType, ScalarType, Type};
 use crate::nodes::Label;
-use crate::tree::TreeNode;
+use crate::tree::{TreeNode, TreeShaped};
 
 /// A compact label type for Rise that implements the Label trait.
 ///

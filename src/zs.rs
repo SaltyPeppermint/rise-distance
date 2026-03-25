@@ -271,7 +271,7 @@ pub fn tree_distance_unit<L: Label>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::*;
+    use crate::{test_utils::*, tree::TreeShaped};
 
     #[test]
     fn basic_zhang_shasha() {
