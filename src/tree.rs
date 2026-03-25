@@ -85,9 +85,9 @@ pub trait TreeShaped<L: Label>: Sized {
         1 + self
             .children()
             .iter()
-            .map(Self::size_without_types)
+            .map(Self::size_with_types)
             .sum::<usize>()
-            + self.ty().map_or(0, |t| t.size_without_types())
+            + self.ty().map_or(0, |t| t.size_with_types())
     }
 }
 
