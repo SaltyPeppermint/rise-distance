@@ -306,7 +306,7 @@ impl IntoSexp for TreeNode<String> {
 }
 
 /// A node in a labeled, ordered tree.
-#[derive(Debug, Clone, std::hash::Hash, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, std::hash::Hash, PartialEq, Eq)]
 pub struct TreeNodeWithOrigin<L: Label> {
     label: L,
     ty: Option<Box<TreeNodeWithOrigin<L>>>,
@@ -411,6 +411,10 @@ impl<L: Label> TreeNodeWithOrigin<L> {
             .map(|&c_id| Self::from_nat(graph, c_id))
             .collect();
         TreeNodeWithOrigin::new_untyped(node, children, id.into())
+    }
+
+    pub fn origin(&self) -> AnyId {
+        self.origin
     }
 }
 

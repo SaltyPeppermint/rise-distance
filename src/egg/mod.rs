@@ -4,12 +4,12 @@ use egg::{
     Analysis, EGraph, Id, IterationData, Language, RecExpr, Rewrite, Runner, SimpleScheduler,
     StopReason,
 };
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
-use crate::ids::{EClassId, ExprChildId};
+use crate::ids::{AnyId, EClassId, ExprChildId};
 use crate::nodes::ENode;
 use crate::tree::TreeShaped;
-use crate::{Class, Graph, Label};
+use crate::{Class, Graph, Label, TreeNodeWithOrigin};
 
 pub use math::{Math, MathLabel};
 
@@ -51,10 +51,17 @@ impl<L: Language, N: Analysis<L>> GuideGoalResult<L, N> {
     }
 }
 
-pub trait ToRecExpr<L: Label>: TreeShaped<L> {
+pub trait ToEgg<L: Label>: TreeShaped<L> {
     type Lang: Language;
 
-    fn to_rec_expr(&self) -> RecExpr<Self::Lang>;
+    fn to_rec_expr(&self) -> RecExpr<Self::Lang> {
+        let mut expr = RecExpr::default();
+        let mut adder = |_: &_, x| expr.add(x);
+        self.add_node(&mut adder);
+        expr
+    }
+
+    fn add_node<F: FnMut(&Self, Self::Lang) -> Id>(&self, adder: &mut F) -> Id;
 }
 
 pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>
@@ -201,17 +208,18 @@ where
 /// # Panics
 ///
 /// Panics if no guides given
-pub fn verify_reachability<T, L, N, LL>(
-    guides: &[T],
+pub fn verify_reachability<L, N, LL>(
+    guides: &[TreeNodeWithOrigin<LL>],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     max_iters: usize,
+    full_union: bool,
 ) -> Option<Vec<egg::Iteration<()>>>
 where
     L: Language + 'static,
     N: Analysis<L> + Default,
     LL: Label,
-    T: ToRecExpr<LL, Lang = L>,
+    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
 {
     assert!(!guides.is_empty(), "must have at least one guide");
     let goal_clone = goal.clone();
@@ -226,6 +234,29 @@ where
             Ok(())
         });
 
+    runner = if full_union {
+        add_with_full_union(runner, guides)
+    } else {
+        add_with_root_union(runner, guides)
+    };
+    runner.egraph.rebuild();
+
+    let runner = runner.run(rules);
+
+    runner.egraph.lookup_expr(goal).map(|_| runner.iterations)
+}
+
+fn add_with_root_union<LL, L, N, I>(
+    mut runner: Runner<L, N, I>,
+    guides: &[TreeNodeWithOrigin<LL>],
+) -> Runner<L, N, I>
+where
+    LL: Label,
+    L: Language,
+    N: Analysis<L>,
+    I: IterationData<L, N>,
+    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
+{
     for guide in guides {
         let expr = guide.to_rec_expr();
         runner = runner.with_expr(&expr);
@@ -235,12 +266,76 @@ where
     for &root in &runner.roots[1..] {
         runner.egraph.union(runner.roots[0], root);
     }
-    runner.egraph.rebuild();
-
-    let runner = runner.run(rules);
-
-    runner.egraph.lookup_expr(goal).map(|_| runner.iterations)
+    runner
 }
+
+fn add_with_full_union<LL, L, N, I>(
+    mut runner: Runner<L, N, I>,
+    guides: &[TreeNodeWithOrigin<LL>],
+) -> Runner<L, N, I>
+where
+    LL: Label,
+    L: Language,
+    N: Analysis<L>,
+    I: IterationData<L, N>,
+    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
+{
+    let mut collector = HashMap::new();
+
+    for guide in guides {
+        let new_root = add_uncanon_remember(&mut runner.egraph, guide, &mut collector);
+        runner.roots.push(new_root);
+    }
+
+    // Union all guide roots together before running
+    for same_in_old in collector.values() {
+        let mut id_iter = same_in_old.iter();
+        if let Some(repr_id) = id_iter.next() {
+            for id in id_iter {
+                runner.egraph.union(*repr_id, *id);
+            }
+        }
+    }
+    runner
+}
+
+fn add_uncanon_remember<LL, L, N>(
+    graph: &mut EGraph<L, N>,
+    guide: &TreeNodeWithOrigin<LL>,
+    collector: &mut HashMap<AnyId, HashSet<Id>>,
+) -> Id
+where
+    LL: Label,
+    L: Language,
+    N: Analysis<L>,
+    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
+{
+    let mut adder = |s: &TreeNodeWithOrigin<LL>, x| {
+        let next_id = graph.add_uncanonical(x);
+        collector
+            .entry(s.origin())
+            .and_modify(|v| {
+                v.insert(next_id);
+            })
+            .or_default();
+        next_id
+    };
+    guide.add_node(&mut adder)
+}
+
+// fn add_expr_uncanonical<L: Language, N: Analysis<L>>(
+//     graph: &mut EGraph<L, N>,
+//     expr: &RecExpr<L>,
+// ) -> Id {
+//     let mut new_ids = Vec::with_capacity(expr.len());
+//     for node in expr {
+//         let new_node = node.clone().map_children(|i| new_ids[usize::from(i)]);
+//         let next_id = graph.add_uncanonical(new_node);
+
+//         new_ids.push(next_id);
+//     }
+//     *new_ids.last().unwrap()
+// }
 
 #[cfg(test)]
 mod tests {

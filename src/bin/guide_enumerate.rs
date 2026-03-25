@@ -19,7 +19,7 @@ use rise_distance::cli::{
     sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
-use rise_distance::egg::{ToRecExpr, convert, run_guide_goal, verify_reachability};
+use rise_distance::egg::{ToEgg, convert, run_guide_goal, verify_reachability};
 use rise_distance::{TreeNodeWithOrigin, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
@@ -84,6 +84,10 @@ struct Cli {
     /// How often to evaluate the trial
     #[arg(long, default_value_t = 100)]
     n_trials: usize,
+
+    /// Use the experimental `add_with_full_union` for the new egraph
+    #[arg(long)]
+    full_union: bool,
 }
 
 fn main() {
@@ -174,11 +178,17 @@ fn main() {
         let timer = Instant::now();
 
         if cli.eval_all {
-            eval_all(verify_iters, &ranked, goal, &run_folder);
+            eval_all(verify_iters, &ranked, goal, &run_folder, cli.full_union);
         }
         tee_println!("Verification completed in {:.2?}", timer.elapsed());
 
-        let top_k = eval_top_k(&mut ranked, goal, verify_iters, cli.n_trials);
+        let top_k = eval_top_k(
+            &mut ranked,
+            goal,
+            verify_iters,
+            cli.n_trials,
+            cli.full_union,
+        );
         all_top_k.push(top_k);
     }
 
@@ -198,6 +208,7 @@ fn eval_all(
     ranked: &[MeasuredGuide<MathLabel>],
     goal: &TreeNodeWithOrigin<MathLabel>,
     run_folder: &Path,
+    full_union: bool,
 ) {
     let goal_recexpr = goal.to_rec_expr();
     let pb_style = ProgressStyle::with_template(
@@ -218,6 +229,7 @@ fn eval_all(
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
                 verify_iters,
+                full_union,
             ),
         })
         .collect::<Vec<_>>();
@@ -246,6 +258,7 @@ fn eval_top_k(
     goal: &TreeNodeWithOrigin<MathLabel>,
     max_iters: usize,
     n_trials: usize,
+    full_union: bool,
 ) -> TopKResults {
     tee_println!("Testing out top-k to see if that improves things");
     let go = goal.to_rec_expr();
@@ -265,14 +278,14 @@ fn eval_top_k(
 
     results.sort_unstable_by_key(|v| v.zs_distance);
     tee_println!("ZS DISTANCE:");
-    top_k_results.zs = top_k(max_iters, results, &go);
+    top_k_results.zs = top_k(max_iters, results, &go, full_union);
 
     results.sort_unstable_by_key(|v| v.structural_distance);
     tee_println!("STRUCTURAL DISTANCE:");
-    top_k_results.structural = top_k(max_iters, results, &go);
+    top_k_results.structural = top_k(max_iters, results, &go, full_union);
 
     tee_println!("RANDOM ({n_trials} trials averaged):");
-    top_k_results.random = random_k(max_iters, results, &go, n_trials);
+    top_k_results.random = random_k(max_iters, results, &go, n_trials, full_union);
 
     top_k_results
 }
@@ -281,6 +294,7 @@ fn top_k(
     max_iters: usize,
     ranked: &[MeasuredGuide<MathLabel>],
     go: &RecExpr<Math>,
+    full_union: bool,
 ) -> Vec<TopKEntry> {
     let mut entries = Vec::new();
     for k in TRIAL_SIZE {
@@ -291,7 +305,13 @@ fn top_k(
             .iter()
             .map(|k| k.guide.clone())
             .collect::<Vec<_>>();
-        let data = verify_reachability(&top_guides, go, RULES.get_or_init(math::rules), max_iters);
+        let data = verify_reachability(
+            &top_guides,
+            go,
+            RULES.get_or_init(math::rules),
+            max_iters,
+            full_union,
+        );
 
         entries.push(TopKEntry { k, data });
     }
@@ -303,6 +323,7 @@ fn random_k(
     successful: &[MeasuredGuide<MathLabel>],
     go: &RecExpr<Math>,
     n_trials: usize,
+    full_union: bool,
 ) -> Vec<RandomEntry> {
     let mut entries = Vec::new();
     for k in TRIAL_SIZE {
@@ -317,7 +338,13 @@ fn random_k(
                     .choose_multiple(&mut rng, k)
                     .map(|v| v.guide.clone())
                     .collect::<Vec<_>>();
-                verify_reachability(&subset, go, RULES.get_or_init(math::rules), max_iters)
+                verify_reachability(
+                    &subset,
+                    go,
+                    RULES.get_or_init(math::rules),
+                    max_iters,
+                    full_union,
+                )
             })
             .collect::<Vec<_>>();
 

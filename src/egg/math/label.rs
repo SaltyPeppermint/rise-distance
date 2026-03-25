@@ -1,11 +1,11 @@
 use std::fmt::{self, Display};
 use std::str::FromStr;
 
-use egg::{Id, RecExpr, Symbol};
+use egg::{Id, Symbol};
 use serde::{Deserialize, Serialize};
 
 use crate::Label;
-use crate::egg::ToRecExpr;
+use crate::egg::ToEgg;
 use crate::tree::TreeShaped;
 
 use super::{Constant, Math};
@@ -106,54 +106,38 @@ impl FromStr for MathLabel {
     }
 }
 
-// impl From<&TreeNode<MathLabel>> for RecExpr<Math> {
-//     fn from(tree: &TreeNode<MathLabel>) -> Self {
-//         let mut expr = RecExpr::default();
-//         add_node(tree, &mut expr);
-//         expr
-//     }
-// }
-
-// impl From<&TreeNodeWithOrigin<MathLabel>> for RecExpr<Math> {
-//     fn from(tree: &TreeNodeWithOrigin<MathLabel>) -> Self {
-//         let mut expr = RecExpr::default();
-//         add_node(tree, &mut expr);
-//         expr
-//     }
-// }
-
-impl<T: TreeShaped<MathLabel>> ToRecExpr<MathLabel> for T {
+impl<T: TreeShaped<MathLabel>> ToEgg<MathLabel> for T {
     type Lang = Math;
 
-    fn to_rec_expr(&self) -> RecExpr<Self::Lang> {
-        let mut expr = RecExpr::default();
-        add_node(self, &mut expr);
-        expr
+    fn add_node<F: FnMut(&Self, Self::Lang) -> Id>(&self, adder: &mut F) -> Id {
+        let child_ids = self
+            .children()
+            .iter()
+            .map(|c| c.add_node(adder))
+            .collect::<Vec<_>>();
+        let math_node = match self.label() {
+            MathLabel::Diff => Math::Diff([child_ids[0], child_ids[1]]),
+            MathLabel::Integral => Math::Integral([child_ids[0], child_ids[1]]),
+            MathLabel::Add => Math::Add([child_ids[0], child_ids[1]]),
+            MathLabel::Sub => Math::Sub([child_ids[0], child_ids[1]]),
+            MathLabel::Mul => Math::Mul([child_ids[0], child_ids[1]]),
+            MathLabel::Div => Math::Div([child_ids[0], child_ids[1]]),
+            MathLabel::Pow => Math::Pow([child_ids[0], child_ids[1]]),
+            MathLabel::Ln => Math::Ln(child_ids[0]),
+            MathLabel::Sqrt => Math::Sqrt(child_ids[0]),
+            MathLabel::Sin => Math::Sin(child_ids[0]),
+            MathLabel::Cos => Math::Cos(child_ids[0]),
+            MathLabel::Constant(c) => Math::Constant(*c),
+            MathLabel::Symbol(s) => Math::Symbol(*s),
+        };
+        adder(self, math_node)
     }
-}
-
-fn add_node<T: TreeShaped<MathLabel>>(node: &T, expr: &mut RecExpr<Math>) -> Id {
-    let child_ids: Vec<Id> = node.children().iter().map(|c| add_node(c, expr)).collect();
-    let math_node = match node.label() {
-        MathLabel::Diff => Math::Diff([child_ids[0], child_ids[1]]),
-        MathLabel::Integral => Math::Integral([child_ids[0], child_ids[1]]),
-        MathLabel::Add => Math::Add([child_ids[0], child_ids[1]]),
-        MathLabel::Sub => Math::Sub([child_ids[0], child_ids[1]]),
-        MathLabel::Mul => Math::Mul([child_ids[0], child_ids[1]]),
-        MathLabel::Div => Math::Div([child_ids[0], child_ids[1]]),
-        MathLabel::Pow => Math::Pow([child_ids[0], child_ids[1]]),
-        MathLabel::Ln => Math::Ln(child_ids[0]),
-        MathLabel::Sqrt => Math::Sqrt(child_ids[0]),
-        MathLabel::Sin => Math::Sin(child_ids[0]),
-        MathLabel::Cos => Math::Cos(child_ids[0]),
-        MathLabel::Constant(c) => Math::Constant(*c),
-        MathLabel::Symbol(s) => Math::Symbol(*s),
-    };
-    expr.add(math_node)
 }
 
 #[cfg(test)]
 mod tests {
+    use egg::RecExpr;
+
     use crate::TreeNode;
 
     use super::*;

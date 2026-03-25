@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::count::{Counter, TermCount};
 use crate::egg::math::ConstantFold;
-use crate::egg::{Math, ToRecExpr};
+use crate::egg::{Math, ToEgg};
 use crate::sampling::Sampler;
 use crate::sampling::count::CountSampler;
 use crate::tree::{TreeNodeWithOrigin, TreeShaped};
@@ -203,7 +203,7 @@ where
     L: Language,
     N: Analysis<L>,
     LL: Label,
-    T: ToRecExpr<LL, Lang = L>,
+    T: ToEgg<LL, Lang = L>,
 {
     prev_raw_egg.lookup_expr(&tree.to_rec_expr()).is_none()
 }
@@ -284,7 +284,7 @@ pub fn measure_guides<L: Label>(
             let zs_dist = tree_distance_unit(&guide_flat, &goal_flat);
             let structural_dist = structural_diff(&goal_flat, &guide_flat, &UnitCost);
             MeasuredGuide {
-                guide: guide.clone().into(),
+                guide: guide.clone(),
                 zs_distance: zs_dist,
                 structural_distance: structural_dist,
             }
@@ -304,7 +304,7 @@ where
     L: Language,
     N: Analysis<L>,
     LL: Label,
-    TreeNodeWithOrigin<LL>: ToRecExpr<LL, Lang = L>,
+    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
 {
     let tc = TermCount::<BigUint>::new(max_size, false, graph);
 
@@ -363,8 +363,8 @@ where
     L: Language,
     N: Analysis<L>,
     LL: Label,
-    TreeNodeWithOrigin<LL>: ToRecExpr<LL, Lang = L>,
-    TreeNode<LL>: ToRecExpr<LL, Lang = L>,
+    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
+    TreeNode<LL>: ToEgg<LL, Lang = L>,
 {
     let tc = TermCount::<BigUint>::new(max_size, false, graph);
 
@@ -410,7 +410,7 @@ pub struct EvalResult<'a, L: Label> {
 
 #[derive(Serialize, Debug, PartialEq, Eq, Hash)]
 pub struct MeasuredGuide<L: Label> {
-    pub guide: TreeNode<L>,
+    pub guide: TreeNodeWithOrigin<L>,
     pub zs_distance: usize,
     #[serde(flatten)]
     pub structural_distance: StructuralDistance,

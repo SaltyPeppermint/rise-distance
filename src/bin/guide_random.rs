@@ -15,7 +15,7 @@ use rise_distance::cli::{
     init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
-use rise_distance::egg::{ToRecExpr, convert, run_guide_goal, verify_reachability};
+use rise_distance::egg::{ToEgg, convert, run_guide_goal, verify_reachability};
 use rise_distance::{TreeNodeWithOrigin, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
@@ -84,6 +84,10 @@ struct Cli {
     /// Sample Strategy
     #[arg(long)]
     eval_all: bool,
+
+    /// Use the experimental `add_with_full_union` for the new egraph
+    #[arg(long)]
+    full_union: bool,
 }
 
 const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
@@ -186,6 +190,7 @@ fn main() {
                     &goal_recexpr,
                     RULES.get_or_init(math::rules),
                     verify_iters,
+                    cli.full_union,
                 );
                 EvalResult {
                     guide: measured,
@@ -253,6 +258,7 @@ fn take_n_trials(
                     goal_recexpr,
                     RULES.get_or_init(math::rules),
                     cli.goal_iters,
+                    cli.full_union,
                 )
             })
             .collect::<Vec<_>>();
