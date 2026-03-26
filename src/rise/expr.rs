@@ -13,7 +13,7 @@ use super::label::RiseLabel;
 use super::nat::{Nat, parse_nat};
 use super::primitive::Primitive;
 use super::types::{DataType, Type, parse_data_type, parse_type};
-use crate::tree::TreeNode;
+use crate::tree::Tree;
 
 // ============================================================================
 // Literal data values
@@ -227,31 +227,27 @@ impl Expr {
 
     /// Convert this expression to a `TreeNode<RiseLabel>`
     #[must_use]
-    pub fn to_tree(&self) -> TreeNode<RiseLabel> {
+    pub fn to_tree(&self) -> Tree<RiseLabel> {
         let label = (&self.node).into();
         let ty = self.ty.as_ref().map(|t| t.to_tree());
         match &self.node {
             ExprNode::Var(_) | ExprNode::Literal(_) | ExprNode::Primitive(_) => {
-                TreeNode::leaf_typed(label, ty)
+                Tree::leaf_typed(label, ty)
             }
             ExprNode::NatLiteral(n) => n.to_tree(),
-            ExprNode::App(f, e) => TreeNode::new_typed(label, vec![f.to_tree(), e.to_tree()], ty),
+            ExprNode::App(f, e) => Tree::new_typed(label, vec![f.to_tree(), e.to_tree()], ty),
             ExprNode::Lambda(body)
             | ExprNode::NatLambda(body)
             | ExprNode::DataLambda(body)
             | ExprNode::AddrLambda(body)
-            | ExprNode::NatNatLambda(body) => TreeNode::new_typed(label, vec![body.to_tree()], ty),
-            ExprNode::NatApp(f, n) => {
-                TreeNode::new_typed(label, vec![f.to_tree(), n.to_tree()], ty)
-            }
-            ExprNode::DataApp(f, dt) => {
-                TreeNode::new_typed(label, vec![f.to_tree(), dt.to_tree()], ty)
-            }
+            | ExprNode::NatNatLambda(body) => Tree::new_typed(label, vec![body.to_tree()], ty),
+            ExprNode::NatApp(f, n) => Tree::new_typed(label, vec![f.to_tree(), n.to_tree()], ty),
+            ExprNode::DataApp(f, dt) => Tree::new_typed(label, vec![f.to_tree(), dt.to_tree()], ty),
             ExprNode::AddrApp(f, addr) => {
-                TreeNode::new_typed(label, vec![f.to_tree(), addr.to_tree()], ty)
+                Tree::new_typed(label, vec![f.to_tree(), addr.to_tree()], ty)
             }
             ExprNode::IndexLiteral(i, n) => {
-                TreeNode::new_typed(label, vec![i.to_tree(), n.to_tree()], ty)
+                Tree::new_typed(label, vec![i.to_tree(), n.to_tree()], ty)
             }
         }
     }

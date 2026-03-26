@@ -61,31 +61,31 @@ impl From<SexpError> for ParseError {
 mod tests {
     use super::*;
 
-    use crate::tree::{TreeNode, TreeShaped};
+    use crate::tree::{Tree, TreeShaped};
     use crate::zs::tree_distance_unit;
 
     #[test]
     fn rise_label_works_with_zs() {
         // Create two simple trees with RiseLabel
-        let tree1 = TreeNode::new_untyped(
+        let tree1 = Tree::new_untyped(
             RiseLabel::App,
             vec![
-                TreeNode::leaf_untyped(RiseLabel::Primitive(Primitive::Map)),
-                TreeNode::new_untyped(
+                Tree::leaf_untyped(RiseLabel::Primitive(Primitive::Map)),
+                Tree::new_untyped(
                     RiseLabel::Lambda,
-                    vec![TreeNode::leaf_untyped(RiseLabel::Var(0))],
+                    vec![Tree::leaf_untyped(RiseLabel::Var(0))],
                 ),
             ],
         )
         .flatten(false);
 
-        let tree2 = TreeNode::new_untyped(
+        let tree2 = Tree::new_untyped(
             RiseLabel::App,
             vec![
-                TreeNode::leaf_untyped(RiseLabel::Primitive(Primitive::Map)),
-                TreeNode::new_untyped(
+                Tree::leaf_untyped(RiseLabel::Primitive(Primitive::Map)),
+                Tree::new_untyped(
                     RiseLabel::Lambda,
-                    vec![TreeNode::leaf_untyped(RiseLabel::Var(1))],
+                    vec![Tree::leaf_untyped(RiseLabel::Var(1))],
                 ),
             ],
         )
@@ -104,9 +104,9 @@ mod tests {
     fn rise_label_with_floats_in_zs() {
         use ordered_float::OrderedFloat;
 
-        let tree1 = TreeNode::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).flatten(false);
-        let tree2 = TreeNode::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).flatten(false);
-        let tree3 = TreeNode::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(2.71))).flatten(false);
+        let tree1 = Tree::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).flatten(false);
+        let tree2 = Tree::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).flatten(false);
+        let tree3 = Tree::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(2.71))).flatten(false);
 
         // Same float value - distance 0
         assert_eq!(tree_distance_unit(&tree1, &tree2), 0);

@@ -20,7 +20,7 @@ use rise_distance::cli::{
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
 use rise_distance::egg::{ToEgg, convert, run_guide_goal, verify_reachability};
-use rise_distance::{TreeNodeWithOrigin, TreeShaped, tee_println};
+use rise_distance::{OriginTree, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -206,7 +206,7 @@ fn main() {
 fn eval_all(
     verify_iters: usize,
     ranked: &[MeasuredGuide<MathLabel>],
-    goal: &TreeNodeWithOrigin<MathLabel>,
+    goal: &OriginTree<MathLabel>,
     run_folder: &Path,
     full_union: bool,
 ) {
@@ -255,7 +255,7 @@ struct GoalResults {
 
 fn eval_guide_sets(
     results: &mut [MeasuredGuide<MathLabel>],
-    goal: &TreeNodeWithOrigin<MathLabel>,
+    goal: &OriginTree<MathLabel>,
     max_iters: usize,
     n_trials: usize,
     full_union: bool,
@@ -366,11 +366,7 @@ fn random_guide_sets(
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-fn print_summary(
-    results: &[GuideEval<MathLabel>],
-    goal: &TreeNodeWithOrigin<MathLabel>,
-    max_iters: usize,
-) {
+fn print_summary(results: &[GuideEval<MathLabel>], goal: &OriginTree<MathLabel>, max_iters: usize) {
     let mut successful = results
         .iter()
         .filter(|r| r.iterations.is_some())

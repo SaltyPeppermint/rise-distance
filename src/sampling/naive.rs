@@ -3,7 +3,7 @@ use rand::prelude::*;
 use crate::count::{Counter, TermCount};
 use crate::ids::ExprChildId;
 use crate::sampling::Sampler;
-use crate::tree::TreeNodeWithOrigin;
+use crate::tree::OriginTree;
 use crate::{EClassId, Graph, Label};
 
 pub struct NaiveSampler<'a, 'b, C: Counter, L: Label> {
@@ -39,7 +39,7 @@ impl<C: Counter, L: Label> Sampler<L> for NaiveSampler<'_, '_, C, L> {
     }
 
     /// Sample uniformly: each feasible choice gets equal weight.
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNodeWithOrigin<L> {
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> OriginTree<L> {
         let canon_id = self.graph.canonicalize(id);
         let eclass = self.graph.class(canon_id);
         let child_budget = size - 1 - self.term_count.type_overhead(eclass);
@@ -76,19 +76,17 @@ impl<C: Counter, L: Label> Sampler<L> for NaiveSampler<'_, '_, C, L> {
                 remaining -= chosen_size;
 
                 match c_id {
-                    ExprChildId::Nat(nat_id) => TreeNodeWithOrigin::from_nat(self.graph, nat_id),
-                    ExprChildId::Data(data_id) => {
-                        TreeNodeWithOrigin::from_data(self.graph, data_id)
-                    }
+                    ExprChildId::Nat(nat_id) => OriginTree::from_nat(self.graph, nat_id),
+                    ExprChildId::Data(data_id) => OriginTree::from_data(self.graph, data_id),
                     ExprChildId::EClass(eclass_id) => self.sample(eclass_id, chosen_size, rng),
                 }
             })
             .collect();
 
-        TreeNodeWithOrigin::new_typed(
+        OriginTree::new_typed(
             pick.label().clone(),
             children,
-            TreeNodeWithOrigin::from_eclass(self.graph, canon_id),
+            OriginTree::from_eclass(self.graph, canon_id),
             canon_id.into(),
         )
     }

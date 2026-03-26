@@ -12,7 +12,7 @@ use crate::tree::TreeShaped;
 use super::euler_str::EulerString;
 use super::nodes::Label;
 use super::structural::structural_diff;
-use super::tree::TreeNode;
+use super::tree::Tree;
 use super::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
 
 /// Core Zhang-Shasha minimum distance search over a parallel iterator of candidate trees.
@@ -21,14 +21,14 @@ use super::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
 /// the full edit distance.
 pub fn find_min_zs<L, CF, I>(
     candidates: I,
-    reference: &TreeNode<L>,
+    reference: &Tree<L>,
     costs: &CF,
     with_types: bool,
-) -> (Option<(TreeNode<L>, usize)>, ZSStats)
+) -> (Option<(Tree<L>, usize)>, ZSStats)
 where
     L: Label,
     CF: EditCosts<L>,
-    I: ParallelIterator<Item = TreeNode<L>>,
+    I: ParallelIterator<Item = Tree<L>>,
 {
     let ref_flat = reference.flatten(with_types);
 
@@ -132,14 +132,14 @@ impl std::ops::Add for ZSStats {
 #[must_use]
 pub fn find_min_struct<L, CF, I>(
     candidates: I,
-    reference: &TreeNode<L>,
+    reference: &Tree<L>,
     costs: &CF,
     with_types: bool,
-) -> Option<(TreeNode<L>, StructuralDistance)>
+) -> Option<(Tree<L>, StructuralDistance)>
 where
     L: Label,
     CF: EditCosts<L>,
-    I: ParallelIterator<Item = TreeNode<L>>,
+    I: ParallelIterator<Item = Tree<L>>,
 {
     let running_best_overlap = AtomicUsize::new(0);
     let running_best_zs = AtomicUsize::new(usize::MAX);

@@ -6,7 +6,7 @@ use crate::count::{Counter, TermCount};
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::Label;
 use crate::sampling::Sampler;
-use crate::tree::TreeNodeWithOrigin;
+use crate::tree::OriginTree;
 
 pub struct CountSampler<'a, 'b, C: Counter, L: Label> {
     term_count: &'a TermCount<C>,
@@ -40,7 +40,7 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, '_, C, L> {
             .copied()
     }
 
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> TreeNodeWithOrigin<L> {
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> OriginTree<L> {
         let canon_id = self.graph.canonicalize(id);
         let eclass = self.graph.class(canon_id);
         let child_budget = size - 1 - self.term_count.type_overhead(eclass);
@@ -84,19 +84,17 @@ impl<C: Counter, L: Label> Sampler<L> for CountSampler<'_, '_, C, L> {
                 remaining -= chosen_size;
 
                 match c_id {
-                    ExprChildId::Nat(nat_id) => TreeNodeWithOrigin::from_nat(self.graph, nat_id),
-                    ExprChildId::Data(data_id) => {
-                        TreeNodeWithOrigin::from_data(self.graph, data_id)
-                    }
+                    ExprChildId::Nat(nat_id) => OriginTree::from_nat(self.graph, nat_id),
+                    ExprChildId::Data(data_id) => OriginTree::from_data(self.graph, data_id),
                     ExprChildId::EClass(eclass_id) => self.sample(eclass_id, chosen_size, rng),
                 }
             })
             .collect();
 
-        TreeNodeWithOrigin::new_typed(
+        OriginTree::new_typed(
             pick.label().clone(),
             children,
-            TreeNodeWithOrigin::from_eclass(self.graph, canon_id),
+            OriginTree::from_eclass(self.graph, canon_id),
             canon_id.into(),
         )
     }

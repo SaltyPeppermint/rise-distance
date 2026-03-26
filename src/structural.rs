@@ -3,7 +3,7 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{tree::FlattenedTreeNode, tree_distance};
+use crate::{tree::FlatTree, tree_distance};
 
 use super::{EditCosts, Label};
 
@@ -98,13 +98,13 @@ impl std::iter::Sum for StructuralDistance {
 /// Very simple structural diff.
 /// starting from the root, is already present.
 pub fn structural_diff<L: Label, C: EditCosts<L>>(
-    reference: &FlattenedTreeNode<L>,
-    candidate: &FlattenedTreeNode<L>,
+    reference: &FlatTree<L>,
+    candidate: &FlatTree<L>,
     costs: &C,
 ) -> StructuralDistance {
     fn rec<L: Label, C: EditCosts<L>>(
-        reference: &FlattenedTreeNode<L>,
-        candidate: &FlattenedTreeNode<L>,
+        reference: &FlatTree<L>,
+        candidate: &FlatTree<L>,
         costs: &C,
     ) -> StructuralDistance {
         if reference.label() != candidate.label() {

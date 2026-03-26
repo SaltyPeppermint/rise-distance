@@ -8,7 +8,7 @@ use symbolic_expressions::{IntoSexp, Sexp};
 
 use super::ParseError;
 use super::label::RiseLabel;
-use crate::tree::TreeNode;
+use crate::tree::Tree;
 
 /// Natural number expressions in Rise.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -56,16 +56,14 @@ impl Nat {
 
     /// Convert this nat to a `TreeNode<RiseLabel>`.
     #[must_use]
-    pub fn to_tree(&self) -> TreeNode<RiseLabel> {
+    pub fn to_tree(&self) -> Tree<RiseLabel> {
         match self {
-            Nat::Var(_) | Nat::Cst(_) => TreeNode::leaf_untyped(self.into()),
+            Nat::Var(_) | Nat::Cst(_) => Tree::leaf_untyped(self.into()),
             Nat::Add(a, b)
             | Nat::Mul(a, b)
             | Nat::Pow(a, b)
             | Nat::Mod(a, b)
-            | Nat::FloorDiv(a, b) => {
-                TreeNode::new_untyped(self.into(), vec![a.to_tree(), b.to_tree()])
-            }
+            | Nat::FloorDiv(a, b) => Tree::new_untyped(self.into(), vec![a.to_tree(), b.to_tree()]),
         }
     }
 }

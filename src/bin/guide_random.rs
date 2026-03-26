@@ -18,7 +18,7 @@ use rise_distance::cli::{
 };
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
 use rise_distance::egg::{GuideGoalResult, ToEgg, convert, run_guide_goal, verify_reachability};
-use rise_distance::{TreeNodeWithOrigin, TreeShaped, tee_println};
+use rise_distance::{OriginTree, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -186,7 +186,7 @@ fn evaluate_goal(
     cli: &Cli,
     result: &GuideGoalResult<Math, ConstantFold>,
     root: Id,
-    goal: &TreeNodeWithOrigin<MathLabel>,
+    goal: &OriginTree<MathLabel>,
     verify_iters: usize,
     run_folder: &Path,
 ) -> (GoalResults, serde_json::Value) {
@@ -268,7 +268,7 @@ fn write_outputs(
 fn run_guide_set_trials(
     cli: &Cli,
     goal_recexpr: &RecExpr<Math>,
-    sampled_guides: &[TreeNodeWithOrigin<MathLabel>],
+    sampled_guides: &[OriginTree<MathLabel>],
 ) -> Vec<GuideSetTrials> {
     let mut entries = Vec::new();
     for k in TRIAL_SIZE {
@@ -311,7 +311,7 @@ struct GoalResults {
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
 fn print_summary(
     results: &[GuideEval<MathLabel>],
-    goal: &TreeNodeWithOrigin<MathLabel>,
+    goal: &OriginTree<MathLabel>,
     max_iters: usize,
 ) -> serde_json::Value {
     let successful = results

@@ -20,9 +20,9 @@ use crate::count::TermCount;
 use crate::egg::math::ConstantFold;
 use crate::egg::{Math, ToEgg};
 use crate::sampling::{CountSampler, Sampler};
-use crate::tree::{TreeNodeWithOrigin, TreeShaped};
+use crate::tree::{OriginTree, TreeShaped};
 use crate::{
-    Graph, Label, StructuralDistance, TreeNode, UnitCost, structural_diff, tree_distance_unit,
+    Graph, Label, StructuralDistance, Tree, UnitCost, structural_diff, tree_distance_unit,
 };
 
 pub const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
@@ -133,8 +133,8 @@ pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T
 
 /// Measure guides by distance to the goal.
 pub fn measure_guides<L: Label>(
-    guides: &[TreeNodeWithOrigin<L>],
-    goal: &TreeNodeWithOrigin<L>,
+    guides: &[OriginTree<L>],
+    goal: &OriginTree<L>,
 ) -> Vec<MeasuredGuide<L>> {
     let goal_flat = goal.flatten(false);
     #[expect(clippy::missing_panics_doc)]
@@ -165,12 +165,12 @@ pub fn sample_frontier_terms<L, N, LL>(
     count: usize,
     max_size: usize,
     distribution: SizeDistribution,
-) -> Vec<TreeNodeWithOrigin<LL>>
+) -> Vec<OriginTree<LL>>
 where
     L: Language,
     N: Analysis<L>,
     LL: Label,
-    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<LL>: ToEgg<LL, Lang = L>,
 {
     let tc = TermCount::<BigUint>::new(max_size, false, graph);
 
@@ -224,13 +224,13 @@ pub fn enumerate_frontier_terms<L, N, LL>(
     graph: &Graph<LL>,
     prev_raw_egg: &egg::EGraph<L, N>,
     max_size: usize,
-) -> Vec<TreeNodeWithOrigin<LL>>
+) -> Vec<OriginTree<LL>>
 where
     L: Language,
     N: Analysis<L>,
     LL: Label,
-    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
-    TreeNode<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<LL>: ToEgg<LL, Lang = L>,
+    Tree<LL>: ToEgg<LL, Lang = L>,
 {
     let tc = TermCount::<BigUint>::new(max_size, false, graph);
 
@@ -276,7 +276,7 @@ pub struct GuideEval<'a, L: Label> {
 
 #[derive(Serialize, Debug, PartialEq, Eq, Hash)]
 pub struct MeasuredGuide<L: Label> {
-    pub guide: TreeNodeWithOrigin<L>,
+    pub guide: OriginTree<L>,
     pub zs_distance: usize,
     #[serde(flatten)]
     pub structural_distance: StructuralDistance,

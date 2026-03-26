@@ -12,7 +12,7 @@ use rise_distance::count::TermCount;
 use rise_distance::sampling::CountSampler;
 use rise_distance::sampling::Sampler;
 use rise_distance::{
-    EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, TreeNode, TreeShaped,
+    EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, Tree, TreeShaped,
     UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
 };
 
@@ -214,7 +214,7 @@ fn main() {
     }
 }
 
-fn parse_ref(source: &RefSource) -> TreeNode<RiseLabel> {
+fn parse_ref(source: &RefSource) -> Tree<RiseLabel> {
     let parse_tree = |sexpr: &str| {
         sexpr
             .parse::<Expr>()
@@ -259,7 +259,7 @@ struct CountSampleConfig {
 fn run_count_extraction<L: Label>(
     graph: &Graph<L>,
     term_count: &TermCount<BigUint>,
-    ref_tree: &TreeNode<L>,
+    ref_tree: &Tree<L>,
     config: &CountSampleConfig,
 ) {
     let CountSampleConfig {
@@ -319,8 +319,8 @@ fn run_count_extraction<L: Label>(
 
 #[expect(clippy::cast_precision_loss)]
 fn print_zs_result<L: Label>(
-    result: &(TreeNode<L>, usize),
-    ref_tree: &TreeNode<L>,
+    result: &(Tree<L>, usize),
+    ref_tree: &Tree<L>,
     stats: &ZSStats,
     elapsed: std::time::Duration,
     with_types: bool,
@@ -353,8 +353,8 @@ fn print_zs_result<L: Label>(
 }
 
 fn print_struct_result<L: Label>(
-    result: &(TreeNode<L>, StructuralDistance),
-    ref_tree: &TreeNode<L>,
+    result: &(Tree<L>, StructuralDistance),
+    ref_tree: &Tree<L>,
     elapsed: std::time::Duration,
     with_types: bool,
 ) {
@@ -369,7 +369,7 @@ fn print_struct_result<L: Label>(
     println!("{best}");
 }
 
-fn print_tree_sizes<L: Label>(best: &TreeNode<L>, ref_tree: &TreeNode<L>) {
+fn print_tree_sizes<L: Label>(best: &Tree<L>, ref_tree: &Tree<L>) {
     eprintln!(
         "Best tree size: {} with types, {} without",
         best.size_with_types(),

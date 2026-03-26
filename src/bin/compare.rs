@@ -2,7 +2,7 @@ use std::fs;
 
 use clap::Parser;
 
-use rise_distance::{Expr, Label, TreeNode, TreeShaped, tree_distance_unit};
+use rise_distance::{Expr, Label, Tree, TreeShaped, tree_distance_unit};
 
 #[derive(Parser)]
 #[command(about = "Compare trees using Zhang-Shasha edit distance")]
@@ -29,7 +29,7 @@ fn main() {
             &content,
             |sexpr| {
                 sexpr
-                    .parse::<TreeNode<String>>()
+                    .parse::<Tree<String>>()
                     .expect("Failed to parse s-expression")
             },
             args.with_types,
@@ -51,7 +51,7 @@ fn main() {
 fn run<L, F>(content: &str, parse_tree: F, with_types: bool)
 where
     L: Label,
-    F: Fn(&str) -> TreeNode<L>,
+    F: Fn(&str) -> Tree<L>,
 {
     let trees = content
         .lines()
@@ -65,7 +65,7 @@ where
     print_distance_matrix(&trees, with_types);
 }
 
-fn print_distance_matrix<L>(trees: &[(String, TreeNode<L>)], with_types: bool)
+fn print_distance_matrix<L>(trees: &[(String, Tree<L>)], with_types: bool)
 where
     L: Label,
 {

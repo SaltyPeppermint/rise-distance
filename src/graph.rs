@@ -16,7 +16,7 @@ use super::ids::{
     numeric_key_map,
 };
 use super::nodes::{DataTyNode, ENode, FunTyNode, Label, NatNode};
-use super::tree::TreeNode;
+use super::tree::Tree;
 
 /// `EClass`: choose exactly one child (`ENode`)
 /// Children are `ENode` instances directly
@@ -208,7 +208,7 @@ impl<L: Label> Graph<L> {
     }
 
     #[must_use]
-    pub fn tree_from_choices(&self, id: EClassId, choices: &[usize]) -> TreeNode<L> {
+    pub fn tree_from_choices(&self, id: EClassId, choices: &[usize]) -> Tree<L> {
         self.tree_from_choices_rec(id, 0, choices).0
     }
 
@@ -217,7 +217,7 @@ impl<L: Label> Graph<L> {
         id: EClassId,
         choice_idx: usize,
         choices: &[usize],
-    ) -> (TreeNode<L>, usize) {
+    ) -> (Tree<L>, usize) {
         let class = self.class(id);
         let choice = choices[choice_idx];
         let node = &class.nodes()[choice];
@@ -227,8 +227,8 @@ impl<L: Label> Graph<L> {
             |(mut children, curr_idx): (Vec<_>, _), child_id| {
                 let (child_tree, last_idx) = match child_id {
                     // With nats and dt we cannot make a choice so do not add anything to the choice
-                    ExprChildId::Nat(nat_id) => (TreeNode::from_nat(self, *nat_id), curr_idx),
-                    ExprChildId::Data(dt_id) => (TreeNode::from_data(self, *dt_id), curr_idx),
+                    ExprChildId::Nat(nat_id) => (Tree::from_nat(self, *nat_id), curr_idx),
+                    ExprChildId::Data(dt_id) => (Tree::from_data(self, *dt_id), curr_idx),
                     ExprChildId::EClass(eclass_id) => {
                         self.tree_from_choices_rec(*eclass_id, curr_idx + 1, choices)
                     }
@@ -238,11 +238,8 @@ impl<L: Label> Graph<L> {
             },
         );
 
-        let eclass_tree = TreeNode::new_typed(
-            node.label().clone(),
-            children,
-            TreeNode::from_eclass(self, id),
-        );
+        let eclass_tree =
+            Tree::new_typed(node.label().clone(), children, Tree::from_eclass(self, id));
         (eclass_tree, curr_idx)
     }
 

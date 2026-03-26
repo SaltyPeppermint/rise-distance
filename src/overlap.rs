@@ -4,7 +4,7 @@ use crate::graph::Class;
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::{ENode, Label};
 use crate::tree::TreeShaped;
-use crate::{Graph, PartialChild, PartialTree, TreeNode, tree_node_to_partial};
+use crate::{Graph, Tree, PartialChild, PartialTree, tree_node_to_partial};
 
 /// Match a reference tree against an e-class, producing a partial tree
 /// that maximizes structural overlap with the reference.
@@ -15,11 +15,11 @@ use crate::{Graph, PartialChild, PartialTree, TreeNode, tree_node_to_partial};
 pub fn match_ref_tree<L: Label>(
     graph: &Graph<L>,
     eclass_id: EClassId,
-    ref_tree: &TreeNode<L>,
+    ref_tree: &Tree<L>,
 ) -> Option<PartialTree<L>> {
     let canonical_id = graph.canonicalize(eclass_id);
     let eclass = graph.class(canonical_id);
-    let ty = TreeNode::from_eclass(graph, canonical_id);
+    let ty = Tree::from_eclass(graph, canonical_id);
 
     let mut best = None;
 
@@ -37,12 +37,12 @@ pub fn match_ref_tree<L: Label>(
         for &child_id in children {
             match child_id {
                 ExprChildId::Nat(nat_id) => {
-                    let nat_tree = TreeNode::from_nat(graph, nat_id);
+                    let nat_tree = Tree::from_nat(graph, nat_id);
                     partial_children.push(PartialChild::Resolved(tree_node_to_partial(&nat_tree)));
                     ref_idx += 1;
                 }
                 ExprChildId::Data(data_id) => {
-                    let data_tree = TreeNode::from_data(graph, data_id);
+                    let data_tree = Tree::from_data(graph, data_id);
                     partial_children.push(PartialChild::Resolved(tree_node_to_partial(&data_tree)));
                     ref_idx += 1;
                 }
@@ -88,7 +88,7 @@ pub fn match_ref_tree<L: Label>(
 fn collect_matched_nodes<'a, L: Label>(
     graph: &'a Graph<L>,
     eclass_id: EClassId,
-    ref_tree: &TreeNode<L>,
+    ref_tree: &Tree<L>,
 ) -> HashMap<EClassId, &'a ENode<L>> {
     let canonical_id = graph.canonicalize(eclass_id);
     let eclass = graph.class(canonical_id);
@@ -182,7 +182,7 @@ fn collect_reachable<L: Label>(
 pub fn prune_by_ref_tree<L: Label>(
     graph: &Graph<L>,
     root: EClassId,
-    ref_tree: &TreeNode<L>,
+    ref_tree: &Tree<L>,
 ) -> (Graph<L>, HashSet<EClassId>) {
     let matched = collect_matched_nodes(graph, root, ref_tree);
 
@@ -248,7 +248,7 @@ pub fn prune_by_ref_tree<L: Label>(
 mod tests {
     use super::*;
     use crate::Graph;
-    use crate::TreeNode;
+    use crate::Tree;
     use crate::graph::Class;
     use crate::nodes::ENode;
     use crate::overlap::match_ref_tree;
@@ -272,7 +272,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "(f a)".parse().unwrap();
+        let ref_tree: Tree<String> = "(f a)".parse().unwrap();
 
         let partial = match_ref_tree(&graph, EClassId::new(0), &ref_tree).unwrap();
         assert_eq!(partial.resolved_count(), 2); // f + a
@@ -300,7 +300,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "(f c)".parse().unwrap();
+        let ref_tree: Tree<String> = "(f c)".parse().unwrap();
 
         let partial = match_ref_tree(&graph, EClassId::new(0), &ref_tree).unwrap();
         assert_eq!(partial.resolved_count(), 1); // only f
@@ -324,7 +324,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "b".parse().unwrap();
+        let ref_tree: Tree<String> = "b".parse().unwrap();
 
         assert!(match_ref_tree(&graph, EClassId::new(0), &ref_tree).is_none());
     }
@@ -355,7 +355,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "(f a)".parse().unwrap();
+        let ref_tree: Tree<String> = "(f a)".parse().unwrap();
 
         let partial = match_ref_tree(&graph, EClassId::new(0), &ref_tree).unwrap();
         // Should pick the f->class1 node which fully matches (f a)
@@ -386,7 +386,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "(f a)".parse().unwrap();
+        let ref_tree: Tree<String> = "(f a)".parse().unwrap();
         let (pruned, pruned_ids) = prune_by_ref_tree(&graph, EClassId::new(0), &ref_tree);
 
         // Class 0 was pruned (had 2 nodes, now 1)
@@ -413,7 +413,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "b".parse().unwrap();
+        let ref_tree: Tree<String> = "b".parse().unwrap();
         let (pruned, pruned_ids) = prune_by_ref_tree(&graph, EClassId::new(0), &ref_tree);
 
         assert!(pruned_ids.is_empty());
@@ -442,7 +442,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "(f c)".parse().unwrap();
+        let ref_tree: Tree<String> = "(f c)".parse().unwrap();
         let (pruned, pruned_ids) = prune_by_ref_tree(&graph, EClassId::new(0), &ref_tree);
 
         // Class 0 has only 1 node so not "pruned" (nothing removed)
@@ -481,7 +481,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "(f c)".parse().unwrap();
+        let ref_tree: Tree<String> = "(f c)".parse().unwrap();
         let (pruned, pruned_ids) = prune_by_ref_tree(&graph, EClassId::new(0), &ref_tree);
 
         assert!(pruned_ids.is_empty());
@@ -516,7 +516,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "(f a)".parse().unwrap();
+        let ref_tree: Tree<String> = "(f a)".parse().unwrap();
         let (pruned, pruned_ids) = prune_by_ref_tree(&graph, EClassId::new(0), &ref_tree);
 
         assert_eq!(pruned_ids, [EClassId::new(0)].into());
@@ -554,7 +554,7 @@ mod tests {
             HashMap::new(),
         );
 
-        let ref_tree: TreeNode<String> = "(f a c)".parse().unwrap();
+        let ref_tree: Tree<String> = "(f a c)".parse().unwrap();
         let (pruned, pruned_ids) = prune_by_ref_tree(&graph, EClassId::new(0), &ref_tree);
 
         // Class 1 was matched but is reachable from hole class2 -> protected

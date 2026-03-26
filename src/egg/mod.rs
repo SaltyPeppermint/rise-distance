@@ -9,7 +9,7 @@ use hashbrown::{HashMap, HashSet};
 use crate::ids::{AnyId, EClassId, ExprChildId};
 use crate::nodes::ENode;
 use crate::tree::TreeShaped;
-use crate::{Class, Graph, Label, TreeNodeWithOrigin};
+use crate::{Class, Graph, Label, OriginTree};
 
 pub use math::{Math, MathLabel};
 
@@ -209,7 +209,7 @@ where
 ///
 /// Panics if no guides given
 pub fn verify_reachability<L, N, LL>(
-    guides: &[TreeNodeWithOrigin<LL>],
+    guides: &[OriginTree<LL>],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     max_iters: usize,
@@ -219,7 +219,7 @@ where
     L: Language + 'static,
     N: Analysis<L> + Default,
     LL: Label,
-    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<LL>: ToEgg<LL, Lang = L>,
 {
     assert!(!guides.is_empty(), "must have at least one guide");
     let goal_clone = goal.clone();
@@ -248,14 +248,14 @@ where
 
 fn add_with_root_union<LL, L, N, I>(
     mut runner: Runner<L, N, I>,
-    guides: &[TreeNodeWithOrigin<LL>],
+    guides: &[OriginTree<LL>],
 ) -> Runner<L, N, I>
 where
     LL: Label,
     L: Language,
     N: Analysis<L>,
     I: IterationData<L, N>,
-    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<LL>: ToEgg<LL, Lang = L>,
 {
     for guide in guides {
         let expr = guide.to_rec_expr();
@@ -271,14 +271,14 @@ where
 
 fn add_with_full_union<LL, L, N, I>(
     mut runner: Runner<L, N, I>,
-    guides: &[TreeNodeWithOrigin<LL>],
+    guides: &[OriginTree<LL>],
 ) -> Runner<L, N, I>
 where
     LL: Label,
     L: Language,
     N: Analysis<L>,
     I: IterationData<L, N>,
-    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<LL>: ToEgg<LL, Lang = L>,
 {
     let mut origin_to_new_ids = HashMap::new();
 
@@ -301,16 +301,16 @@ where
 
 fn add_uncanon_remember<LL, L, N>(
     graph: &mut EGraph<L, N>,
-    guide: &TreeNodeWithOrigin<LL>,
+    guide: &OriginTree<LL>,
     origin_to_new_ids: &mut HashMap<AnyId, HashSet<Id>>,
 ) -> Id
 where
     LL: Label,
     L: Language,
     N: Analysis<L>,
-    TreeNodeWithOrigin<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<LL>: ToEgg<LL, Lang = L>,
 {
-    let mut adder = |node: &TreeNodeWithOrigin<LL>, lang_node| {
+    let mut adder = |node: &OriginTree<LL>, lang_node| {
         let new_id = graph.add_uncanonical(lang_node);
         origin_to_new_ids
             .entry(node.origin())

@@ -1,7 +1,7 @@
 use ordered_float::NotNan;
 use rand::Rng;
 
-use crate::tree::{TreeNode, TreeShaped};
+use crate::tree::{Tree, TreeShaped};
 
 use super::label::MathLabel;
 
@@ -104,26 +104,26 @@ impl BoltzmannSampler {
         }
     }
 
-    fn gen_node(&self, rng: &mut impl Rng, depth: usize) -> TreeNode<MathLabel> {
+    fn gen_node(&self, rng: &mut impl Rng, depth: usize) -> Tree<MathLabel> {
         let r = rng.r#gen::<f64>();
         if depth >= self.max_depth || r < self.p_leaf {
             let label = self.symbols[rng.gen_range(0..self.symbols.len())];
-            TreeNode::leaf_untyped(label)
+            Tree::leaf_untyped(label)
         } else if r < self.p_leaf + self.p_unary {
             let op = self.unary_ops[rng.gen_range(0..self.unary_ops.len())];
             let child = self.gen_node(rng, depth + 1);
-            TreeNode::new_untyped(op, vec![child])
+            Tree::new_untyped(op, vec![child])
         } else {
             let op = self.binary_ops[rng.gen_range(0..self.binary_ops.len())];
             let left = self.gen_node(rng, depth + 1);
             let right = self.gen_node(rng, depth + 1);
-            TreeNode::new_untyped(op, vec![left, right])
+            Tree::new_untyped(op, vec![left, right])
         }
     }
 
     /// Generate a random term whose size is in `[target - tolerance, target + tolerance]`.
     /// Uses rejection sampling. Returns None if no valid tree is found within `10_000` attempts.
-    pub fn sample<R: Rng>(&self, rng: &mut R) -> Option<TreeNode<MathLabel>> {
+    pub fn sample<R: Rng>(&self, rng: &mut R) -> Option<Tree<MathLabel>> {
         let lo = self.target.saturating_sub(self.tolerance);
         let hi = self.target + self.tolerance;
         (0..10_000)
@@ -132,7 +132,7 @@ impl BoltzmannSampler {
     }
 
     /// Generate `count` random terms within the size window.
-    pub fn sample_many<R: Rng>(&self, rng: &mut R, count: usize) -> Vec<TreeNode<MathLabel>> {
+    pub fn sample_many<R: Rng>(&self, rng: &mut R, count: usize) -> Vec<Tree<MathLabel>> {
         (0..count).filter_map(|_| self.sample(rng)).collect()
     }
 }
