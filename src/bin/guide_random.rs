@@ -6,6 +6,7 @@ use clap::Parser;
 use egg::RecExpr;
 use hashbrown::HashSet;
 use rayon::prelude::*;
+use rise_distance::cli::argtypes::SampleStrategy;
 use rise_distance::cli::parquet::{dump_goal_summary_parquet, dump_to_parquet};
 use serde::Serialize;
 use serde_json::json;
@@ -69,6 +70,10 @@ struct Cli {
     #[arg(long, default_value_t = SizeDistribution::Uniform)]
     size_distribution: SizeDistribution,
 
+    /// How to sample the individual terms.
+    #[arg(long, default_value_t = SampleStrategy::CountBased)]
+    sample_strategy: SampleStrategy,
+
     /// Output folder (generated if omitted)
     #[arg(short, long)]
     output: Option<String>,
@@ -95,8 +100,8 @@ const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
 fn main() {
     let cli = Cli::parse();
     let prefix = format!(
-        "run-{}-{}-random-fullunion-{}",
-        cli.guide_iters, cli.goal_iters, cli.full_union
+        "run-{}-{}-{}-fullunion-{}",
+        cli.guide_iters, cli.goal_iters, cli.sample_strategy, cli.full_union
     );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
@@ -218,10 +223,10 @@ fn write_outputs(
     let mut output_writer = BufWriter::new(output_file);
     serde_json::to_writer(&mut output_writer, &all_results).expect("write top-k json");
 
-    let summaries: Vec<GoalSummary> = all_results
+    let summaries = all_results
         .iter()
         .map(|tk| GoalSummary::from_entries(&tk.goal, &tk.entries))
-        .collect();
+        .collect::<Vec<_>>();
     let summary_path = run_folder.join("top_k_summary.json");
     let summary_file = File::create(summary_path).expect("Failed to create summary json file");
     let summary_writer = BufWriter::new(summary_file);
