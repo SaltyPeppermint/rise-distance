@@ -159,7 +159,12 @@ pub fn dump_goal_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
 
     let n: usize = summaries
         .iter()
-        .map(|s| s.entries.iter().map(|e| e.trials.len()).sum::<usize>())
+        .map(|s| {
+            s.entries_per_k
+                .values()
+                .map(|trials| trials.len())
+                .sum::<usize>()
+        })
         .sum();
 
     let mut goals = StringBuilder::with_capacity(n, 64 * n);
@@ -171,10 +176,10 @@ pub fn dump_goal_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
     let mut total_time = Float64Builder::with_capacity(n);
 
     for summary in summaries {
-        for entry in &summary.entries {
-            for trial in &entry.trials {
+        for (k, trials) in &summary.entries_per_k {
+            for trial in trials {
                 goals.append_value(&summary.goal);
-                ks.append_value(entry.k as u64);
+                ks.append_value(*k as u64);
                 if let Some(t) = trial {
                     iters.append_value(t.iters as u64);
                     nodes.append_value(t.nodes as u64);

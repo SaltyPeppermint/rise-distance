@@ -12,7 +12,7 @@ use serde_json::json;
 
 use rise_distance::cli::argtypes::{SampleStrategy, SizeDistribution};
 use rise_distance::cli::parquet::{dump_goal_summary_parquet, dump_to_parquet};
-use rise_distance::cli::types::{GoalSummary, GuideEval, GuideSetTrials};
+use rise_distance::cli::types::{GoalSummary, GuideEval, TrialsPerK};
 use rise_distance::cli::{
     RULES, TRIAL_SIZE, get_run_folder, init_log, measure_guides, min_med_max,
     sample_frontier_terms, trial_avg,
@@ -203,10 +203,10 @@ fn evaluate_goal(
         cli.sample_strategy,
     );
 
-    let entries = run_guide_set_trials(cli, &goal_recexpr, &sampled_guides);
+    let runs = run_guide_set_trials(cli, &goal_recexpr, &sampled_guides);
     let goal_results = GoalResults {
         goal: goal.to_string(),
-        runs: entries,
+        runs,
     };
 
     let measured = measure_guides(&sampled_guides, goal)
@@ -247,7 +247,7 @@ fn write_outputs(
 
     let summaries = all_results
         .iter()
-        .map(|tk| GoalSummary::from_entries(&tk.goal, &tk.runs))
+        .map(|r| GoalSummary::from_entries(&r.goal, &r.runs))
         .collect::<Vec<_>>();
     let summary_path = run_folder.join("top_k_summary.json");
     let summary_file = File::create(summary_path).expect("Failed to create summary json file");
@@ -272,8 +272,8 @@ fn run_guide_set_trials(
     cli: &Cli,
     goal_recexpr: &RecExpr<Math>,
     sampled_guides: &[OriginTree<MathLabel>],
-) -> Vec<GuideSetTrials> {
-    let mut entries = Vec::new();
+) -> TrialsPerK {
+    let mut entries = TrialsPerK::default();
     for k in TRIAL_SIZE {
         let trials = sampled_guides
             .par_windows(cli.guides / MAX_TRIAL_SIZE)
@@ -300,7 +300,7 @@ fn run_guide_set_trials(
             tee_println!("Could NOT reach with {k} guides");
         }
 
-        entries.push(GuideSetTrials { k, trials });
+        entries.insert(k, trials);
     }
     entries
 }
@@ -308,7 +308,7 @@ fn run_guide_set_trials(
 #[derive(Serialize)]
 struct GoalResults {
     goal: String,
-    runs: Vec<GuideSetTrials>,
+    runs: TrialsPerK,
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]

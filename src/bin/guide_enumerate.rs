@@ -14,7 +14,7 @@ use rise_distance::cli::parquet::dump_to_parquet;
 use serde::Serialize;
 
 use rise_distance::cli::argtypes::{SampleStrategy, SizeDistribution};
-use rise_distance::cli::types::{GuideEval, GuideSetTrials, MeasuredGuide};
+use rise_distance::cli::types::{GuideEval, MeasuredGuide, TrialsPerK};
 use rise_distance::cli::{
     RULES, TRIAL_SIZE, enumerate_frontier_terms, get_run_folder, init_log, measure_guides,
     min_med_max, sample_frontier_terms, trial_avg,
@@ -254,9 +254,9 @@ struct GoalResults {
     goal: String,
     zs: Vec<GuideSetRun>,
     structural: Vec<GuideSetRun>,
-    random: Vec<GuideSetTrials>,
-    random_with_best_zs: Vec<GuideSetTrials>,
-    random_with_best_structural: Vec<GuideSetTrials>,
+    random: TrialsPerK,
+    random_with_best_zs: TrialsPerK,
+    random_with_best_structural: TrialsPerK,
 }
 
 fn eval_guide_sets(
@@ -273,9 +273,9 @@ fn eval_guide_sets(
         goal: goal.to_string(),
         zs: Vec::new(),
         structural: Vec::new(),
-        random: Vec::new(),
-        random_with_best_zs: Vec::new(),
-        random_with_best_structural: Vec::new(),
+        random: TrialsPerK::default(),
+        random_with_best_zs: TrialsPerK::default(),
+        random_with_best_structural: TrialsPerK::default(),
     };
 
     if results.is_empty() {
@@ -330,8 +330,8 @@ fn random_guide_sets(
     go: &RecExpr<Math>,
     n_trials: usize,
     full_union: bool,
-) -> Vec<GuideSetTrials> {
-    let mut entries = Vec::new();
+) -> TrialsPerK {
+    let mut entries = TrialsPerK::default();
     for k in TRIAL_SIZE {
         if k > successful.len() {
             continue;
@@ -366,7 +366,7 @@ fn random_guide_sets(
             tee_println!("Could NOT reach with top {k} guides");
         }
 
-        entries.push(GuideSetTrials { k, trials });
+        entries.insert(k, trials);
     }
     entries
 }

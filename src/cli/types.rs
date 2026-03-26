@@ -1,3 +1,4 @@
+use ahash::HashMap;
 use egg::Iteration;
 use serde::Serialize;
 
@@ -18,11 +19,12 @@ pub struct MeasuredGuide<L: Label> {
     pub structural_distance: StructuralDistance,
 }
 
-#[derive(Serialize)]
-pub struct GuideSetTrials {
-    pub k: usize,
-    pub trials: Vec<Option<Vec<Iteration<()>>>>,
-}
+/// Type alias for the per-k trial data: maps each guide-set size `k` to its
+/// trial results (one `Option` per trial — `None` means the goal was not reached).
+pub type TrialsPerK = HashMap<usize, Vec<Option<Vec<Iteration<()>>>>>;
+
+/// Same as `TrialsPerK` but with pre-computed summaries instead of full iteration data.
+pub type SummaryPerK = HashMap<usize, Vec<Option<TrialSummary>>>;
 
 /// Pre-computed per-trial summary. Much smaller than the full `Iteration`
 /// vectors, so Python can load it instantly.
@@ -41,49 +43,44 @@ pub struct TrialSummary {
 }
 
 #[derive(Serialize)]
-pub struct GuideSetSummary {
-    pub k: usize,
-    pub trials: Vec<Option<TrialSummary>>,
-}
-
-#[derive(Serialize)]
 pub struct GoalSummary {
     pub goal: String,
-    pub entries: Vec<GuideSetSummary>,
+    pub entries_per_k: SummaryPerK,
 }
 
 impl GoalSummary {
-    /// Build a summary from the full `GuideSetTrials` data for a given goal.
+    /// Build a summary from the full per-k trial data for a given goal.
     ///
     /// # Panics
     /// Panics if a reachable trial has an empty iteration list.
     #[must_use]
-    pub fn from_entries(goal: &str, entries: &[GuideSetTrials]) -> Self {
+    pub fn from_entries(goal: &str, entries: &TrialsPerK) -> Self {
         Self {
             goal: goal.to_owned(),
-            entries: entries
+            entries_per_k: entries
                 .iter()
-                .map(|e| GuideSetSummary {
-                    k: e.k,
-                    trials: e
-                        .trials
-                        .iter()
-                        .map(|trial| {
-                            trial.as_ref().map(|iters| {
-                                let last = iters.last().expect("non-empty iteration list");
-                                TrialSummary {
-                                    iters: iters.len(),
-                                    nodes: last.egraph_nodes,
-                                    classes: last.egraph_classes,
-                                    total_applied: iters
-                                        .iter()
-                                        .map(|i| i.applied.values().sum::<usize>())
-                                        .sum(),
-                                    total_time: iters.iter().map(|i| i.total_time).sum(),
-                                }
+                .map(|(k, trials)| {
+                    (
+                        *k,
+                        trials
+                            .iter()
+                            .map(|trial| {
+                                trial.as_ref().map(|iters| {
+                                    let last = iters.last().expect("non-empty iteration list");
+                                    TrialSummary {
+                                        iters: iters.len(),
+                                        nodes: last.egraph_nodes,
+                                        classes: last.egraph_classes,
+                                        total_applied: iters
+                                            .iter()
+                                            .map(|i| i.applied.values().sum::<usize>())
+                                            .sum(),
+                                        total_time: iters.iter().map(|i| i.total_time).sum(),
+                                    }
+                                })
                             })
-                        })
-                        .collect(),
+                            .collect(),
+                    )
                 })
                 .collect(),
         }
