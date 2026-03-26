@@ -157,6 +157,7 @@ fn main() {
         cli.goals,
         cli.max_size,
         cli.size_distribution,
+        cli.sample_strategy,
     );
     assert!(
         !goals.is_empty(),
@@ -198,6 +199,7 @@ fn evaluate_goal(
         cli.guides,
         cli.max_size,
         cli.size_distribution,
+        cli.sample_strategy,
     );
 
     let entries = run_guide_set_trials(cli, &goal_recexpr, &sampled_guides);

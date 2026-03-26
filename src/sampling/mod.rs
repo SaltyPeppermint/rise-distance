@@ -51,13 +51,13 @@ pub trait Sampler<L: Label>: Sync + Send {
     /// Sample unique terms across a range of sizes from root.
     ///
     /// See `sample_unique` for more info
-    fn sample_constrained_root(
+    fn sample_batch_root(
         &self,
         min_size: usize,
         max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<OriginTree<L>> {
-        self.sample_constrained(self.root(), min_size, max_size, samples_per_size)
+        self.sample_batch(self.root(), min_size, max_size, samples_per_size)
     }
 
     /// Sample unique terms across a range of sizes.
@@ -69,7 +69,7 @@ pub trait Sampler<L: Label>: Sync + Send {
     /// may have gaps in its reachable sizes (e.g. terms only at sizes 5, 7, 9),
     /// and calling `sample` with a size that has no terms would cause all node
     /// weights to be zero, panicking with `AllWeightsZero`.
-    fn sample_constrained(
+    fn sample_batch(
         &self,
         id: EClassId,
         min_size: usize,

@@ -15,11 +15,11 @@ use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::cli::argtypes::SizeDistribution;
+use crate::cli::argtypes::{SampleStrategy, SizeDistribution};
 use crate::count::TermCount;
 use crate::egg::math::ConstantFold;
 use crate::egg::{Math, ToEgg};
-use crate::sampling::{CountSampler, Sampler};
+use crate::sampling::{CountSampler, NaiveSampler, Sampler};
 use crate::tree::{OriginTree, TreeShaped};
 use crate::{
     Graph, Label, StructuralDistance, Tree, UnitCost, structural_diff, tree_distance_unit,
@@ -165,6 +165,7 @@ pub fn sample_frontier_terms<L, N, LL>(
     count: usize,
     max_size: usize,
     distribution: SizeDistribution,
+    sample_strategy: SampleStrategy,
 ) -> Vec<OriginTree<LL>>
 where
     L: Language,
@@ -199,11 +200,19 @@ where
             count * oversample,
             normal_center,
         );
-        let batch = CountSampler::new(&tc, graph).sample_constrained_root(
-            min_size,
-            max_size,
-            &samples_per_size,
-        );
+        let batch = match sample_strategy {
+            SampleStrategy::Naive => NaiveSampler::new(&tc, graph).sample_batch_root(
+                min_size,
+                max_size,
+                &samples_per_size,
+            ),
+            SampleStrategy::CountBased => CountSampler::new(&tc, graph).sample_batch_root(
+                min_size,
+                max_size,
+                &samples_per_size,
+            ),
+        };
+
         let prev_len = result.len();
         result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
         if result.len() >= count || result.len() == prev_len {

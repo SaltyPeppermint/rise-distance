@@ -284,7 +284,7 @@ fn run_count_extraction<L: Label>(
     let normal_center = (ref_tree.size(with_types) - min_size) as f64;
     let samples_per_size =
         distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
-    let candidates = CountSampler::new(term_count, graph).sample_constrained_root(
+    let candidates = CountSampler::new(term_count, graph).sample_batch_root(
         min_size,
         max_size,
         &samples_per_size,

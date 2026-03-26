@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use rise_distance::cli::parquet::dump_to_parquet;
 use serde::Serialize;
 
-use rise_distance::cli::argtypes::SizeDistribution;
+use rise_distance::cli::argtypes::{SampleStrategy, SizeDistribution};
 use rise_distance::cli::{
     GuideEval, GuideSetTrials, MeasuredGuide, RULES, TRIAL_SIZE, enumerate_frontier_terms,
     get_run_folder, init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
@@ -65,6 +65,10 @@ struct Cli {
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
     #[arg(long, default_value_t = SizeDistribution::Uniform)]
     size_distribution: SizeDistribution,
+
+    /// How to sample the individual terms BEWARE THIS ONLY APPLIES TO THE GOALS!.
+    #[arg(long, default_value_t = SampleStrategy::CountBased)]
+    sample_strategy: SampleStrategy,
 
     /// Output folder (generated if omitted)
     #[arg(short, long)]
@@ -141,6 +145,7 @@ fn main() {
         cli.goals,
         cli.max_size,
         cli.size_distribution,
+        cli.sample_strategy,
     );
     assert!(
         !goals.is_empty(),
