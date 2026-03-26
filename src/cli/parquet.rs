@@ -9,7 +9,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 
-use super::{EvalResult, TopKSummary};
+use super::{GoalSummary, GuideEval};
 use crate::{Label, TreeNodeWithOrigin, tee_println};
 
 /// Dump eval results to a new Parquet file inside `run_folder/out/`.
@@ -22,7 +22,7 @@ use crate::{Label, TreeNodeWithOrigin, tee_println};
 pub fn dump_to_parquet<L: Label>(
     run_folder: &Path,
     goal: &TreeNodeWithOrigin<L>,
-    results: &[EvalResult<'_, L>],
+    results: &[GuideEval<'_, L>],
 ) {
     let out_dir = run_folder.join("out");
     std::fs::create_dir_all(&out_dir).expect("create out/ directory");
@@ -146,7 +146,7 @@ fn parquet_schema() -> Arc<Schema> {
 /// # Panics
 ///
 /// Panics on I/O or Arrow errors.
-pub fn dump_top_k_summary_parquet(path: &Path, summaries: &[TopKSummary]) {
+pub fn dump_goal_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("goal", DataType::Utf8, false),
         Field::new("k", DataType::UInt64, false),

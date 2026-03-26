@@ -403,7 +403,7 @@ where
 }
 
 #[derive(Serialize, Debug)]
-pub struct EvalResult<'a, L: Label> {
+pub struct GuideEval<'a, L: Label> {
     pub guide: &'a MeasuredGuide<L>,
     pub iterations: Option<Vec<Iteration<()>>>,
 }
@@ -416,11 +416,8 @@ pub struct MeasuredGuide<L: Label> {
     pub structural_distance: StructuralDistance,
 }
 
-pub struct RandomTrial {
-    pub data: Vec<Iteration<()>>,
-}
 #[derive(Serialize)]
-pub struct RandomEntry {
+pub struct GuideSetTrials {
     pub k: usize,
     pub trials: Vec<Option<Vec<Iteration<()>>>>,
 }
@@ -442,29 +439,29 @@ pub struct TrialSummary {
 }
 
 #[derive(Serialize)]
-pub struct SummaryEntry {
+pub struct GuideSetSummary {
     pub k: usize,
     pub trials: Vec<Option<TrialSummary>>,
 }
 
 #[derive(Serialize)]
-pub struct TopKSummary {
+pub struct GoalSummary {
     pub goal: String,
-    pub entries: Vec<SummaryEntry>,
+    pub entries: Vec<GuideSetSummary>,
 }
 
-impl TopKSummary {
-    /// Build a summary from the full `RandomEntry` data for a given goal.
+impl GoalSummary {
+    /// Build a summary from the full `GuideSetTrials` data for a given goal.
     ///
     /// # Panics
     /// Panics if a reachable trial has an empty iteration list.
     #[must_use]
-    pub fn from_entries(goal: &str, entries: &[RandomEntry]) -> Self {
+    pub fn from_entries(goal: &str, entries: &[GuideSetTrials]) -> Self {
         Self {
             goal: goal.to_owned(),
             entries: entries
                 .iter()
-                .map(|e| SummaryEntry {
+                .map(|e| GuideSetSummary {
                     k: e.k,
                     trials: e
                         .trials

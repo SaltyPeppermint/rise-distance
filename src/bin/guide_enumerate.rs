@@ -14,7 +14,7 @@ use rise_distance::cli::parquet::dump_to_parquet;
 use serde::Serialize;
 
 use rise_distance::cli::{
-    EvalResult, MeasuredGuide, RULES, RandomEntry, SizeDistribution, TRIAL_SIZE,
+    GuideEval, GuideSetTrials, MeasuredGuide, RULES, SizeDistribution, TRIAL_SIZE,
     enumerate_frontier_terms, get_run_folder, init_log, measure_guides, min_med_max,
     sample_frontier_terms, trial_avg,
 };
@@ -162,7 +162,7 @@ fn main() {
     assert!(!guides.is_empty(), "No frontier terms found");
     tee_println!("Found {} guide(s)", guides.len());
 
-    let mut all_top_k = Vec::new();
+    let mut all_results = Vec::new();
     let n_goals = goals.len();
     for (goal_idx, goal) in goals.iter().enumerate() {
         tee_println!(
@@ -182,20 +182,20 @@ fn main() {
         }
         tee_println!("Verification completed in {:.2?}", timer.elapsed());
 
-        let top_k = eval_top_k(
+        let goal_result = eval_guide_sets(
             &mut ranked,
             goal,
             verify_iters,
             cli.n_trials,
             cli.full_union,
         );
-        all_top_k.push(top_k);
+        all_results.push(goal_result);
     }
 
     let output_path = run_folder.join("top_k.json");
     let output_file = File::create(output_path).expect("Failed to create output json file");
     let mut output_writer = BufWriter::new(output_file);
-    serde_json::to_writer(&mut output_writer, &all_top_k).expect("write top-k json");
+    serde_json::to_writer(&mut output_writer, &all_results).expect("write top-k json");
 
     let config_path = run_folder.join("config.json");
     let config_file = File::create(config_path).expect("Failed to create output config.json file");
@@ -222,7 +222,7 @@ fn eval_all(
     let results = ranked
         .par_iter()
         .progress_with_style(pb_style)
-        .map(|guide| EvalResult {
+        .map(|guide| GuideEval {
             guide,
             iterations: verify_reachability(
                 std::slice::from_ref(&guide.guide),
@@ -238,32 +238,32 @@ fn eval_all(
 }
 
 #[derive(Serialize)]
-struct TopKEntry {
+struct GuideSetRun {
     k: usize,
     data: Option<Vec<Iteration<()>>>,
 }
 
 #[derive(Serialize)]
-struct TopKResults {
+struct GoalResults {
     goal: String,
-    zs: Vec<TopKEntry>,
-    structural: Vec<TopKEntry>,
-    random: Vec<RandomEntry>,
-    random_with_best_zs: Vec<RandomEntry>,
-    random_with_best_structural: Vec<RandomEntry>,
+    zs: Vec<GuideSetRun>,
+    structural: Vec<GuideSetRun>,
+    random: Vec<GuideSetTrials>,
+    random_with_best_zs: Vec<GuideSetTrials>,
+    random_with_best_structural: Vec<GuideSetTrials>,
 }
 
-fn eval_top_k(
+fn eval_guide_sets(
     results: &mut [MeasuredGuide<MathLabel>],
     goal: &TreeNodeWithOrigin<MathLabel>,
     max_iters: usize,
     n_trials: usize,
     full_union: bool,
-) -> TopKResults {
+) -> GoalResults {
     tee_println!("Testing out top-k to see if that improves things");
     let go = goal.to_rec_expr();
 
-    let mut top_k_results = TopKResults {
+    let mut goal_results = GoalResults {
         goal: goal.to_string(),
         zs: Vec::new(),
         structural: Vec::new(),
@@ -273,21 +273,21 @@ fn eval_top_k(
     };
 
     if results.is_empty() {
-        return top_k_results;
+        return goal_results;
     }
 
     results.sort_unstable_by_key(|v| v.zs_distance);
     tee_println!("ZS DISTANCE:");
-    top_k_results.zs = top_k(max_iters, results, &go, full_union);
+    goal_results.zs = top_k(max_iters, results, &go, full_union);
 
     results.sort_unstable_by_key(|v| v.structural_distance);
     tee_println!("STRUCTURAL DISTANCE:");
-    top_k_results.structural = top_k(max_iters, results, &go, full_union);
+    goal_results.structural = top_k(max_iters, results, &go, full_union);
 
     tee_println!("RANDOM ({n_trials} trials averaged):");
-    top_k_results.random = random_k(max_iters, results, &go, n_trials, full_union);
+    goal_results.random = random_guide_sets(max_iters, results, &go, n_trials, full_union);
 
-    top_k_results
+    goal_results
 }
 
 fn top_k(
@@ -295,7 +295,7 @@ fn top_k(
     ranked: &[MeasuredGuide<MathLabel>],
     go: &RecExpr<Math>,
     full_union: bool,
-) -> Vec<TopKEntry> {
+) -> Vec<GuideSetRun> {
     let mut entries = Vec::new();
     for k in TRIAL_SIZE {
         if k > ranked.len() {
@@ -313,18 +313,18 @@ fn top_k(
             full_union,
         );
 
-        entries.push(TopKEntry { k, data });
+        entries.push(GuideSetRun { k, data });
     }
     entries
 }
 
-fn random_k(
+fn random_guide_sets(
     max_iters: usize,
     successful: &[MeasuredGuide<MathLabel>],
     go: &RecExpr<Math>,
     n_trials: usize,
     full_union: bool,
-) -> Vec<RandomEntry> {
+) -> Vec<GuideSetTrials> {
     let mut entries = Vec::new();
     for k in TRIAL_SIZE {
         if k > successful.len() {
@@ -360,14 +360,14 @@ fn random_k(
             tee_println!("Could NOT reach with top {k} guides");
         }
 
-        entries.push(RandomEntry { k, trials });
+        entries.push(GuideSetTrials { k, trials });
     }
     entries
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
 fn print_summary(
-    results: &[EvalResult<MathLabel>],
+    results: &[GuideEval<MathLabel>],
     goal: &TreeNodeWithOrigin<MathLabel>,
     max_iters: usize,
 ) {

@@ -6,12 +6,12 @@ use clap::Parser;
 use egg::RecExpr;
 use hashbrown::HashSet;
 use rayon::prelude::*;
-use rise_distance::cli::parquet::{dump_to_parquet, dump_top_k_summary_parquet};
+use rise_distance::cli::parquet::{dump_goal_summary_parquet, dump_to_parquet};
 use serde::Serialize;
 use serde_json::json;
 
 use rise_distance::cli::{
-    EvalResult, RULES, RandomEntry, SizeDistribution, TRIAL_SIZE, TopKSummary, get_run_folder,
+    GoalSummary, GuideEval, GuideSetTrials, RULES, SizeDistribution, TRIAL_SIZE, get_run_folder,
     init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
@@ -163,7 +163,7 @@ fn main() {
         cli.guide_iters
     );
 
-    let mut all_top_k = Vec::new();
+    let mut all_results = Vec::new();
     let mut goal_stats = Vec::new();
     for goal in &goals {
         let goal_recexpr = goal.to_rec_expr();
@@ -176,8 +176,8 @@ fn main() {
             cli.size_distribution,
         );
 
-        let entries = take_n_trials(&cli, cli.guides, &goal_recexpr, &sampled_guides);
-        all_top_k.push(TopKResults {
+        let entries = run_guide_set_trials(&cli, cli.guides, &goal_recexpr, &sampled_guides);
+        all_results.push(GoalResults {
             goal: goal.to_string(),
             entries,
         });
@@ -186,7 +186,7 @@ fn main() {
             .collect::<HashSet<_>>();
         let results = measured
             .par_iter()
-            .map(|measured| EvalResult {
+            .map(|measured| GuideEval {
                 guide: measured,
                 iterations: verify_reachability(
                     std::slice::from_ref(&measured.guide),
@@ -204,23 +204,23 @@ fn main() {
     }
 
     stats["goals"] = serde_json::Value::Array(goal_stats);
-    write_outputs(&run_folder, &all_top_k, &cli, &stats);
+    write_outputs(&run_folder, &all_results, &cli, &stats);
 }
 
 fn write_outputs(
     run_folder: &std::path::Path,
-    all_top_k: &[TopKResults],
+    all_results: &[GoalResults],
     cli: &Cli,
     stats: &serde_json::Value,
 ) {
     let output_path = run_folder.join("top_k.json");
     let output_file = File::create(output_path).expect("Failed to create output json file");
     let mut output_writer = BufWriter::new(output_file);
-    serde_json::to_writer(&mut output_writer, &all_top_k).expect("write top-k json");
+    serde_json::to_writer(&mut output_writer, &all_results).expect("write top-k json");
 
-    let summaries: Vec<TopKSummary> = all_top_k
+    let summaries: Vec<GoalSummary> = all_results
         .iter()
-        .map(|tk| TopKSummary::from_entries(&tk.goal, &tk.entries))
+        .map(|tk| GoalSummary::from_entries(&tk.goal, &tk.entries))
         .collect();
     let summary_path = run_folder.join("top_k_summary.json");
     let summary_file = File::create(summary_path).expect("Failed to create summary json file");
@@ -228,7 +228,7 @@ fn write_outputs(
     serde_json::to_writer(summary_writer, &summaries).expect("write top-k summary json");
 
     let parquet_path = run_folder.join("top_k_summary.parquet");
-    dump_top_k_summary_parquet(&parquet_path, &summaries);
+    dump_goal_summary_parquet(&parquet_path, &summaries);
 
     let config_path = run_folder.join("config.json");
     let config_file = File::create(config_path).expect("Failed to create output config.json file");
@@ -241,12 +241,12 @@ fn write_outputs(
     serde_json::to_writer_pretty(stats_writer, stats).expect("write stats json");
 }
 
-fn take_n_trials(
+fn run_guide_set_trials(
     cli: &Cli,
     guide_count: usize,
     goal_recexpr: &RecExpr<Math>,
     sampled_guides: &[TreeNodeWithOrigin<MathLabel>],
-) -> Vec<RandomEntry> {
+) -> Vec<GuideSetTrials> {
     let mut entries = Vec::new();
     for k in TRIAL_SIZE {
         let trials = sampled_guides
@@ -274,20 +274,20 @@ fn take_n_trials(
             tee_println!("Could NOT reach with {k} guides");
         }
 
-        entries.push(RandomEntry { k, trials });
+        entries.push(GuideSetTrials { k, trials });
     }
     entries
 }
 
 #[derive(Serialize)]
-struct TopKResults {
+struct GoalResults {
     goal: String,
-    entries: Vec<RandomEntry>,
+    entries: Vec<GuideSetTrials>,
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
 fn print_summary(
-    results: &[EvalResult<MathLabel>],
+    results: &[GuideEval<MathLabel>],
     goal: &TreeNodeWithOrigin<MathLabel>,
     max_iters: usize,
 ) -> serde_json::Value {
