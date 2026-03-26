@@ -12,9 +12,10 @@ use serde_json::json;
 
 use rise_distance::cli::argtypes::{SampleStrategy, SizeDistribution};
 use rise_distance::cli::parquet::{dump_goal_summary_parquet, dump_to_parquet};
+use rise_distance::cli::types::{GoalSummary, GuideEval, GuideSetTrials};
 use rise_distance::cli::{
-    GoalSummary, GuideEval, GuideSetTrials, RULES, TRIAL_SIZE, get_run_folder, init_log,
-    measure_guides, min_med_max, sample_frontier_terms, trial_avg,
+    RULES, TRIAL_SIZE, get_run_folder, init_log, measure_guides, min_med_max,
+    sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
 use rise_distance::egg::{GuideGoalResult, ToEgg, convert, run_guide_goal, verify_reachability};
@@ -205,7 +206,7 @@ fn evaluate_goal(
     let entries = run_guide_set_trials(cli, &goal_recexpr, &sampled_guides);
     let goal_results = GoalResults {
         goal: goal.to_string(),
-        entries,
+        runs: entries,
     };
 
     let measured = measure_guides(&sampled_guides, goal)
@@ -246,7 +247,7 @@ fn write_outputs(
 
     let summaries = all_results
         .iter()
-        .map(|tk| GoalSummary::from_entries(&tk.goal, &tk.entries))
+        .map(|tk| GoalSummary::from_entries(&tk.goal, &tk.runs))
         .collect::<Vec<_>>();
     let summary_path = run_folder.join("top_k_summary.json");
     let summary_file = File::create(summary_path).expect("Failed to create summary json file");
@@ -307,7 +308,7 @@ fn run_guide_set_trials(
 #[derive(Serialize)]
 struct GoalResults {
     goal: String,
-    entries: Vec<GuideSetTrials>,
+    runs: Vec<GuideSetTrials>,
 }
 
 #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]

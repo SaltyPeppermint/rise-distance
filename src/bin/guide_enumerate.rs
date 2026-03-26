@@ -14,9 +14,10 @@ use rise_distance::cli::parquet::dump_to_parquet;
 use serde::Serialize;
 
 use rise_distance::cli::argtypes::{SampleStrategy, SizeDistribution};
+use rise_distance::cli::types::{GuideEval, GuideSetTrials, MeasuredGuide};
 use rise_distance::cli::{
-    GuideEval, GuideSetTrials, MeasuredGuide, RULES, TRIAL_SIZE, enumerate_frontier_terms,
-    get_run_folder, init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
+    RULES, TRIAL_SIZE, enumerate_frontier_terms, get_run_folder, init_log, measure_guides,
+    min_med_max, sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, Math, MathLabel};
 use rise_distance::egg::{ToEgg, convert, run_guide_goal, verify_reachability};
