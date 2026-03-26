@@ -1,22 +1,23 @@
 use std::fs::File;
 use std::io::BufWriter;
+use std::path::Path;
 use std::time::Instant;
 
 use clap::Parser;
-use egg::RecExpr;
+use egg::{Id, RecExpr};
 use hashbrown::HashSet;
 use rayon::prelude::*;
-use rise_distance::cli::argtypes::SampleStrategy;
-use rise_distance::cli::parquet::{dump_goal_summary_parquet, dump_to_parquet};
 use serde::Serialize;
 use serde_json::json;
 
+use rise_distance::cli::argtypes::{SampleStrategy, SizeDistribution};
+use rise_distance::cli::parquet::{dump_goal_summary_parquet, dump_to_parquet};
 use rise_distance::cli::{
-    GoalSummary, GuideEval, GuideSetTrials, RULES, SizeDistribution, TRIAL_SIZE, get_run_folder,
-    init_log, measure_guides, min_med_max, sample_frontier_terms, trial_avg,
+    GoalSummary, GuideEval, GuideSetTrials, RULES, TRIAL_SIZE, get_run_folder, init_log,
+    measure_guides, min_med_max, sample_frontier_terms, trial_avg,
 };
-use rise_distance::egg::math::{self, Math, MathLabel};
-use rise_distance::egg::{ToEgg, convert, run_guide_goal, verify_reachability};
+use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
+use rise_distance::egg::{GuideGoalResult, ToEgg, convert, run_guide_goal, verify_reachability};
 use rise_distance::{TreeNodeWithOrigin, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
@@ -171,49 +172,67 @@ fn main() {
     let mut all_results = Vec::new();
     let mut goal_stats = Vec::new();
     for goal in &goals {
-        let goal_recexpr = goal.to_rec_expr();
-
-        let sampled_guides = sample_frontier_terms(
-            &convert(result.guide(), root),
-            result.prev_guide(),
-            cli.guides,
-            cli.max_size,
-            cli.size_distribution,
-        );
-
-        let entries = run_guide_set_trials(&cli, cli.guides, &goal_recexpr, &sampled_guides);
-        all_results.push(GoalResults {
-            goal: goal.to_string(),
-            entries,
-        });
-        let measured = measure_guides(&sampled_guides, goal)
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let results = measured
-            .par_iter()
-            .map(|measured| GuideEval {
-                guide: measured,
-                iterations: verify_reachability(
-                    std::slice::from_ref(&measured.guide),
-                    &goal_recexpr,
-                    RULES.get_or_init(math::rules),
-                    verify_iters,
-                    cli.full_union,
-                ),
-            })
-            .collect::<Vec<_>>();
-        goal_stats.push(print_summary(&results, goal, verify_iters));
-        if cli.eval_all {
-            dump_to_parquet(&run_folder, goal, &results);
-        }
+        let (goal_result, goal_stat) =
+            evaluate_goal(&cli, &result, root, goal, verify_iters, &run_folder);
+        all_results.push(goal_result);
+        goal_stats.push(goal_stat);
     }
 
     stats["goals"] = serde_json::Value::Array(goal_stats);
     write_outputs(&run_folder, &all_results, &cli, &stats);
 }
 
+fn evaluate_goal(
+    cli: &Cli,
+    result: &GuideGoalResult<Math, ConstantFold>,
+    root: Id,
+    goal: &TreeNodeWithOrigin<MathLabel>,
+    verify_iters: usize,
+    run_folder: &Path,
+) -> (GoalResults, serde_json::Value) {
+    let goal_recexpr = goal.to_rec_expr();
+
+    let sampled_guides = sample_frontier_terms(
+        &convert(result.guide(), root),
+        result.prev_guide(),
+        cli.guides,
+        cli.max_size,
+        cli.size_distribution,
+    );
+
+    let entries = run_guide_set_trials(cli, &goal_recexpr, &sampled_guides);
+    let goal_results = GoalResults {
+        goal: goal.to_string(),
+        entries,
+    };
+
+    let measured = measure_guides(&sampled_guides, goal)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let results = measured
+        .par_iter()
+        .map(|measured| GuideEval {
+            guide: measured,
+            iterations: verify_reachability(
+                std::slice::from_ref(&measured.guide),
+                &goal_recexpr,
+                RULES.get_or_init(math::rules),
+                verify_iters,
+                cli.full_union,
+            ),
+        })
+        .collect::<Vec<_>>();
+
+    let stat = print_summary(&results, goal, verify_iters);
+    if cli.eval_all {
+        dump_to_parquet(run_folder, goal, &results);
+    }
+
+    (goal_results, stat)
+}
+
 fn write_outputs(
-    run_folder: &std::path::Path,
+    run_folder: &Path,
     all_results: &[GoalResults],
     cli: &Cli,
     stats: &serde_json::Value,
@@ -248,14 +267,13 @@ fn write_outputs(
 
 fn run_guide_set_trials(
     cli: &Cli,
-    guide_count: usize,
     goal_recexpr: &RecExpr<Math>,
     sampled_guides: &[TreeNodeWithOrigin<MathLabel>],
 ) -> Vec<GuideSetTrials> {
     let mut entries = Vec::new();
     for k in TRIAL_SIZE {
         let trials = sampled_guides
-            .par_windows(guide_count / MAX_TRIAL_SIZE)
+            .par_windows(cli.guides / MAX_TRIAL_SIZE)
             .map(|guides_here| {
                 verify_reachability(
                     &guides_here[..k],

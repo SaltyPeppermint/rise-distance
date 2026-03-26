@@ -7,10 +7,10 @@ use indicatif::ParallelProgressIterator;
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
-use rise_distance::cli::{DistanceMetric, SizeDistribution};
+use rise_distance::cli::argtypes::{DistanceMetric, SizeDistribution};
 use rise_distance::count::TermCount;
+use rise_distance::sampling::CountSampler;
 use rise_distance::sampling::Sampler;
-use rise_distance::sampling::count::CountSampler;
 use rise_distance::{
     EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, TreeNode, TreeShaped,
     UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,

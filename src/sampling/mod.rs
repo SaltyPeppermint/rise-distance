@@ -1,10 +1,13 @@
-pub mod count;
-pub mod naive;
+mod count;
+mod naive;
 
 use hashbrown::{HashMap, HashSet};
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
+
+pub use count::CountSampler;
+pub use naive::NaiveSampler;
 
 use crate::{EClassId, Label, tree::TreeNodeWithOrigin};
 
