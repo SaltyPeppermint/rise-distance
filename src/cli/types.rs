@@ -1,5 +1,5 @@
-use ahash::HashMap;
 use egg::Iteration;
+use hashbrown::HashMap;
 use serde::Serialize;
 
 use crate::tree::OriginTree;

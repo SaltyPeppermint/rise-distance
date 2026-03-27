@@ -4,10 +4,9 @@
 //! producing [`TreeNode`]s and filters for structural diversity using hashing
 //! and feature-based deduplication.
 
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasher, Hash, Hasher};
 
-use ahash::AHasher;
-use hashbrown::HashSet;
+use hashbrown::{DefaultHashBuilder, HashSet};
 
 use crate::tree::TreeShaped;
 
@@ -115,7 +114,7 @@ impl<L: Label, I: Iterator<Item = Tree<L>>> Iterator for DiverseSampler<L, I> {
 /// Trees with the same structure and labels will have the same hash.
 #[must_use]
 pub fn structural_hash<L: Label>(tree: &Tree<L>) -> u64 {
-    let mut hasher = AHasher::default();
+    let mut hasher = DefaultHashBuilder::default().build_hasher();
     hash_tree_rec(tree, &mut hasher);
     hasher.finish()
 }

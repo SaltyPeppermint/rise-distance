@@ -9,7 +9,6 @@ name = "rise_distance"
 crate-type = ["rlib"]
 
 [dependencies]
-ahash = { version = "0.8", features = ["compile-time-rng"] }
 bon = "3"
 clap = { version = "4", features = ["derive"] }
 arrow = { version = "58" }
