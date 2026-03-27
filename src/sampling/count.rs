@@ -1,8 +1,6 @@
 use hashbrown::{HashMap, HashSet};
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
-use rand_chacha::ChaCha12Rng;
-use rayon::prelude::*;
 
 use crate::Graph;
 use crate::count::{Counter, TermCount};
@@ -30,38 +28,16 @@ impl<C: Counter, L: Label> Sampler for CountSampler<'_, '_, C, L> {
         self.graph.root()
     }
 
-    fn possible_size(
-        &self,
-        id: EClassId,
-        min_size: usize,
-        max_size: usize,
-    ) -> impl Iterator<Item = usize> + Send {
-        let canon_id = self.graph.canonicalize(id);
-        self.term_count
-            .data
-            .get(&canon_id)
-            .into_iter()
-            .flat_map(move |h| h.keys().filter(move |&&s| s >= min_size && s <= max_size))
-            .copied()
+    fn possible_size(&self, id: EClassId, size: usize, samples: u64) -> bool {
+        super::common::possible_size(self.term_count, self.graph, id, size, samples)
     }
 
     fn sample_batch(
         &self,
         id: EClassId,
-        min_size: usize,
-        max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<OriginTree<L>> {
-        self.possible_size(id, min_size, max_size)
-            .par_bridge()
-            .flat_map_iter(|size| {
-                let mut rng = ChaCha12Rng::seed_from_u64(size as u64);
-                (0..samples_per_size[&size]).map(move |sample| {
-                    rng.set_stream(sample);
-                    self.sample(id, size, &mut rng)
-                })
-            })
-            .collect()
+        super::common::sample_batch(self, id, samples_per_size)
     }
 
     fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> OriginTree<L> {

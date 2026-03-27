@@ -5,24 +5,83 @@ use rayon::prelude::*;
 
 use crate::sampling::Sampler;
 use crate::tree::OriginTree;
-use crate::zs::EditCosts;
+use crate::zs::{EditCosts, PreprocessedTree, tree_distance_preprocessed};
 use crate::{EClassId, TreeShaped, tree_distance};
 
 /// Greedily only accepts new terms that have a bigger or equal zs distance
 pub struct ZSDistanceSampler<E: EditCosts<S::Label>, S: Sampler> {
     inner: S,
     cost_fn: E,
+    percentile: f64,
     with_types: bool,
 }
 
 impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
     #[must_use]
-    pub fn new(inner: S, cost_fn: E, with_types: bool) -> Self {
+    /// Wrap an existing sampler in one that filters by zs
+    ///
+    /// # Panics
+    ///
+    /// Panics if `percentile` is not in (0, 1]
+    pub fn new(inner: S, cost_fn: E, percentile: f64, with_types: bool) -> Self {
+        assert!(
+            percentile > 0.0 && percentile <= 1.0,
+            "percentile must be in (0, 1]"
+        );
         Self {
             inner,
             cost_fn,
+            percentile,
             with_types,
         }
+    }
+
+    /// Sample `n` trees of the given `size` from `id`, then compute all pairwise
+    /// tree-edit distances.  Returns the distance at the `percentile` position
+    /// (e.g. `percentile = 0.2` → 20th percentile of distances).
+    ///
+    /// # Panics
+    ///
+    /// Panics if fewer than 2 unique samples are drawn.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn average_distance(&self, id: EClassId, size: usize, n: u64) -> usize {
+        // Sample n unique trees of the given size.
+        let trees = self
+            .inner
+            .sample_batch(id, &HashMap::from([(size, n)]))
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert!(
+            trees.len() >= 2,
+            "need at least 2 unique samples, got {}",
+            trees.len()
+        );
+
+        // Flatten once.
+        let flat = trees
+            .iter()
+            .map(|t| t.flatten(self.with_types))
+            .collect::<Vec<_>>();
+        // Preprocess once for reuse.
+        let preprocessed = flat.iter().map(PreprocessedTree::new).collect::<Vec<_>>();
+
+        // Compute all pairwise distances in parallel.
+        let mut distances = (0..flat.len())
+            .flat_map(|i| ((i + 1)..flat.len()).map(move |j| (i, j)))
+            .par_bridge()
+            .map(|(i, j)| {
+                tree_distance_preprocessed(&preprocessed[i], &preprocessed[j], &self.cost_fn)
+            })
+            .collect::<Vec<_>>();
+
+        // Sort ascending and take the value at the configured percentile.
+        distances.sort_unstable();
+        let idx = (self.percentile * distances.len() as f64).round() as usize;
+        distances[idx.min(distances.len() - 1)]
     }
 }
 
@@ -33,45 +92,51 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
         self.inner.root()
     }
 
-    fn possible_size(
-        &self,
-        id: EClassId,
-        min_size: usize,
-        max_size: usize,
-    ) -> impl Iterator<Item = usize> + Send {
-        self.inner.possible_size(id, min_size, max_size)
+    fn possible_size(&self, id: EClassId, size: usize, samples: u64) -> bool {
+        self.inner.possible_size(id, size, samples)
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn sample_batch(
         &self,
         id: EClassId,
-        min_size: usize,
-        max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<OriginTree<S::Label>> {
-        self.possible_size(id, min_size, max_size)
-            .par_bridge()
-            .flat_map(|size| {
-                let mut samples_to_take = samples_per_size[&size];
+        samples_per_size
+            .into_par_iter()
+            .filter(|(size, samples)| self.possible_size(id, **size, **samples))
+            .flat_map(|(&size, samples)| {
+                let mut samples_to_take = *samples;
                 let mut existing_flat = HashSet::new();
                 let mut existing = HashSet::new();
                 let mut rng = ChaCha12Rng::seed_from_u64(size as u64);
-                let mut current_max = 0;
+                let mut rejected = 0;
+                let cut_off = self.average_distance(id, size, 1000);
+
                 while samples_to_take > 0 {
                     let new_candidate = self.sample(id, size, &mut rng);
                     if existing.contains(&new_candidate) {
                         continue;
                     }
                     let candidate_flat = new_candidate.flatten(self.with_types);
-                    if let Some(new_max) = existing_flat.iter().try_fold(current_max, |acc, e| {
-                        let td = tree_distance(e, &candidate_flat, &self.cost_fn);
-                        (td > current_max).then_some(acc.max(td))
-                    }) {
-                        existing_flat.insert(candidate_flat);
-                        existing.insert(new_candidate);
-                        samples_to_take -= 1;
-                        current_max = new_max;
+                    if existing_flat
+                        .iter()
+                        .any(|e| tree_distance(e, &candidate_flat, &self.cost_fn) < cut_off)
+                    {
+                        rejected += 1;
+                        if rejected % 100 == 0 {
+                            eprintln!("REJECTED: {rejected}");
+                            eprintln!("SO FAR THIS MANY {}", existing.len());
+                        }
+                        continue;
                     }
+                    existing_flat.insert(candidate_flat);
+                    existing.insert(new_candidate);
+                    samples_to_take -= 1;
                 }
                 existing.into_par_iter()
             })

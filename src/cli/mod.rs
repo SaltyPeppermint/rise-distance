@@ -21,7 +21,7 @@ use crate::cli::argtypes::{SampleStrategy, SizeDistribution};
 use crate::count::TermCount;
 use crate::egg::math::ConstantFold;
 use crate::egg::{Math, ToEgg};
-use crate::sampling::{CountSampler, NaiveSampler, Sampler};
+use crate::sampling::{CountSampler, NaiveSampler, Sampler, ZSDistanceSampler};
 use crate::tee_println;
 use crate::tree::{OriginTree, TreeShaped};
 use crate::{Graph, Label, Tree, UnitCost, structural_diff, tree_distance_unit};
@@ -135,16 +135,20 @@ where
             normal_center,
         );
         let batch = match sample_strategy {
-            SampleStrategy::Naive => NaiveSampler::new(&tc, graph).sample_batch_root(
-                min_size,
-                max_size,
-                &samples_per_size,
-            ),
-            SampleStrategy::CountBased => CountSampler::new(&tc, graph).sample_batch_root(
-                min_size,
-                max_size,
-                &samples_per_size,
-            ),
+            SampleStrategy::Naive => {
+                NaiveSampler::new(&tc, graph).sample_batch_root(&samples_per_size)
+            }
+            SampleStrategy::CountBased => {
+                CountSampler::new(&tc, graph).sample_batch_root(&samples_per_size)
+            }
+            SampleStrategy::ZSDiverseNaive => {
+                ZSDistanceSampler::new(NaiveSampler::new(&tc, graph), UnitCost, 0.5, false)
+                    .sample_batch_root(&samples_per_size)
+            }
+            SampleStrategy::ZSDiverseCountBased => {
+                ZSDistanceSampler::new(CountSampler::new(&tc, graph), UnitCost, 0.5, false)
+                    .sample_batch_root(&samples_per_size)
+            }
         };
 
         let prev_len = result.len();

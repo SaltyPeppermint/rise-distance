@@ -1,3 +1,4 @@
+mod common;
 mod count;
 mod naive;
 mod zs_min_distance;
@@ -7,6 +8,7 @@ use rand::prelude::*;
 
 pub use count::CountSampler;
 pub use naive::NaiveSampler;
+pub use zs_min_distance::ZSDistanceSampler;
 
 use crate::{EClassId, Label, tree::OriginTree};
 
@@ -17,29 +19,20 @@ pub trait Sampler: Sync + Send {
     fn root(&self) -> EClassId;
 
     #[must_use]
-    fn possible_size(
-        &self,
-        id: EClassId,
-        min_size: usize,
-        max_size: usize,
-    ) -> impl Iterator<Item = usize> + Send;
+    fn possible_size(&self, id: EClassId, size: usize, samples: u64) -> bool;
 
     /// Sample unique terms across a range of sizes from root.
     ///
     /// See `sample_unique` for more info
     fn sample_batch_root(
         &self,
-        min_size: usize,
-        max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<OriginTree<Self::Label>> {
-        self.sample_batch(self.root(), min_size, max_size, samples_per_size)
+        self.sample_batch(self.root(), samples_per_size)
     }
 
     /// Sample unique terms across a range of sizes.
     ///
-    /// For each size in `[min_size, max_size]` that the root e-class actually has
-    /// terms for, samples `samples_fn` terms and deduplicates them.
     ///
     /// Only sizes present in the root's histogram are sampled. The root e-class
     /// may have gaps in its reachable sizes (e.g. terms only at sizes 5, 7, 9),
@@ -48,8 +41,6 @@ pub trait Sampler: Sync + Send {
     fn sample_batch(
         &self,
         id: EClassId,
-        min_size: usize,
-        max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
     ) -> HashSet<OriginTree<Self::Label>>;
 

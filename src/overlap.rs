@@ -4,7 +4,7 @@ use crate::graph::Class;
 use crate::ids::{EClassId, ExprChildId};
 use crate::nodes::{ENode, Label};
 use crate::tree::TreeShaped;
-use crate::{Graph, Tree, PartialChild, PartialTree, tree_node_to_partial};
+use crate::{Graph, PartialChild, PartialTree, Tree, tree_node_to_partial};
 
 /// Match a reference tree against an e-class, producing a partial tree
 /// that maximizes structural overlap with the reference.
