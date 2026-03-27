@@ -74,7 +74,11 @@ struct Cli {
 
     /// How to sample the individual terms.
     #[arg(long, default_value_t = SampleStrategy::CountBased)]
-    sample_strategy: SampleStrategy,
+    guide_sample_strategy: SampleStrategy,
+
+    /// How to sample the GOAL terms.
+    #[arg(long, default_value_t = SampleStrategy::CountBased)]
+    goal_sample_strategy: SampleStrategy,
 
     /// Output folder (generated if omitted)
     #[arg(short, long)]
@@ -103,7 +107,7 @@ fn main() {
     let cli = Cli::parse();
     let prefix = format!(
         "{}-{}-{}-fullunion-{}",
-        cli.guide_iters, cli.goal_iters, cli.sample_strategy, cli.full_union
+        cli.guide_iters, cli.goal_iters, cli.guide_sample_strategy, cli.full_union
     );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
@@ -158,7 +162,7 @@ fn main() {
         cli.goals,
         cli.max_size,
         cli.size_distribution,
-        cli.sample_strategy,
+        cli.goal_sample_strategy,
     );
     assert!(
         !goals.is_empty(),
@@ -200,7 +204,7 @@ fn evaluate_goal(
         cli.guides,
         cli.max_size,
         cli.size_distribution,
-        cli.sample_strategy,
+        cli.guide_sample_strategy,
     );
 
     let runs = run_guide_set_trials(cli, &goal_recexpr, &sampled_guides);
