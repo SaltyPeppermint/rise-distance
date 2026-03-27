@@ -1,17 +1,18 @@
 mod count;
 mod naive;
+mod zs_min_distance;
 
 use hashbrown::{HashMap, HashSet};
 use rand::prelude::*;
-use rand_chacha::ChaCha12Rng;
-use rayon::prelude::*;
 
 pub use count::CountSampler;
 pub use naive::NaiveSampler;
 
 use crate::{EClassId, Label, tree::OriginTree};
 
-pub trait Sampler<L: Label>: Sync + Send {
+pub trait Sampler: Sync + Send {
+    type Label: Label;
+
     #[must_use]
     fn root(&self) -> EClassId;
 
@@ -23,31 +24,6 @@ pub trait Sampler<L: Label>: Sync + Send {
         max_size: usize,
     ) -> impl Iterator<Item = usize> + Send;
 
-    #[must_use]
-    fn sample_many_root(
-        &self,
-        size: usize,
-        samples: u64,
-        seed: u64,
-    ) -> impl ParallelIterator<Item = OriginTree<L>> {
-        self.sample_many(self.root(), size, samples, seed)
-    }
-
-    #[must_use]
-    fn sample_many(
-        &self,
-        id: EClassId,
-        size: usize,
-        samples: u64,
-        seed: u64,
-    ) -> impl ParallelIterator<Item = OriginTree<L>> {
-        (0..samples).into_par_iter().map(move |sample| {
-            let mut rng = ChaCha12Rng::seed_from_u64(seed);
-            rng.set_stream(sample);
-            self.sample(id, size, &mut rng)
-        })
-    }
-
     /// Sample unique terms across a range of sizes from root.
     ///
     /// See `sample_unique` for more info
@@ -56,7 +32,7 @@ pub trait Sampler<L: Label>: Sync + Send {
         min_size: usize,
         max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
-    ) -> HashSet<OriginTree<L>> {
+    ) -> HashSet<OriginTree<Self::Label>> {
         self.sample_batch(self.root(), min_size, max_size, samples_per_size)
     }
 
@@ -75,13 +51,8 @@ pub trait Sampler<L: Label>: Sync + Send {
         min_size: usize,
         max_size: usize,
         samples_per_size: &HashMap<usize, u64>,
-    ) -> HashSet<OriginTree<L>> {
-        self.possible_size(id, min_size, max_size)
-            .par_bridge()
-            .flat_map(|size| self.sample_many(id, size, samples_per_size[&size], size as u64))
-            .collect()
-    }
+    ) -> HashSet<OriginTree<Self::Label>>;
 
     #[must_use]
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> OriginTree<L>;
+    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> OriginTree<Self::Label>;
 }

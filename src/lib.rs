@@ -11,7 +11,6 @@ mod min;
 mod nodes;
 mod overlap;
 pub mod rise;
-mod sampler;
 pub mod sampling;
 mod structural;
 #[cfg(test)]
@@ -30,5 +29,5 @@ pub use nodes::Label;
 pub use overlap::{match_ref_tree, prune_by_ref_tree};
 pub use rise::{Expr, Nat, RiseLabel, Type};
 pub use structural::{StructuralDistance, structural_diff};
-pub use tree::{Tree, OriginTree, PartialChild, PartialTree, TreeShaped, tree_node_to_partial};
+pub use tree::{OriginTree, PartialChild, PartialTree, Tree, TreeShaped, tree_node_to_partial};
 pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};
