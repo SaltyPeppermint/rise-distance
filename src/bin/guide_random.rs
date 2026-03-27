@@ -102,7 +102,7 @@ const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
 fn main() {
     let cli = Cli::parse();
     let prefix = format!(
-        "run-{}-{}-{}-fullunion-{}",
+        "{}-{}-{}-fullunion-{}",
         cli.guide_iters, cli.goal_iters, cli.sample_strategy, cli.full_union
     );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);

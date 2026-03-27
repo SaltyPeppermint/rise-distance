@@ -97,7 +97,7 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    let prefix = format!("run-{}-{}-enumerate", cli.guide_iters, cli.goal_iters);
+    let prefix = format!("{}-{}-enumerate", cli.guide_iters, cli.goal_iters);
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
 
