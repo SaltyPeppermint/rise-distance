@@ -20,7 +20,7 @@ pub struct MeasuredGuide<L: Label> {
 }
 
 /// Type alias for the per-k trial data: maps each guide-set size `k` to its
-/// trial results (one `Option` per trial — `None` means the goal was not reached).
+/// trial results (one `Option` per trial. `None` means the goal was not reached).
 pub type TrialsPerK = HashMap<usize, Vec<Option<Vec<Iteration<()>>>>>;
 
 /// Same as `TrialsPerK` but with pre-computed summaries instead of full iteration data.

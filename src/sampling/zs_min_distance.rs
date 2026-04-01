@@ -38,7 +38,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
 
     /// Sample `n` trees of the given `size` from `id`, then compute all pairwise
     /// tree-edit distances.  Returns the distance at the `percentile` position
-    /// (e.g. `percentile = 0.2` → 20th percentile of distances).
+    /// (e.g. `percentile = 0.2` => 20th percentile of distances).
     ///
     /// # Panics
     ///

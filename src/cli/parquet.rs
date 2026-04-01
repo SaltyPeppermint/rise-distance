@@ -14,7 +14,7 @@ use crate::{Label, OriginTree, tee_println};
 
 /// Dump eval results to a new Parquet file inside `run_folder/out/`.
 ///
-/// Each call creates the next numbered file (`0.parquet`, `1.parquet`, …).
+/// Each call creates the next numbered file (`0.parquet`, `1.parquet`, ...).
 ///
 /// # Panics
 ///
