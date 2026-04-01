@@ -1,4 +1,4 @@
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
@@ -52,7 +52,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         // Sample n unique trees of the given size.
         let trees = self
             .inner
-            .sample_batch(id, &HashMap::from([(size, n)]))
+            .sample_batch(id, &[(size, n)])
             .into_iter()
             .collect::<Vec<_>>();
         assert!(
@@ -104,21 +104,21 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
     fn sample_batch(
         &self,
         id: EClassId,
-        samples_per_size: &HashMap<usize, u64>,
+        samples_per_size: &[(usize, u64)],
     ) -> HashSet<OriginTree<S::Label>> {
         samples_per_size
             .into_par_iter()
-            .filter(|(size, samples)| self.possible_size(id, **size, **samples))
-            .flat_map(|(&size, samples)| {
+            .filter(|(size, samples)| self.possible_size(id, *size, *samples))
+            .flat_map(|(size, samples)| {
                 let mut samples_to_take = *samples;
                 let mut existing_flat = HashSet::new();
                 let mut existing = HashSet::new();
-                let mut rng = ChaCha12Rng::seed_from_u64(size as u64);
+                let mut rng = ChaCha12Rng::seed_from_u64(*size as u64);
                 let mut rejected = 0;
-                let cut_off = self.average_distance(id, size, 1000);
+                let cut_off = self.average_distance(id, *size, 1000);
 
                 while samples_to_take > 0 {
-                    let new_candidate = self.sample(id, size, &mut rng);
+                    let new_candidate = self.sample(id, *size, &mut rng);
                     if existing.contains(&new_candidate) {
                         continue;
                     }

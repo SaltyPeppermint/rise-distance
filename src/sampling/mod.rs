@@ -3,7 +3,7 @@ mod count;
 mod naive;
 mod zs_min_distance;
 
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use rand::prelude::*;
 
 pub use count::CountSampler;
@@ -26,7 +26,7 @@ pub trait Sampler: Sync + Send {
     /// See `sample_unique` for more info
     fn sample_batch_root(
         &self,
-        samples_per_size: &HashMap<usize, u64>,
+        samples_per_size: &[(usize, u64)],
     ) -> HashSet<OriginTree<Self::Label>> {
         self.sample_batch(self.root(), samples_per_size)
     }
@@ -41,7 +41,7 @@ pub trait Sampler: Sync + Send {
     fn sample_batch(
         &self,
         id: EClassId,
-        samples_per_size: &HashMap<usize, u64>,
+        samples_per_size: &[(usize, u64)],
     ) -> HashSet<OriginTree<Self::Label>>;
 
     #[must_use]

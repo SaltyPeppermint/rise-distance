@@ -72,7 +72,7 @@ impl Distribution {
         min_size: usize,
         max_size: usize,
         total_samples: usize,
-    ) -> HashMap<usize, u64> {
+    ) -> Vec<(usize, u64)> {
         match self {
             Self::Uniform => {
                 let num_sizes = (max_size - min_size).max(1);
@@ -160,7 +160,7 @@ impl TermSampleDist {
         min_size: usize,
         max_size: usize,
         total_samples: usize,
-    ) -> HashMap<usize, u64> {
+    ) -> Vec<(usize, u64)> {
         match self {
             Self::Statistical(d) => d.samples_per_size(min_size, max_size, total_samples),
             Self::Proportional(min_per_size) => {

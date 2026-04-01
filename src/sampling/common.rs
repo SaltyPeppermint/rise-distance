@@ -1,4 +1,4 @@
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
@@ -28,16 +28,16 @@ pub(super) fn possible_size<C: Counter>(
 pub(super) fn sample_batch<S: Sampler>(
     sampler: &S,
     id: EClassId,
-    samples_per_size: &HashMap<usize, u64>,
+    samples_per_size: &[(usize, u64)],
 ) -> HashSet<OriginTree<S::Label>> {
     samples_per_size
         .par_iter()
-        .filter(|&(&size, &samples)| sampler.possible_size(id, size, samples))
-        .flat_map_iter(|(&size, &samples)| {
-            let mut rng = ChaCha12Rng::seed_from_u64(size as u64);
-            (0..samples).map(move |sample| {
+        .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
+        .flat_map_iter(|(size, samples)| {
+            let mut rng = ChaCha12Rng::seed_from_u64(*size as u64);
+            (0..*samples).map(move |sample| {
                 rng.set_stream(sample);
-                sampler.sample(id, size, &mut rng)
+                sampler.sample(id, *size, &mut rng)
             })
         })
         .collect()

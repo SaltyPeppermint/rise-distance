@@ -1,4 +1,4 @@
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use rand::prelude::*;
 
 use crate::count::{Counter, TermCount};
@@ -33,7 +33,7 @@ impl<C: Counter, L: Label> Sampler for NaiveSampler<'_, '_, C, L> {
     fn sample_batch(
         &self,
         id: EClassId,
-        samples_per_size: &HashMap<usize, u64>,
+        samples_per_size: &[(usize, u64)],
     ) -> HashSet<OriginTree<L>> {
         super::common::sample_batch(self, id, samples_per_size)
     }

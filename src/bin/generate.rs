@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use csv::Writer;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
@@ -74,7 +74,7 @@ fn main() {
     let mut root_rng = ChaCha12Rng::seed_from_u64(cli.seed);
     let mut sized_rngs = samples_per_size
         .iter()
-        .map(|(&size, &n)| {
+        .map(|(size, n)| {
             let rng = ChaCha12Rng::from_rng(&mut root_rng).expect("RNG derivation failed");
             (size, n, rng)
         })
@@ -92,9 +92,9 @@ fn main() {
         .into_par_iter()
         .progress_with_style(style)
         .map(|(size, n, mut rng)| {
-            let sampler = BoltzmannSampler::new(size, cli.tolerance, None);
+            let sampler = BoltzmannSampler::new(*size, cli.tolerance, None);
             let mut collector = HashSet::new();
-            while (collector.len() as u64) < n {
+            while (collector.len() as u64) < *n {
                 let mut consecutive_dupes = 0;
                 loop {
                     assert!(
@@ -112,7 +112,7 @@ fn main() {
             }
             (size, collector)
         })
-        .collect::<HashMap<_, _>>();
+        .collect::<Vec<_>>();
 
     let mut writer = Writer::from_path(&cli.path).expect("File does not exist");
     writer.write_record(["size", "term"]).unwrap();
