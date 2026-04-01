@@ -95,6 +95,7 @@ struct Cli {
     full_union: bool,
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
     let prefix = format!("{}-{}-enumerate", cli.guide_iters, cli.goal_iters);
@@ -184,7 +185,14 @@ fn main() {
         let timer = Instant::now();
 
         if cli.eval_all {
-            eval_all(verify_iters, &ranked, goal, &run_folder, cli.full_union);
+            eval_all(
+                verify_iters,
+                &ranked,
+                goal,
+                &run_folder,
+                &cli.seed,
+                cli.full_union,
+            );
         }
         tee_println!("Verification completed in {:.2?}", timer.elapsed());
 
@@ -214,6 +222,7 @@ fn eval_all(
     ranked: &[MeasuredGuide<MathLabel>],
     goal: &OriginTree<MathLabel>,
     run_folder: &Path,
+    seed: &str,
     full_union: bool,
 ) {
     let goal_recexpr = goal.to_rec_expr();
@@ -240,7 +249,7 @@ fn eval_all(
         })
         .collect::<Vec<_>>();
     print_summary(&results, goal, verify_iters);
-    dump_to_parquet(run_folder, goal, &results);
+    dump_to_parquet(run_folder, seed, goal, &results);
 }
 
 #[derive(Serialize)]

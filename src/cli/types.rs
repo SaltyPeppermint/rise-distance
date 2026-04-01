@@ -44,6 +44,7 @@ pub struct TrialSummary {
 
 #[derive(Serialize)]
 pub struct GoalSummary {
+    pub seed: String,
     pub goal: String,
     pub entries_per_k: SummaryPerK,
 }
@@ -54,8 +55,9 @@ impl GoalSummary {
     /// # Panics
     /// Panics if a reachable trial has an empty iteration list.
     #[must_use]
-    pub fn from_entries(goal: &str, entries: &TrialsPerK) -> Self {
+    pub fn from_entries(seed: &str, goal: &str, entries: &TrialsPerK) -> Self {
         Self {
+            seed: seed.to_owned(),
             goal: goal.to_owned(),
             entries_per_k: entries
                 .iter()

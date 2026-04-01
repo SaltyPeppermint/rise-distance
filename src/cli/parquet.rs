@@ -21,6 +21,7 @@ use crate::{Label, OriginTree, tee_println};
 /// Panics if it cannot create/open the file or write the data.
 pub fn dump_to_parquet<L: Label>(
     run_folder: &Path,
+    seed: &str,
     goal: &OriginTree<L>,
     results: &[GuideEval<'_, L>],
 ) {
@@ -41,6 +42,7 @@ pub fn dump_to_parquet<L: Label>(
 
     // Build column arrays
     let n = results.len();
+    let mut seeds = StringBuilder::with_capacity(n, seed.len() * n);
     let mut goals = StringBuilder::with_capacity(n, goal_str.len() * n);
     let mut guides = StringBuilder::new();
     let mut zs_distances = UInt64Builder::with_capacity(n);
@@ -60,6 +62,7 @@ pub fn dump_to_parquet<L: Label>(
     ));
 
     for r in results {
+        seeds.append_value(seed);
         goals.append_value(&goal_str);
         guides.append_value(r.guide.guide.to_string());
         zs_distances.append_value(r.guide.zs_distance.try_into().unwrap());
@@ -89,6 +92,7 @@ pub fn dump_to_parquet<L: Label>(
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
+            Arc::new(seeds.finish()) as ArrayRef,
             Arc::new(goals.finish()) as ArrayRef,
             Arc::new(guides.finish()) as ArrayRef,
             Arc::new(zs_distances.finish()) as ArrayRef,
@@ -118,6 +122,7 @@ pub fn dump_to_parquet<L: Label>(
 
 fn parquet_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
+        Field::new("seed", DataType::Utf8, false),
         Field::new("goal", DataType::Utf8, false),
         Field::new("guide", DataType::Utf8, false),
         Field::new("zs_distance", DataType::UInt64, false),
@@ -148,6 +153,7 @@ fn parquet_schema() -> Arc<Schema> {
 /// Panics on I/O or Arrow errors.
 pub fn dump_goal_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
     let schema = Arc::new(Schema::new(vec![
+        Field::new("seed", DataType::Utf8, false),
         Field::new("goal", DataType::Utf8, false),
         Field::new("k", DataType::UInt64, false),
         Field::new("iters", DataType::UInt64, true),
@@ -167,6 +173,7 @@ pub fn dump_goal_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
         })
         .sum();
 
+    let mut seeds = StringBuilder::with_capacity(n, 64 * n);
     let mut goals = StringBuilder::with_capacity(n, 64 * n);
     let mut ks = UInt64Builder::with_capacity(n);
     let mut iters = UInt64Builder::with_capacity(n);
@@ -178,6 +185,7 @@ pub fn dump_goal_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
     for summary in summaries {
         for (k, trials) in &summary.entries_per_k {
             for trial in trials {
+                seeds.append_value(&summary.seed);
                 goals.append_value(&summary.goal);
                 ks.append_value(*k as u64);
                 if let Some(t) = trial {
@@ -200,6 +208,7 @@ pub fn dump_goal_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
+            Arc::new(seeds.finish()) as ArrayRef,
             Arc::new(goals.finish()) as ArrayRef,
             Arc::new(ks.finish()) as ArrayRef,
             Arc::new(iters.finish()) as ArrayRef,

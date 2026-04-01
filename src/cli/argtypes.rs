@@ -1,10 +1,20 @@
 use std::fmt::Display;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use hashbrown::HashMap;
 use serde::Serialize;
 
 use crate::count::Counter;
+
+/// Either a single seed s-expression or a path to a CSV file with `size,term` columns.
+///
+/// Pass as `--seed '(d x ...)'` or `--seed-csv path/to/file.csv`.
+#[derive(Debug, Clone)]
+pub enum SeedInput {
+    Single { term: String, max_size: usize },
+    Csv(PathBuf),
+}
 
 #[derive(Serialize, Debug, Clone, Copy, clap::ValueEnum, strum::Display)]
 #[strum(serialize_all = "kebab-case")]

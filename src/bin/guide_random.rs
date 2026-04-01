@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 
-use rise_distance::cli::argtypes::{SampleStrategy, TermSampleDist};
+use rise_distance::cli::argtypes::{SampleStrategy, SeedInput, TermSampleDist};
 use rise_distance::cli::parquet::{dump_goal_summary_parquet, dump_to_parquet};
 use rise_distance::cli::types::{GoalSummary, GuideEval, TrialsPerK};
 use rise_distance::cli::{
@@ -26,26 +26,34 @@ use rise_distance::{OriginTree, TreeShaped, tee_println};
     about = "Evaluate distance metrics as guide predictors for equality saturation",
     after_help = "\
 Examples:
-  # Basic evaluation with 100 random guides
-  guide-random -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150
+  # Basic evaluation with 100 random guides, single seed
+  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 5 -i 4 -g 100
 
   # Sample 5 goals and 100 guides
-  guide-random -s '(d x (+ (* x x) 1))' -n 8 -i 3 -g 100 --goals 5 --max-size 150
+  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 8 -i 3 -g 100 --goals 5
 
-  # Write JSON output to a file
-  guide-random -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 -o results.json
+  # Loop over many seeds from a CSV (size,term columns; size drives max-size)
+  guide-random --seed-csv seeds.csv -n 5 -i 4 -g 100
+
+  # Write JSON output to a folder
+  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 5 -i 4 -g 100 -o results/
 
   # Limit verification iterations separately from goal iterations
-  guide-random -s '(d x (+ (* x x) 1))' -n 8 -i 4 -g 100 --max-size 150 --verify-iters 5
+  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 8 -i 4 -g 100 --verify-iters 5
 
   # Print top 20 guides in the summary table (default: 10)
-  guide-random -s '(d x (+ (* x x) 1))' -n 5 -i 4 -g 100 --max-size 150 --top 20
+  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 5 -i 4 -g 100 --top 20
 "
 )]
 struct Cli {
-    /// Seed term as an s-expression (Math language)
-    #[arg(short, long)]
-    seed: String,
+    /// Seed term as an s-expression (Math language). Requires --max-size.
+    #[arg(long, group = "seed_input", requires = "max_size")]
+    seed: Option<String>,
+
+    /// Path to a CSV file with `size,term` columns. The `size` column drives --max-size.
+    /// Mutually exclusive with --seed / --max-size.
+    #[arg(long, group = "seed_input", conflicts_with = "max_size")]
+    seed_csv: Option<std::path::PathBuf>,
 
     /// Number of eqsat iterations to grow the egraph
     #[arg(short = 'n', long)]
@@ -63,9 +71,9 @@ struct Cli {
     #[arg(long, default_value_t = 1)]
     goals: usize,
 
-    /// Max term size for counting/sampling
+    /// Max term size for counting/sampling. Required with --seed; forbidden with --seed-csv.
     #[arg(long)]
-    max_size: usize,
+    max_size: Option<usize>,
 
     /// How to distribute the sample budget across sizes.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
@@ -103,6 +111,7 @@ struct Cli {
 
 const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
     let prefix = format!(
@@ -114,20 +123,82 @@ fn main() {
 
     let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
 
-    let seed = cli
-        .seed
-        .parse::<RecExpr<Math>>()
-        .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
+    // Build the list of (seed_str, parsed_expr, max_size) to process.
+    let seed_input = match (&cli.seed, &cli.seed_csv) {
+        (Some(s), None) => SeedInput::Single {
+            term: s.clone(),
+            max_size: cli.max_size.expect("--max-size required with --seed"),
+        },
+        (None, Some(p)) => SeedInput::Csv(p.clone()),
+        _ => unreachable!("clap group enforces exactly one of --seed / --seed-csv"),
+    };
 
-    tee_println!("Seed: {seed}");
+    let seeds: Vec<(String, RecExpr<Math>, usize)> = match seed_input {
+        SeedInput::Single { term, max_size } => {
+            let expr = term
+                .parse::<RecExpr<Math>>()
+                .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
+            vec![(term, expr, max_size)]
+        }
+        SeedInput::Csv(path) => {
+            let mut rdr = csv::Reader::from_path(&path)
+                .unwrap_or_else(|e| panic!("Failed to open CSV {}: {e}", path.display()));
+            rdr.records()
+                .map(|rec| {
+                    let rec = rec.expect("CSV read error");
+                    let max_size: usize = rec[0].parse().expect("CSV size column must be usize");
+                    let term = rec[1].to_owned();
+                    let expr = term
+                        .parse::<RecExpr<Math>>()
+                        .unwrap_or_else(|e| panic!("Failed to parse term '{term}': {e}"));
+                    (term, expr, max_size)
+                })
+                .collect()
+        }
+    };
+
     tee_println!("Goal Iterations: {}", cli.goal_iters);
     tee_println!("Guide Iterations: {}", cli.guide_iters);
     tee_println!("Distribution: {}", cli.size_distribution);
+    tee_println!("Seeds to process: {}", seeds.len());
 
+    let mut all_results: Vec<GoalResults> = Vec::new();
+    let mut all_goal_stats: Vec<serde_json::Value> = Vec::new();
+
+    for (seed_str, seed_expr, max_size) in &seeds {
+        if let Some((results, stats)) = process_seed(
+            &cli,
+            seed_str,
+            seed_expr,
+            *max_size,
+            verify_iters,
+            &run_folder,
+        ) {
+            all_results.extend(results);
+            all_goal_stats.extend(stats);
+        }
+    }
+
+    let global_stats = json!({ "goals": all_goal_stats });
+    write_outputs(&run_folder, &all_results, &cli, &global_stats);
+}
+
+/// Run eqsat for one seed, sample goals, evaluate each goal, and return the
+/// collected results and per-goal stats. Returns `None` if the goal frontier
+/// is empty (seed is skipped with a warning).
+fn process_seed(
+    cli: &Cli,
+    seed_str: &str,
+    seed_expr: &RecExpr<Math>,
+    max_size: usize,
+    verify_iters: usize,
+    run_folder: &Path,
+) -> Option<(Vec<GoalResults>, Vec<serde_json::Value>)> {
+    tee_println!("\n=== Seed: {seed_str} (max_size={max_size}) ===");
     tee_println!("Running eqsat for {} iterations...", cli.goal_iters);
     let start = Instant::now();
     let result = run_guide_goal(
-        &seed,
+        seed_expr,
         RULES.get_or_init(math::rules),
         cli.guide_iters,
         cli.goal_iters,
@@ -142,14 +213,6 @@ fn main() {
     tee_println!("Guide egraph had {guide_nodes} nodes, {guide_classes} classes");
     tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes");
 
-    let mut stats = json!({
-        "eqsat_time_secs": eqsat_secs,
-        "guide_egraph_nodes": guide_nodes,
-        "guide_egraph_classes": guide_classes,
-        "goal_egraph_nodes": goal_nodes,
-        "goal_egraph_classes": goal_classes,
-    });
-
     tee_println!(
         "\nSampling goals from iteration-{} frontier...",
         cli.goal_iters
@@ -160,14 +223,16 @@ fn main() {
         &convert(result.goal(), root),
         result.prev_goal(),
         cli.goals,
-        cli.max_size,
+        max_size,
         cli.size_distribution,
         cli.goal_sample_strategy,
     );
-    assert!(
-        !goals.is_empty(),
-        "Frontier empty. Try more iterations or a larger max-size.",
-    );
+    if goals.is_empty() {
+        tee_println!(
+            "WARNING: Frontier empty for seed '{seed_str}'. Skipping. Try more iterations or a larger max-size."
+        );
+        return None;
+    }
     tee_println!("Sampled {} goal(s)", goals.len());
 
     tee_println!(
@@ -175,24 +240,45 @@ fn main() {
         cli.guide_iters
     );
 
-    let mut all_results = Vec::new();
+    let run_stats = json!({
+        "seed": seed_str,
+        "max_size": max_size,
+        "eqsat_time_secs": eqsat_secs,
+        "guide_egraph_nodes": guide_nodes,
+        "guide_egraph_classes": guide_classes,
+        "goal_egraph_nodes": goal_nodes,
+        "goal_egraph_classes": goal_classes,
+    });
+
+    let mut goal_results = Vec::new();
     let mut goal_stats = Vec::new();
     for goal in &goals {
-        let (goal_result, goal_stat) =
-            evaluate_goal(&cli, &result, root, goal, verify_iters, &run_folder);
-        all_results.push(goal_result);
+        let (goal_result, mut goal_stat) = evaluate_goal(
+            cli,
+            &result,
+            root,
+            goal,
+            seed_str,
+            max_size,
+            verify_iters,
+            run_folder,
+        );
+        goal_stat["run_stats"] = run_stats.clone();
+        goal_results.push(goal_result);
         goal_stats.push(goal_stat);
     }
 
-    stats["goals"] = serde_json::Value::Array(goal_stats);
-    write_outputs(&run_folder, &all_results, &cli, &stats);
+    Some((goal_results, goal_stats))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_goal(
     cli: &Cli,
     result: &GuideGoalResult<Math, ConstantFold>,
     root: Id,
     goal: &OriginTree<MathLabel>,
+    seed_str: &str,
+    max_size: usize,
     verify_iters: usize,
     run_folder: &Path,
 ) -> (GoalResults, serde_json::Value) {
@@ -202,13 +288,14 @@ fn evaluate_goal(
         &convert(result.guide(), root),
         result.prev_guide(),
         cli.guides,
-        cli.max_size,
+        max_size,
         cli.size_distribution,
         cli.guide_sample_strategy,
     );
 
     let runs = run_guide_set_trials(cli, &goal_recexpr, &sampled_guides);
     let goal_results = GoalResults {
+        seed: seed_str.to_owned(),
         goal: goal.to_string(),
         runs,
     };
@@ -232,7 +319,7 @@ fn evaluate_goal(
 
     let stat = print_summary(&results, goal, verify_iters);
     if cli.eval_all {
-        dump_to_parquet(run_folder, goal, &results);
+        dump_to_parquet(run_folder, seed_str, goal, &results);
     }
 
     (goal_results, stat)
@@ -251,7 +338,7 @@ fn write_outputs(
 
     let summaries = all_results
         .iter()
-        .map(|r| GoalSummary::from_entries(&r.goal, &r.runs))
+        .map(|r| GoalSummary::from_entries(&r.seed, &r.goal, &r.runs))
         .collect::<Vec<_>>();
     let summary_path = run_folder.join("top_k_summary.json");
     let summary_file = File::create(summary_path).expect("Failed to create summary json file");
@@ -311,6 +398,7 @@ fn run_guide_set_trials(
 
 #[derive(Serialize)]
 struct GoalResults {
+    seed: String,
     goal: String,
     runs: TrialsPerK,
 }
