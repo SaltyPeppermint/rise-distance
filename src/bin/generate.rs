@@ -51,6 +51,8 @@ struct Cli {
     #[arg(long)]
     seed: u64,
 
+    /// Retry limit when rejecting previously seen terms
+    /// Should only be an issue for really small terms
     #[arg(long, default_value_t = 10000)]
     retry_limit: usize,
 
@@ -95,20 +97,14 @@ fn main() {
             let sampler = BoltzmannSampler::new(*size, cli.tolerance, None);
             let mut collector = HashSet::new();
             while (collector.len() as u64) < *n {
-                let mut consecutive_dupes = 0;
-                loop {
-                    assert!(
-                        consecutive_dupes < cli.retry_limit,
-                        "Sampled previously seen term too often"
-                    );
-                    let new_term = sampler
+                // has any inseration succeeded?
+                let inserted = (0..cli.retry_limit).any(|_| {
+                    let candidate = sampler
                         .sample(&mut rng)
                         .expect("Too many failed sample attempts");
-                    if collector.insert(new_term) {
-                        break;
-                    }
-                    consecutive_dupes += 1;
-                }
+                    collector.insert(candidate)
+                });
+                assert!(inserted, "Sampled previously seen term too often");
             }
             (size, collector)
         })

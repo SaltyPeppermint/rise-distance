@@ -175,16 +175,15 @@ impl BoltzmannSampler {
 /// Returns true if every Diff/Integral node in the tree has its bound variable
 /// appearing free somewhere in its expression child (child[0]).
 fn binders_valid(tree: &Tree<MathLabel>) -> bool {
-    match tree.label() {
-        MathLabel::Diff | MathLabel::Integral => {
-            let children = tree.children();
-            let expr = &children[0];
-            let MathLabel::Symbol(var) = children[1].label() else {
-                return false;
-            };
-            free_vars(expr).contains(var) && binders_valid(expr)
-        }
-        _ => tree.children().iter().all(binders_valid),
+    if let MathLabel::Diff | MathLabel::Integral = tree.label() {
+        let children = tree.children();
+        let expr = &children[0];
+        let MathLabel::Symbol(var) = children[1].label() else {
+            return false;
+        };
+        free_vars(expr).contains(var) && binders_valid(expr)
+    } else {
+        tree.children().iter().all(binders_valid)
     }
 }
 
