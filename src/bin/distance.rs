@@ -7,7 +7,7 @@ use indicatif::ParallelProgressIterator;
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
-use rise_distance::cli::argtypes::{DistanceMetric, SizeDistribution};
+use rise_distance::cli::argtypes::{DistanceMetric, TermSampleDist};
 use rise_distance::count::TermCount;
 use rise_distance::sampling::CountSampler;
 use rise_distance::sampling::Sampler;
@@ -80,8 +80,8 @@ Examples:
 
         /// How to distribute the sample budget across sizes.
         /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
-        #[arg(short = 'p', long, requires = "budget", default_value_t = SizeDistribution::Uniform)]
-        distribution: SizeDistribution,
+        #[arg(short = 'p', long, requires = "budget", default_value_t = TermSampleDist::UNIFORM)]
+        distribution: TermSampleDist,
     },
 
     /// Prune the e-graph by overlap with a reference tree and output the result
@@ -251,7 +251,7 @@ struct CountSampleConfig {
     min_size: usize,
     max_size: usize,
     total_samples: usize,
-    distribution: SizeDistribution,
+    distribution: TermSampleDist,
     with_types: bool,
     distance: DistanceMetric,
 }
@@ -280,10 +280,8 @@ fn run_count_extraction<L: Label>(
     let histogram = term_count
         .get(&graph.root())
         .expect("Root e-class has no terms");
-    #[expect(clippy::cast_precision_loss)]
-    let normal_center = (ref_tree.size(with_types) - min_size) as f64;
     let samples_per_size =
-        distribution.samples_per_size(histogram, min_size, max_size, total_samples, normal_center);
+        distribution.samples_per_size(histogram, min_size, max_size, total_samples);
     let candidates = CountSampler::new(term_count, graph).sample_batch_root(&samples_per_size);
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");

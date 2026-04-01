@@ -17,7 +17,7 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
-use crate::cli::argtypes::{SampleStrategy, SizeDistribution};
+use crate::cli::argtypes::{SampleStrategy, TermSampleDist};
 use crate::count::TermCount;
 use crate::egg::math::ConstantFold;
 use crate::egg::{Math, ToEgg};
@@ -98,7 +98,7 @@ pub fn sample_frontier_terms<L, N, LL>(
     prev_raw_egg: &egg::EGraph<L, N>,
     count: usize,
     max_size: usize,
-    distribution: SizeDistribution,
+    distribution: TermSampleDist,
     sample_strategy: SampleStrategy,
 ) -> Vec<OriginTree<LL>>
 where
@@ -121,19 +121,11 @@ where
     }
 
     let min_size = histogram.keys().min().copied().unwrap_or(1);
-    #[expect(clippy::cast_precision_loss)]
-    let normal_center = (min_size + max_size) as f64 / 2.0;
-
     let mut result = HashSet::new();
     let mut oversample = 5;
     loop {
-        let samples_per_size = distribution.samples_per_size(
-            histogram,
-            min_size,
-            max_size,
-            count * oversample,
-            normal_center,
-        );
+        let samples_per_size =
+            distribution.samples_per_size(histogram, min_size, max_size, count * oversample);
         let batch = match sample_strategy {
             SampleStrategy::Naive => {
                 NaiveSampler::new(&tc, graph).sample_batch_root(&samples_per_size)

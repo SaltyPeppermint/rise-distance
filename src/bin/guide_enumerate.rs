@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use rise_distance::cli::parquet::dump_to_parquet;
 use serde::Serialize;
 
-use rise_distance::cli::argtypes::{SampleStrategy, SizeDistribution};
+use rise_distance::cli::argtypes::{SampleStrategy, TermSampleDist};
 use rise_distance::cli::types::{GuideEval, MeasuredGuide, TrialsPerK};
 use rise_distance::cli::{
     RULES, TRIAL_SIZE, enumerate_frontier_terms, get_run_folder, init_log, measure_guides,
@@ -64,8 +64,8 @@ struct Cli {
 
     /// How to distribute the sample budget across sizes for goals.
     /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
-    #[arg(long, default_value_t = SizeDistribution::Uniform)]
-    size_distribution: SizeDistribution,
+    #[arg(long, default_value_t = TermSampleDist::UNIFORM)]
+    size_distribution: TermSampleDist,
 
     /// How to sample the individual terms BEWARE THIS ONLY APPLIES TO THE GOALS!.
     #[arg(long, default_value_t = SampleStrategy::CountBased)]

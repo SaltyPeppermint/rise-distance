@@ -55,12 +55,12 @@ impl BoltzmannSampler {
     ///
     /// `symbols` is the pool of leaf labels to draw from (variables and constants).
     /// If empty, defaults to `[x, y, 0, 1, 2]`.
-    pub fn new(target: usize, tolerance: usize, symbols: Option<Vec<MathLabel>>) -> Self {
-        let symbols = symbols.unwrap_or_else(default_symbols);
+    pub fn new(target: usize, tolerance: usize, leaf_symbols: Option<Vec<MathLabel>>) -> Self {
+        let leaf_symbols = leaf_symbols.unwrap_or_else(default_symbols);
         let unary_ops = UNARY_OPS.to_vec();
         let binary_ops = BINARY_OPS.to_vec();
 
-        let n_l = symbols.len() as f64;
+        let n_l = leaf_symbols.len() as f64;
         let n_u = unary_ops.len() as f64;
         let n_b = binary_ops.len() as f64;
 
@@ -95,7 +95,7 @@ impl BoltzmannSampler {
         BoltzmannSampler {
             p_leaf,
             p_unary,
-            symbols,
+            symbols: leaf_symbols,
             unary_ops,
             binary_ops,
             target,
