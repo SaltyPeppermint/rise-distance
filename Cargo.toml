@@ -32,6 +32,7 @@ strum = { version = "0.28", features = ["derive"] }
 symbolic_expressions = "5"
 thiserror = "2"
 plotters = "0.3"
+csv = "1"
 
 [lints.clippy]
 all = { level = "deny", priority = -2 }
@@ -85,3 +86,7 @@ path = "src/bin/guide_enumerate.rs"
 [[bin]]
 name = "guide-random"
 path = "src/bin/guide_random.rs"
+
+[[bin]]
+name = "generate"
+path = "src/bin/generate.rs"
