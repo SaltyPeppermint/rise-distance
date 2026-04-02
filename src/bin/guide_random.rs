@@ -1,7 +1,6 @@
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
-use std::time::Instant;
 
 use clap::Parser;
 use egg::{Id, RecExpr};
@@ -130,7 +129,7 @@ fn main() {
             max_size: cli.max_size.expect("--max-size required with --seed"),
         },
         (None, Some(p)) => SeedInput::Csv(p.clone()),
-        _ => unreachable!("clap group enforces exactly one of --seed / --seed-csv"),
+        _ => panic!("clap group enforces exactly one of --seed / --seed-csv"),
     };
 
     let seeds: Vec<(String, RecExpr<Math>, usize)> = match seed_input {
@@ -179,8 +178,7 @@ fn main() {
         }
     }
 
-    let global_stats = json!({ "goals": all_goal_stats });
-    write_outputs(&run_folder, &all_results, &cli, &global_stats);
+    write_outputs(&run_folder, &all_results, &cli, &all_goal_stats);
 }
 
 /// Run eqsat for one seed, sample goals, evaluate each goal, and return the
@@ -196,7 +194,6 @@ fn process_seed(
 ) -> Option<(Vec<GoalResults>, Vec<serde_json::Value>)> {
     tee_println!("\n=== Seed: {seed_str} (max_size={max_size}) ===");
     tee_println!("Running eqsat for {} iterations...", cli.goal_iters);
-    let start = Instant::now();
     let result = run_guide_goal(
         seed_expr,
         RULES.get_or_init(math::rules),
@@ -204,14 +201,21 @@ fn process_seed(
         cli.goal_iters,
     );
 
-    let eqsat_secs = start.elapsed().as_secs_f64();
-    tee_println!("Eqsat completed in {eqsat_secs:.2}s");
+    let guide_secs = result
+        .guide_data()
+        .iter()
+        .map(|i| i.total_time)
+        .sum::<f64>();
+    let goal_secs = result.goal_data().iter().map(|i| i.total_time).sum::<f64>();
+
     let guide_nodes = result.guide().total_number_of_nodes();
     let guide_classes = result.guide().classes().len();
     let goal_nodes = result.goal().total_number_of_nodes();
     let goal_classes = result.goal().classes().len();
-    tee_println!("Guide egraph had {guide_nodes} nodes, {guide_classes} classes");
-    tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes");
+    tee_println!(
+        "Guide egraph had {guide_nodes} nodes, {guide_classes} classes in {guide_secs:.2}s"
+    );
+    tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
 
     tee_println!(
         "\nSampling goals from iteration-{} frontier...",
@@ -243,11 +247,12 @@ fn process_seed(
     let run_stats = json!({
         "seed": seed_str,
         "max_size": max_size,
-        "eqsat_time_secs": eqsat_secs,
         "guide_egraph_nodes": guide_nodes,
         "guide_egraph_classes": guide_classes,
+        "guide_eqsat_time": guide_secs,
         "goal_egraph_nodes": goal_nodes,
         "goal_egraph_classes": goal_classes,
+        "goal_eqsat_time": goal_secs,
     });
 
     let mut goal_results = Vec::new();
@@ -329,7 +334,7 @@ fn write_outputs(
     run_folder: &Path,
     all_results: &[GoalResults],
     cli: &Cli,
-    stats: &serde_json::Value,
+    stats: &[serde_json::Value],
 ) {
     let output_path = run_folder.join("top_k.json");
     let output_file = File::create(output_path).expect("Failed to create output json file");

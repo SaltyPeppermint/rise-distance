@@ -14,7 +14,7 @@ base_cmd = [
     "--bin",
     "guide-random",
     "--",
-    "-s",
+    "--seed",
     "(d x (- (pow x 3) (* 7 (pow x 2))))",
     "-n",
     "10",

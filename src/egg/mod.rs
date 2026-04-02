@@ -1,8 +1,8 @@
 pub mod math;
 
 use egg::{
-    Analysis, EGraph, Id, IterationData, Language, RecExpr, Rewrite, Runner, SimpleScheduler,
-    StopReason,
+    Analysis, EGraph, Id, Iteration, IterationData, Language, RecExpr, Rewrite, Runner,
+    SimpleScheduler, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
 
@@ -15,16 +15,26 @@ pub use math::{Math, MathLabel};
 
 /// Result of [`run_guide_goal`]: egraph snapshots at guide and goal iterations,
 /// plus the total node count of the final egraph.
-pub struct GuideGoalResult<L: Language, N: Analysis<L>> {
-    /// Egraph at `n_guide - 1` (rebuilt), for frontier membership checks.
-    graphs: Vec<EGraph<L, N>>,
+pub struct GuideGoalResult<L, N>
+where
+    L: Language,
+    N: Analysis<L> + Clone,
+    N::Data: Clone,
+{
+    // /// Iteration Data at `n_guide - 1` (rebuilt), for frontier membership checks.
+    iter_data: Vec<Iteration<EGraphHolder<L, N>>>,
     /// Root (valid for all egraphs)
     root: Id,
     /// Guide Iteration
     guide_iteration: usize,
 }
 
-impl<L: Language, N: Analysis<L>> GuideGoalResult<L, N> {
+impl<L, N> GuideGoalResult<L, N>
+where
+    L: Language,
+    N: Analysis<L> + Clone,
+    N::Data: Clone,
+{
     #[must_use]
     pub fn root(&self) -> Id {
         self.root
@@ -32,22 +42,32 @@ impl<L: Language, N: Analysis<L>> GuideGoalResult<L, N> {
 
     #[must_use]
     pub fn guide(&self) -> &EGraph<L, N> {
-        &self.graphs[self.guide_iteration]
+        &self.iter_data[self.guide_iteration].data.0
+    }
+
+    #[must_use]
+    pub fn guide_data(&self) -> &[Iteration<EGraphHolder<L, N>>] {
+        &self.iter_data[..self.guide_iteration]
     }
 
     #[must_use]
     pub fn prev_guide(&self) -> &EGraph<L, N> {
-        &self.graphs[self.guide_iteration - 1]
+        &self.iter_data[self.guide_iteration - 1].data.0
     }
 
     #[must_use]
     pub fn goal(&self) -> &EGraph<L, N> {
-        &self.graphs[self.graphs.len() - 1]
+        &self.iter_data[self.iter_data.len() - 1].data.0
+    }
+
+    #[must_use]
+    pub fn goal_data(&self) -> &[Iteration<EGraphHolder<L, N>>] {
+        &self.iter_data
     }
 
     #[must_use]
     pub fn prev_goal(&self) -> &EGraph<L, N> {
-        &self.graphs[self.graphs.len() - 2]
+        &self.iter_data[self.iter_data.len() - 2].data.0
     }
 }
 
@@ -123,7 +143,7 @@ where
     )
 }
 
-struct EGraphHolder<L, N>(EGraph<L, N>)
+pub struct EGraphHolder<L, N>(pub EGraph<L, N>)
 where
     L: Language,
     N: Analysis<L> + Clone,
@@ -185,18 +205,14 @@ where
     );
 
     let root = runner.roots[0];
-    let graphs = runner
-        .iterations
-        .into_iter()
-        .map(|i| {
-            let mut eg = i.data.0;
-            eg.rebuild();
-            eg
-        })
-        .collect::<Vec<_>>();
+    let mut iter_data = runner.iterations;
+
+    for i in &mut iter_data {
+        i.data.0.rebuild();
+    }
 
     GuideGoalResult {
-        graphs,
+        iter_data,
         root,
         guide_iteration: n_guide,
     }
