@@ -294,17 +294,38 @@ def parse_top_k_summary(raw: list[dict], strategy_name: str) -> list[dict]:
 
 
 def load_top_k(run_dir: Path, strategy_name: str) -> pl.DataFrame:
-    """Load trial rows from a run directory, preferring parquet over JSON summary."""
+    """Load trial rows from a run directory, preferring parquet over JSON summary.
+
+    Adjusts `nodes` and `total_time` to account for the guide egraph overhead:
+      - nodes = max(trial_nodes, guide_egraph_nodes)
+      - total_time += guide_eqsat_time
+    """
+    with open(run_dir / "stats.json", encoding="utf-8") as f:
+        run_stats = json.load(f)[0]["run_stats"]
+    guide_nodes = run_stats["guide_egraph_nodes"]
+    guide_time = run_stats["guide_eqsat_time"]
+
     parquet_path = run_dir / "top_k_summary.parquet"
     if parquet_path.exists():
-        return pl.read_parquet(parquet_path).with_columns(
+        df = pl.read_parquet(parquet_path).with_columns(
             pl.lit(strategy_name).alias("strategy")
         )
+    else:
+        summary_path = run_dir / "top_k_summary.json"
+        with open(summary_path, encoding="utf-8") as f:
+            raw = json.load(f)
+        df = pl.DataFrame(parse_top_k_summary(raw, strategy_name))
 
-    summary_path = run_dir / "top_k_summary.json"
-    with open(summary_path, encoding="utf-8") as f:
-        raw = json.load(f)
-    return pl.DataFrame(parse_top_k_summary(raw, strategy_name))
+    return df.with_columns(
+        pl.when(pl.col("nodes").is_not_null())
+        .then(pl.max_horizontal(pl.col("nodes"), pl.lit(guide_nodes)))
+        .otherwise(None)
+        .alias("nodes"),
+        pl.when(pl.col("total_time").is_not_null())
+        .then(pl.col("total_time") + guide_time)
+        .otherwise(None)
+        .alias("total_time"),
+    )
 
 
 def load_guide_eval(path: Path) -> pl.DataFrame:

@@ -174,7 +174,7 @@ fn main() {
             &run_folder,
         ) {
             all_results.extend(results);
-            all_goal_stats.extend(stats);
+            all_goal_stats.push(stats);
         }
     }
 
@@ -191,7 +191,7 @@ fn process_seed(
     max_size: usize,
     verify_iters: usize,
     run_folder: &Path,
-) -> Option<(Vec<GoalResults>, Vec<serde_json::Value>)> {
+) -> Option<(Vec<GoalResults>, serde_json::Value)> {
     tee_println!("\n=== Seed: {seed_str} (max_size={max_size}) ===");
     tee_println!("Running eqsat for {} iterations...", cli.goal_iters);
     let result = run_guide_goal(
@@ -258,7 +258,7 @@ fn process_seed(
     let mut goal_results = Vec::new();
     let mut goal_stats = Vec::new();
     for goal in &goals {
-        let (goal_result, mut goal_stat) = evaluate_goal(
+        let (goal_result, goal_stat) = evaluate_goal(
             cli,
             &result,
             root,
@@ -268,12 +268,11 @@ fn process_seed(
             verify_iters,
             run_folder,
         );
-        goal_stat["run_stats"] = run_stats.clone();
         goal_results.push(goal_result);
         goal_stats.push(goal_stat);
     }
-
-    Some((goal_results, goal_stats))
+    let full_stats = json!({"run_stats": run_stats, "goal_stats": goal_stats});
+    Some((goal_results, full_stats))
 }
 
 #[allow(clippy::too_many_arguments)]
