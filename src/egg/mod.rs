@@ -84,6 +84,19 @@ pub trait ToEgg<L: Label>: TreeShaped<L> {
     fn add_node<F: FnMut(&Self, Self::Lang) -> Id>(&self, adder: &mut F) -> Id;
 }
 
+pub fn iter_check_hook<L: Language, N: Analysis<L> + Default, LL: Label, T: ToEgg<LL, Lang = L>>(
+    tree: &T,
+    min_iters: usize,
+    rules: &[Rewrite<L, N>],
+) -> bool {
+    let expr = tree.to_rec_expr();
+    let r = Runner::default()
+        .with_expr(&expr)
+        .with_iter_limit(min_iters)
+        .run(rules);
+    matches!(r.stop_reason, Some(StopReason::IterationLimit(_)))
+}
+
 pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>
 where
     L: Language,

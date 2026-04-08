@@ -81,11 +81,11 @@ impl BoltzmannSampler {
     /// If `None`, defaults to `[x, y, 0, 1, 2]`.
     pub fn new(target: usize, tolerance: usize, leaf_symbols: Option<Vec<MathLabel>>) -> Self {
         let leaf_symbols = leaf_symbols.unwrap_or_else(default_symbols);
-        let var_symbols: Vec<MathLabel> = leaf_symbols
+        let var_symbols = leaf_symbols
             .iter()
             .filter(|l| matches!(l, MathLabel::Symbol(_)))
             .copied()
-            .collect();
+            .collect::<Vec<_>>();
         let unary_ops = UNARY_OPS.to_vec();
         let normal_binary_ops = NORMAL_BINARY_OPS.to_vec();
         let binder_ops = BINDER_OPS.to_vec();
@@ -158,17 +158,45 @@ impl BoltzmannSampler {
     /// Generate a random term whose size is in `[target - tolerance, target + tolerance]`
     /// and where every Diff/Integral node's bound variable appears free in its expression child.
     /// Returns None if no valid tree is found within `10_000` attempts.
-    pub fn sample<R: Rng>(&self, rng: &mut R) -> Option<Tree<MathLabel>> {
+    pub fn sample<R: Rng, F: Fn(&Tree<MathLabel>) -> bool>(
+        &self,
+        rng: &mut R,
+        filter_hook: &F,
+    ) -> Option<(Tree<MathLabel>, usize)> {
         let lo = self.target.saturating_sub(self.tolerance);
         let hi = self.target + self.tolerance;
-        (0..10_000)
-            .map(|_| self.gen_node(rng, 0))
-            .find(|tree| (lo..=hi).contains(&tree.size_without_types()) && binders_valid(tree))
+        (0..100_000)
+            .map(|a| (self.gen_node(rng, 0), a))
+            .find(|(candidate, _)| {
+                (lo..=hi).contains(&candidate.size_without_types())
+                    && binders_valid(candidate)
+                    && filter_hook(candidate)
+            })
     }
 
     /// Generate `count` random terms within the size window.
-    pub fn sample_many<R: Rng>(&self, rng: &mut R, count: usize) -> Vec<Tree<MathLabel>> {
-        (0..count).filter_map(|_| self.sample(rng)).collect()
+    pub fn sample_many<R: Rng, F: Fn(&Tree<MathLabel>) -> bool>(
+        &self,
+        rng: &mut R,
+        count: usize,
+        filter_hook: &F,
+    ) -> Vec<Tree<MathLabel>> {
+        let (trees, total_attempts, failed) =
+            (0..count).map(|_| self.sample(rng, filter_hook)).fold(
+                (Vec::with_capacity(count), 0, 0),
+                |(mut trees, attempts, failed), result| match result {
+                    Some((tree, a)) => {
+                        trees.push(tree);
+                        (trees, attempts + a, failed)
+                    }
+                    None => (trees, attempts, failed + 1),
+                },
+            );
+        println!(
+            "Took a total of {total_attempts} attempts for {} terms. {failed} failed!",
+            trees.len()
+        );
+        trees
     }
 }
 
@@ -304,7 +332,7 @@ mod tests {
         let sampler = BoltzmannSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(42);
 
-        let trees = sampler.sample_many(&mut rng, 50);
+        let trees = sampler.sample_many(&mut rng, 50, &|_| true);
         assert_eq!(trees.len(), 50);
         for tree in &trees {
             let size = tree.size_without_types();
@@ -336,7 +364,7 @@ mod tests {
         let sampler = BoltzmannSampler::new(5, 2, None);
         let mut rng = ChaCha8Rng::seed_from_u64(123);
 
-        let trees = sampler.sample_many(&mut rng, 30);
+        let trees = sampler.sample_many(&mut rng, 30, &|_| true);
         for tree in &trees {
             let size = tree.size_without_types();
             assert!((3..=7).contains(&size), "size {size} out of range [3, 7]");
@@ -348,7 +376,7 @@ mod tests {
         let sampler = BoltzmannSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(99);
 
-        let trees = sampler.sample_many(&mut rng, 100);
+        let trees = sampler.sample_many(&mut rng, 100, &|_| true);
         for tree in &trees {
             assert!(
                 binders_valid(tree),
@@ -362,7 +390,7 @@ mod tests {
         let sampler = BoltzmannSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(7);
 
-        let trees = sampler.sample_many(&mut rng, 100);
+        let trees = sampler.sample_many(&mut rng, 100, &|_| true);
         for tree in &trees {
             assert_no_constant_binder(tree);
         }
@@ -509,7 +537,7 @@ mod tests {
     fn sample_many_count_zero() {
         let sampler = BoltzmannSampler::new(10, 3, None);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
-        let trees = sampler.sample_many(&mut rng, 0);
+        let trees = sampler.sample_many(&mut rng, 0, &|_| true);
         assert!(trees.is_empty());
     }
 

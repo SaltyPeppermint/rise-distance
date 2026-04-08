@@ -2,12 +2,14 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use csv::Writer;
-use hashbrown::HashSet;
+use hashbrown::{HashMap, hash_map::Entry};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rise_distance::cli::RULES;
 use rise_distance::egg::math::generate::BoltzmannSampler;
+use rise_distance::egg::{iter_check_hook, math};
 use serde::Serialize;
 
 use rise_distance::cli::argtypes::Distribution;
@@ -63,6 +65,10 @@ struct Cli {
     /// Size Distribution to sample
     #[arg(long)]
     path: PathBuf,
+
+    /// Minimum iter complexity for the term
+    #[arg(long, default_value_t = 10)]
+    min_iters: usize,
 }
 
 fn main() {
@@ -90,33 +96,52 @@ fn main() {
     .expect("valid template")
     .progress_chars("=>-");
 
+    let rules = RULES.get_or_init(math::rules);
+
     let big_collector = sized_rngs
         .into_par_iter()
         .progress_with_style(style)
         .map(|(size, n, mut rng)| {
             let sampler = BoltzmannSampler::new(*size, cli.tolerance, None);
-            let mut collector = HashSet::new();
+            let mut collector = HashMap::new();
             while (collector.len() as u64) < *n {
-                // has any inseration succeeded?
-                let inserted = (0..cli.retry_limit).any(|_| {
-                    let candidate = sampler
-                        .sample(&mut rng)
-                        .expect("Too many failed sample attempts");
-                    collector.insert(candidate)
-                });
+                let mut total_attempts = 0;
+                let inserted = 'retry: {
+                    for _ in 0..cli.retry_limit {
+                        let (candidate, attempts) = sampler
+                            .sample(&mut rng, &|t| iter_check_hook(t, cli.min_iters, rules))
+                            .expect("Too many failed sample attempts");
+                        total_attempts += attempts;
+                        if let Entry::Vacant(e) = collector.entry(candidate) {
+                            e.insert(total_attempts);
+                            break 'retry true;
+                        }
+                    }
+                    false
+                };
                 assert!(inserted, "Sampled previously seen term too often");
             }
             (size, collector)
         })
         .collect::<Vec<_>>();
 
+    println!(
+        "Took a total of {} attempts for {} terms.",
+        big_collector
+            .iter()
+            .map(|x| x.1.values().sum::<usize>())
+            .sum::<usize>(),
+        big_collector.iter().map(|x| x.1.len()).sum::<usize>()
+    );
     let mut writer = Writer::from_path(&cli.path).expect("File does not exist");
-    writer.write_record(["size", "term"]).unwrap();
+    writer.write_record(["size", "term", "attempts"]).unwrap();
 
-    for (size, c) in big_collector {
+    for (size, terms) in big_collector {
         let size_str = size.to_string();
-        for term in c {
-            writer.write_record([&size_str, &term.to_string()]).unwrap();
+        for (tree, attempts) in terms {
+            writer
+                .write_record([&size_str, &tree.to_string(), &attempts.to_string()])
+                .unwrap();
         }
     }
 }
