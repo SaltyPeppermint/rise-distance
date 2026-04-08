@@ -1,5 +1,7 @@
 pub mod math;
 
+use std::fmt::Display;
+
 use egg::{
     Analysis, EGraph, Id, Iteration, IterationData, Language, RecExpr, Rewrite, Runner,
     SimpleScheduler, StopReason,
@@ -84,17 +86,39 @@ pub trait ToEgg<L: Label>: TreeShaped<L> {
     fn add_node<F: FnMut(&Self, Self::Lang) -> Id>(&self, adder: &mut F) -> Id;
 }
 
-pub fn iter_check_hook<L: Language, N: Analysis<L> + Default, LL: Label, T: ToEgg<LL, Lang = L>>(
+pub fn iter_check_hook<
+    L: Language + Display,
+    N: Analysis<L> + Default,
+    LL: Label,
+    T: ToEgg<LL, Lang = L>,
+>(
     tree: &T,
     min_iters: usize,
     rules: &[Rewrite<L, N>],
 ) -> bool {
     let expr = tree.to_rec_expr();
-    let r = Runner::default()
-        .with_expr(&expr)
-        .with_iter_limit(min_iters)
-        .run(rules);
-    matches!(r.stop_reason, Some(StopReason::IterationLimit(_)))
+    // egg's Runner can panic on certain malformed inside its merge check.
+    // Fixing this would require only constructing correct terms and that is too complicated
+    // We use catch_unwind to treat such cases as "not passing the check" rather than crashing the process.
+    // An example would be the expression
+    // '(cos (* (sqrt (* x (sqrt (i (/ 0 x) x)))) (sin (+ (pow 1 (/ 1 2)) (cos 2)))))'
+    // The issue is that the binder check does not catch (i (/ 0 x) x) although (/ 0 x)
+    // trivially simplifies to 0
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Runner::default()
+            .with_expr(&expr)
+            .with_scheduler(SimpleScheduler)
+            .with_iter_limit(min_iters)
+            .run(rules)
+    }))
+    .map_or_else(
+        |_| {
+            println!("panic caught in iter_check_hook for expr: {expr}");
+            println!("It is safe to ignore the output of egg here");
+            false
+        },
+        |r| matches!(r.stop_reason, Some(StopReason::IterationLimit(_))),
+    )
 }
 
 pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>
