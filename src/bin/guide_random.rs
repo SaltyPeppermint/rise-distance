@@ -150,7 +150,7 @@ fn main() {
                     let expr = term
                         .parse::<RecExpr<Math>>()
                         .unwrap_or_else(|e| panic!("Failed to parse term '{term}': {e}"));
-                    (term, expr, max_size)
+                    (term, expr, max_size * 2)
                 })
                 .collect()
         }
@@ -371,7 +371,7 @@ fn run_guide_set_trials(
     let mut entries = TrialsPerK::default();
     for k in TRIAL_SIZE {
         let trials = sampled_guides
-            .par_windows(cli.guides / MAX_TRIAL_SIZE)
+            .par_windows(MAX_TRIAL_SIZE)
             .map(|guides_here| {
                 verify_reachability(
                     &guides_here[..k],
@@ -389,7 +389,8 @@ fn run_guide_set_trials(
         let combined_nodes = trial_avg(&trials, |t| t.last().map(|i| i.egraph_nodes));
         if let (Some(avg_i), Some(avg_n)) = (combined_iters, combined_nodes) {
             tee_println!(
-                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {reached} in {MAX_TRIAL_SIZE} trials)"
+                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {reached} in {} trials)",
+                trials.len()
             );
         } else {
             tee_println!("Could NOT reach with {k} guides");
