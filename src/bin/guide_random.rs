@@ -96,7 +96,7 @@ struct Cli {
     verify_iters: Option<usize>,
 
     /// Number of top guides to print in summary table (default: 10)
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 11)]
     top: usize,
 
     /// Sample Strategy
@@ -389,7 +389,7 @@ fn run_guide_set_trials(
         let combined_nodes = trial_avg(&trials, |t| t.last().map(|i| i.egraph_nodes));
         if let (Some(avg_i), Some(avg_n)) = (combined_iters, combined_nodes) {
             tee_println!(
-                "Could reach with {k} guides: {avg_i:.1} ({avg_n:.0} nodes) (avg over {reached} in {} trials)",
+                "Could reach with {k} guides on average in {avg_i:.1} iterations and with {avg_n:.0} nodes (avg over {reached} in {} trials)",
                 trials.len()
             );
         } else {
