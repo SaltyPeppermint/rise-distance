@@ -1,4 +1,4 @@
-use crate::tree::FlatTree;
+use crate::tree::UnfoldedTree;
 
 use super::nodes::Label;
 
@@ -21,7 +21,7 @@ impl<'a, L: Label> PreprocessedTree<'a, L> {
     /// Create a preprocessed tree from a tree node.
     /// This performs a single postorder traversal to compute leftmost leaf descendants
     /// and keyroots.
-    pub fn new(root: &'a FlatTree<L>) -> Self {
+    pub fn new(root: &'a UnfoldedTree<L>) -> Self {
         let mut nodes = Vec::new();
 
         // Perform postorder traversal and compute leftmost leaf descendants
@@ -52,7 +52,10 @@ impl<'a, L: Label> PreprocessedTree<'a, L> {
         PreprocessedTree { nodes, keyroots }
     }
 
-    fn postorder_traverse(node: &'a FlatTree<L>, nodes: &mut Vec<PostorderNode<'a, L>>) -> usize {
+    fn postorder_traverse(
+        node: &'a UnfoldedTree<L>,
+        nodes: &mut Vec<PostorderNode<'a, L>>,
+    ) -> usize {
         // First, traverse all children
         let child_indices = node
             .children()
@@ -138,8 +141,8 @@ impl<L: Eq> EditCosts<L> for UnitCost {
 
 /// Compute the Zhang-Shasha tree edit distance between two trees.
 pub fn tree_distance<L: Label, C: EditCosts<L>>(
-    tree1: &FlatTree<L>,
-    tree2: &FlatTree<L>,
+    tree1: &UnfoldedTree<L>,
+    tree2: &UnfoldedTree<L>,
     costs: &C,
 ) -> usize {
     let t1 = PreprocessedTree::new(tree1);
@@ -149,7 +152,7 @@ pub fn tree_distance<L: Label, C: EditCosts<L>>(
 
 /// Compute distance with a pre-preprocessed reference tree.
 pub fn tree_distance_with_ref<L: Label, C: EditCosts<L>>(
-    candidate: &FlatTree<L>,
+    candidate: &UnfoldedTree<L>,
     reference: &PreprocessedTree<L>,
     costs: &C,
 ) -> usize {
@@ -258,7 +261,7 @@ fn compute_forest_distance<L: Label, C: EditCosts<L>>(
 }
 
 /// Compute tree edit distance with unit costs.
-pub fn tree_distance_unit<L: Label>(tree1: &FlatTree<L>, tree2: &FlatTree<L>) -> usize {
+pub fn tree_distance_unit<L: Label>(tree1: &UnfoldedTree<L>, tree2: &UnfoldedTree<L>) -> usize {
     tree_distance(tree1, tree2, &UnitCost)
 }
 

@@ -12,7 +12,7 @@
 
 use super::nodes::Label;
 use super::zs::EditCosts;
-use crate::tree::FlatTree;
+use crate::tree::UnfoldedTree;
 
 /// Euler string element - distinguishes entering vs leaving a node.
 ///
@@ -80,8 +80,8 @@ fn euler_string_edit_distance<L: Label, C: EditCosts<L>>(
 /// Returns `ceil(EDS(euler(t1), euler(t2)) / 2)` which is a valid lower bound
 /// on the tree edit distance between t1 and t2.
 pub fn tree_distance_euler_bound<L: Label, C: EditCosts<L>>(
-    t1: &FlatTree<L>,
-    t2: &FlatTree<L>,
+    t1: &UnfoldedTree<L>,
+    t2: &UnfoldedTree<L>,
     costs: &C,
 ) -> usize {
     EulerString::new(t1).lower_bound(t2, costs)
@@ -115,8 +115,8 @@ impl<'a, L: Label> EulerString<'a, L> {
     ///
     /// The Euler string records each node with Enter when entering the subtree
     /// and Leave when leaving. This gives a string of length 2n for a tree with n nodes.
-    pub fn new(tree: &'a FlatTree<L>) -> Self {
-        fn build<'b, LL: Label>(node: &'b FlatTree<LL>, out: &mut Vec<EulerSymbol<'b, LL>>) {
+    pub fn new(tree: &'a UnfoldedTree<L>) -> Self {
+        fn build<'b, LL: Label>(node: &'b UnfoldedTree<LL>, out: &mut Vec<EulerSymbol<'b, LL>>) {
             out.push(EulerSymbol::Enter(node.label()));
             for child in node.children() {
                 build(child, out);
@@ -129,7 +129,7 @@ impl<'a, L: Label> EulerString<'a, L> {
     }
 
     /// Compute a lower bound on tree edit distance to the given tree.
-    pub fn lower_bound<C: EditCosts<L>>(&self, tree: &'a FlatTree<L>, costs: &C) -> usize {
+    pub fn lower_bound<C: EditCosts<L>>(&self, tree: &'a UnfoldedTree<L>, costs: &C) -> usize {
         let other = Self::new(tree);
         let eds = euler_string_edit_distance(&self.string, &other.string, costs);
         eds.div_ceil(2)

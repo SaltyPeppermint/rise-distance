@@ -26,9 +26,9 @@ pub trait TreeShaped<L: Label>: Sized {
 
     fn ty(&self) -> Option<&Self>;
 
-    fn flatten(&self, with_types: bool) -> FlatTree<L> {
+    fn flatten(&self, with_types: bool) -> UnfoldedTree<L> {
         if !with_types {
-            return FlatTree {
+            return UnfoldedTree {
                 label: self.label().clone(),
                 children: self
                     .children()
@@ -38,10 +38,10 @@ pub trait TreeShaped<L: Label>: Sized {
             };
         }
         if let Some(ty) = &self.ty() {
-            FlatTree {
+            UnfoldedTree {
                 label: L::type_of(),
                 children: vec![
-                    FlatTree {
+                    UnfoldedTree {
                         label: self.label().clone(),
                         children: self
                             .children()
@@ -53,7 +53,7 @@ pub trait TreeShaped<L: Label>: Sized {
                 ],
             }
         } else {
-            FlatTree {
+            UnfoldedTree {
                 label: self.label().clone(),
                 children: self
                     .children()
@@ -472,15 +472,14 @@ impl<L: Label> From<OriginTree<L>> for Tree<L> {
     }
 }
 
-/// A node in a labeled, ordered tree.
 #[derive(Debug, Clone, std::hash::Hash, PartialEq, Eq)]
-pub struct FlatTree<L: Label> {
+pub struct UnfoldedTree<L: Label> {
     label: L,
-    children: Vec<FlatTree<L>>,
+    children: Vec<UnfoldedTree<L>>,
 }
 
-impl<L: Label> FlatTree<L> {
-    pub fn children(&self) -> &[FlatTree<L>] {
+impl<L: Label> UnfoldedTree<L> {
+    pub fn children(&self) -> &[UnfoldedTree<L>] {
         &self.children
     }
 
@@ -498,7 +497,7 @@ impl<L: Label> FlatTree<L> {
     }
 }
 
-impl<L: Label + Display> Display for FlatTree<L> {
+impl<L: Label + Display> Display for UnfoldedTree<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_leaf() {
             write!(f, "{}", self.label)
