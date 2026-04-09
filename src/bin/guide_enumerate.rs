@@ -241,7 +241,7 @@ fn eval_all(
         .map(|guide| GuideEval {
             guide,
             iterations: verify_reachability(
-                std::iter::once(&guide.guide),
+                std::slice::from_ref(&guide.guide),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
                 verify_iters,
@@ -322,7 +322,7 @@ fn top_k(
             .map(|k| k.guide.clone())
             .collect::<Vec<_>>();
         let data = verify_reachability(
-            top_guides.iter(),
+            &top_guides,
             go,
             RULES.get_or_init(math::rules),
             max_iters,
@@ -355,7 +355,7 @@ fn random_guide_sets(
                     .map(|v| v.guide.clone())
                     .collect::<Vec<_>>();
                 verify_reachability(
-                    subset.iter(),
+                    &subset,
                     go,
                     RULES.get_or_init(math::rules),
                     max_iters,

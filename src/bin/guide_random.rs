@@ -5,9 +5,6 @@ use std::path::Path;
 use clap::Parser;
 use egg::{Id, RecExpr};
 use hashbrown::HashSet;
-use rand::SeedableRng;
-use rand::seq::SliceRandom;
-use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
@@ -109,10 +106,6 @@ struct Cli {
     /// Use the experimental `add_with_full_union` for the new egraph
     #[arg(long)]
     full_union: bool,
-
-    /// Use the experimental `add_with_full_union` for the new egraph
-    #[arg(long, default_value_t = 42)]
-    rng_seed: u64,
 }
 
 const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
@@ -319,7 +312,7 @@ fn evaluate_goal(
         .map(|measured| GuideEval {
             guide: measured,
             iterations: verify_reachability(
-                std::iter::once(&measured.guide),
+                std::slice::from_ref(&measured.guide),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
                 verify_iters,
@@ -376,18 +369,14 @@ fn run_guide_set_trials(
     sampled_guides: &[OriginTree<MathLabel>],
 ) -> TrialsPerK {
     assert!(sampled_guides.len() >= MAX_TRIAL_SIZE);
-    let rng = ChaCha12Rng::seed_from_u64(cli.rng_seed);
     let mut entries = TrialsPerK::default();
     for k in TRIAL_SIZE {
-        let trials = (0..100)
-            .into_par_iter()
-            .map(|i| {
-                let mut rng = rng.clone();
-                rng.set_stream(i);
-                let guides = sampled_guides.choose_multiple(&mut rng, k);
-                // dbg!(&guides.len());
+        let trials = sampled_guides
+            .par_chunks_exact(MAX_TRIAL_SIZE)
+            .take(100)
+            .map(|subset| {
                 verify_reachability(
-                    guides.into_iter(),
+                    &subset[..k],
                     goal_recexpr,
                     RULES.get_or_init(math::rules),
                     cli.goal_iters,
@@ -395,19 +384,6 @@ fn run_guide_set_trials(
                 )
             })
             .collect::<Vec<_>>();
-        // let trials = sampled_guides
-        //     .par_chunks_exact(k)
-        //     .take(100)
-        //     .map(|guides_here| {
-        //         verify_reachability(
-        //             guides_here.iter(),
-        //             goal_recexpr,
-        //             RULES.get_or_init(math::rules),
-        //             cli.goal_iters,
-        //             cli.full_union,
-        //         )
-        //     })
-        //     .collect::<Vec<_>>();
 
         let reached = trials.iter().filter(|v| v.is_some()).count();
         tee_println!("{reached} out of {} reached the goal", trials.len());
