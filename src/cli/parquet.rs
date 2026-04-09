@@ -23,7 +23,7 @@ pub fn dump_to_parquet<L: Label>(
     run_folder: &Path,
     seed: &str,
     goal: &OriginTree<L>,
-    results: &[GuideEval<'_, L>],
+    results: &[GuideEval<L>],
 ) {
     let out_dir = run_folder.join("out");
     std::fs::create_dir_all(&out_dir).expect("create out/ directory");

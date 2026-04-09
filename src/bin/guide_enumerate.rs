@@ -181,7 +181,7 @@ fn main() {
         );
         tee_println!("{goal}\n");
 
-        let mut ranked = measure_guides(&guides, goal);
+        let mut ranked = measure_guides(&guides, goal).collect::<Vec<_>>();
 
         let timer = Instant::now();
 
@@ -236,12 +236,12 @@ fn eval_all(
         ranked.len(),
     );
     let results = ranked
-        .par_iter()
+        .into_par_iter()
         .progress_with_style(pb_style)
-        .map(|guide| GuideEval {
-            guide,
+        .map(|measured_guide| GuideEval {
+            guide: measured_guide.clone(),
             iterations: verify_reachability(
-                std::slice::from_ref(&guide.guide),
+                std::slice::from_ref(&measured_guide.guide),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
                 verify_iters,

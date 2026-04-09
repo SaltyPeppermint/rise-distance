@@ -6,12 +6,12 @@ use crate::tree::OriginTree;
 use crate::{Label, StructuralDistance};
 
 #[derive(Serialize, Debug)]
-pub struct GuideEval<'a, L: Label> {
-    pub guide: &'a MeasuredGuide<L>,
+pub struct GuideEval<L: Label> {
+    pub guide: MeasuredGuide<L>,
     pub iterations: Option<Vec<Iteration<()>>>,
 }
 
-#[derive(Serialize, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Debug, PartialEq, Eq, Hash, Clone)]
 pub struct MeasuredGuide<L: Label> {
     pub guide: OriginTree<L>,
     pub zs_distance: usize,

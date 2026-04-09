@@ -69,7 +69,7 @@ pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T
 pub fn measure_guides<L: Label>(
     guides: &[OriginTree<L>],
     goal: &OriginTree<L>,
-) -> Vec<MeasuredGuide<L>> {
+) -> impl ParallelIterator<Item = MeasuredGuide<L>> {
     let goal_flat = goal.flatten(false);
     #[expect(clippy::missing_panics_doc)]
     let pb_style = ProgressStyle::with_template(
@@ -79,7 +79,7 @@ pub fn measure_guides<L: Label>(
     guides
         .par_iter()
         .progress_with_style(pb_style)
-        .map(|guide| {
+        .map(move |guide| {
             let guide_flat = guide.flatten(false);
             let zs_dist = tree_distance_unit(&guide_flat, &goal_flat);
             let structural_dist = structural_diff(&goal_flat, &guide_flat, &UnitCost);
@@ -89,10 +89,23 @@ pub fn measure_guides<L: Label>(
                 structural_distance: structural_dist,
             }
         })
-        .collect()
 }
 
-const CUTOFF: usize = 1_000_000;
+const OVERSAMPLE_START: usize = 20;
+
+const OVERSAMPLE_CUTOFF: usize = 1_000_000;
+
+const OVERSAMPLE_SCHEDULE: [usize; 16] = {
+    let mut arr = [0usize; 16];
+    let mut v = OVERSAMPLE_START;
+    let mut i = 0;
+    while v < OVERSAMPLE_CUTOFF {
+        arr[i] = v;
+        i += 1;
+        v *= 2;
+    }
+    arr
+};
 
 /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
 pub fn sample_frontier_terms<L, N, LL>(
@@ -104,8 +117,10 @@ pub fn sample_frontier_terms<L, N, LL>(
     sample_strategy: SampleStrategy,
 ) -> Option<Vec<OriginTree<LL>>>
 where
-    L: Language,
-    N: Analysis<L>,
+    L: Language + Sync,
+    L::Discriminant: Sync,
+    N: Analysis<L> + Sync,
+    N::Data: Sync,
     LL: Label,
     OriginTree<LL>: ToEgg<LL, Lang = L>,
 {
@@ -123,10 +138,7 @@ where
     }
 
     let min_size = histogram.keys().min().copied().unwrap_or(1);
-    let mut result = HashSet::new();
-    let mut oversample = 5;
-
-    loop {
+    OVERSAMPLE_SCHEDULE.iter().find_map(|oversample| {
         let samples_per_size =
             distribution.samples_per_size(histogram, min_size, max_size, count * oversample);
         let batch = match sample_strategy {
@@ -146,21 +158,20 @@ where
             }
         };
 
-        result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
-        if result.len() >= count {
-            break;
+        let results = batch
+            .into_par_iter()
+            .filter(|t| is_frontier(t, prev_raw_egg))
+            .collect::<HashSet<_>>();
+        if results.len() >= count {
+            Some(results.into_iter().take(count).collect())
+        } else {
+            tee_println!(
+                "Have {}/{count} frontier terms with {oversample}x oversampling, retrying with double that...",
+                results.len()
+            );
+            None
         }
-        // None out if overflow
-        oversample = oversample.checked_mul(2)?;
-        if oversample >= CUTOFF {
-            return None;
-        }
-        tee_println!(
-            "Have {}/{count} frontier terms, retrying with {oversample}x oversample...",
-            result.len()
-        );
-    }
-    Some(result.into_iter().take(count).collect())
+    })
 }
 
 /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg`.

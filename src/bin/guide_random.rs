@@ -4,7 +4,6 @@ use std::path::Path;
 
 use clap::Parser;
 use egg::{Id, RecExpr};
-use hashbrown::HashSet;
 use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
@@ -304,20 +303,19 @@ fn evaluate_goal(
         runs,
     };
 
-    let measured = measure_guides(&sampled_guides, goal)
-        .into_iter()
-        .collect::<HashSet<_>>();
-    let results = measured
-        .par_iter()
-        .map(|measured| GuideEval {
-            guide: measured,
-            iterations: verify_reachability(
-                std::slice::from_ref(&measured.guide),
+    let results = measure_guides(&sampled_guides, goal)
+        .map(|measured_guide| {
+            let iterations = verify_reachability(
+                std::slice::from_ref(&measured_guide.guide),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
                 verify_iters,
                 cli.full_union,
-            ),
+            );
+            GuideEval {
+                guide: measured_guide,
+                iterations,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -369,8 +367,7 @@ fn run_guide_set_trials(
     sampled_guides: &[OriginTree<MathLabel>],
 ) -> TrialsPerK {
     assert!(sampled_guides.len() >= MAX_TRIAL_SIZE);
-    let mut entries = TrialsPerK::default();
-    for k in TRIAL_SIZE {
+    TRIAL_SIZE.into_iter().map(|k| {
         let trials = sampled_guides
             .par_chunks_exact(MAX_TRIAL_SIZE)
             .take(100)
@@ -397,10 +394,8 @@ fn run_guide_set_trials(
         } else {
             tee_println!("Could NOT reach with {k} guides");
         }
-
-        entries.insert(k, trials);
-    }
-    entries
+        (k, trials)
+    }).collect()
 }
 
 #[derive(Serialize)]

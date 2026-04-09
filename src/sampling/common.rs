@@ -33,9 +33,10 @@ pub(super) fn sample_batch<S: Sampler>(
     samples_per_size
         .par_iter()
         .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
-        .flat_map_iter(|(size, samples)| {
-            let mut rng = ChaCha12Rng::seed_from_u64(*size as u64);
-            (0..*samples).map(move |sample| {
+        .flat_map(|(size, samples)| {
+            let base_rng = ChaCha12Rng::seed_from_u64(*size as u64);
+            (0..*samples).into_par_iter().map(move |sample| {
+                let mut rng = base_rng.clone();
                 rng.set_stream(sample);
                 sampler.sample(id, *size, &mut rng)
             })
