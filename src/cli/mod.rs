@@ -92,7 +92,7 @@ pub fn measure_guides<L: Label>(
         .collect()
 }
 
-// const CUTOFF: usize = 1_000_000_000;
+const CUTOFF: usize = 1_000_000;
 
 /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
 pub fn sample_frontier_terms<L, N, LL>(
@@ -152,6 +152,9 @@ where
         }
         // None out if overflow
         oversample = oversample.checked_mul(2)?;
+        if oversample >= CUTOFF {
+            return None;
+        }
         tee_println!(
             "Have {}/{count} frontier terms, retrying with {oversample}x oversample...",
             result.len()
