@@ -148,7 +148,8 @@ fn main() {
         cli.max_size,
         cli.size_distribution,
         cli.sample_strategy,
-    );
+    )
+    .unwrap();
     assert!(
         !goals.is_empty(),
         "No frontier terms found. Try more iterations or a larger max-size.",

@@ -92,6 +92,8 @@ pub fn measure_guides<L: Label>(
         .collect()
 }
 
+// const CUTOFF: usize = 1_000_000_000;
+
 /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
 pub fn sample_frontier_terms<L, N, LL>(
     graph: &Graph<LL>,
@@ -100,7 +102,7 @@ pub fn sample_frontier_terms<L, N, LL>(
     max_size: usize,
     distribution: TermSampleDist,
     sample_strategy: SampleStrategy,
-) -> Vec<OriginTree<LL>>
+) -> Option<Vec<OriginTree<LL>>>
 where
     L: Language,
     N: Analysis<L>,
@@ -110,7 +112,7 @@ where
     let tc = TermCount::<BigUint>::new(max_size, false, graph);
 
     let Some(histogram) = tc.data.get(&graph.root()) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
@@ -123,6 +125,7 @@ where
     let min_size = histogram.keys().min().copied().unwrap_or(1);
     let mut result = HashSet::new();
     let mut oversample = 5;
+
     loop {
         let samples_per_size =
             distribution.samples_per_size(histogram, min_size, max_size, count * oversample);
@@ -143,18 +146,18 @@ where
             }
         };
 
-        let prev_len = result.len();
         result.extend(batch.into_iter().filter(|t| is_frontier(t, prev_raw_egg)));
-        if result.len() >= count || result.len() == prev_len {
+        if result.len() >= count {
             break;
         }
-        oversample *= 2;
+        // None out if overflow
+        oversample = oversample.checked_mul(2)?;
         tee_println!(
             "Have {}/{count} frontier terms, retrying with {oversample}x oversample...",
             result.len()
         );
     }
-    result.into_iter().take(count).collect()
+    Some(result.into_iter().take(count).collect())
 }
 
 /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg`.

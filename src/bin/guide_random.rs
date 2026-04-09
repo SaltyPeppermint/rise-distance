@@ -115,7 +115,7 @@ struct Cli {
     rng_seed: u64,
 }
 
-// const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
+const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
 
 #[allow(clippy::too_many_lines)]
 fn main() {
@@ -237,7 +237,7 @@ fn process_seed(
         max_size,
         cli.size_distribution,
         cli.goal_sample_strategy,
-    );
+    )?;
     if goals.is_empty() {
         tee_println!(
             "WARNING: Frontier empty for seed '{seed_str}'. Skipping. Try more iterations or a larger max-size."
@@ -274,7 +274,7 @@ fn process_seed(
             max_size,
             verify_iters,
             run_folder,
-        );
+        )?;
         goal_results.push(goal_result);
         goal_stats.push(goal_stat);
     }
@@ -292,7 +292,7 @@ fn evaluate_goal(
     max_size: usize,
     verify_iters: usize,
     run_folder: &Path,
-) -> (GoalResults, serde_json::Value) {
+) -> Option<(GoalResults, serde_json::Value)> {
     let goal_recexpr = goal.to_rec_expr();
 
     let sampled_guides = sample_frontier_terms(
@@ -302,7 +302,7 @@ fn evaluate_goal(
         max_size,
         cli.size_distribution,
         cli.guide_sample_strategy,
-    );
+    )?;
 
     let runs = run_guide_set_trials(cli, &goal_recexpr, &sampled_guides);
     let goal_results = GoalResults {
@@ -333,7 +333,7 @@ fn evaluate_goal(
         dump_to_parquet(run_folder, seed_str, goal, &results);
     }
 
-    (goal_results, stat)
+    Some((goal_results, stat))
 }
 
 fn write_outputs(
@@ -375,6 +375,7 @@ fn run_guide_set_trials(
     goal_recexpr: &RecExpr<Math>,
     sampled_guides: &[OriginTree<MathLabel>],
 ) -> TrialsPerK {
+    assert!(sampled_guides.len() >= MAX_TRIAL_SIZE);
     let rng = ChaCha12Rng::seed_from_u64(cli.rng_seed);
     let mut entries = TrialsPerK::default();
     for k in TRIAL_SIZE {
@@ -383,8 +384,10 @@ fn run_guide_set_trials(
             .map(|i| {
                 let mut rng = rng.clone();
                 rng.set_stream(i);
+                let guides = sampled_guides.choose_multiple(&mut rng, k);
+                // dbg!(&guides.len());
                 verify_reachability(
-                    sampled_guides.choose_multiple(&mut rng, k),
+                    guides.into_iter(),
                     goal_recexpr,
                     RULES.get_or_init(math::rules),
                     cli.goal_iters,
