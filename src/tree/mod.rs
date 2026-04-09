@@ -16,8 +16,6 @@ pub trait TreeShaped<L: Label>: Sized {
 
     fn children(&self) -> &[Self];
 
-    fn children_mut(&mut self) -> &mut Vec<Self>;
-
     fn label(&self) -> &L;
 
     fn ty(&self) -> Option<&Self>;

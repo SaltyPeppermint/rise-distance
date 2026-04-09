@@ -120,10 +120,6 @@ impl<L: Label> TreeShaped<L> for Tree<L> {
         &self.children
     }
 
-    fn children_mut(&mut self) -> &mut Vec<Self> {
-        &mut self.children
-    }
-
     fn label(&self) -> &L {
         &self.label
     }
