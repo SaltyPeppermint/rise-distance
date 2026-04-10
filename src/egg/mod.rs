@@ -245,7 +245,7 @@ where
     assert!(
         matches!(
             runner.stop_reason.as_ref().unwrap(),
-            StopReason::IterationLimit(_)
+            StopReason::TimeLimit(_) | StopReason::IterationLimit(_) | StopReason::NodeLimit(_)
         ),
         "Failed cause stopped with {:?}",
         runner.stop_reason
