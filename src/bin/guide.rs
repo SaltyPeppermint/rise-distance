@@ -59,8 +59,8 @@ struct Cli {
     node_limit: usize,
 
     /// Time limit for the baseline egraph in seconds
-    #[arg(long, default_value = "0.2", value_parser = parse_duration)]
-    time_limit: Duration,
+    #[arg(long, default_value_t = 0.2)]
+    time_limit: f64,
 
     /// Number of guide candidates to sample from the n-1 frontier
     #[arg(short, long)]
@@ -111,10 +111,7 @@ fn main() {
     let cli = Cli::parse();
     let prefix = format!(
         "{}-{}-{}-fullunion-{}",
-        cli.node_limit,
-        cli.time_limit.as_secs_f64(),
-        cli.guide_sample_strategy,
-        cli.full_union
+        cli.node_limit, cli.time_limit, cli.guide_sample_strategy, cli.full_union
     );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
@@ -188,7 +185,7 @@ fn process_seed(
     let result = run_guide_goal(
         seed_expr,
         RULES.get_or_init(math::rules),
-        cli.time_limit,
+        Duration::from_secs_f64(cli.time_limit),
         cli.node_limit,
     )?;
 
@@ -295,7 +292,7 @@ fn evaluate_goal(
                 std::slice::from_ref(&measured_guide.guide),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
-                cli.time_limit,
+                Duration::from_secs_f64(cli.time_limit),
                 cli.node_limit,
                 cli.full_union,
             );
@@ -365,7 +362,7 @@ fn run_guide_set_trials(
                         &subset[..k],
                         goal_recexpr,
                         RULES.get_or_init(math::rules),
-                        cli.time_limit,
+                        Duration::from_secs_f64(cli.time_limit),
                         cli.node_limit,
                         cli.full_union,
                     )
@@ -460,9 +457,4 @@ fn print_summary(
     stat["iterations_to_reach"] = json!({"min": min, "median": med, "max": max});
 
     stat
-}
-
-fn parse_duration(s: &str) -> Result<Duration, String> {
-    let secs: u64 = s.parse().map_err(|e| format!("invalid duration: {e}"))?;
-    Ok(Duration::from_secs(secs))
 }
