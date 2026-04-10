@@ -131,9 +131,9 @@ fn parquet_schema() -> Arc<Schema> {
         Field::new("seed", DataType::Utf8, false),
         Field::new("goal", DataType::Utf8, false),
         Field::new("guide", DataType::Utf8, false),
-        Field::new("zs_distance", DataType::UInt64, false),
-        Field::new("structural_overlap", DataType::UInt64, false),
-        Field::new("structural_zs_sum", DataType::UInt64, false),
+        Field::new("zs_distance", DataType::UInt64, true),
+        Field::new("structural_overlap", DataType::UInt64, true),
+        Field::new("structural_zs_sum", DataType::UInt64, true),
         Field::new("iterations_to_reach", DataType::UInt64, true),
         Field::new("ms_to_reach", DataType::Float64, true),
         Field::new(
