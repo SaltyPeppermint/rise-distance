@@ -65,15 +65,22 @@ pub fn dump_to_parquet<L: Label>(
         seeds.append_value(seed);
         goals.append_value(&goal_str);
         guides.append_value(r.guide.to_string());
-        if let Some(m) = &r.measurements {
-            zs_distances.append_value(m.zs_distance.try_into().unwrap());
-            structural_overlaps.append_value(m.structural_distance.overlap().try_into().unwrap());
-            structural_zs_sums.append_value(m.structural_distance.zs_sum().try_into().unwrap());
-        } else {
-            zs_distances.append_null();
-            structural_overlaps.append_null();
-            structural_zs_sums.append_null();
-        }
+
+        zs_distances.append_value(r.measurements.zs_distance.try_into().unwrap());
+        structural_overlaps.append_value(
+            r.measurements
+                .structural_distance
+                .overlap()
+                .try_into()
+                .unwrap(),
+        );
+        structural_zs_sums.append_value(
+            r.measurements
+                .structural_distance
+                .zs_sum()
+                .try_into()
+                .unwrap(),
+        );
 
         if let Some(iters) = &r.iterations {
             iterations_to_reach.append_value(iters.len().try_into().unwrap());
@@ -132,9 +139,9 @@ fn parquet_schema() -> Arc<Schema> {
         Field::new("goal", DataType::Utf8, false),
         Field::new("guide", DataType::Utf8, false),
         Field::new("zs_distance", DataType::UInt64, true),
-        Field::new("structural_overlap", DataType::UInt64, true),
-        Field::new("structural_zs_sum", DataType::UInt64, true),
-        Field::new("iterations_to_reach", DataType::UInt64, true),
+        Field::new("structural_overlap", DataType::UInt64, false),
+        Field::new("structural_zs_sum", DataType::UInt64, false),
+        Field::new("iterations_to_reach", DataType::UInt64, false),
         Field::new("ms_to_reach", DataType::Float64, true),
         Field::new(
             "nodes_to_reach",

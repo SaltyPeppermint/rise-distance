@@ -8,7 +8,7 @@ use crate::{Label, StructuralDistance};
 #[derive(Serialize, Debug)]
 pub struct GuideEval<L: Label> {
     pub guide: OriginTree<L>,
-    pub measurements: Option<Measurements>,
+    pub measurements: Measurements,
     pub iterations: Option<Vec<Iteration<()>>>,
 }
 

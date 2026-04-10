@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
-use egg::{Id, RecExpr};
+use egg::RecExpr;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::prelude::*;
 use serde::Serialize;
@@ -17,10 +17,8 @@ use rise_distance::cli::{
     RULES, TRIAL_SIZE, get_run_folder, init_log, measure_guide, min_med_max, sample_frontier_terms,
     trial_avg,
 };
-use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
-use rise_distance::egg::{
-    GuideGoalResult, ToEgg, convert, run_guide_goal, stop_reason_str, verify_reachability,
-};
+use rise_distance::egg::math::{self, Math, MathLabel};
+use rise_distance::egg::{ToEgg, convert, run_guide_goal, stop_reason_str, verify_reachability};
 use rise_distance::{OriginTree, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
@@ -113,7 +111,6 @@ struct Cli {
 
 const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
 
-#[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
     let prefix = format!(
@@ -122,8 +119,6 @@ fn main() {
     );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
-
-    // let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
 
     // Build the list of (seed_str, parsed_expr, max_size) to process.
     let seed_input = match (&cli.seed, &cli.seed_csv) {
@@ -163,18 +158,20 @@ fn main() {
     tee_println!("Seeds to process: {}", seeds.len());
 
     let mut all_results: Vec<GoalResults> = Vec::new();
-    let mut all_goal_stats: Vec<serde_json::Value> = Vec::new();
+    let mut all_stats: Vec<serde_json::Value> = Vec::new();
 
     for (seed_str, seed_expr, max_size) in &seeds {
         if let Some((results, stats)) =
             process_seed(&cli, seed_str, seed_expr, *max_size, &run_folder)
         {
+            all_stats.push(stats);
             all_results.extend(results);
-            all_goal_stats.push(stats);
         }
     }
 
-    write_outputs(&run_folder, &all_results, &cli, &all_goal_stats);
+    write_top_k_outputs(&run_folder, &all_results);
+    write_config(&run_folder, &cli);
+    write_stats(&run_folder, &all_stats);
 }
 
 /// Run eqsat for one seed, sample goals, evaluate each goal, and return the
@@ -209,17 +206,15 @@ fn process_seed(
 
     let guide_nodes = result.guide().total_number_of_nodes();
     let guide_classes = result.guide().classes().len();
+    let guide_iters = result.guide_iters();
     let goal_nodes = result.goal().total_number_of_nodes();
     let goal_classes = result.goal().classes().len();
+    let goal_iters = result.goal_iters();
     tee_println!(
         "Guide egraph had {guide_nodes} nodes, {guide_classes} classes in {guide_secs:.2}s"
     );
     tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
-
-    tee_println!(
-        "\nSampling goals from iteration-{} frontier...",
-        result.goal_iters()
-    );
+    tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
 
     let root = result.root();
     let goals = sample_frontier_terms(
@@ -237,13 +232,9 @@ fn process_seed(
         return None;
     }
     tee_println!("Sampled {} goal(s)", goals.len());
+    tee_println!("\nGetting guides from iteration-{guide_iters} frontier...",);
 
-    tee_println!(
-        "\nGetting guides from iteration-{} frontier...",
-        result.guide_iters()
-    );
-
-    let run_stats = json!({
+    let mut stats = json!({
         "seed": seed_str,
         "max_size": max_size,
         "guide_egraph_iters": result.goal_iters(),
@@ -256,30 +247,6 @@ fn process_seed(
         "goal_eqsat_time": goal_secs,
     });
 
-    let mut goal_results = Vec::new();
-    let mut goal_stats = Vec::new();
-    for goal in &goals {
-        let (goal_result, goal_stat) =
-            evaluate_goal(cli, &result, root, goal, seed_str, max_size, run_folder)?;
-        goal_results.push(goal_result);
-        goal_stats.push(goal_stat);
-    }
-    let full_stats = json!({"run_stats": run_stats, "goal_stats": goal_stats});
-    Some((goal_results, full_stats))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn evaluate_goal(
-    cli: &Cli,
-    result: &GuideGoalResult<Math, ConstantFold>,
-    root: Id,
-    goal: &OriginTree<MathLabel>,
-    seed_str: &str,
-    max_size: usize,
-    run_folder: &Path,
-) -> Option<(GoalResults, serde_json::Value)> {
-    let goal_recexpr = goal.to_rec_expr();
-
     let sampled_guides = sample_frontier_terms(
         &convert(result.guide(), root),
         result.prev_guide(),
@@ -289,13 +256,53 @@ fn evaluate_goal(
         cli.guide_sample_strategy,
     )?;
 
-    let runs = run_guide_set_trials(cli, &goal_recexpr, &sampled_guides);
-    let goal_results = GoalResults {
-        seed: seed_str.to_owned(),
-        goal: goal.to_string(),
-        runs,
-    };
+    let goal_results = goals
+        .iter()
+        .map(|goal| GoalResults {
+            seed: seed_str.to_owned(),
+            goal: goal.to_string(),
+            runs: run_guide_set_trials(cli, &goal.to_rec_expr(), &sampled_guides),
+        })
+        .collect();
+    if cli.eval_all {
+        let big_stats = goals
+            .iter()
+            .map(|goal| {
+                eval_all_fn(
+                    cli,
+                    goal,
+                    seed_str,
+                    run_folder,
+                    goal.to_rec_expr(),
+                    &sampled_guides,
+                )
+            })
+            .collect::<Vec<_>>();
+        stats["all_eval_stats"] = big_stats.into();
+    }
+    Some((goal_results, stats))
+}
 
+// #[allow(clippy::too_many_arguments)]
+// fn evaluate_goal(
+//     cli: &Cli,
+//     result: &GuideGoalResult<Math, ConstantFold>,
+//     root: Id,
+//     goal: &OriginTree<MathLabel>,
+//     seed_str: &str,
+//     max_size: usize,
+// ) -> Option<GoalResults> {
+//     let goal_recexpr = goal.to_rec_expr();
+// }
+
+fn eval_all_fn(
+    cli: &Cli,
+    goal: &OriginTree<MathLabel>,
+    seed_str: &str,
+    run_folder: &Path,
+    goal_recexpr: RecExpr<Math>,
+    sampled_guides: &[OriginTree<MathLabel>],
+) -> serde_json::Value {
     let pb_style = ProgressStyle::with_template(
         "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
     )
@@ -305,9 +312,9 @@ fn evaluate_goal(
         .into_par_iter()
         .progress_with_style(pb_style)
         .map(move |guide| {
-            let m = cli.measure.then(|| measure_guide(&guide, &goal_flat));
+            let measurements = measure_guide(guide, &goal_flat);
             let iterations = verify_reachability(
-                std::slice::from_ref(&guide),
+                std::slice::from_ref(guide),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
                 Duration::from_secs_f64(cli.time_limit),
@@ -315,27 +322,18 @@ fn evaluate_goal(
                 cli.full_union,
             );
             GuideEval {
-                guide,
-                measurements: m,
+                guide: guide.clone(),
+                measurements,
                 iterations,
             }
         })
         .collect::<Vec<_>>();
-
     let stat = print_summary(&results, goal);
-    if cli.eval_all {
-        dump_to_parquet(run_folder, seed_str, goal, &results);
-    }
-
-    Some((goal_results, stat))
+    dump_to_parquet(run_folder, seed_str, goal, &results);
+    stat
 }
 
-fn write_outputs(
-    run_folder: &Path,
-    all_results: &[GoalResults],
-    cli: &Cli,
-    stats: &[serde_json::Value],
-) {
+fn write_top_k_outputs(run_folder: &Path, all_results: &[GoalResults]) {
     let output_path = run_folder.join("top_k.json");
     let output_file = File::create(output_path).expect("Failed to create output json file");
     let mut output_writer = BufWriter::new(output_file);
@@ -352,12 +350,15 @@ fn write_outputs(
 
     let parquet_path = run_folder.join("top_k_summary.parquet");
     dump_goal_summary_parquet(&parquet_path, &summaries);
+}
 
+fn write_config(run_folder: &Path, cli: &Cli) {
     let config_path = run_folder.join("config.json");
     let config_file = File::create(config_path).expect("Failed to create output config.json file");
     let config_writer = BufWriter::new(config_file);
     serde_json::to_writer_pretty(config_writer, &cli).unwrap();
-
+}
+fn write_stats(run_folder: &Path, stats: &[serde_json::Value]) {
     let stats_path = run_folder.join("stats.json");
     let stats_file = File::create(&stats_path).expect("Failed to create stats.json");
     let stats_writer = BufWriter::new(stats_file);
@@ -453,32 +454,26 @@ fn print_summary(
         return stat;
     }
 
+    let (min, med, max) = min_med_max(&successful, |r| r.measurements.zs_distance);
+    tee_println!(
+        "  {:<30} min={min}, median={med}, max={max}",
+        "Successful guide zs_dists:"
+    );
+    stat["zs_distance"] = json!({"min": min, "median": med, "max": max});
+
+    let (min, med, max) = min_med_max(&successful, |r| r.measurements.structural_distance);
+    tee_println!(
+        "  {:<30} min={min}, median={med}, max={max}",
+        "Successful guide struct_dist:"
+    );
+    stat["structural_distance"] = json!({"min": min, "median": med, "max": max});
+
     let (min, med, max) = min_med_max(&successful, |v| v.iterations.as_ref().unwrap().len());
     tee_println!(
         "  {:<30} min={min}, median={med}, max={max}",
         "Iterations to reach:"
     );
     stat["iterations_to_reach"] = json!({"min": min, "median": med, "max": max});
-
-    if let Some(measurements) = successful
-        .iter()
-        .map(|g| g.measurements.as_ref())
-        .collect::<Option<Vec<_>>>()
-    {
-        let (min, med, max) = min_med_max(&measurements, |m| m.zs_distance);
-        tee_println!(
-            "  {:<30} min={min}, median={med}, max={max}",
-            "Successful guide zs_dists:"
-        );
-        stat["zs_distance"] = json!({"min": min, "median": med, "max": max});
-
-        let (min, med, max) = min_med_max(&measurements, |m| m.structural_distance);
-        tee_println!(
-            "  {:<30} min={min}, median={med}, max={max}",
-            "Successful guide struct_dist:"
-        );
-        stat["structural_distance"] = json!({"min": min, "median": med, "max": max});
-    }
 
     stat
 }
