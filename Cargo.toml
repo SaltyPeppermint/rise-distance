@@ -16,6 +16,7 @@ parquet = { version = "58", features = ["arrow"] }
 dashmap = "6"
 egg = { version = "0.11", features = ["serde-1"] }
 env_logger = "0.11"
+foldhash = "0.2"
 hashbrown = { version = "0.16", features = ["rayon", "serde"] }
 indexmap = { version = "2", features = ["serde"] }
 indicatif = { version = "0.18", features = ["rayon"] }
@@ -80,12 +81,8 @@ name = "distance"
 path = "src/bin/distance.rs"
 
 [[bin]]
-name = "guide-enumerate"
-path = "src/bin/guide_enumerate.rs"
-
-[[bin]]
-name = "guide-random"
-path = "src/bin/guide_random.rs"
+name = "guide"
+path = "src/bin/guide.rs"
 
 [[bin]]
 name = "generate"

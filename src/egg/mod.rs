@@ -1,6 +1,7 @@
 pub mod math;
 
 use std::fmt::Display;
+use std::time::Duration;
 
 use egg::{
     Analysis, EGraph, Id, Iteration, IterationData, Language, RecExpr, Rewrite, Runner,
@@ -11,7 +12,7 @@ use hashbrown::{HashMap, HashSet};
 use crate::ids::{AnyId, EClassId, ExprChildId};
 use crate::nodes::ENode;
 use crate::tree::TreeShaped;
-use crate::{Class, Graph, Label, OriginTree};
+use crate::{Class, Graph, Label, OriginTree, tee_println};
 
 pub use math::{Math, MathLabel};
 
@@ -28,7 +29,9 @@ where
     /// Root (valid for all egraphs)
     root: Id,
     /// Guide Iteration
-    guide_iteration: usize,
+    guide_iters: usize,
+    /// Goal Iterations
+    goal_iters: usize,
 }
 
 impl<L, N> GuideGoalResult<L, N>
@@ -44,22 +47,27 @@ where
 
     #[must_use]
     pub fn guide(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.guide_iteration].data.0
-    }
-
-    #[must_use]
-    pub fn guide_data(&self) -> &[Iteration<EGraphHolder<L, N>>] {
-        &self.iter_data[..self.guide_iteration]
+        &self.iter_data[self.guide_iters].data.0
     }
 
     #[must_use]
     pub fn prev_guide(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.guide_iteration - 1].data.0
+        &self.iter_data[self.guide_iters - 1].data.0
+    }
+
+    #[must_use]
+    pub fn guide_data(&self) -> &[Iteration<EGraphHolder<L, N>>] {
+        &self.iter_data[..self.guide_iters]
     }
 
     #[must_use]
     pub fn goal(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.iter_data.len() - 1].data.0
+        &self.iter_data[self.goal_iters].data.0
+    }
+
+    #[must_use]
+    pub fn prev_goal(&self) -> &EGraph<L, N> {
+        &self.iter_data[self.goal_iters - 1].data.0
     }
 
     #[must_use]
@@ -68,8 +76,13 @@ where
     }
 
     #[must_use]
-    pub fn prev_goal(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.iter_data.len() - 2].data.0
+    pub fn guide_iters(&self) -> usize {
+        self.guide_iters
+    }
+
+    #[must_use]
+    pub fn goal_iters(&self) -> usize {
+        self.goal_iters
     }
 }
 
@@ -213,22 +226,19 @@ where
 pub fn run_guide_goal<'a, L, N, R>(
     start: &RecExpr<L>,
     rules: R,
-    n_guide: usize,
-    n_goal: usize,
-) -> GuideGoalResult<L, N>
+    time_limit: Duration,
+    node_limit: usize,
+) -> Option<GuideGoalResult<L, N>>
 where
     L: Language + 'static,
     N: Analysis<L> + Default + Clone + 'static,
     N::Data: Clone,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
-    assert!(n_guide > 0);
-    assert!(n_goal > n_guide);
-    assert!(n_goal >= 3, "Needs 3 or more iterations to be meaningful");
-
     let runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
         .with_scheduler(SimpleScheduler)
-        .with_iter_limit(n_goal)
+        .with_time_limit(time_limit)
+        .with_node_limit(node_limit)
         .with_expr(start)
         .run(rules);
 
@@ -244,15 +254,24 @@ where
     let root = runner.roots[0];
     let mut iter_data = runner.iterations;
 
+    if iter_data.len() < 3 {
+        tee_println!("Not enough iterations!");
+        return None;
+    }
+
+    let goal_iters = iter_data.len() - 1;
+    let guide_iters = goal_iters / 2;
+
     for i in &mut iter_data {
         i.data.0.rebuild();
     }
 
-    GuideGoalResult {
+    Some(GuideGoalResult {
         iter_data,
         root,
-        guide_iteration: n_guide,
-    }
+        guide_iters,
+        goal_iters,
+    })
 }
 
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
@@ -265,7 +284,8 @@ pub fn verify_reachability<L, N, LL>(
     guides: &[OriginTree<LL>],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
-    max_iters: usize,
+    time_limit: Duration,
+    node_limit: usize,
     full_union: bool,
 ) -> Option<Vec<egg::Iteration<()>>>
 where
@@ -279,7 +299,8 @@ where
 
     let mut runner = Runner::default()
         .with_scheduler(SimpleScheduler)
-        .with_iter_limit(max_iters)
+        .with_time_limit(time_limit)
+        .with_node_limit(node_limit)
         .with_hook(move |runner| {
             if runner.egraph.lookup_expr(&goal_clone).is_some() {
                 return Err("goal found".to_owned());

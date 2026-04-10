@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::BufWriter;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::Parser;
 use egg::{Id, RecExpr};
@@ -25,22 +26,22 @@ use rise_distance::{OriginTree, TreeShaped, tee_println};
     after_help = "\
 Examples:
   # Basic evaluation with 100 random guides, single seed
-  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 5 -i 4 -g 100
+  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100
 
   # Sample 5 goals and 100 guides
-  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 8 -i 3 -g 100 --goals 5
+  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --goals 5
 
   # Loop over many seeds from a CSV (size,term columns; size drives max-size)
-  guide-random --seed-csv seeds.csv -n 5 -i 4 -g 100
+  guide --seed-csv seeds.csv -g 100
 
   # Write JSON output to a folder
-  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 5 -i 4 -g 100 -o results/
+  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 -o results/
 
-  # Limit verification iterations separately from goal iterations
-  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 8 -i 4 -g 100 --verify-iters 5
+  # Use the experimental full-union egraph
+  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --full-union
 
   # Print top 20 guides in the summary table (default: 10)
-  guide-random --seed '(d x (+ (* x x) 1))' --max-size 150 -n 5 -i 4 -g 100 --top 20
+  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --top 20
 "
 )]
 struct Cli {
@@ -51,15 +52,15 @@ struct Cli {
     /// Path to a CSV file with `size,term` columns. The `size` column drives --max-size.
     /// Mutually exclusive with --seed / --max-size.
     #[arg(long, group = "seed_input", conflicts_with = "max_size")]
-    seed_csv: Option<std::path::PathBuf>,
+    seed_csv: Option<PathBuf>,
 
-    /// Number of eqsat iterations to grow the egraph
-    #[arg(short = 'n', long)]
-    goal_iters: usize,
+    /// Node limit for the baseline egraph in seconds
+    #[arg(long, default_value_t = 1_000_000_000)]
+    node_limit: usize,
 
-    /// Number of eqsat iterations to grow the egraph to reach the guide
-    #[arg(short = 'i', long)]
-    guide_iters: usize,
+    /// Time limit for the baseline egraph in seconds
+    #[arg(long, default_value = "0.2", value_parser = parse_duration)]
+    time_limit: Duration,
 
     /// Number of guide candidates to sample from the n-1 frontier
     #[arg(short, long)]
@@ -90,10 +91,6 @@ struct Cli {
     #[arg(short, long)]
     output: Option<String>,
 
-    /// Max iterations when verifying guide reachability (defaults to -n value)
-    #[arg(long)]
-    verify_iters: Option<usize>,
-
     /// Number of top guides to print in summary table (default: 10)
     #[arg(long, default_value_t = 11)]
     top: usize,
@@ -114,12 +111,15 @@ fn main() {
     let cli = Cli::parse();
     let prefix = format!(
         "{}-{}-{}-fullunion-{}",
-        cli.guide_iters, cli.goal_iters, cli.guide_sample_strategy, cli.full_union
+        cli.node_limit,
+        cli.time_limit.as_secs_f64(),
+        cli.guide_sample_strategy,
+        cli.full_union
     );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
 
-    let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
+    // let verify_iters = cli.verify_iters.unwrap_or(cli.goal_iters);
 
     // Build the list of (seed_str, parsed_expr, max_size) to process.
     let seed_input = match (&cli.seed, &cli.seed_csv) {
@@ -131,7 +131,7 @@ fn main() {
         _ => panic!("clap group enforces exactly one of --seed / --seed-csv"),
     };
 
-    let seeds: Vec<(String, RecExpr<Math>, usize)> = match seed_input {
+    let seeds = match seed_input {
         SeedInput::Single { term, max_size } => {
             let expr = term
                 .parse::<RecExpr<Math>>()
@@ -155,8 +155,6 @@ fn main() {
         }
     };
 
-    tee_println!("Goal Iterations: {}", cli.goal_iters);
-    tee_println!("Guide Iterations: {}", cli.guide_iters);
     tee_println!("Distribution: {}", cli.size_distribution);
     tee_println!("Seeds to process: {}", seeds.len());
 
@@ -164,14 +162,9 @@ fn main() {
     let mut all_goal_stats: Vec<serde_json::Value> = Vec::new();
 
     for (seed_str, seed_expr, max_size) in &seeds {
-        if let Some((results, stats)) = process_seed(
-            &cli,
-            seed_str,
-            seed_expr,
-            *max_size,
-            verify_iters,
-            &run_folder,
-        ) {
+        if let Some((results, stats)) =
+            process_seed(&cli, seed_str, seed_expr, *max_size, &run_folder)
+        {
             all_results.extend(results);
             all_goal_stats.push(stats);
         }
@@ -188,17 +181,19 @@ fn process_seed(
     seed_str: &str,
     seed_expr: &RecExpr<Math>,
     max_size: usize,
-    verify_iters: usize,
     run_folder: &Path,
 ) -> Option<(Vec<GoalResults>, serde_json::Value)> {
     tee_println!("\n=== Seed: {seed_str} (max_size={max_size}) ===");
-    tee_println!("Running eqsat for {} iterations...", cli.goal_iters);
+
     let result = run_guide_goal(
         seed_expr,
         RULES.get_or_init(math::rules),
-        cli.guide_iters,
-        cli.goal_iters,
-    );
+        cli.time_limit,
+        cli.node_limit,
+    )?;
+
+    tee_println!("Goal Iterations: {}", result.goal_iters());
+    tee_println!("Guide Iterations: {}", result.guide_iters());
 
     let guide_secs = result
         .guide_data()
@@ -218,7 +213,7 @@ fn process_seed(
 
     tee_println!(
         "\nSampling goals from iteration-{} frontier...",
-        cli.goal_iters
+        result.goal_iters()
     );
 
     let root = result.root();
@@ -240,7 +235,7 @@ fn process_seed(
 
     tee_println!(
         "\nGetting guides from iteration-{} frontier...",
-        cli.guide_iters
+        result.guide_iters()
     );
 
     let run_stats = json!({
@@ -257,16 +252,8 @@ fn process_seed(
     let mut goal_results = Vec::new();
     let mut goal_stats = Vec::new();
     for goal in &goals {
-        let (goal_result, goal_stat) = evaluate_goal(
-            cli,
-            &result,
-            root,
-            goal,
-            seed_str,
-            max_size,
-            verify_iters,
-            run_folder,
-        )?;
+        let (goal_result, goal_stat) =
+            evaluate_goal(cli, &result, root, goal, seed_str, max_size, run_folder)?;
         goal_results.push(goal_result);
         goal_stats.push(goal_stat);
     }
@@ -282,7 +269,6 @@ fn evaluate_goal(
     goal: &OriginTree<MathLabel>,
     seed_str: &str,
     max_size: usize,
-    verify_iters: usize,
     run_folder: &Path,
 ) -> Option<(GoalResults, serde_json::Value)> {
     let goal_recexpr = goal.to_rec_expr();
@@ -309,7 +295,8 @@ fn evaluate_goal(
                 std::slice::from_ref(&measured_guide.guide),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
-                verify_iters,
+                cli.time_limit,
+                cli.node_limit,
                 cli.full_union,
             );
             GuideEval {
@@ -319,7 +306,7 @@ fn evaluate_goal(
         })
         .collect::<Vec<_>>();
 
-    let stat = print_summary(&results, goal, verify_iters);
+    let stat = print_summary(&results, goal);
     if cli.eval_all {
         dump_to_parquet(run_folder, seed_str, goal, &results);
     }
@@ -367,35 +354,44 @@ fn run_guide_set_trials(
     sampled_guides: &[OriginTree<MathLabel>],
 ) -> TrialsPerK {
     assert!(sampled_guides.len() >= MAX_TRIAL_SIZE);
-    TRIAL_SIZE.into_iter().map(|k| {
-        let trials = sampled_guides
-            .par_chunks_exact(MAX_TRIAL_SIZE)
-            .take(100)
-            .map(|subset| {
-                verify_reachability(
-                    &subset[..k],
-                    goal_recexpr,
-                    RULES.get_or_init(math::rules),
-                    cli.goal_iters,
-                    cli.full_union,
-                )
-            })
-            .collect::<Vec<_>>();
+    TRIAL_SIZE
+        .into_iter()
+        .map(|k| {
+            let trials = sampled_guides
+                .par_chunks_exact(MAX_TRIAL_SIZE)
+                .take(100)
+                .map(|subset| {
+                    verify_reachability(
+                        &subset[..k],
+                        goal_recexpr,
+                        RULES.get_or_init(math::rules),
+                        cli.time_limit,
+                        cli.node_limit,
+                        cli.full_union,
+                    )
+                })
+                .collect::<Vec<_>>();
 
-        let reached = trials.iter().filter(|v| v.is_some()).count();
-        tee_println!("{reached} out of {} reached the goal", trials.len());
-        let combined_iters = trial_avg(trials.as_slice(), |t| Some(t.len()));
-        let combined_nodes = trial_avg(&trials, |t| t.last().map(|i| i.egraph_nodes));
-        if let (Some(avg_i), Some(avg_n)) = (combined_iters, combined_nodes) {
-            tee_println!(
-                "Could reach with {k} guides on average in {avg_i:.1} iterations and with {avg_n:.0} nodes (avg over {reached} in {} trials)",
-                trials.len()
-            );
-        } else {
-            tee_println!("Could NOT reach with {k} guides");
-        }
-        (k, trials)
-    }).collect()
+            let reached = trials.iter().filter(|v| v.is_some()).count();
+            let combined_iters = trial_avg(trials.as_slice(), |t| Some(t.len()));
+            let combined_nodes = trial_avg(&trials, |t| t.last().map(|i| i.egraph_nodes));
+            let combined_time = trial_avg(&trials, |t| t.last().map(|i| i.total_time));
+            if let (Some(avg_i), Some(avg_n), Some(avg_t)) =
+                (combined_iters, combined_nodes, combined_time)
+            {
+                tee_println!(
+                    "--- k = {k} guides ---\n  Reached goal : {reached} / {}\n  Avg iters    : {avg_i:.1}\n  Avg nodes    : {avg_n:.0}\n  Avg time     : {avg_t:.1}s",
+                    trials.len()
+                );
+            } else {
+                tee_println!(
+                    "--- k = {k} guides ---\n  Reached goal : {reached} / {}\n  Could NOT reach goal",
+                    trials.len()
+                );
+            }
+            (k, trials)
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -409,7 +405,6 @@ struct GoalResults {
 fn print_summary(
     results: &[GuideEval<MathLabel>],
     goal: &OriginTree<MathLabel>,
-    max_iters: usize,
 ) -> serde_json::Value {
     let successful = results
         .iter()
@@ -423,14 +418,12 @@ fn print_summary(
     tee_println!("\nSummary for goal: {goal}");
     tee_println!("  Goal size: {goal_size}");
     tee_println!("  Total guides evaluated: {total}");
-    tee_println!("  Max verify iterations: {max_iters}");
     tee_println!("  Guides that reached goal: {n_reached}/{total} ({reach_pct:.1}%)");
 
     let mut stat = json!({
         "goal": goal.to_string(),
         "goal_size": goal_size,
         "total_guides": total,
-        "max_verify_iters": max_iters,
         "reached": n_reached,
         "reach_pct": reach_pct,
     });
@@ -461,4 +454,9 @@ fn print_summary(
     stat["iterations_to_reach"] = json!({"min": min, "median": med, "max": max});
 
     stat
+}
+
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    let secs: u64 = s.parse().map_err(|e| format!("invalid duration: {e}"))?;
+    Ok(Duration::from_secs(secs))
 }

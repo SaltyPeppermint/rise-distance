@@ -41,19 +41,21 @@ where
     prev_raw_egg.lookup_expr(&tree.to_rec_expr()).is_none()
 }
 
-#[expect(clippy::cast_precision_loss)]
-pub fn trial_avg<F: Fn(&Vec<Iteration<()>>) -> Option<usize>>(
+pub fn trial_avg<
+    F: Fn(&Vec<Iteration<()>>) -> Option<T>,
+    T: for<'a> std::iter::Sum<&'a T> + ToPrimitive,
+>(
     trials: &[Option<Vec<Iteration<()>>>],
     f: F,
 ) -> Option<f64> {
-    let values: Vec<usize> = trials
+    let values: Vec<_> = trials
         .iter()
         .filter_map(|x| x.as_ref().and_then(&f))
         .collect();
     if values.is_empty() {
         return None;
     }
-    let avg = values.iter().sum::<usize>() as f64 / values.len() as f64;
+    let avg = values.iter().sum::<T>().to_f64()? / values.len().to_f64()?;
     Some(avg)
 }
 
@@ -126,9 +128,7 @@ where
 {
     let tc = TermCount::<BigUint>::new(max_size, false, graph);
 
-    let Some(histogram) = tc.data.get(&graph.root()) else {
-        return Some(Vec::new());
-    };
+    let histogram = tc.data.get(&graph.root())?;
 
     let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
     sorted_hist.sort_unstable();
@@ -163,7 +163,7 @@ where
             .filter(|t| is_frontier(t, prev_raw_egg))
             .collect::<HashSet<_>>();
         if results.len() >= count {
-            Some(results.into_iter().take(count).collect())
+            Some(results.into_par_iter().take_any(count).collect())
         } else {
             tee_println!(
                 "Have {}/{count} frontier terms with {oversample}x oversampling, retrying with double that...",
