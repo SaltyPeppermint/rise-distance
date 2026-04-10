@@ -256,8 +256,9 @@ fn process_seed(
         cli.guide_sample_strategy,
     )?;
 
+    tee_println!("\nRunning top_k experiments...");
     let goal_results = goals
-        .iter()
+        .par_iter()
         .map(|goal| GoalResults {
             seed: seed_str.to_owned(),
             goal: goal.to_string(),
@@ -265,6 +266,7 @@ fn process_seed(
         })
         .collect();
     if cli.eval_all {
+        tee_println!("\nRunning eval_all...");
         let big_stats = goals
             .iter()
             .map(|goal| {

@@ -260,14 +260,13 @@ where
         .with_expr(start)
         .run(rules);
 
-    assert!(
-        matches!(
-            runner.stop_reason.as_ref().unwrap(),
-            StopReason::TimeLimit(_) | StopReason::IterationLimit(_) | StopReason::NodeLimit(_)
-        ),
-        "Failed cause stopped with {:?}",
-        runner.stop_reason
-    );
+    if !matches!(
+        runner.stop_reason.as_ref().unwrap(),
+        StopReason::TimeLimit(_) | StopReason::IterationLimit(_) | StopReason::NodeLimit(_)
+    ) {
+        tee_println!("Failed cause stopped with {:?}", runner.stop_reason);
+        return None;
+    }
 
     let stop_reason = runner.stop_reason.unwrap();
 
