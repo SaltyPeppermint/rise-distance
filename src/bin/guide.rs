@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use egg::{Id, RecExpr};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
@@ -13,8 +14,8 @@ use rise_distance::cli::argtypes::{SampleStrategy, SeedInput, TermSampleDist};
 use rise_distance::cli::parquet::{dump_goal_summary_parquet, dump_to_parquet};
 use rise_distance::cli::types::{GoalSummary, GuideEval, TrialsPerK};
 use rise_distance::cli::{
-    RULES, TRIAL_SIZE, get_run_folder, init_log, measure_guides, min_med_max,
-    sample_frontier_terms, trial_avg,
+    RULES, TRIAL_SIZE, get_run_folder, init_log, measure_guide, min_med_max, sample_frontier_terms,
+    trial_avg,
 };
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
 use rise_distance::egg::{
@@ -104,6 +105,10 @@ struct Cli {
     /// Use the experimental `add_with_full_union` for the new egraph
     #[arg(long)]
     full_union: bool,
+
+    /// Measure the distance?
+    #[arg(long)]
+    measure: bool,
 }
 
 const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
@@ -291,10 +296,18 @@ fn evaluate_goal(
         runs,
     };
 
-    let results = measure_guides(&sampled_guides, goal)
-        .map(|measured_guide| {
+    let pb_style = ProgressStyle::with_template(
+        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
+    )
+    .unwrap();
+    let goal_flat = goal.flatten(false);
+    let results = sampled_guides
+        .into_par_iter()
+        .progress_with_style(pb_style)
+        .map(move |guide| {
+            let m = cli.measure.then(|| measure_guide(&guide, &goal_flat));
             let iterations = verify_reachability(
-                std::slice::from_ref(&measured_guide.guide),
+                std::slice::from_ref(&guide),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
                 Duration::from_secs_f64(cli.time_limit),
@@ -302,7 +315,8 @@ fn evaluate_goal(
                 cli.full_union,
             );
             GuideEval {
-                guide: measured_guide,
+                guide,
+                measurements: m,
                 iterations,
             }
         })
@@ -435,24 +449,9 @@ fn print_summary(
         "reached": n_reached,
         "reach_pct": reach_pct,
     });
-
     if successful.is_empty() {
         return stat;
     }
-
-    let (min, med, max) = min_med_max(&successful, |v| v.guide.zs_distance);
-    tee_println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Successful guide zs_dists:"
-    );
-    stat["zs_distance"] = json!({"min": min, "median": med, "max": max});
-
-    let (min, med, max) = min_med_max(&successful, |v| v.guide.structural_distance);
-    tee_println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Successful guide struct_dist:"
-    );
-    stat["structural_distance"] = json!({"min": min, "median": med, "max": max});
 
     let (min, med, max) = min_med_max(&successful, |v| v.iterations.as_ref().unwrap().len());
     tee_println!(
@@ -460,6 +459,26 @@ fn print_summary(
         "Iterations to reach:"
     );
     stat["iterations_to_reach"] = json!({"min": min, "median": med, "max": max});
+
+    if let Some(measurements) = successful
+        .iter()
+        .map(|g| g.measurements.as_ref())
+        .collect::<Option<Vec<_>>>()
+    {
+        let (min, med, max) = min_med_max(&measurements, |m| m.zs_distance);
+        tee_println!(
+            "  {:<30} min={min}, median={med}, max={max}",
+            "Successful guide zs_dists:"
+        );
+        stat["zs_distance"] = json!({"min": min, "median": med, "max": max});
+
+        let (min, med, max) = min_med_max(&measurements, |m| m.structural_distance);
+        tee_println!(
+            "  {:<30} min={min}, median={med}, max={max}",
+            "Successful guide struct_dist:"
+        );
+        stat["structural_distance"] = json!({"min": min, "median": med, "max": max});
+    }
 
     stat
 }

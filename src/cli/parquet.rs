@@ -64,10 +64,16 @@ pub fn dump_to_parquet<L: Label>(
     for r in results {
         seeds.append_value(seed);
         goals.append_value(&goal_str);
-        guides.append_value(r.guide.guide.to_string());
-        zs_distances.append_value(r.guide.zs_distance.try_into().unwrap());
-        structural_overlaps.append_value(r.guide.structural_distance.overlap().try_into().unwrap());
-        structural_zs_sums.append_value(r.guide.structural_distance.zs_sum().try_into().unwrap());
+        guides.append_value(r.guide.to_string());
+        if let Some(m) = &r.measurements {
+            zs_distances.append_value(m.zs_distance.try_into().unwrap());
+            structural_overlaps.append_value(m.structural_distance.overlap().try_into().unwrap());
+            structural_zs_sums.append_value(m.structural_distance.zs_sum().try_into().unwrap());
+        } else {
+            zs_distances.append_null();
+            structural_overlaps.append_null();
+            structural_zs_sums.append_null();
+        }
 
         if let Some(iters) = &r.iterations {
             iterations_to_reach.append_value(iters.len().try_into().unwrap());

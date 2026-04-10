@@ -7,13 +7,13 @@ use crate::{Label, StructuralDistance};
 
 #[derive(Serialize, Debug)]
 pub struct GuideEval<L: Label> {
-    pub guide: MeasuredGuide<L>,
+    pub guide: OriginTree<L>,
+    pub measurements: Option<Measurements>,
     pub iterations: Option<Vec<Iteration<()>>>,
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq, Hash, Clone)]
-pub struct MeasuredGuide<L: Label> {
-    pub guide: OriginTree<L>,
+pub struct Measurements {
     pub zs_distance: usize,
     #[serde(flatten)]
     pub structural_distance: StructuralDistance,

@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use egg::{Analysis, Iteration, Language, Rewrite};
 use hashbrown::HashSet;
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
@@ -23,7 +23,7 @@ use crate::egg::math::ConstantFold;
 use crate::egg::{Math, ToEgg};
 use crate::sampling::{CountSampler, NaiveSampler, Sampler, ZSDistanceSampler};
 use crate::tee_println;
-use crate::tree::{OriginTree, TreeShaped};
+use crate::tree::{OriginTree, TreeShaped, UnfoldedTree};
 use crate::{Graph, Label, Tree, UnitCost, structural_diff, tree_distance_unit};
 
 pub const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
@@ -68,29 +68,17 @@ pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T
 }
 
 /// Measure guides by distance to the goal.
-pub fn measure_guides<L: Label>(
-    guides: &[OriginTree<L>],
-    goal: &OriginTree<L>,
-) -> impl ParallelIterator<Item = MeasuredGuide<L>> {
-    let goal_flat = goal.flatten(false);
-    #[expect(clippy::missing_panics_doc)]
-    let pb_style = ProgressStyle::with_template(
-        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
-    )
-    .unwrap();
-    guides
-        .par_iter()
-        .progress_with_style(pb_style)
-        .map(move |guide| {
-            let guide_flat = guide.flatten(false);
-            let zs_dist = tree_distance_unit(&guide_flat, &goal_flat);
-            let structural_dist = structural_diff(&goal_flat, &guide_flat, &UnitCost);
-            MeasuredGuide {
-                guide: guide.clone(),
-                zs_distance: zs_dist,
-                structural_distance: structural_dist,
-            }
-        })
+pub fn measure_guide<L: Label>(
+    guide: &OriginTree<L>,
+    goal_unfolded: &UnfoldedTree<L>,
+) -> Measurements {
+    let guide_unfolded = guide.flatten(false);
+    let zs_dist = tree_distance_unit(&guide_unfolded, goal_unfolded);
+    let structural_dist = structural_diff(goal_unfolded, &guide_unfolded, &UnitCost);
+    Measurements {
+        zs_distance: zs_dist,
+        structural_distance: structural_dist,
+    }
 }
 
 const OVERSAMPLE_START: usize = 20;
