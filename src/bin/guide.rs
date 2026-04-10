@@ -380,12 +380,18 @@ fn run_guide_set_trials(
                 (combined_iters, combined_nodes, combined_time)
             {
                 tee_println!(
-                    "--- k = {k} guides ---\n  Reached goal : {reached} / {}\n  Avg iters    : {avg_i:.1}\n  Avg nodes    : {avg_n:.0}\n  Avg time     : {avg_t:.1}s",
-                    trials.len()
+                    "--- k = {k} guides ---\n\
+                      Reached goal : {reached} / {}\n\
+                      Avg iters    : {avg_i:.1}\n\
+                      Avg nodes    : {avg_n:.0}\n\
+                      Avg time     : {avg_t:.1}s",
+                    trials.len(),
                 );
             } else {
                 tee_println!(
-                    "--- k = {k} guides ---\n  Reached goal : {reached} / {}\n  Could NOT reach goal",
+                    "--- k = {k} guides ---\n\
+                      Reached goal : {reached} / {}\n\
+                      Could NOT reach goal",
                     trials.len()
                 );
             }
