@@ -17,7 +17,9 @@ use rise_distance::cli::{
     sample_frontier_terms, trial_avg,
 };
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
-use rise_distance::egg::{GuideGoalResult, ToEgg, convert, run_guide_goal, verify_reachability};
+use rise_distance::egg::{
+    GuideGoalResult, ToEgg, convert, run_guide_goal, stop_reason_str, verify_reachability,
+};
 use rise_distance::{OriginTree, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
@@ -191,6 +193,7 @@ fn process_seed(
 
     tee_println!("Goal Iterations: {}", result.goal_iters());
     tee_println!("Guide Iterations: {}", result.guide_iters());
+    tee_println!("Stop Reason: {}", stop_reason_str(result.stop_reason()));
 
     let guide_secs = result
         .guide_data()
@@ -238,9 +241,11 @@ fn process_seed(
     let run_stats = json!({
         "seed": seed_str,
         "max_size": max_size,
+        "guide_egraph_iters": result.goal_iters(),
         "guide_egraph_nodes": guide_nodes,
         "guide_egraph_classes": guide_classes,
         "guide_eqsat_time": guide_secs,
+        "goal_egraph_iters": result.guide_iters(),
         "goal_egraph_nodes": goal_nodes,
         "goal_egraph_classes": goal_classes,
         "goal_eqsat_time": goal_secs,

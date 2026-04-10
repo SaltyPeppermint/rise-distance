@@ -32,6 +32,8 @@ where
     guide_iters: usize,
     /// Goal Iterations
     goal_iters: usize,
+    /// Stop reason
+    stop_reason: StopReason,
 }
 
 impl<L, N> GuideGoalResult<L, N>
@@ -83,6 +85,22 @@ where
     #[must_use]
     pub fn goal_iters(&self) -> usize {
         self.goal_iters
+    }
+
+    #[must_use]
+    pub fn stop_reason(&self) -> &StopReason {
+        &self.stop_reason
+    }
+}
+
+#[must_use]
+pub fn stop_reason_str(reason: &StopReason) -> String {
+    match reason {
+        StopReason::Saturated => "saturated".to_owned(),
+        StopReason::IterationLimit(n) => format!("iteration limit ({n})"),
+        StopReason::NodeLimit(n) => format!("node limit ({n})"),
+        StopReason::TimeLimit(t) => format!("time limit ({t:.2}s)"),
+        StopReason::Other(s) => format!("other ({s})"),
     }
 }
 
@@ -251,6 +269,8 @@ where
         runner.stop_reason
     );
 
+    let stop_reason = runner.stop_reason.unwrap();
+
     let root = runner.roots[0];
     let mut iter_data = runner.iterations;
 
@@ -271,6 +291,7 @@ where
         root,
         guide_iters,
         goal_iters,
+        stop_reason,
     })
 }
 
