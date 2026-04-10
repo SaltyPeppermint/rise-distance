@@ -300,8 +300,8 @@ where
 /// # Panics
 ///
 /// Panics if no guides given
-pub fn verify_reachability<L, N, LL>(
-    guides: &[OriginTree<LL>],
+pub fn verify_reachability<'a, L, N, LL, I>(
+    guides: I,
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     time_limit: Duration,
@@ -311,10 +311,11 @@ pub fn verify_reachability<L, N, LL>(
 where
     L: Language + 'static,
     N: Analysis<L> + Default,
-    LL: Label,
+    LL: Label + 'a,
     OriginTree<LL>: ToEgg<LL, Lang = L>,
+    I: ExactSizeIterator<Item = &'a OriginTree<LL>>,
 {
-    assert!(!guides.is_empty(), "must have at least one guide");
+    assert!(guides.len() > 0, "must have at least one guide");
     let goal_clone = goal.clone();
 
     let mut runner = Runner::default()
@@ -340,16 +341,17 @@ where
     runner.egraph.lookup_expr(goal).map(|_| runner.iterations)
 }
 
-fn add_with_root_union<LL, L, N, I>(
-    mut runner: Runner<L, N, I>,
-    guides: &[OriginTree<LL>],
-) -> Runner<L, N, I>
+fn add_with_root_union<'a, LL, L, N, D, I>(
+    mut runner: Runner<L, N, D>,
+    guides: I,
+) -> Runner<L, N, D>
 where
-    LL: Label,
+    LL: Label + 'a,
     L: Language,
     N: Analysis<L>,
-    I: IterationData<L, N>,
+    D: IterationData<L, N>,
     OriginTree<LL>: ToEgg<LL, Lang = L>,
+    I: IntoIterator<Item = &'a OriginTree<LL>>,
 {
     for guide in guides {
         let expr = guide.to_rec_expr();
@@ -363,16 +365,17 @@ where
     runner
 }
 
-fn add_with_full_union<LL, L, N, I>(
-    mut runner: Runner<L, N, I>,
-    guides: &[OriginTree<LL>],
-) -> Runner<L, N, I>
+fn add_with_full_union<'a, LL, L, N, D, I>(
+    mut runner: Runner<L, N, D>,
+    guides: I,
+) -> Runner<L, N, D>
 where
-    LL: Label,
+    LL: Label + 'a,
     L: Language,
     N: Analysis<L>,
-    I: IterationData<L, N>,
+    D: IterationData<L, N>,
     OriginTree<LL>: ToEgg<LL, Lang = L>,
+    I: IntoIterator<Item = &'a OriginTree<LL>>,
 {
     let mut origin_to_new_ids = HashMap::new();
 

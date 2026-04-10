@@ -6,6 +6,9 @@ use std::time::Duration;
 use clap::Parser;
 use egg::RecExpr;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
+use rand::SeedableRng;
+use rand::seq::SliceRandom;
+use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
@@ -108,8 +111,6 @@ struct Cli {
     #[arg(long)]
     measure: bool,
 }
-
-const MAX_TRIAL_SIZE: usize = const { TRIAL_SIZE[TRIAL_SIZE.len() - 1] };
 
 fn main() {
     let cli = Cli::parse();
@@ -258,11 +259,14 @@ fn process_seed(
 
     tee_println!("\nRunning top_k experiments...");
     let goal_results = goals
-        .par_iter()
-        .map(|goal| GoalResults {
-            seed: seed_str.to_owned(),
-            goal: goal.to_string(),
-            runs: run_guide_set_trials(cli, &goal.to_rec_expr(), &sampled_guides),
+        .iter()
+        .map(|goal| {
+            tee_println!("Current goal: {}", goal.to_string());
+            GoalResults {
+                seed: seed_str.to_owned(),
+                goal: goal.to_string(),
+                runs: run_guide_set_trials(cli, &goal.to_rec_expr(), &sampled_guides),
+            }
         })
         .collect();
     if cli.eval_all {
@@ -270,6 +274,7 @@ fn process_seed(
         let big_stats = goals
             .iter()
             .map(|goal| {
+                tee_println!("Current goal: {}", goal.to_string());
                 eval_all_fn(
                     cli,
                     goal,
@@ -316,7 +321,7 @@ fn eval_all_fn(
         .map(move |guide| {
             let measurements = measure_guide(guide, &goal_flat);
             let iterations = verify_reachability(
-                std::slice::from_ref(guide),
+                std::slice::from_ref(guide).iter(),
                 &goal_recexpr,
                 RULES.get_or_init(math::rules),
                 Duration::from_secs_f64(cli.time_limit),
@@ -372,16 +377,19 @@ fn run_guide_set_trials(
     goal_recexpr: &RecExpr<Math>,
     sampled_guides: &[OriginTree<MathLabel>],
 ) -> TrialsPerK {
-    assert!(sampled_guides.len() >= MAX_TRIAL_SIZE);
+    assert!(sampled_guides.len() >= 10 * TRIAL_SIZE[TRIAL_SIZE.len() - 1]);
     TRIAL_SIZE
-        .into_iter()
+        .into_par_iter()
         .map(|k| {
-            let trials = sampled_guides
-                .par_chunks_exact(MAX_TRIAL_SIZE)
-                .take(100)
-                .map(|subset| {
+            let outer_rng = ChaCha12Rng::seed_from_u64(k as u64);
+            let trials = (0..100)
+                .into_par_iter()
+                .map(|s| {
+                    let mut inner_rng = outer_rng.clone();
+                    inner_rng.set_stream(s);
+                    let subset = sampled_guides.choose_multiple(&mut inner_rng, k);
                     verify_reachability(
-                        &subset[..k],
+                        subset,
                         goal_recexpr,
                         RULES.get_or_init(math::rules),
                         Duration::from_secs_f64(cli.time_limit),
@@ -391,32 +399,35 @@ fn run_guide_set_trials(
                 })
                 .collect::<Vec<_>>();
 
-            let reached = trials.iter().filter(|v| v.is_some()).count();
-            let combined_iters = trial_avg(trials.as_slice(), |t| Some(t.len()));
-            let combined_nodes = trial_avg(&trials, |t| t.last().map(|i| i.egraph_nodes));
-            let combined_time = trial_avg(&trials, |t| t.last().map(|i| i.total_time));
-            if let (Some(avg_i), Some(avg_n), Some(avg_t)) =
-                (combined_iters, combined_nodes, combined_time)
-            {
-                tee_println!(
-                    "--- k = {k} guides ---\n\
+            // log_trials(k, &trials);
+            (k, trials)
+        })
+        .collect()
+}
+
+fn log_trials(k: usize, trials: &[Option<Vec<egg::Iteration<()>>>]) {
+    let reached = trials.iter().filter(|v| v.is_some()).count();
+    let combined_iters = trial_avg(trials, |t| Some(t.len()));
+    let combined_nodes = trial_avg(trials, |t| t.last().map(|i| i.egraph_nodes));
+    let combined_time = trial_avg(trials, |t| t.last().map(|i| i.total_time));
+    if let (Some(avg_i), Some(avg_n), Some(avg_t)) = (combined_iters, combined_nodes, combined_time)
+    {
+        tee_println!(
+            "--- k = {k} guides ---\n\
                       Reached goal : {reached} / {}\n\
                       Avg iters    : {avg_i:.1}\n\
                       Avg nodes    : {avg_n:.0}\n\
                       Avg time     : {avg_t:.1}s",
-                    trials.len(),
-                );
-            } else {
-                tee_println!(
-                    "--- k = {k} guides ---\n\
+            trials.len(),
+        );
+    } else {
+        tee_println!(
+            "--- k = {k} guides ---\n\
                       Reached goal : {reached} / {}\n\
                       Could NOT reach goal",
-                    trials.len()
-                );
-            }
-            (k, trials)
-        })
-        .collect()
+            trials.len()
+        );
+    }
 }
 
 #[derive(Serialize)]
