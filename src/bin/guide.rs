@@ -109,11 +109,15 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
     let prefix = format!(
-        "nodes-{}-time-{}-strategy-{}-fullunion-{}",
-        cli.node_limit, cli.time_limit, cli.guide_sample_strategy, cli.full_union
+        "nodes-{}-timems-{}-strategy-{}-fullunion-{}",
+        cli.node_limit,
+        Duration::from_secs_f64(cli.time_limit).as_millis(),
+        cli.guide_sample_strategy,
+        cli.full_union
     );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
+    tee_println!("Run Folder: {}", run_folder.to_string_lossy());
 
     // Build the list of (seed_str, parsed_expr, max_size) to process.
     let seed_input = match (&cli.seed, &cli.seed_csv) {
@@ -364,9 +368,11 @@ where
                 .map(|s| {
                     let mut inner_rng = outer_rng.clone();
                     inner_rng.set_stream(s);
-                    let subset = pc
-                        .sample_frontier_terms(k, cli.size_distribution, cli.guide_sample_strategy)
-                        .unwrap();
+                    let subset = pc.sample_frontier_terms(
+                        k,
+                        cli.size_distribution,
+                        cli.guide_sample_strategy,
+                    )?;
                     verify_reachability(
                         subset.iter(),
                         goal_recexpr,
