@@ -171,39 +171,48 @@ where
     {
         let histogram = self.tc.data.get(&self.graph.root())?;
         OVERSAMPLE_SCHEDULE.iter().find_map(|oversample| {
-        let samples_per_size =
-            distribution.samples_per_size(histogram, self.min_size, self.max_size, count * oversample);
-        let batch = match sample_strategy {
-            SampleStrategy::Naive => {
-                NaiveSampler::new(&self.tc, &self.graph).sample_batch_root(&samples_per_size)
-            }
-            SampleStrategy::CountBased => {
-                CountSampler::new(&self.tc, &self.graph).sample_batch_root(&samples_per_size)
-            }
-            SampleStrategy::ZSDiverseNaive => {
-                ZSDistanceSampler::new(NaiveSampler::new(&self.tc, &self.graph), UnitCost, 0.5, false)
-                    .sample_batch_root(&samples_per_size)
-            }
-            SampleStrategy::ZSDiverseCountBased => {
-                ZSDistanceSampler::new(CountSampler::new(&self.tc, &self.graph), UnitCost, 0.5, false)
-                    .sample_batch_root(&samples_per_size)
-            }
-        };
-
-        let results = batch
-            .into_par_iter()
-            .filter(|t| is_frontier(t, &self.prev_raw_egg))
-            .collect::<HashSet<_>>();
-        if results.len() >= count {
-            Some(results.into_par_iter().take_any(count).collect())
-        } else {
-            tee_println!(
-                "Have {}/{count} frontier terms with {oversample}x oversampling, retrying with double that...",
-                results.len()
+            let samples_per_size = distribution.samples_per_size(
+                histogram,
+                self.min_size,
+                self.max_size,
+                count * oversample,
             );
-            None
-        }
-    })
+            let batch =
+                match sample_strategy {
+                    SampleStrategy::Naive => NaiveSampler::new(&self.tc, &self.graph)
+                        .sample_batch_root(&samples_per_size),
+                    SampleStrategy::CountBased => CountSampler::new(&self.tc, &self.graph)
+                        .sample_batch_root(&samples_per_size),
+                    SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
+                        NaiveSampler::new(&self.tc, &self.graph),
+                        UnitCost,
+                        0.5,
+                        false,
+                    )
+                    .sample_batch_root(&samples_per_size),
+                    SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
+                        CountSampler::new(&self.tc, &self.graph),
+                        UnitCost,
+                        0.5,
+                        false,
+                    )
+                    .sample_batch_root(&samples_per_size),
+                };
+
+            let results = batch
+                .into_par_iter()
+                .filter(|t| is_frontier(t, &self.prev_raw_egg))
+                .collect::<HashSet<_>>();
+            if results.len() >= count {
+                Some(results.into_par_iter().take_any(count).collect())
+            } else {
+                // tee_println!(
+                //     "Have {}/{count} frontier terms with {oversample}x oversampling, retrying with double that...",
+                //     results.len()
+                // );
+                None
+            }
+        })
     }
 }
 
