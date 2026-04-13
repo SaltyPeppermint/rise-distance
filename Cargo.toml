@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 [dependencies]
 bon = "3"
 clap = { version = "4", features = ["derive"] }
-polars = { version = "0.46", features = ["parquet"] }
+polars = { version = "0.53", features = ["parquet", "polars-io"] }
 dashmap = "6"
 egg = { version = "0.11", features = ["serde-1"] }
 env_logger = "0.11"

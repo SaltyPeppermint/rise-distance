@@ -78,16 +78,14 @@ pub fn dump_full_eval_parquet<L: Label>(
     }
     .expect("build DataFrame");
 
-    df.with_column(nodes_builder.finish().into_series())
+    df.with_column(nodes_builder.finish().into_column())
         .expect("add nodes_to_reach column");
-    df.with_column(classes_builder.finish().into_series())
+    df.with_column(classes_builder.finish().into_column())
         .expect("add classes_to_reach column");
 
     let file = File::create(&parquet_path).expect("create parquet file");
     ParquetWriter::new(file)
-        .with_compression(ParquetCompression::Zstd(Some(
-            ZstdLevel::try_new(3).expect("valid zstd level"),
-        )))
+        .with_compression(ParquetCompression::Zstd(None))
         .finish(&mut df)
         .expect("write parquet");
 
@@ -167,9 +165,7 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
 
     let file = File::create(path).expect("create summary parquet file");
     ParquetWriter::new(file)
-        .with_compression(ParquetCompression::Zstd(Some(
-            ZstdLevel::try_new(3).expect("valid zstd level"),
-        )))
+        .with_compression(ParquetCompression::Zstd(None)) // ZstdLevel::try_new(3).expect("valid zstd level")
         .finish(&mut df)
         .expect("write parquet");
 }
