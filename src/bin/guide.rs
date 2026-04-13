@@ -211,7 +211,7 @@ fn process_seed(
     tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
 
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
-    let Some(goals) = PrecomputePackage::<BigUint, _, _, _>::precompute(
+    let Some(goals) = PrecomputePackage::<BigUint, MathLabel, _, _>::precompute(
         result.goal(),
         result.prev_goal().to_owned(),
         result.root(),

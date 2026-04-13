@@ -1,3 +1,4 @@
+pub mod lambda;
 pub mod math;
 
 use std::fmt::Display;
@@ -15,6 +16,7 @@ use crate::nodes::ENode;
 use crate::tree::TreeShaped;
 use crate::{Class, Graph, Label, OriginTree, tee_println};
 
+pub use lambda::{Lambda, LambdaLabel};
 pub use math::{Math, MathLabel};
 
 /// Result of [`run_guide_goal`]: egraph snapshots at guide and goal iterations,
