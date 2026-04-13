@@ -371,14 +371,13 @@ where
                         .sample_frontier_terms(k, cli.size_distribution, cli.guide_sample_strategy)
                         .ok_or(GuideError::InsufficientSamples)?;
                     verify_reachability(
-                        subset.iter(),
+                        &subset,
                         goal_recexpr,
                         RULES.get_or_init(math::rules),
                         Duration::from_secs_f64(cli.time_limit),
                         cli.node_limit,
                         cli.full_union,
                     )
-                    .ok_or(GuideError::Unreached)
                 })
                 .collect::<Vec<_>>();
 

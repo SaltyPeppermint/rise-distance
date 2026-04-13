@@ -118,6 +118,7 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
     let mut total_time: Vec<Option<f64>> = Vec::with_capacity(n);
     let mut not_enough_samples: Vec<bool> = Vec::with_capacity(n);
     let mut unreached: Vec<bool> = Vec::with_capacity(n);
+    let mut panic_while_sample: Vec<bool> = Vec::with_capacity(n);
 
     for summary in summaries {
         for (k, trials) in &summary.entries_per_k {
@@ -134,6 +135,7 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
                         total_time.push(Some(t.total_time));
                         not_enough_samples.push(false);
                         unreached.push(false);
+                        panic_while_sample.push(false);
                     }
                     Err(e) => {
                         iters.push(None);
@@ -143,6 +145,7 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
                         total_time.push(None);
                         not_enough_samples.push(matches!(e, GuideError::InsufficientSamples));
                         unreached.push(matches!(e, GuideError::Unreached));
+                        panic_while_sample.push(matches!(e, GuideError::PanicWhileAttempt));
                     }
                 }
             }
@@ -160,6 +163,7 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
         "total_time"          => total_time,
         "not_enough_samples"  => not_enough_samples,
         "unreached"           => unreached,
+        "panic_while_sample"  => panic_while_sample,
     }
     .expect("build summary DataFrame");
 

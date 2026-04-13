@@ -9,6 +9,7 @@ use egg::{
 };
 use hashbrown::{HashMap, HashSet};
 
+use crate::cli::GuideError;
 use crate::ids::{AnyId, EClassId, ExprChildId};
 use crate::nodes::ENode;
 use crate::tree::TreeShaped;
@@ -311,25 +312,28 @@ where
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
 /// Returns `Some((iterations, nodes))` if reached, `None` otherwise.
 ///
+/// # Errors
+///
+/// Errors either if the guide is unrachable or we have a panic
+///
 /// # Panics
 ///
-/// Panics if no guides given
-pub fn verify_reachability<'a, L, N, LL, I>(
-    guides: I,
+/// Panics if not at least one guide is given
+pub fn verify_reachability<L, N, LL>(
+    guides: &[OriginTree<LL>],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     time_limit: Duration,
     node_limit: usize,
     full_union: bool,
-) -> Option<Vec<egg::Iteration<()>>>
+) -> Result<Vec<egg::Iteration<()>>, GuideError>
 where
-    L: Language + 'static,
+    L: Language + Display + 'static,
     N: Analysis<L> + Default,
-    LL: Label + 'a,
+    LL: Label,
     OriginTree<LL>: ToEgg<LL, Lang = L>,
-    I: ExactSizeIterator<Item = &'a OriginTree<LL>>,
 {
-    assert!(guides.len() > 0, "must have at least one guide");
+    assert!(!guides.is_empty(), "must have at least one guide");
     let goal_clone = goal.clone();
 
     let mut runner = Runner::default()
@@ -350,9 +354,16 @@ where
     };
     runner.egraph.rebuild();
 
-    let runner = runner.run(rules);
+    let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
+        println!("Panic caught verify_reachability for guide/goal pair: {guides:?}/{goal}");
+        return Err(GuideError::PanicWhileAttempt);
+    };
+    // let runner = runner.run(rules);
 
-    runner.egraph.lookup_expr(goal).map(|_| runner.iterations)
+    r.egraph
+        .lookup_expr(goal)
+        .map(|_| r.iterations)
+        .ok_or(GuideError::Unreached)
 }
 
 fn add_with_root_union<'a, LL, L, N, D, I>(

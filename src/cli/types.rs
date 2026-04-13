@@ -11,6 +11,7 @@ use crate::{Label, StructuralDistance};
 pub enum GuideError {
     InsufficientSamples,
     Unreached,
+    PanicWhileAttempt,
 }
 
 #[derive(Serialize, Debug)]
