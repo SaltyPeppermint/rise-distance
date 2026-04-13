@@ -275,6 +275,8 @@ def parse_top_k_summary(raw: list[dict], strategy_name: str) -> list[dict]:
                             "classes": None,
                             "total_applied": None,
                             "total_time": None,
+                            "not_enough_samples": False,
+                            "unreached": True,
                         }
                     )
                 else:
@@ -288,6 +290,8 @@ def parse_top_k_summary(raw: list[dict], strategy_name: str) -> list[dict]:
                             "classes": trial["classes"],
                             "total_applied": trial["total_applied"],
                             "total_time": trial["total_time"],
+                            "not_enough_samples": trial["not_enough_samples"],
+                            "unreached": trial["unreached"],
                         }
                     )
     return rows
