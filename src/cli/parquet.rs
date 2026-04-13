@@ -2,14 +2,16 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Float64Builder, ListBuilder, StringBuilder, UInt64Builder};
+use arrow::array::{
+    ArrayRef, BooleanBuilder, Float64Builder, ListBuilder, StringBuilder, UInt64Builder,
+};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 
-use super::{GoalSummary, GuideEval};
+use super::{GoalSummary, GuideError, GuideEval};
 use crate::{Label, OriginTree, tee_println};
 
 /// Dump eval results to a new Parquet file inside `run_folder/out/`.
@@ -185,6 +187,8 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
     let mut classes = UInt64Builder::with_capacity(n);
     let mut total_applied = UInt64Builder::with_capacity(n);
     let mut total_time = Float64Builder::with_capacity(n);
+    let mut not_enough_samples = BooleanBuilder::with_capacity(n);
+    let mut unreached = BooleanBuilder::with_capacity(n);
 
     for summary in summaries {
         for (k, trials) in &summary.entries_per_k {
@@ -192,18 +196,27 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
                 seeds.append_value(&summary.seed);
                 goals.append_value(&summary.goal);
                 ks.append_value(*k as u64);
-                if let Some(t) = trial {
-                    iters.append_value(t.iters as u64);
-                    nodes.append_value(t.nodes as u64);
-                    classes.append_value(t.classes as u64);
-                    total_applied.append_value(t.total_applied as u64);
-                    total_time.append_value(t.total_time);
-                } else {
-                    iters.append_null();
-                    nodes.append_null();
-                    classes.append_null();
-                    total_applied.append_null();
-                    total_time.append_null();
+                match trial {
+                    Ok(t) => {
+                        iters.append_value(t.iters as u64);
+                        nodes.append_value(t.nodes as u64);
+                        classes.append_value(t.classes as u64);
+                        total_applied.append_value(t.total_applied as u64);
+                        total_time.append_value(t.total_time);
+                        not_enough_samples.append_value(false);
+                        unreached.append_value(false);
+                    }
+                    Err(e) => {
+                        iters.append_null();
+                        nodes.append_null();
+                        classes.append_null();
+                        total_applied.append_null();
+                        total_time.append_null();
+                        not_enough_samples
+                            .append_value(matches!(e, GuideError::InsufficientSamples));
+
+                        unreached.append_value(matches!(e, GuideError::Unreached));
+                    }
                 }
             }
         }
@@ -220,6 +233,8 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
             Arc::new(classes.finish()) as ArrayRef,
             Arc::new(total_applied.finish()) as ArrayRef,
             Arc::new(total_time.finish()) as ArrayRef,
+            Arc::new(not_enough_samples.finish()) as ArrayRef,
+            Arc::new(unreached.finish()) as ArrayRef,
         ],
     )
     .expect("build summary record batch");
@@ -246,5 +261,7 @@ fn summary_schema() -> Arc<Schema> {
         Field::new("classes", DataType::UInt64, true),
         Field::new("total_applied", DataType::UInt64, true),
         Field::new("total_time", DataType::Float64, true),
+        Field::new("not_enough_samples", DataType::Boolean, false),
+        Field::new("unreached", DataType::Boolean, false),
     ]))
 }

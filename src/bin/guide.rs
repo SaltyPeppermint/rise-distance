@@ -16,7 +16,7 @@ use serde_json::json;
 
 use rise_distance::cli::argtypes::{SampleStrategy, SeedInput, TermSampleDist};
 use rise_distance::cli::parquet::dump_summary_parquet;
-use rise_distance::cli::types::{GoalSummary, TrialsPerK};
+use rise_distance::cli::types::{GoalSummary, GuideError, TrialsPerK};
 use rise_distance::cli::{PrecomputePackage, RULES, TRIAL_SIZE, get_run_folder, init_log};
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
 use rise_distance::egg::{ToEgg, big_eqsat, stop_reason_str, verify_reachability};
@@ -209,22 +209,21 @@ fn process_seed(
         "Guide egraph had {guide_nodes} nodes, {guide_classes} classes in {guide_secs:.2}s"
     );
     tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
-    tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
 
-    let root = result.root();
-    let goals = PrecomputePackage::<BigUint, _, _, _>::precompute(
+    tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
+    let Some(goals) = PrecomputePackage::<BigUint, _, _, _>::precompute(
         result.goal(),
         result.prev_goal().to_owned(),
-        root,
+        result.root(),
         max_size,
     )?
-    .sample_frontier_terms(cli.goals, cli.size_distribution, cli.goal_sample_strategy)?;
-    if goals.is_empty() {
+    .sample_frontier_terms(cli.goals, cli.size_distribution, cli.goal_sample_strategy) else {
         tee_println!(
-            "WARNING: Frontier empty for seed '{seed_str}'. Skipping. Try more iterations or a larger max-size."
+            "WARNING: Not enough goals in the frontier for seed '{seed_str}'. Skipping. Try more iterations or a larger max-size."
         );
         return None;
-    }
+    };
+
     tee_println!("Sampled {} goal(s)", goals.len());
 
     let stats = json!({
@@ -243,7 +242,7 @@ fn process_seed(
     let pc = PrecomputePackage::<BigUint, _, _, _>::precompute(
         result.guide(),
         result.prev_guide().clone(),
-        root,
+        result.root(),
         max_size,
     )?;
 
@@ -368,11 +367,9 @@ where
                 .map(|s| {
                     let mut inner_rng = outer_rng.clone();
                     inner_rng.set_stream(s);
-                    let subset = pc.sample_frontier_terms(
-                        k,
-                        cli.size_distribution,
-                        cli.guide_sample_strategy,
-                    )?;
+                    let subset = pc
+                        .sample_frontier_terms(k, cli.size_distribution, cli.guide_sample_strategy)
+                        .ok_or(GuideError::InsufficientSamples)?;
                     verify_reachability(
                         subset.iter(),
                         goal_recexpr,
@@ -381,6 +378,7 @@ where
                         cli.node_limit,
                         cli.full_union,
                     )
+                    .ok_or(GuideError::Unreached)
                 })
                 .collect::<Vec<_>>();
 
@@ -390,9 +388,9 @@ where
         .collect()
 }
 
-// fn log_trials(k: usize, trials: &[Option<Vec<egg::Iteration<()>>>]) {
+// fn log_trials(k: usize, trials: &[Result<Vec<egg::Iteration<()>>, GuideError>]) {
 //     let reached = trials.iter().filter(|v| v.is_some()).count();
-//     let combined_iters = trial_avg(trials, |t| Some(t.len()));
+//     let combined_iters = trial_avg(trials, |t| Ok(t.len()));
 //     let combined_nodes = trial_avg(trials, |t| t.last().map(|i| i.egraph_nodes));
 //     let combined_time = trial_avg(trials, |t| t.last().map(|i| i.total_time));
 //     if let (Some(avg_i), Some(avg_n), Some(avg_t)) = (combined_iters, combined_nodes, combined_time)

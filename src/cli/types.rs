@@ -1,9 +1,17 @@
 use egg::Iteration;
 use hashbrown::HashMap;
 use serde::Serialize;
+use strum::Display;
+use thiserror::Error;
 
 use crate::tree::OriginTree;
 use crate::{Label, StructuralDistance};
+
+#[derive(Debug, Error, Display, Serialize, Clone, Copy)]
+pub enum GuideError {
+    InsufficientSamples,
+    Unreached,
+}
 
 #[derive(Serialize, Debug)]
 pub struct GuideEval<L: Label> {
@@ -21,10 +29,10 @@ pub struct Measurements {
 
 /// Type alias for the per-k trial data: maps each guide-set size `k` to its
 /// trial results (one `Option` per trial. `None` means the goal was not reached).
-pub type TrialsPerK = HashMap<usize, Vec<Option<Vec<Iteration<()>>>>>;
+pub type TrialsPerK = HashMap<usize, Vec<Result<Vec<Iteration<()>>, GuideError>>>;
 
 /// Same as `TrialsPerK` but with pre-computed summaries instead of full iteration data.
-pub type SummaryPerK = HashMap<usize, Vec<Option<TrialSummary>>>;
+pub type SummaryPerK = HashMap<usize, Vec<Result<TrialSummary, GuideError>>>;
 
 /// Pre-computed per-trial summary. Much smaller than the full `Iteration`
 /// vectors, so Python can load it instantly.
@@ -67,19 +75,22 @@ impl GoalSummary {
                         trials
                             .iter()
                             .map(|trial| {
-                                trial.as_ref().map(|iters| {
-                                    let last = iters.last().expect("non-empty iteration list");
-                                    TrialSummary {
-                                        iters: iters.len(),
-                                        nodes: last.egraph_nodes,
-                                        classes: last.egraph_classes,
-                                        total_applied: iters
-                                            .iter()
-                                            .map(|i| i.applied.values().sum::<usize>())
-                                            .sum(),
-                                        total_time: iters.iter().map(|i| i.total_time).sum(),
-                                    }
-                                })
+                                trial
+                                    .as_ref()
+                                    .map(|iters| {
+                                        let last = iters.last().expect("non-empty iteration list");
+                                        TrialSummary {
+                                            iters: iters.len(),
+                                            nodes: last.egraph_nodes,
+                                            classes: last.egraph_classes,
+                                            total_applied: iters
+                                                .iter()
+                                                .map(|i| i.applied.values().sum::<usize>())
+                                                .sum(),
+                                            total_time: iters.iter().map(|i| i.total_time).sum(),
+                                        }
+                                    })
+                                    .map_err(|e| *e)
                             })
                             .collect(),
                     )
