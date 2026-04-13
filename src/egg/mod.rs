@@ -117,14 +117,16 @@ pub trait ToEgg<L: Label>: TreeShaped<L> {
     fn add_node<F: FnMut(&Self, Self::Lang) -> Id>(&self, adder: &mut F) -> Id;
 }
 
-pub fn iter_check_hook<
+pub fn valididty_hook<
     L: Language + Display,
     N: Analysis<L> + Default,
     LL: Label,
     T: ToEgg<LL, Lang = L>,
 >(
     tree: &T,
-    min_iters: usize,
+    min_iters: Option<usize>,
+    min_nodes: Option<usize>,
+    min_time: Option<f64>,
     rules: &[Rewrite<L, N>],
 ) -> bool {
     let expr = tree.to_rec_expr();
@@ -135,21 +137,33 @@ pub fn iter_check_hook<
     // '(cos (* (sqrt (* x (sqrt (i (/ 0 x) x)))) (sin (+ (pow 1 (/ 1 2)) (cos 2)))))'
     // The issue is that the binder check does not catch (i (/ 0 x) x) although (/ 0 x)
     // trivially simplifies to 0
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        Runner::default()
-            .with_expr(&expr)
-            .with_scheduler(SimpleScheduler)
-            .with_iter_limit(min_iters)
-            .run(rules)
-    }))
-    .map_or_else(
-        |_| {
-            println!("panic caught in iter_check_hook for expr: {expr}");
-            println!("It is safe to ignore the output of egg here");
-            false
-        },
-        |r| matches!(r.stop_reason, Some(StopReason::IterationLimit(_))),
-    )
+    let mut runner = Runner::default()
+        .with_expr(&expr)
+        .with_scheduler(SimpleScheduler);
+
+    if let Some(i) = min_iters {
+        runner = runner.with_iter_limit(i);
+    }
+
+    if let Some(n) = min_nodes {
+        runner = runner.with_node_limit(n);
+    }
+
+    if let Some(t) = min_time {
+        runner = runner.with_time_limit(Duration::from_secs_f64(t));
+    }
+
+    let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
+        println!("panic caught in iter_check_hook for expr: {expr}");
+        println!("It is safe to ignore the output of egg here");
+        return false;
+    };
+    match r.stop_reason {
+        Some(StopReason::IterationLimit(_)) => min_iters.is_some(),
+        Some(StopReason::NodeLimit(_)) => min_nodes.is_some(),
+        Some(StopReason::TimeLimit(_)) => min_time.is_some(),
+        Some(StopReason::Saturated | StopReason::Other(_)) | None => false,
+    }
 }
 
 pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>

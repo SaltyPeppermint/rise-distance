@@ -9,7 +9,7 @@ use rand_chacha::ChaCha12Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rise_distance::cli::RULES;
 use rise_distance::egg::math::generate::BoltzmannSampler;
-use rise_distance::egg::{iter_check_hook, math};
+use rise_distance::egg::{math, valididty_hook};
 use serde::Serialize;
 
 use rise_distance::cli::argtypes::Distribution;
@@ -67,8 +67,16 @@ struct Cli {
     path: PathBuf,
 
     /// Minimum iter complexity for the term
-    #[arg(long, default_value_t = 10)]
-    min_iters: usize,
+    #[arg(long)]
+    min_iters: Option<usize>,
+
+    /// Minimum nodes complexity for the term
+    #[arg(long)]
+    min_nodes: Option<usize>,
+
+    /// Minimum time complexity for the term
+    #[arg(long)]
+    min_time: Option<f64>,
 }
 
 fn main() {
@@ -109,7 +117,9 @@ fn main() {
                 let inserted = 'retry: {
                     for _ in 0..cli.retry_limit {
                         let (candidate, attempts) = sampler
-                            .sample(&mut rng, &|t| iter_check_hook(t, cli.min_iters, rules))
+                            .sample(&mut rng, &|t| {
+                                valididty_hook(t, cli.min_iters, cli.min_nodes, cli.min_time, rules)
+                            })
                             .expect("Too many failed sample attempts");
                         total_attempts += attempts;
                         if let Entry::Vacant(e) = collector.entry(candidate) {
