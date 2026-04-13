@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -5,24 +6,21 @@ use std::time::Duration;
 
 use clap::Parser;
 use egg::RecExpr;
-use indicatif::{ParallelProgressIterator, ProgressStyle};
-use rand::SeedableRng;
-use rand::seq::SliceRandom;
+use num::BigUint;
+use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
+use rise_distance::count::Counter;
 use serde::Serialize;
 use serde_json::json;
 
 use rise_distance::cli::argtypes::{SampleStrategy, SeedInput, TermSampleDist};
-use rise_distance::cli::parquet::{dump_goal_summary_parquet, dump_to_parquet};
-use rise_distance::cli::types::{GoalSummary, GuideEval, TrialsPerK};
-use rise_distance::cli::{
-    RULES, TRIAL_SIZE, get_run_folder, init_log, measure_guide, min_med_max, sample_frontier_terms,
-    trial_avg,
-};
-use rise_distance::egg::math::{self, Math, MathLabel};
-use rise_distance::egg::{ToEgg, convert, run_guide_goal, stop_reason_str, verify_reachability};
-use rise_distance::{OriginTree, TreeShaped, tee_println};
+use rise_distance::cli::parquet::dump_summary_parquet;
+use rise_distance::cli::types::{GoalSummary, TrialsPerK};
+use rise_distance::cli::{PrecomputePackage, RULES, TRIAL_SIZE, get_run_folder, init_log};
+use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
+use rise_distance::egg::{ToEgg, big_eqsat, stop_reason_str, verify_reachability};
+use rise_distance::tee_println;
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -99,10 +97,6 @@ struct Cli {
     #[arg(long, default_value_t = 11)]
     top: usize,
 
-    /// Sample Strategy
-    #[arg(long)]
-    eval_all: bool,
-
     /// Use the experimental `add_with_full_union` for the new egraph
     #[arg(long)]
     full_union: bool,
@@ -162,9 +156,7 @@ fn main() {
     let mut all_stats: Vec<serde_json::Value> = Vec::new();
 
     for (seed_str, seed_expr, max_size) in &seeds {
-        if let Some((results, stats)) =
-            process_seed(&cli, seed_str, seed_expr, *max_size, &run_folder)
-        {
+        if let Some((results, stats)) = process_seed(&cli, seed_str, seed_expr, *max_size) {
             all_stats.push(stats);
             all_results.extend(results);
         }
@@ -183,11 +175,10 @@ fn process_seed(
     seed_str: &str,
     seed_expr: &RecExpr<Math>,
     max_size: usize,
-    run_folder: &Path,
 ) -> Option<(Vec<GoalResults>, serde_json::Value)> {
     tee_println!("\n=== Seed: {seed_str} (max_size={max_size}) ===");
 
-    let result = run_guide_goal(
+    let result = big_eqsat(
         seed_expr,
         RULES.get_or_init(math::rules),
         Duration::from_secs_f64(cli.time_limit),
@@ -207,7 +198,6 @@ fn process_seed(
 
     let guide_nodes = result.guide().total_number_of_nodes();
     let guide_classes = result.guide().classes().len();
-    let guide_iters = result.guide_iters();
     let goal_nodes = result.goal().total_number_of_nodes();
     let goal_classes = result.goal().classes().len();
     let goal_iters = result.goal_iters();
@@ -218,14 +208,13 @@ fn process_seed(
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
 
     let root = result.root();
-    let goals = sample_frontier_terms(
-        &convert(result.goal(), root),
-        result.prev_goal(),
-        cli.goals,
+    let goals = PrecomputePackage::<BigUint, _, _, _>::precompute(
+        result.goal(),
+        result.prev_goal().to_owned(),
+        root,
         max_size,
-        cli.size_distribution,
-        cli.goal_sample_strategy,
-    )?;
+    )?
+    .sample_frontier_terms(cli.goals, cli.size_distribution, cli.goal_sample_strategy)?;
     if goals.is_empty() {
         tee_println!(
             "WARNING: Frontier empty for seed '{seed_str}'. Skipping. Try more iterations or a larger max-size."
@@ -233,28 +222,25 @@ fn process_seed(
         return None;
     }
     tee_println!("Sampled {} goal(s)", goals.len());
-    tee_println!("\nGetting guides from iteration-{guide_iters} frontier...",);
 
-    let mut stats = json!({
+    let stats = json!({
         "seed": seed_str,
         "max_size": max_size,
-        "guide_egraph_iters": result.goal_iters(),
+        "guide_egraph_iters": result.guide_iters(),
         "guide_egraph_nodes": guide_nodes,
         "guide_egraph_classes": guide_classes,
         "guide_eqsat_time": guide_secs,
-        "goal_egraph_iters": result.guide_iters(),
+        "goal_egraph_iters": result.goal_iters(),
         "goal_egraph_nodes": goal_nodes,
         "goal_egraph_classes": goal_classes,
         "goal_eqsat_time": goal_secs,
     });
 
-    let sampled_guides = sample_frontier_terms(
-        &convert(result.guide(), root),
-        result.prev_guide(),
-        cli.guides,
+    let pc = PrecomputePackage::<BigUint, _, _, _>::precompute(
+        result.guide(),
+        result.prev_guide().clone(),
+        root,
         max_size,
-        cli.size_distribution,
-        cli.guide_sample_strategy,
     )?;
 
     tee_println!("\nRunning top_k experiments...");
@@ -265,80 +251,68 @@ fn process_seed(
             GoalResults {
                 seed: seed_str.to_owned(),
                 goal: goal.to_string(),
-                runs: run_guide_set_trials(cli, &goal.to_rec_expr(), &sampled_guides),
+                runs: run_guide_set_trials(cli, &goal.to_rec_expr(), &pc),
             }
         })
         .collect();
-    if cli.eval_all {
-        tee_println!("\nRunning eval_all...");
-        let big_stats = goals
-            .iter()
-            .map(|goal| {
-                tee_println!("Current goal: {}", goal.to_string());
-                eval_all_fn(
-                    cli,
-                    goal,
-                    seed_str,
-                    run_folder,
-                    goal.to_rec_expr(),
-                    &sampled_guides,
-                )
-            })
-            .collect::<Vec<_>>();
-        stats["all_eval_stats"] = big_stats.into();
-    }
+    // if cli.eval_all {
+    //     tee_println!("\nRunning eval_all...");
+    //     let big_stats = goals
+    //         .iter()
+    //         .map(|goal| {
+    //             tee_println!("Current goal: {}", goal.to_string());
+    //             eval_all_fn(
+    //                 cli,
+    //                 goal,
+    //                 seed_str,
+    //                 run_folder,
+    //                 goal.to_rec_expr(),
+    //                 &sampled_guides,
+    //             )
+    //         })
+    //         .collect::<Vec<_>>();
+    //     stats["all_eval_stats"] = big_stats.into();
+    // }
     Some((goal_results, stats))
 }
 
-// #[allow(clippy::too_many_arguments)]
-// fn evaluate_goal(
+// fn eval_all_fn(
 //     cli: &Cli,
-//     result: &GuideGoalResult<Math, ConstantFold>,
-//     root: Id,
 //     goal: &OriginTree<MathLabel>,
 //     seed_str: &str,
-//     max_size: usize,
-// ) -> Option<GoalResults> {
-//     let goal_recexpr = goal.to_rec_expr();
+//     run_folder: &Path,
+//     goal_recexpr: RecExpr<Math>,
+//     sampled_guides: &[OriginTree<MathLabel>],
+// ) -> serde_json::Value {
+//     let pb_style = ProgressStyle::with_template(
+//         "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
+//     )
+//     .unwrap();
+//     let goal_flat = goal.flatten(false);
+//     let results = sampled_guides
+//         .into_par_iter()
+//         .progress_with_style(pb_style)
+//         .map(move |guide| {
+//             let measurements = measure_guide(guide, &goal_flat);
+//             let iterations = verify_reachability(
+//                 std::slice::from_ref(guide).iter(),
+//                 &goal_recexpr,
+//                 RULES.get_or_init(math::rules),
+//                 Duration::from_secs_f64(cli.time_limit),
+//                 cli.node_limit,
+//                 cli.full_union,
+//             );
+//             GuideEval {
+//                 guide: guide.clone(),
+//                 measurements,
+//                 iterations,
+//             }
+//         })
+//         .collect::<Vec<_>>();
+//     let stat = print_summary(&results, goal);
+//     dump_to_parquet(run_folder, seed_str, goal, &results);
+//     stat
 // }
-
-fn eval_all_fn(
-    cli: &Cli,
-    goal: &OriginTree<MathLabel>,
-    seed_str: &str,
-    run_folder: &Path,
-    goal_recexpr: RecExpr<Math>,
-    sampled_guides: &[OriginTree<MathLabel>],
-) -> serde_json::Value {
-    let pb_style = ProgressStyle::with_template(
-        "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
-    )
-    .unwrap();
-    let goal_flat = goal.flatten(false);
-    let results = sampled_guides
-        .into_par_iter()
-        .progress_with_style(pb_style)
-        .map(move |guide| {
-            let measurements = measure_guide(guide, &goal_flat);
-            let iterations = verify_reachability(
-                std::slice::from_ref(guide).iter(),
-                &goal_recexpr,
-                RULES.get_or_init(math::rules),
-                Duration::from_secs_f64(cli.time_limit),
-                cli.node_limit,
-                cli.full_union,
-            );
-            GuideEval {
-                guide: guide.clone(),
-                measurements,
-                iterations,
-            }
-        })
-        .collect::<Vec<_>>();
-    let stat = print_summary(&results, goal);
-    dump_to_parquet(run_folder, seed_str, goal, &results);
-    stat
-}
 
 fn write_top_k_outputs(run_folder: &Path, all_results: &[GoalResults]) {
     let output_path = run_folder.join("top_k.json");
@@ -356,7 +330,7 @@ fn write_top_k_outputs(run_folder: &Path, all_results: &[GoalResults]) {
     serde_json::to_writer(summary_writer, &summaries).expect("write top-k summary json");
 
     let parquet_path = run_folder.join("top_k_summary.parquet");
-    dump_goal_summary_parquet(&parquet_path, &summaries);
+    dump_summary_parquet(&parquet_path, &summaries);
 }
 
 fn write_config(run_folder: &Path, cli: &Cli) {
@@ -372,12 +346,15 @@ fn write_stats(run_folder: &Path, stats: &[serde_json::Value]) {
     serde_json::to_writer_pretty(stats_writer, stats).expect("write stats json");
 }
 
-fn run_guide_set_trials(
+fn run_guide_set_trials<C>(
     cli: &Cli,
     goal_recexpr: &RecExpr<Math>,
-    sampled_guides: &[OriginTree<MathLabel>],
-) -> TrialsPerK {
-    assert!(sampled_guides.len() >= 10 * TRIAL_SIZE[TRIAL_SIZE.len() - 1]);
+    pc: &PrecomputePackage<C, MathLabel, Math, ConstantFold>,
+) -> TrialsPerK
+where
+    C: Counter + Display + Ord,
+{
+    // assert!(sampler.len() >= 10 * TRIAL_SIZE[TRIAL_SIZE.len() - 1]);
     TRIAL_SIZE
         .into_par_iter()
         .map(|k| {
@@ -387,9 +364,11 @@ fn run_guide_set_trials(
                 .map(|s| {
                     let mut inner_rng = outer_rng.clone();
                     inner_rng.set_stream(s);
-                    let subset = sampled_guides.choose_multiple(&mut inner_rng, k);
+                    let subset = pc
+                        .sample_frontier_terms(k, cli.size_distribution, cli.guide_sample_strategy)
+                        .unwrap();
                     verify_reachability(
-                        subset,
+                        subset.iter(),
                         goal_recexpr,
                         RULES.get_or_init(math::rules),
                         Duration::from_secs_f64(cli.time_limit),
@@ -405,30 +384,30 @@ fn run_guide_set_trials(
         .collect()
 }
 
-fn log_trials(k: usize, trials: &[Option<Vec<egg::Iteration<()>>>]) {
-    let reached = trials.iter().filter(|v| v.is_some()).count();
-    let combined_iters = trial_avg(trials, |t| Some(t.len()));
-    let combined_nodes = trial_avg(trials, |t| t.last().map(|i| i.egraph_nodes));
-    let combined_time = trial_avg(trials, |t| t.last().map(|i| i.total_time));
-    if let (Some(avg_i), Some(avg_n), Some(avg_t)) = (combined_iters, combined_nodes, combined_time)
-    {
-        tee_println!(
-            "--- k = {k} guides ---\n\
-                      Reached goal : {reached} / {}\n\
-                      Avg iters    : {avg_i:.1}\n\
-                      Avg nodes    : {avg_n:.0}\n\
-                      Avg time     : {avg_t:.1}s",
-            trials.len(),
-        );
-    } else {
-        tee_println!(
-            "--- k = {k} guides ---\n\
-                      Reached goal : {reached} / {}\n\
-                      Could NOT reach goal",
-            trials.len()
-        );
-    }
-}
+// fn log_trials(k: usize, trials: &[Option<Vec<egg::Iteration<()>>>]) {
+//     let reached = trials.iter().filter(|v| v.is_some()).count();
+//     let combined_iters = trial_avg(trials, |t| Some(t.len()));
+//     let combined_nodes = trial_avg(trials, |t| t.last().map(|i| i.egraph_nodes));
+//     let combined_time = trial_avg(trials, |t| t.last().map(|i| i.total_time));
+//     if let (Some(avg_i), Some(avg_n), Some(avg_t)) = (combined_iters, combined_nodes, combined_time)
+//     {
+//         tee_println!(
+//             "--- k = {k} guides ---\n\
+//                       Reached goal : {reached} / {}\n\
+//                       Avg iters    : {avg_i:.1}\n\
+//                       Avg nodes    : {avg_n:.0}\n\
+//                       Avg time     : {avg_t:.1}s",
+//             trials.len(),
+//         );
+//     } else {
+//         tee_println!(
+//             "--- k = {k} guides ---\n\
+//                       Reached goal : {reached} / {}\n\
+//                       Could NOT reach goal",
+//             trials.len()
+//         );
+//     }
+// }
 
 #[derive(Serialize)]
 struct GoalResults {
@@ -437,56 +416,56 @@ struct GoalResults {
     runs: TrialsPerK,
 }
 
-#[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-fn print_summary(
-    results: &[GuideEval<MathLabel>],
-    goal: &OriginTree<MathLabel>,
-) -> serde_json::Value {
-    let successful = results
-        .iter()
-        .filter(|r| r.iterations.is_some())
-        .collect::<Vec<_>>();
-    let total = results.len();
-    let n_reached = successful.len();
-    let goal_size = goal.size_without_types();
-    let reach_pct = 100.0 * n_reached as f64 / total.max(1) as f64;
+// #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
+// fn print_summary(
+//     results: &[GuideEval<MathLabel>],
+//     goal: &OriginTree<MathLabel>,
+// ) -> serde_json::Value {
+//     let successful = results
+//         .iter()
+//         .filter(|r| r.iterations.is_some())
+//         .collect::<Vec<_>>();
+//     let total = results.len();
+//     let n_reached = successful.len();
+//     let goal_size = goal.size_without_types();
+//     let reach_pct = 100.0 * n_reached as f64 / total.max(1) as f64;
 
-    tee_println!("\nSummary for goal: {goal}");
-    tee_println!("  Goal size: {goal_size}");
-    tee_println!("  Total guides evaluated: {total}");
-    tee_println!("  Guides that reached goal: {n_reached}/{total} ({reach_pct:.1}%)");
+//     tee_println!("\nSummary for goal: {goal}");
+//     tee_println!("  Goal size: {goal_size}");
+//     tee_println!("  Total guides evaluated: {total}");
+//     tee_println!("  Guides that reached goal: {n_reached}/{total} ({reach_pct:.1}%)");
 
-    let mut stat = json!({
-        "goal": goal.to_string(),
-        "goal_size": goal_size,
-        "total_guides": total,
-        "reached": n_reached,
-        "reach_pct": reach_pct,
-    });
-    if successful.is_empty() {
-        return stat;
-    }
+//     let mut stat = json!({
+//         "goal": goal.to_string(),
+//         "goal_size": goal_size,
+//         "total_guides": total,
+//         "reached": n_reached,
+//         "reach_pct": reach_pct,
+//     });
+//     if successful.is_empty() {
+//         return stat;
+//     }
 
-    let (min, med, max) = min_med_max(&successful, |r| r.measurements.zs_distance);
-    tee_println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Successful guide zs_dists:"
-    );
-    stat["zs_distance"] = json!({"min": min, "median": med, "max": max});
+//     let (min, med, max) = min_med_max(&successful, |r| r.measurements.zs_distance);
+//     tee_println!(
+//         "  {:<30} min={min}, median={med}, max={max}",
+//         "Successful guide zs_dists:"
+//     );
+//     stat["zs_distance"] = json!({"min": min, "median": med, "max": max});
 
-    let (min, med, max) = min_med_max(&successful, |r| r.measurements.structural_distance);
-    tee_println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Successful guide struct_dist:"
-    );
-    stat["structural_distance"] = json!({"min": min, "median": med, "max": max});
+//     let (min, med, max) = min_med_max(&successful, |r| r.measurements.structural_distance);
+//     tee_println!(
+//         "  {:<30} min={min}, median={med}, max={max}",
+//         "Successful guide struct_dist:"
+//     );
+//     stat["structural_distance"] = json!({"min": min, "median": med, "max": max});
 
-    let (min, med, max) = min_med_max(&successful, |v| v.iterations.as_ref().unwrap().len());
-    tee_println!(
-        "  {:<30} min={min}, median={med}, max={max}",
-        "Iterations to reach:"
-    );
-    stat["iterations_to_reach"] = json!({"min": min, "median": med, "max": max});
+//     let (min, med, max) = min_med_max(&successful, |v| v.iterations.as_ref().unwrap().len());
+//     tee_println!(
+//         "  {:<30} min={min}, median={med}, max={max}",
+//         "Iterations to reach:"
+//     );
+//     stat["iterations_to_reach"] = json!({"min": min, "median": med, "max": max});
 
-    stat
-}
+//     stat
+// }

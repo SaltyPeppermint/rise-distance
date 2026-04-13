@@ -19,7 +19,7 @@ use crate::{Label, OriginTree, tee_println};
 /// # Panics
 ///
 /// Panics if it cannot create/open the file or write the data.
-pub fn dump_to_parquet<L: Label>(
+pub fn dump_full_eval_parquet<L: Label>(
     run_folder: &Path,
     seed: &str,
     goal: &OriginTree<L>,
@@ -38,7 +38,7 @@ pub fn dump_to_parquet<L: Label>(
     let parquet_path = out_dir.join(format!("{next_id}.parquet"));
     let goal_str = goal.to_string();
 
-    let schema = parquet_schema();
+    let schema = full_eval_schema();
 
     // Build column arrays
     let n = results.len();
@@ -133,7 +133,7 @@ pub fn dump_to_parquet<L: Label>(
     tee_println!("Wrote goal to {}", parquet_path.display());
 }
 
-fn parquet_schema() -> Arc<Schema> {
+fn full_eval_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("seed", DataType::Utf8, false),
         Field::new("goal", DataType::Utf8, false),
@@ -164,19 +164,10 @@ fn parquet_schema() -> Arc<Schema> {
 /// # Panics
 ///
 /// Panics on I/O or Arrow errors.
-pub fn dump_goal_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("seed", DataType::Utf8, false),
-        Field::new("goal", DataType::Utf8, false),
-        Field::new("k", DataType::UInt64, false),
-        Field::new("iters", DataType::UInt64, true),
-        Field::new("nodes", DataType::UInt64, true),
-        Field::new("classes", DataType::UInt64, true),
-        Field::new("total_applied", DataType::UInt64, true),
-        Field::new("total_time", DataType::Float64, true),
-    ]));
+pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
+    let schema = summary_schema();
 
-    let n: usize = summaries
+    let n = summaries
         .iter()
         .map(|s| {
             s.entries_per_k
@@ -243,4 +234,17 @@ pub fn dump_goal_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
         ArrowWriter::try_new(file, schema, Some(props)).expect("create parquet writer");
     writer.write(&batch).expect("write parquet batch");
     writer.close().expect("close parquet writer");
+}
+
+fn summary_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("seed", DataType::Utf8, false),
+        Field::new("goal", DataType::Utf8, false),
+        Field::new("k", DataType::UInt64, false),
+        Field::new("iters", DataType::UInt64, true),
+        Field::new("nodes", DataType::UInt64, true),
+        Field::new("classes", DataType::UInt64, true),
+        Field::new("total_applied", DataType::UInt64, true),
+        Field::new("total_time", DataType::Float64, true),
+    ]))
 }

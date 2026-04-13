@@ -7,6 +7,7 @@ pub use logging::{_tee_print, init_log};
 pub use types::*;
 
 use std::env::current_dir;
+use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -18,9 +19,9 @@ use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
 use crate::cli::argtypes::{SampleStrategy, TermSampleDist};
-use crate::count::TermCount;
+use crate::count::{Counter, TermCount};
 use crate::egg::math::ConstantFold;
-use crate::egg::{Math, ToEgg};
+use crate::egg::{Math, ToEgg, convert};
 use crate::sampling::{CountSampler, NaiveSampler, Sampler, ZSDistanceSampler};
 use crate::tee_println;
 use crate::tree::{OriginTree, TreeShaped, UnfoldedTree};
@@ -97,58 +98,101 @@ const OVERSAMPLE_SCHEDULE: [usize; 16] = {
     arr
 };
 
-/// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
-pub fn sample_frontier_terms<L, N, LL>(
-    graph: &Graph<LL>,
-    prev_raw_egg: &egg::EGraph<L, N>,
-    count: usize,
-    max_size: usize,
-    distribution: TermSampleDist,
-    sample_strategy: SampleStrategy,
-) -> Option<Vec<OriginTree<LL>>>
+pub struct PrecomputePackage<C, LL, L, N>
 where
     L: Language + Sync,
     L::Discriminant: Sync,
     N: Analysis<L> + Sync,
     N::Data: Sync,
-    LL: Label,
+    LL: Label + for<'a> std::convert::From<&'a L>,
     OriginTree<LL>: ToEgg<LL, Lang = L>,
+    C: Counter + Display + Ord,
 {
-    let tc = TermCount::<BigUint>::new(max_size, false, graph);
+    tc: TermCount<C>,
+    min_size: usize,
+    max_size: usize,
+    prev_raw_egg: egg::EGraph<L, N>,
+    graph: Graph<LL>,
+}
 
-    let histogram = tc.data.get(&graph.root())?;
+impl<C, LL, L, N> PrecomputePackage<C, LL, L, N>
+where
+    L: Language + Sync,
+    L::Discriminant: Sync,
+    N: Analysis<L> + Sync,
+    N::Data: Sync,
+    LL: Label + for<'a> std::convert::From<&'a L>,
+    OriginTree<LL>: ToEgg<LL, Lang = L>,
+    C: Counter + Display + Ord,
+{
+    pub fn precompute(
+        guide_egg: &egg::EGraph<L, N>,
+        prev_raw_egg: egg::EGraph<L, N>,
+        root: egg::Id,
+        max_size: usize,
+    ) -> Option<PrecomputePackage<C, LL, L, N>> {
+        let graph = convert(guide_egg, root);
+        let tc = TermCount::<C>::new(max_size, false, &graph);
+        let histogram = tc.data.get(&graph.root())?;
+        let mut sorted_hist = histogram
+            .iter()
+            .map(|(a, b)| (*a, b.to_owned()))
+            .collect::<Vec<_>>();
+        sorted_hist.sort_unstable();
+        tee_println!("Terms in frontier:");
+        for (k, v) in &sorted_hist {
+            tee_println!("{v} terms of size {k}");
+        }
 
-    let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
-    sorted_hist.sort_unstable();
-    tee_println!("Terms in frontier:");
-    for (k, v) in &sorted_hist {
-        tee_println!("{v} terms of size {k}");
+        let min_size = histogram.keys().min().copied().unwrap_or(1);
+        Some(PrecomputePackage {
+            tc,
+            min_size,
+            max_size,
+            prev_raw_egg,
+            graph,
+        })
     }
 
-    let min_size = histogram.keys().min().copied().unwrap_or(1);
-    OVERSAMPLE_SCHEDULE.iter().find_map(|oversample| {
+    /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
+    pub fn sample_frontier_terms(
+        &self,
+        count: usize,
+        distribution: TermSampleDist,
+        sample_strategy: SampleStrategy,
+    ) -> Option<Vec<OriginTree<LL>>>
+    where
+        L: Language + Sync,
+        L::Discriminant: Sync,
+        N: Analysis<L> + Sync,
+        N::Data: Sync,
+        LL: Label,
+        OriginTree<LL>: ToEgg<LL, Lang = L>,
+    {
+        let histogram = self.tc.data.get(&self.graph.root())?;
+        OVERSAMPLE_SCHEDULE.iter().find_map(|oversample| {
         let samples_per_size =
-            distribution.samples_per_size(histogram, min_size, max_size, count * oversample);
+            distribution.samples_per_size(histogram, self.min_size, self.max_size, count * oversample);
         let batch = match sample_strategy {
             SampleStrategy::Naive => {
-                NaiveSampler::new(&tc, graph).sample_batch_root(&samples_per_size)
+                NaiveSampler::new(&self.tc, &self.graph).sample_batch_root(&samples_per_size)
             }
             SampleStrategy::CountBased => {
-                CountSampler::new(&tc, graph).sample_batch_root(&samples_per_size)
+                CountSampler::new(&self.tc, &self.graph).sample_batch_root(&samples_per_size)
             }
             SampleStrategy::ZSDiverseNaive => {
-                ZSDistanceSampler::new(NaiveSampler::new(&tc, graph), UnitCost, 0.5, false)
+                ZSDistanceSampler::new(NaiveSampler::new(&self.tc, &self.graph), UnitCost, 0.5, false)
                     .sample_batch_root(&samples_per_size)
             }
             SampleStrategy::ZSDiverseCountBased => {
-                ZSDistanceSampler::new(CountSampler::new(&tc, graph), UnitCost, 0.5, false)
+                ZSDistanceSampler::new(CountSampler::new(&self.tc, &self.graph), UnitCost, 0.5, false)
                     .sample_batch_root(&samples_per_size)
             }
         };
 
         let results = batch
             .into_par_iter()
-            .filter(|t| is_frontier(t, prev_raw_egg))
+            .filter(|t| is_frontier(t, &self.prev_raw_egg))
             .collect::<HashSet<_>>();
         if results.len() >= count {
             Some(results.into_par_iter().take_any(count).collect())
@@ -160,6 +204,7 @@ where
             None
         }
     })
+    }
 }
 
 /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg`.

@@ -241,7 +241,7 @@ where
 ///
 /// Panics if `n_guide == 0`, `n_goal <= n_guide`, or if the runner
 /// saturates before reaching `n_goal` iterations.
-pub fn run_guide_goal<'a, L, N, R>(
+pub fn big_eqsat<'a, L, N, R>(
     start: &RecExpr<L>,
     rules: R,
     time_limit: Duration,
