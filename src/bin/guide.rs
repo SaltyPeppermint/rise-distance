@@ -109,7 +109,7 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
     let prefix = format!(
-        "{}-{}-{}-fullunion-{}",
+        "nodes-{}-time-{}-strategy-{}-fullunion-{}",
         cli.node_limit, cli.time_limit, cli.guide_sample_strategy, cli.full_union
     );
     let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
