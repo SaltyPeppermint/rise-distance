@@ -301,7 +301,7 @@ def load_top_k(run_dir: Path, strategy_name: str) -> pl.DataFrame:
       - total_time += guide_eqsat_time
     """
     with open(run_dir / "stats.json", encoding="utf-8") as f:
-        run_stats = json.load(f)[0]["run_stats"]
+        run_stats = json.load(f)[0]
     guide_nodes = run_stats["guide_egraph_nodes"]
     guide_time = run_stats["guide_eqsat_time"]
 
