@@ -1,15 +1,7 @@
 use std::fs::File;
 use std::path::Path;
-use std::sync::Arc;
 
-use arrow::array::{
-    ArrayRef, BooleanBuilder, Float64Builder, ListBuilder, StringBuilder, UInt64Builder,
-};
-use arrow::datatypes::{DataType, Field, Schema};
-use arrow::record_batch::RecordBatch;
-use parquet::arrow::ArrowWriter;
-use parquet::basic::{Compression, ZstdLevel};
-use parquet::file::properties::WriterProperties;
+use polars::prelude::*;
 
 use super::{GoalSummary, GuideError, GuideEval};
 use crate::{Label, OriginTree, tee_println};
@@ -39,137 +31,76 @@ pub fn dump_full_eval_parquet<L: Label>(
 
     let parquet_path = out_dir.join(format!("{next_id}.parquet"));
     let goal_str = goal.to_string();
-
-    let schema = full_eval_schema();
-
-    // Build column arrays
     let n = results.len();
-    let mut seeds = StringBuilder::with_capacity(n, seed.len() * n);
-    let mut goals = StringBuilder::with_capacity(n, goal_str.len() * n);
-    let mut guides = StringBuilder::new();
-    let mut zs_distances = UInt64Builder::with_capacity(n);
-    let mut structural_overlaps = UInt64Builder::with_capacity(n);
-    let mut structural_zs_sums = UInt64Builder::with_capacity(n);
-    let mut iterations_to_reach = UInt64Builder::with_capacity(n);
-    let mut ms_to_reach = Float64Builder::with_capacity(n);
-    let mut nodes_to_reach = ListBuilder::new(UInt64Builder::new()).with_field(Field::new(
-        "item",
-        DataType::UInt64,
-        false,
-    ));
-    let mut classes_to_reach = ListBuilder::new(UInt64Builder::new()).with_field(Field::new(
-        "item",
-        DataType::UInt64,
-        false,
-    ));
 
+    // List columns need a dedicated builder; df! doesn't handle them.
+    let mut nodes_builder = ListPrimitiveChunkedBuilder::<UInt64Type>::new(
+        "nodes_to_reach".into(),
+        n,
+        n * 10,
+        DataType::UInt64,
+    );
+    let mut classes_builder = ListPrimitiveChunkedBuilder::<UInt64Type>::new(
+        "classes_to_reach".into(),
+        n,
+        n * 10,
+        DataType::UInt64,
+    );
     for r in results {
-        seeds.append_value(seed);
-        goals.append_value(&goal_str);
-        guides.append_value(r.guide.to_string());
-
-        zs_distances.append_value(r.measurements.zs_distance.try_into().unwrap());
-        structural_overlaps.append_value(
-            r.measurements
-                .structural_distance
-                .overlap()
-                .try_into()
-                .unwrap(),
-        );
-        structural_zs_sums.append_value(
-            r.measurements
-                .structural_distance
-                .zs_sum()
-                .try_into()
-                .unwrap(),
-        );
-
         if let Some(iters) = &r.iterations {
-            iterations_to_reach.append_value(iters.len().try_into().unwrap());
-            let t = iters.iter().map(|i| i.total_time).sum::<f64>();
-            ms_to_reach.append_value(t);
-            let node_vals = iters
-                .iter()
-                .map(|i| Some(i.egraph_nodes.try_into().unwrap()));
-            nodes_to_reach.append_value(node_vals);
-            let class_vals = iters
-                .iter()
-                .map(|i| Some(i.egraph_classes.try_into().unwrap()));
-            classes_to_reach.append_value(class_vals);
+            nodes_builder.append_slice(
+                &iters
+                    .iter()
+                    .map(|i| i.egraph_nodes as u64)
+                    .collect::<Vec<_>>(),
+            );
+            classes_builder.append_slice(
+                &iters
+                    .iter()
+                    .map(|i| i.egraph_classes as u64)
+                    .collect::<Vec<_>>(),
+            );
         } else {
-            iterations_to_reach.append_null();
-            ms_to_reach.append_null();
-            nodes_to_reach.append_null();
-            classes_to_reach.append_null();
+            nodes_builder.append_null();
+            classes_builder.append_null();
         }
     }
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(seeds.finish()) as ArrayRef,
-            Arc::new(goals.finish()) as ArrayRef,
-            Arc::new(guides.finish()) as ArrayRef,
-            Arc::new(zs_distances.finish()) as ArrayRef,
-            Arc::new(structural_overlaps.finish()) as ArrayRef,
-            Arc::new(structural_zs_sums.finish()) as ArrayRef,
-            Arc::new(iterations_to_reach.finish()) as ArrayRef,
-            Arc::new(ms_to_reach.finish()) as ArrayRef,
-            Arc::new(nodes_to_reach.finish()) as ArrayRef,
-            Arc::new(classes_to_reach.finish()) as ArrayRef,
-        ],
-    )
-    .expect("build record batch");
+    let mut df = df! {
+        "seed"                => vec![seed; n],
+        "goal"                => vec![goal_str.as_str(); n],
+        "guide"               => results.iter().map(|r| r.guide.to_string()).collect::<Vec<_>>(),
+        "zs_distance"         => results.iter().map(|r| r.measurements.zs_distance as u64).collect::<Vec<_>>(),
+        "structural_overlap"  => results.iter().map(|r| r.measurements.structural_distance.overlap() as u64).collect::<Vec<_>>(),
+        "structural_zs_sum"   => results.iter().map(|r| r.measurements.structural_distance.zs_sum() as u64).collect::<Vec<_>>(),
+        "iterations_to_reach" => results.iter().map(|r| r.iterations.as_ref().map(|i| i.len() as u64)).collect::<Vec<Option<u64>>>(),
+        "ms_to_reach"         => results.iter().map(|r| r.iterations.as_ref().map(|i| i.iter().map(|x| x.total_time).sum::<f64>())).collect::<Vec<Option<f64>>>(),
+    }
+    .expect("build DataFrame");
+
+    df.with_column(nodes_builder.finish().into_series())
+        .expect("add nodes_to_reach column");
+    df.with_column(classes_builder.finish().into_series())
+        .expect("add classes_to_reach column");
 
     let file = File::create(&parquet_path).expect("create parquet file");
-    let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(
+    ParquetWriter::new(file)
+        .with_compression(ParquetCompression::Zstd(Some(
             ZstdLevel::try_new(3).expect("valid zstd level"),
-        ))
-        .build();
-    let mut writer =
-        ArrowWriter::try_new(file, schema, Some(props)).expect("create parquet writer");
-    writer.write(&batch).expect("write parquet batch");
-    writer.close().expect("close parquet writer");
+        )))
+        .finish(&mut df)
+        .expect("write parquet");
 
     tee_println!("Wrote goal to {}", parquet_path.display());
 }
 
-fn full_eval_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("seed", DataType::Utf8, false),
-        Field::new("goal", DataType::Utf8, false),
-        Field::new("guide", DataType::Utf8, false),
-        Field::new("zs_distance", DataType::UInt64, true),
-        Field::new("structural_overlap", DataType::UInt64, false),
-        Field::new("structural_zs_sum", DataType::UInt64, false),
-        Field::new("iterations_to_reach", DataType::UInt64, false),
-        Field::new("ms_to_reach", DataType::Float64, true),
-        Field::new(
-            "nodes_to_reach",
-            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-            true,
-        ),
-        Field::new(
-            "classes_to_reach",
-            DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
-            true,
-        ),
-    ]))
-}
-
 /// Write a flat `top_k_summary.parquet` from pre-computed summaries.
-///
-/// Columns: `goal` (Utf8), `k` (`UInt64`), `iters`/`nodes`/`classes`/`total_applied`
-/// (nullable `UInt64`), `total_time` (nullable `Float64`).
 ///
 /// # Panics
 ///
 /// Panics on I/O or Arrow errors.
 pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
-    let schema = summary_schema();
-
-    let n = summaries
+    let n: usize = summaries
         .iter()
         .map(|s| {
             s.entries_per_k
@@ -179,89 +110,66 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
         })
         .sum();
 
-    let mut seeds = StringBuilder::with_capacity(n, 64 * n);
-    let mut goals = StringBuilder::with_capacity(n, 64 * n);
-    let mut ks = UInt64Builder::with_capacity(n);
-    let mut iters = UInt64Builder::with_capacity(n);
-    let mut nodes = UInt64Builder::with_capacity(n);
-    let mut classes = UInt64Builder::with_capacity(n);
-    let mut total_applied = UInt64Builder::with_capacity(n);
-    let mut total_time = Float64Builder::with_capacity(n);
-    let mut not_enough_samples = BooleanBuilder::with_capacity(n);
-    let mut unreached = BooleanBuilder::with_capacity(n);
+    let mut seeds: Vec<&str> = Vec::with_capacity(n);
+    let mut goals: Vec<&str> = Vec::with_capacity(n);
+    let mut ks: Vec<u64> = Vec::with_capacity(n);
+    let mut iters: Vec<Option<u64>> = Vec::with_capacity(n);
+    let mut nodes: Vec<Option<u64>> = Vec::with_capacity(n);
+    let mut classes: Vec<Option<u64>> = Vec::with_capacity(n);
+    let mut total_applied: Vec<Option<u64>> = Vec::with_capacity(n);
+    let mut total_time: Vec<Option<f64>> = Vec::with_capacity(n);
+    let mut not_enough_samples: Vec<bool> = Vec::with_capacity(n);
+    let mut unreached: Vec<bool> = Vec::with_capacity(n);
 
     for summary in summaries {
         for (k, trials) in &summary.entries_per_k {
             for trial in trials {
-                seeds.append_value(&summary.seed);
-                goals.append_value(&summary.goal);
-                ks.append_value(*k as u64);
+                seeds.push(&summary.seed);
+                goals.push(&summary.goal);
+                ks.push(*k as u64);
                 match trial {
                     Ok(t) => {
-                        iters.append_value(t.iters as u64);
-                        nodes.append_value(t.nodes as u64);
-                        classes.append_value(t.classes as u64);
-                        total_applied.append_value(t.total_applied as u64);
-                        total_time.append_value(t.total_time);
-                        not_enough_samples.append_value(false);
-                        unreached.append_value(false);
+                        iters.push(Some(t.iters as u64));
+                        nodes.push(Some(t.nodes as u64));
+                        classes.push(Some(t.classes as u64));
+                        total_applied.push(Some(t.total_applied as u64));
+                        total_time.push(Some(t.total_time));
+                        not_enough_samples.push(false);
+                        unreached.push(false);
                     }
                     Err(e) => {
-                        iters.append_null();
-                        nodes.append_null();
-                        classes.append_null();
-                        total_applied.append_null();
-                        total_time.append_null();
-                        not_enough_samples
-                            .append_value(matches!(e, GuideError::InsufficientSamples));
-
-                        unreached.append_value(matches!(e, GuideError::Unreached));
+                        iters.push(None);
+                        nodes.push(None);
+                        classes.push(None);
+                        total_applied.push(None);
+                        total_time.push(None);
+                        not_enough_samples.push(matches!(e, GuideError::InsufficientSamples));
+                        unreached.push(matches!(e, GuideError::Unreached));
                     }
                 }
             }
         }
     }
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(seeds.finish()) as ArrayRef,
-            Arc::new(goals.finish()) as ArrayRef,
-            Arc::new(ks.finish()) as ArrayRef,
-            Arc::new(iters.finish()) as ArrayRef,
-            Arc::new(nodes.finish()) as ArrayRef,
-            Arc::new(classes.finish()) as ArrayRef,
-            Arc::new(total_applied.finish()) as ArrayRef,
-            Arc::new(total_time.finish()) as ArrayRef,
-            Arc::new(not_enough_samples.finish()) as ArrayRef,
-            Arc::new(unreached.finish()) as ArrayRef,
-        ],
-    )
-    .expect("build summary record batch");
+    let mut df = df! {
+        "seed"                => seeds,
+        "goal"                => goals,
+        "k"                   => ks,
+        "iters"               => iters,
+        "nodes"               => nodes,
+        "classes"             => classes,
+        "total_applied"       => total_applied,
+        "total_time"          => total_time,
+        "not_enough_samples"  => not_enough_samples,
+        "unreached"           => unreached,
+    }
+    .expect("build summary DataFrame");
 
     let file = File::create(path).expect("create summary parquet file");
-    let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(
+    ParquetWriter::new(file)
+        .with_compression(ParquetCompression::Zstd(Some(
             ZstdLevel::try_new(3).expect("valid zstd level"),
-        ))
-        .build();
-    let mut writer =
-        ArrowWriter::try_new(file, schema, Some(props)).expect("create parquet writer");
-    writer.write(&batch).expect("write parquet batch");
-    writer.close().expect("close parquet writer");
-}
-
-fn summary_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("seed", DataType::Utf8, false),
-        Field::new("goal", DataType::Utf8, false),
-        Field::new("k", DataType::UInt64, false),
-        Field::new("iters", DataType::UInt64, true),
-        Field::new("nodes", DataType::UInt64, true),
-        Field::new("classes", DataType::UInt64, true),
-        Field::new("total_applied", DataType::UInt64, true),
-        Field::new("total_time", DataType::Float64, true),
-        Field::new("not_enough_samples", DataType::Boolean, false),
-        Field::new("unreached", DataType::Boolean, false),
-    ]))
+        )))
+        .finish(&mut df)
+        .expect("write parquet");
 }
