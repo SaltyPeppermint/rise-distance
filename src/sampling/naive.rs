@@ -1,5 +1,6 @@
 use hashbrown::HashSet;
 use rand::prelude::*;
+use rand_chacha::ChaCha12Rng;
 
 use crate::count::{Counter, TermCount};
 use crate::ids::ExprChildId;
@@ -34,12 +35,13 @@ impl<C: Counter, L: Label> Sampler for NaiveSampler<'_, '_, C, L> {
         &self,
         id: EClassId,
         samples_per_size: &[(usize, u64)],
+        seed: [u64; 2],
     ) -> HashSet<OriginTree<L>> {
-        super::common::sample_batch(self, id, samples_per_size)
+        super::common::sample_batch(self, id, samples_per_size, seed)
     }
 
     /// Sample uniformly: each feasible choice gets equal weight.
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> OriginTree<L> {
+    fn sample(&self, id: EClassId, size: usize, rng: &mut ChaCha12Rng) -> OriginTree<L> {
         let canon_id = self.graph.canonicalize(id);
         let eclass = self.graph.class(canon_id);
         let child_budget = size - 1 - self.term_count.type_overhead(eclass);

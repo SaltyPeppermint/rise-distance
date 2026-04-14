@@ -8,8 +8,6 @@ use clap::Parser;
 use egg::RecExpr;
 use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
-use rand::prelude::*;
-use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 use rise_distance::count::Counter;
 use serde::Serialize;
@@ -108,7 +106,7 @@ struct Cli {
 }
 
 const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
-const NUM_TRIALS: u64 = 100;
+const NUM_TRIALS: usize = 100;
 
 fn main() {
     let cli = Cli::parse();
@@ -220,9 +218,12 @@ fn process_seed(
         max_size,
     )?;
     pp.log_root();
-    let Some(goals) =
-        pp.sample_frontier_terms(cli.goals, cli.size_distribution, cli.goal_sample_strategy)
-    else {
+    let Some(goals) = pp.sample_frontier_terms(
+        cli.goals,
+        cli.size_distribution,
+        cli.goal_sample_strategy,
+        [0, 0],
+    ) else {
         tee_println!("WARNING: Not enough goals in the frontier for seed '{seed_str}'. Skipping.");
         return None;
     };
@@ -359,28 +360,19 @@ fn run_guide_set_trials<C>(
 where
     C: Counter + Display + Ord,
 {
-    let mp = MultiProgress::new();
-    let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
-        .unwrap()
-        .progress_chars("=> ");
-    let bars = TRIAL_SIZE
-        .iter()
-        .map(|&k| {
-            let pb = mp.add(ProgressBar::new(NUM_TRIALS).with_style(style.clone()));
-            pb.set_message(format!("k={k}"));
-            (k, pb)
-        })
-        .collect::<Vec<_>>();
+    let bars = progress_bars();
     bars.into_par_iter()
         .map(|(k, pb)| {
-            let outer_rng = ChaCha12Rng::seed_from_u64(k as u64);
             let trials = (0..NUM_TRIALS)
                 .into_par_iter()
                 .map(|s| {
-                    let mut inner_rng = outer_rng.clone();
-                    inner_rng.set_stream(s);
                     let subset = pc
-                        .sample_frontier_terms(k, cli.size_distribution, cli.guide_sample_strategy)
+                        .sample_frontier_terms(
+                            k,
+                            cli.size_distribution,
+                            cli.guide_sample_strategy,
+                            [k as u64, s as u64],
+                        )
                         .ok_or(GuideError::InsufficientSamples)?;
                     verify_reachability(
                         &subset,
@@ -398,6 +390,62 @@ where
             (k, trials)
         })
         .collect()
+}
+
+fn run_guide_set_trials_without_replacement<C>(
+    cli: &Cli,
+    goal_recexpr: &RecExpr<Math>,
+    pc: &PrecomputePackage<C, MathLabel, Math, ConstantFold>,
+) -> TrialsPerK
+where
+    C: Counter + Display + Ord,
+{
+    let bars = progress_bars();
+    bars.into_par_iter()
+        .map(|(k, pb)| {
+            let trials = if let Some(samples) = pc.sample_frontier_terms(
+                k * NUM_TRIALS,
+                cli.size_distribution,
+                cli.guide_sample_strategy,
+                [k as u64, 0],
+            ) {
+                samples
+                    .par_chunks(k)
+                    .map(|subset| {
+                        verify_reachability(
+                            subset,
+                            goal_recexpr,
+                            &RULES,
+                            Duration::from_secs_f64(cli.time_limit),
+                            cli.node_limit,
+                            cli.full_union,
+                        )
+                    })
+                    .progress_with(pb)
+                    .collect()
+            } else {
+                vec![Err(GuideError::InsufficientSamples); NUM_TRIALS]
+            };
+
+            (k, trials)
+        })
+        .collect()
+}
+
+fn progress_bars() -> Vec<(usize, ProgressBar)> {
+    let mp = MultiProgress::new();
+    let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
+        .unwrap()
+        .progress_chars("=> ");
+
+    TRIAL_SIZE
+        .iter()
+        .map(|&k| {
+            let pb = mp.add(ProgressBar::new(NUM_TRIALS as u64).with_style(style.clone()));
+            pb.set_message(format!("k={k}"));
+            (k, pb)
+        })
+        .collect::<Vec<_>>()
 }
 
 // fn log_trials(k: usize, trials: &[Result<Vec<egg::Iteration<()>>, GuideError>]) {

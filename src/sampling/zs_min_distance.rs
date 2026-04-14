@@ -1,10 +1,10 @@
 use hashbrown::HashSet;
-use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
 use crate::sampling::Sampler;
 use crate::tree::OriginTree;
+use crate::utils::combined_rng;
 use crate::zs::{EditCosts, PreprocessedTree, tree_distance_preprocessed};
 use crate::{EClassId, TreeShaped, tree_distance};
 
@@ -48,11 +48,11 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    fn average_distance(&self, id: EClassId, size: usize, n: u64) -> usize {
+    fn average_distance(&self, id: EClassId, size: usize, n: u64, seed: [u64; 2]) -> usize {
         // Sample n unique trees of the given size.
         let trees = self
             .inner
-            .sample_batch(id, &[(size, n)])
+            .sample_batch(id, &[(size, n)], seed)
             .into_iter()
             .collect::<Vec<_>>();
         assert!(
@@ -105,6 +105,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
         &self,
         id: EClassId,
         samples_per_size: &[(usize, u64)],
+        seed: [u64; 2],
     ) -> HashSet<OriginTree<S::Label>> {
         samples_per_size
             .into_par_iter()
@@ -113,10 +114,11 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
                 let mut samples_to_take = *samples;
                 let mut existing_flat = HashSet::new();
                 let mut existing = HashSet::new();
-                let mut rng = ChaCha12Rng::seed_from_u64(*size as u64);
-                let mut rejected = 0;
-                let cut_off = self.average_distance(id, *size, 1000);
 
+                let mut rejected = 0;
+                let cut_off = self.average_distance(id, *size, 1000, seed);
+
+                let mut rng = combined_rng([*size as u64, seed[0], seed[1]]);
                 while samples_to_take > 0 {
                     let new_candidate = self.sample(id, *size, &mut rng);
                     if existing.contains(&new_candidate) {
@@ -144,7 +146,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
     }
 
     /// Sample uniformly: each feasible choice gets equal weight.
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> OriginTree<S::Label> {
+    fn sample(&self, id: EClassId, size: usize, rng: &mut ChaCha12Rng) -> OriginTree<S::Label> {
         self.inner.sample(id, size, rng)
     }
 }

@@ -282,7 +282,9 @@ fn run_count_extraction<L: Label>(
         .expect("Root e-class has no terms");
     let samples_per_size =
         distribution.samples_per_size(histogram, min_size, max_size, total_samples);
-    let candidates = CountSampler::new(term_count, graph).sample_batch_root(&samples_per_size);
+
+    let candidates =
+        CountSampler::new(term_count, graph).sample_batch_root(&samples_per_size, [0, 0]);
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");
 

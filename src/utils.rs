@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 
 use hashbrown::HashSet;
+use rand::SeedableRng;
+use rand_chacha::ChaCha12Rng;
 
 /// A data structure to maintain a queue of unique elements.
 ///
@@ -59,4 +61,14 @@ impl<T: Eq + Hash + Clone> UniqueQueue<T> {
         self.set.clear();
         self.queue.drain(..)
     }
+}
+
+pub fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
+    const { assert!(N >= 1 && N <= 4, "must provide 1 to 4 u64 values") };
+
+    let mut seed = [0u8; 32];
+    for (i, v) in values.iter().enumerate() {
+        seed[i * 8..(i + 1) * 8].copy_from_slice(&v.to_le_bytes());
+    }
+    ChaCha12Rng::from_seed(seed)
 }

@@ -166,6 +166,7 @@ where
         count: usize,
         distribution: TermSampleDist,
         sample_strategy: SampleStrategy,
+        seed: [u64; 2],
     ) -> Option<Vec<OriginTree<LL>>>
     where
         L: Language + Sync,
@@ -183,27 +184,26 @@ where
                 self.max_size,
                 count * oversample,
             );
-            let batch =
-                match sample_strategy {
-                    SampleStrategy::Naive => NaiveSampler::new(&self.tc, &self.graph)
-                        .sample_batch_root(&samples_per_size),
-                    SampleStrategy::CountBased => CountSampler::new(&self.tc, &self.graph)
-                        .sample_batch_root(&samples_per_size),
-                    SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
-                        NaiveSampler::new(&self.tc, &self.graph),
-                        UnitCost,
-                        0.5,
-                        false,
-                    )
-                    .sample_batch_root(&samples_per_size),
-                    SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
-                        CountSampler::new(&self.tc, &self.graph),
-                        UnitCost,
-                        0.5,
-                        false,
-                    )
-                    .sample_batch_root(&samples_per_size),
-                };
+            let batch = match sample_strategy {
+                SampleStrategy::Naive => NaiveSampler::new(&self.tc, &self.graph)
+                    .sample_batch_root(&samples_per_size, seed),
+                SampleStrategy::CountBased => CountSampler::new(&self.tc, &self.graph)
+                    .sample_batch_root(&samples_per_size, seed),
+                SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
+                    NaiveSampler::new(&self.tc, &self.graph),
+                    UnitCost,
+                    0.5,
+                    false,
+                )
+                .sample_batch_root(&samples_per_size, seed),
+                SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
+                    CountSampler::new(&self.tc, &self.graph),
+                    UnitCost,
+                    0.5,
+                    false,
+                )
+                .sample_batch_root(&samples_per_size, seed),
+            };
 
             let results = batch
                 .into_par_iter()

@@ -1,6 +1,4 @@
 use hashbrown::HashSet;
-use rand::prelude::*;
-use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
 use crate::Graph;
@@ -8,6 +6,7 @@ use crate::count::{Counter, TermCount};
 use crate::ids::EClassId;
 use crate::nodes::Label;
 use crate::tree::OriginTree;
+use crate::utils::combined_rng;
 
 use super::Sampler;
 
@@ -29,16 +28,18 @@ pub(super) fn sample_batch<S: Sampler>(
     sampler: &S,
     id: EClassId,
     samples_per_size: &[(usize, u64)],
+    seed: [u64; 2],
 ) -> HashSet<OriginTree<S::Label>> {
     samples_per_size
         .par_iter()
         .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
         .flat_map(|(size, samples)| {
-            let base_rng = ChaCha12Rng::seed_from_u64(*size as u64);
-            (0..*samples).into_par_iter().map(move |sample| {
-                let mut rng = base_rng.clone();
-                rng.set_stream(sample);
-                sampler.sample(id, *size, &mut rng)
+            (0..*samples).into_par_iter().map(|s| {
+                sampler.sample(
+                    id,
+                    *size,
+                    &mut combined_rng([*size as u64, s, seed[0], seed[1]]),
+                )
             })
         })
         .collect()

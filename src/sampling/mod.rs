@@ -4,10 +4,10 @@ mod naive;
 mod zs_min_distance;
 
 use hashbrown::HashSet;
-use rand::prelude::*;
 
 pub use count::CountSampler;
 pub use naive::NaiveSampler;
+use rand_chacha::ChaCha12Rng;
 pub use zs_min_distance::ZSDistanceSampler;
 
 use crate::{EClassId, Label, tree::OriginTree};
@@ -27,8 +27,9 @@ pub trait Sampler: Sync + Send {
     fn sample_batch_root(
         &self,
         samples_per_size: &[(usize, u64)],
+        seed: [u64; 2],
     ) -> HashSet<OriginTree<Self::Label>> {
-        self.sample_batch(self.root(), samples_per_size)
+        self.sample_batch(self.root(), samples_per_size, seed)
     }
 
     /// Sample unique terms across a range of sizes.
@@ -42,8 +43,9 @@ pub trait Sampler: Sync + Send {
         &self,
         id: EClassId,
         samples_per_size: &[(usize, u64)],
+        seed: [u64; 2],
     ) -> HashSet<OriginTree<Self::Label>>;
 
     #[must_use]
-    fn sample<R: Rng>(&self, id: EClassId, size: usize, rng: &mut R) -> OriginTree<Self::Label>;
+    fn sample(&self, id: EClassId, size: usize, rng: &mut ChaCha12Rng) -> OriginTree<Self::Label>;
 }
