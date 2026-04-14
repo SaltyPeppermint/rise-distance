@@ -10,12 +10,10 @@ use std::env::current_dir;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::Instant;
 
 use egg::{Analysis, Iteration, Language, Rewrite};
 use hashbrown::HashSet;
-use indicatif::ProgressBar;
-use num::{BigUint, ToPrimitive};
+use num::ToPrimitive;
 use rayon::prelude::*;
 
 use crate::cli::argtypes::{SampleStrategy, TermSampleDist};
@@ -25,7 +23,7 @@ use crate::egg::{Math, ToEgg, convert};
 use crate::sampling::{CountSampler, NaiveSampler, Sampler, ZSDistanceSampler};
 use crate::tee_println;
 use crate::tree::{OriginTree, TreeShaped, UnfoldedTree};
-use crate::{Graph, Label, Tree, UnitCost, structural_diff, tree_distance_unit};
+use crate::{Graph, Label, UnitCost, structural_diff, tree_distance_unit};
 
 pub const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
 
@@ -125,13 +123,14 @@ where
     OriginTree<LL>: ToEgg<LL, Lang = L>,
     C: Counter + Display + Ord,
 {
+    /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg` for the sampling process later
     pub fn precompute(
-        guide_egg: &egg::EGraph<L, N>,
-        prev_raw_egg: egg::EGraph<L, N>,
+        graph: &egg::EGraph<L, N>,
+        prev_graph: egg::EGraph<L, N>,
         root: egg::Id,
         max_size: usize,
     ) -> Option<PrecomputePackage<C, LL, L, N>> {
-        let graph = convert(guide_egg, root);
+        let graph = convert(graph, root);
         let tc = TermCount::<C>::new(max_size, false, &graph);
         let histogram = tc.data.get(&graph.root())?;
         let mut sorted_hist = histogram
@@ -149,7 +148,7 @@ where
             tc,
             min_size,
             max_size,
-            prev_raw_egg,
+            prev_raw_egg: prev_graph,
             graph,
         })
     }
@@ -214,56 +213,6 @@ where
             }
         })
     }
-}
-
-/// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg`.
-#[expect(clippy::missing_panics_doc)]
-pub fn enumerate_frontier_terms<L, N, LL>(
-    graph: &Graph<LL>,
-    prev_raw_egg: &egg::EGraph<L, N>,
-    max_size: usize,
-) -> Vec<OriginTree<LL>>
-where
-    L: Language,
-    N: Analysis<L>,
-    LL: Label,
-    OriginTree<LL>: ToEgg<LL, Lang = L>,
-    Tree<LL>: ToEgg<LL, Lang = L>,
-{
-    let tc = TermCount::<BigUint>::new(max_size, false, graph);
-
-    let Some(histogram) = tc.data.get(&graph.root()) else {
-        return Vec::new();
-    };
-
-    let mut sorted_hist = histogram.iter().collect::<Vec<_>>();
-    sorted_hist.sort_unstable();
-    tee_println!("Terms in frontier:");
-    for (k, v) in &sorted_hist {
-        tee_println!("{v} terms of size {k}");
-    }
-    let start = Instant::now();
-    let total_terms = histogram.values().cloned().sum::<BigUint>();
-    tee_println!("Enumerating all {total_terms} terms up to size {max_size}");
-    assert!(
-        total_terms.to_usize().is_some(),
-        "Cannot enumerate more than usize!"
-    );
-
-    let result = tc
-        .enumerate_root(
-            graph,
-            max_size,
-            Some(ProgressBar::new(max_size.try_into().unwrap())),
-        )
-        .into_iter()
-        .filter(|t| is_frontier(t, prev_raw_egg))
-        .collect::<Vec<_>>();
-    tee_println!(
-        "Spent {} seconds enumerating the terms",
-        start.elapsed().as_secs()
-    );
-    result
 }
 
 /// Create an output folder for a run.

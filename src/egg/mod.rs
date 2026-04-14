@@ -96,17 +96,6 @@ where
     }
 }
 
-#[must_use]
-pub fn stop_reason_str(reason: &StopReason) -> String {
-    match reason {
-        StopReason::Saturated => "saturated".to_owned(),
-        StopReason::IterationLimit(n) => format!("iteration limit ({n})"),
-        StopReason::NodeLimit(n) => format!("node limit ({n})"),
-        StopReason::TimeLimit(t) => format!("time limit ({t:.2}s)"),
-        StopReason::Other(s) => format!("other ({s})"),
-    }
-}
-
 pub trait ToEgg<L: Label>: TreeShaped<L> {
     type Lang: Language;
 
@@ -286,9 +275,11 @@ where
     }
 
     let stop_reason = runner.stop_reason.unwrap();
+    tee_println!("Stopped with stop reason: {stop_reason:?}");
 
     let root = runner.roots[0];
     let mut iter_data = runner.iterations;
+    iter_data.pop();
 
     if iter_data.len() < 3 {
         tee_println!("Not enough iterations!");

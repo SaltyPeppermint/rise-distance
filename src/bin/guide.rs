@@ -19,7 +19,7 @@ use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{GoalSummary, GuideError, TrialsPerK};
 use rise_distance::cli::{PrecomputePackage, RULES, TRIAL_SIZE, get_run_folder, init_log};
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
-use rise_distance::egg::{ToEgg, big_eqsat, stop_reason_str, verify_reachability};
+use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
 use rise_distance::tee_println;
 
 #[derive(Parser, Serialize)]
@@ -191,7 +191,7 @@ fn process_seed(
 
     tee_println!("Goal Iterations: {}", result.goal_iters());
     tee_println!("Guide Iterations: {}", result.guide_iters());
-    tee_println!("Stop Reason: {}", stop_reason_str(result.stop_reason()));
+    tee_println!("Stop Reason: {:?}", result.stop_reason());
 
     let guide_secs = result
         .guide_data()
