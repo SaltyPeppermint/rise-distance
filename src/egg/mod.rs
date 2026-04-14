@@ -120,7 +120,7 @@ pub fn valididty_hook<
     min_nodes: Option<usize>,
     min_time: Option<f64>,
     rules: &[Rewrite<L, N>],
-) -> bool {
+) -> Option<StopReason> {
     let expr = tree.to_rec_expr();
     // egg's Runner can panic on certain malformed inside its merge check.
     // Fixing this would require only constructing correct terms and that is too complicated
@@ -148,14 +148,14 @@ pub fn valididty_hook<
     let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
         println!("panic caught in iter_check_hook for expr: {expr}");
         println!("It is safe to ignore the output of egg here");
-        return false;
+        return None;
     };
-    match r.stop_reason {
-        Some(StopReason::IterationLimit(_)) => min_iters.is_some(),
-        Some(StopReason::NodeLimit(_)) => min_nodes.is_some(),
-        Some(StopReason::TimeLimit(_)) => min_time.is_some(),
-        Some(StopReason::Saturated | StopReason::Other(_)) | None => false,
-    }
+    r.stop_reason.filter(|reason| match reason {
+        StopReason::IterationLimit(_) => min_iters.is_some(),
+        StopReason::NodeLimit(_) => min_nodes.is_some(),
+        StopReason::TimeLimit(_) => min_time.is_some(),
+        _ => false,
+    })
 }
 
 pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>

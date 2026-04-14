@@ -116,14 +116,14 @@ fn main() {
                 let mut total_attempts = 0;
                 let inserted = 'retry: {
                     for _ in 0..cli.retry_limit {
-                        let (candidate, attempts) = sampler
+                        let (candidate, reason, attempts) = sampler
                             .sample(&mut rng, &|t| {
                                 valididty_hook(t, cli.min_iters, cli.min_nodes, cli.min_time, rules)
                             })
                             .expect("Too many failed sample attempts");
                         total_attempts += attempts;
                         if let Entry::Vacant(e) = collector.entry(candidate) {
-                            e.insert(total_attempts);
+                            e.insert((total_attempts, reason));
                             break 'retry true;
                         }
                     }
@@ -139,18 +139,25 @@ fn main() {
         "Took a total of {} attempts for {} terms.",
         big_collector
             .iter()
-            .map(|x| x.1.values().sum::<usize>())
+            .map(|x| x.1.values().map(|v| v.0).sum::<usize>())
             .sum::<usize>(),
         big_collector.iter().map(|x| x.1.len()).sum::<usize>()
     );
     let mut writer = Writer::from_path(&cli.path).expect("File does not exist");
-    writer.write_record(["size", "term", "attempts"]).unwrap();
+    writer
+        .write_record(["size", "term", "attempts", "reason"])
+        .unwrap();
 
     for (size, terms) in big_collector {
         let size_str = size.to_string();
-        for (tree, attempts) in terms {
+        for (tree, (attempts, reason)) in terms {
             writer
-                .write_record([&size_str, &tree.to_string(), &attempts.to_string()])
+                .write_record([
+                    &size_str,
+                    &tree.to_string(),
+                    &attempts.to_string(),
+                    &format!("{reason:?}"),
+                ])
                 .unwrap();
         }
     }

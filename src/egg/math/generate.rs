@@ -1,7 +1,7 @@
 #![expect(clippy::similar_names)]
 use std::collections::HashSet;
 
-use egg::Symbol;
+use egg::{StopReason, Symbol};
 use ordered_float::NotNan;
 use rand::Rng;
 
@@ -158,35 +158,37 @@ impl BoltzmannSampler {
     /// Generate a random term whose size is in `[target - tolerance, target + tolerance]`
     /// and where every Diff/Integral node's bound variable appears free in its expression child.
     /// Returns None if no valid tree is found within `10_000` attempts.
-    pub fn sample<R: Rng, F: Fn(&Tree<MathLabel>) -> bool>(
+    pub fn sample<R: Rng, F: Fn(&Tree<MathLabel>) -> Option<StopReason>>(
         &self,
         rng: &mut R,
         filter_hook: &F,
-    ) -> Option<(Tree<MathLabel>, usize)> {
+    ) -> Option<(Tree<MathLabel>, StopReason, usize)> {
         let lo = self.target.saturating_sub(self.tolerance);
         let hi = self.target + self.tolerance;
         (0..100_000)
             .map(|a| (self.gen_node(rng, 0), a))
-            .find(|(candidate, _)| {
-                (lo..=hi).contains(&candidate.size_without_types())
-                    && binders_valid(candidate)
-                    && filter_hook(candidate)
+            .find_map(|(candidate, n)| {
+                if (lo..=hi).contains(&candidate.size_without_types()) && binders_valid(&candidate)
+                {
+                    return None;
+                }
+                filter_hook(&candidate).map(|reason| (candidate, reason, n))
             })
     }
 
     /// Generate `count` random terms within the size window.
-    pub fn sample_many<R: Rng, F: Fn(&Tree<MathLabel>) -> bool>(
+    pub fn sample_many<R: Rng, F: Fn(&Tree<MathLabel>) -> Option<StopReason>>(
         &self,
         rng: &mut R,
         count: usize,
         filter_hook: &F,
-    ) -> Vec<Tree<MathLabel>> {
+    ) -> Vec<(Tree<MathLabel>, StopReason)> {
         let (trees, total_attempts, failed) =
             (0..count).map(|_| self.sample(rng, filter_hook)).fold(
                 (Vec::with_capacity(count), 0, 0),
                 |(mut trees, attempts, failed), result| match result {
-                    Some((tree, a)) => {
-                        trees.push(tree);
+                    Some((tree, reason, a)) => {
+                        trees.push((tree, reason));
                         (trees, attempts + a, failed)
                     }
                     None => (trees, attempts, failed + 1),
@@ -332,10 +334,10 @@ mod tests {
         let sampler = BoltzmannSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(42);
 
-        let trees = sampler.sample_many(&mut rng, 50, &|_| true);
+        let trees = sampler.sample_many(&mut rng, 50, &|_| Some(StopReason::Other(String::new())));
         assert_eq!(trees.len(), 50);
         for tree in &trees {
-            let size = tree.size_without_types();
+            let size = tree.0.size_without_types();
             assert!(
                 (10..=20).contains(&size),
                 "size {size} out of range [10, 20]"
@@ -364,9 +366,9 @@ mod tests {
         let sampler = BoltzmannSampler::new(5, 2, None);
         let mut rng = ChaCha8Rng::seed_from_u64(123);
 
-        let trees = sampler.sample_many(&mut rng, 30, &|_| true);
+        let trees = sampler.sample_many(&mut rng, 30, &|_| Some(StopReason::Other(String::new())));
         for tree in &trees {
-            let size = tree.size_without_types();
+            let size = tree.0.size_without_types();
             assert!((3..=7).contains(&size), "size {size} out of range [3, 7]");
         }
     }
@@ -376,10 +378,10 @@ mod tests {
         let sampler = BoltzmannSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(99);
 
-        let trees = sampler.sample_many(&mut rng, 100, &|_| true);
+        let trees = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
         for tree in &trees {
             assert!(
-                binders_valid(tree),
+                binders_valid(&tree.0),
                 "tree has binder with non-free bound variable: {tree:?}"
             );
         }
@@ -390,9 +392,9 @@ mod tests {
         let sampler = BoltzmannSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(7);
 
-        let trees = sampler.sample_many(&mut rng, 100, &|_| true);
+        let trees = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
         for tree in &trees {
-            assert_no_constant_binder(tree);
+            assert_no_constant_binder(&tree.0);
         }
     }
 
@@ -537,7 +539,7 @@ mod tests {
     fn sample_many_count_zero() {
         let sampler = BoltzmannSampler::new(10, 3, None);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
-        let trees = sampler.sample_many(&mut rng, 0, &|_| true);
+        let trees = sampler.sample_many(&mut rng, 0, &|_| Some(StopReason::Other(String::new())));
         assert!(trees.is_empty());
     }
 
