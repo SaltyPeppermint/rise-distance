@@ -96,127 +96,6 @@ where
     }
 }
 
-pub trait ToEgg<L: Label>: TreeShaped<L> {
-    type Lang: Language;
-
-    fn to_rec_expr(&self) -> RecExpr<Self::Lang> {
-        let mut expr = RecExpr::default();
-        let mut adder = |_: &_, x| expr.add(x);
-        self.add_node(&mut adder);
-        expr
-    }
-
-    fn add_node<F: FnMut(&Self, Self::Lang) -> Id>(&self, adder: &mut F) -> Id;
-}
-
-pub fn valididty_hook<
-    L: Language + Display,
-    N: Analysis<L> + Default,
-    LL: Label,
-    T: ToEgg<LL, Lang = L>,
->(
-    tree: &T,
-    min_iters: Option<usize>,
-    min_nodes: Option<usize>,
-    min_time: Option<f64>,
-    rules: &[Rewrite<L, N>],
-) -> Option<StopReason> {
-    let expr = tree.to_rec_expr();
-    // egg's Runner can panic on certain malformed inside its merge check.
-    // Fixing this would require only constructing correct terms and that is too complicated
-    // We use catch_unwind to treat such cases as "not passing the check" rather than crashing the process.
-    // An example would be the expression
-    // '(cos (* (sqrt (* x (sqrt (i (/ 0 x) x)))) (sin (+ (pow 1 (/ 1 2)) (cos 2)))))'
-    // The issue is that the binder check does not catch (i (/ 0 x) x) although (/ 0 x)
-    // trivially simplifies to 0
-    let mut runner = Runner::default()
-        .with_expr(&expr)
-        .with_scheduler(SimpleScheduler);
-
-    if let Some(i) = min_iters {
-        runner = runner.with_iter_limit(i);
-    }
-
-    if let Some(n) = min_nodes {
-        runner = runner.with_node_limit(n);
-    }
-
-    if let Some(t) = min_time {
-        runner = runner.with_time_limit(Duration::from_secs_f64(t));
-    }
-
-    let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
-        println!("panic caught in iter_check_hook for expr: {expr}");
-        println!("It is safe to ignore the output of egg here");
-        return None;
-    };
-    r.stop_reason.filter(|reason| match reason {
-        StopReason::IterationLimit(_) => min_iters.is_some(),
-        StopReason::NodeLimit(_) => min_nodes.is_some(),
-        StopReason::TimeLimit(_) => min_time.is_some(),
-        _ => false,
-    })
-}
-
-pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>
-where
-    L: Language,
-    N: Analysis<L>,
-    LL: Label + for<'a> From<&'a L>,
-{
-    // Works because classes are unique!
-    let classes = egg_graph
-        .classes()
-        .map(|egg_class| {
-            debug_assert_eq!(egg_class.id, egg_graph.find(egg_class.id));
-            let eclass_id = EClassId::new(egg_class.id.into());
-            let nodes = egg_class
-                .nodes
-                .iter()
-                .map(|math_node| {
-                    let children = math_node
-                        .children()
-                        .iter()
-                        .map(|&child_id| {
-                            ExprChildId::EClass(EClassId::new(egg_graph.find(child_id).into()))
-                        })
-                        .collect::<Vec<_>>();
-                    ENode::new(math_node.into(), children)
-                })
-                .collect();
-            (eclass_id, Class::new(nodes, None))
-        })
-        .collect::<HashMap<_, _>>();
-
-    // Build union-find: identity mapping for canonical IDs
-    // Include both class IDs and all child IDs to cover the full range of IDs
-    // that canonicalize() may be called with.
-    let max_id = egg_graph
-        .classes()
-        .map(|c| usize::from(c.id))
-        .chain(
-            egg_graph
-                .nodes()
-                .iter()
-                .flat_map(|n| n.children().iter())
-                .map(|id| usize::from(*id)),
-        )
-        .max()
-        .map_or(0, |m| m + 1);
-    let union_find = (0..max_id)
-        .map(|i| EClassId::new(usize::from(egg_graph.find(Id::from(i)))))
-        .collect::<Vec<_>>();
-
-    Graph::new(
-        classes,
-        EClassId::new(root.into()),
-        union_find,
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-    )
-}
-
 pub struct EGraphHolder<L, N>(pub EGraph<L, N>)
 where
     L: Language,
@@ -300,6 +179,78 @@ where
         goal_iters,
         stop_reason,
     })
+}
+
+pub trait ToEgg<L: Label>: TreeShaped<L> {
+    type Lang: Language;
+
+    fn to_rec_expr(&self) -> RecExpr<Self::Lang> {
+        let mut expr = RecExpr::default();
+        let mut adder = |_: &_, x| expr.add(x);
+        self.add_node(&mut adder);
+        expr
+    }
+
+    fn add_node<F: FnMut(&Self, Self::Lang) -> Id>(&self, adder: &mut F) -> Id;
+}
+
+pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>
+where
+    L: Language,
+    N: Analysis<L>,
+    LL: Label + for<'a> From<&'a L>,
+{
+    // Works because classes are unique!
+    let classes = egg_graph
+        .classes()
+        .map(|egg_class| {
+            debug_assert_eq!(egg_class.id, egg_graph.find(egg_class.id));
+            let eclass_id = EClassId::new(egg_class.id.into());
+            let nodes = egg_class
+                .nodes
+                .iter()
+                .map(|math_node| {
+                    let children = math_node
+                        .children()
+                        .iter()
+                        .map(|&child_id| {
+                            ExprChildId::EClass(EClassId::new(egg_graph.find(child_id).into()))
+                        })
+                        .collect::<Vec<_>>();
+                    ENode::new(math_node.into(), children)
+                })
+                .collect();
+            (eclass_id, Class::new(nodes, None))
+        })
+        .collect::<HashMap<_, _>>();
+
+    // Build union-find: identity mapping for canonical IDs
+    // Include both class IDs and all child IDs to cover the full range of IDs
+    // that canonicalize() may be called with.
+    let max_id = egg_graph
+        .classes()
+        .map(|c| usize::from(c.id))
+        .chain(
+            egg_graph
+                .nodes()
+                .iter()
+                .flat_map(|n| n.children().iter())
+                .map(|id| usize::from(*id)),
+        )
+        .max()
+        .map_or(0, |m| m + 1);
+    let union_find = (0..max_id)
+        .map(|i| EClassId::new(usize::from(egg_graph.find(Id::from(i)))))
+        .collect::<Vec<_>>();
+
+    Graph::new(
+        classes,
+        EClassId::new(root.into()),
+        union_find,
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    )
 }
 
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
@@ -434,6 +385,55 @@ where
         new_id
     };
     guide.add_node(&mut adder)
+}
+
+pub fn valididty_hook<
+    L: Language + Display,
+    N: Analysis<L> + Default,
+    LL: Label,
+    T: ToEgg<LL, Lang = L>,
+>(
+    tree: &T,
+    min_iters: Option<usize>,
+    min_nodes: Option<usize>,
+    min_time: Option<f64>,
+    rules: &[Rewrite<L, N>],
+) -> Option<StopReason> {
+    let expr = tree.to_rec_expr();
+    // egg's Runner can panic on certain malformed inside its merge check.
+    // Fixing this would require only constructing correct terms and that is too complicated
+    // We use catch_unwind to treat such cases as "not passing the check" rather than crashing the process.
+    // An example would be the expression
+    // '(cos (* (sqrt (* x (sqrt (i (/ 0 x) x)))) (sin (+ (pow 1 (/ 1 2)) (cos 2)))))'
+    // The issue is that the binder check does not catch (i (/ 0 x) x) although (/ 0 x)
+    // trivially simplifies to 0
+    let mut runner = Runner::default()
+        .with_expr(&expr)
+        .with_scheduler(SimpleScheduler);
+
+    if let Some(i) = min_iters {
+        runner = runner.with_iter_limit(i);
+    }
+
+    if let Some(n) = min_nodes {
+        runner = runner.with_node_limit(n);
+    }
+
+    if let Some(t) = min_time {
+        runner = runner.with_time_limit(Duration::from_secs_f64(t));
+    }
+
+    let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
+        println!("panic caught in iter_check_hook for expr: {expr}");
+        println!("It is safe to ignore the output of egg here");
+        return None;
+    };
+    r.stop_reason.filter(|reason| match reason {
+        StopReason::IterationLimit(_) => min_iters.is_some(),
+        StopReason::NodeLimit(_) => min_nodes.is_some(),
+        StopReason::TimeLimit(_) => min_time.is_some(),
+        _ => false,
+    })
 }
 
 // fn add_expr_uncanonical<L: Language, N: Analysis<L>>(
