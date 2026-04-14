@@ -1,5 +1,4 @@
 use hashbrown::HashSet;
-use rayon::prelude::*;
 
 use crate::Graph;
 use crate::count::{Counter, TermCount};
@@ -31,10 +30,10 @@ pub(super) fn sample_batch<S: Sampler>(
     seed: [u64; 2],
 ) -> HashSet<OriginTree<S::Label>> {
     samples_per_size
-        .par_iter()
+        .iter()
         .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
         .flat_map(|(size, samples)| {
-            (0..*samples).into_par_iter().map(|s| {
+            (0..*samples).map(|s| {
                 sampler.sample(
                     id,
                     *size,

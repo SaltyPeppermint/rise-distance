@@ -1,6 +1,5 @@
 use hashbrown::HashSet;
 use rand_chacha::ChaCha12Rng;
-use rayon::prelude::*;
 
 use crate::sampling::Sampler;
 use crate::tree::OriginTree;
@@ -69,10 +68,9 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         // Preprocess once for reuse.
         let preprocessed = flat.iter().map(PreprocessedTree::new).collect::<Vec<_>>();
 
-        // Compute all pairwise distances in parallel.
+        // Compute all pairwise distances.
         let mut distances = (0..flat.len())
             .flat_map(|i| ((i + 1)..flat.len()).map(move |j| (i, j)))
-            .par_bridge()
             .map(|(i, j)| {
                 tree_distance_preprocessed(&preprocessed[i], &preprocessed[j], &self.cost_fn)
             })
@@ -108,7 +106,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
         seed: [u64; 2],
     ) -> HashSet<OriginTree<S::Label>> {
         samples_per_size
-            .into_par_iter()
+            .iter()
             .filter(|(size, samples)| self.possible_size(id, *size, *samples))
             .flat_map(|(size, samples)| {
                 let mut samples_to_take = *samples;
@@ -140,7 +138,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
                     existing.insert(new_candidate);
                     samples_to_take -= 1;
                 }
-                existing.into_par_iter()
+                existing.into_iter()
             })
             .collect()
     }
