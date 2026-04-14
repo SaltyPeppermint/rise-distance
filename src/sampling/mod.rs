@@ -24,12 +24,12 @@ pub trait Sampler: Sync + Send {
     /// Sample unique terms across a range of sizes from root.
     ///
     /// See `sample_unique` for more info
-    fn sample_batch_root(
+    fn sample_batch_root<const PARALLEL: bool>(
         &self,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
     ) -> HashSet<OriginTree<Self::Label>> {
-        self.sample_batch(self.root(), samples_per_size, seed)
+        self.sample_batch::<PARALLEL>(self.root(), samples_per_size, seed)
     }
 
     /// Sample unique terms across a range of sizes.
@@ -39,7 +39,7 @@ pub trait Sampler: Sync + Send {
     /// may have gaps in its reachable sizes (e.g. terms only at sizes 5, 7, 9),
     /// and calling `sample` with a size that has no terms would cause all node
     /// weights to be zero, panicking with `AllWeightsZero`.
-    fn sample_batch(
+    fn sample_batch<const PARALLEL: bool>(
         &self,
         id: EClassId,
         samples_per_size: &[(usize, u64)],

@@ -1,4 +1,5 @@
 use hashbrown::HashSet;
+use rayon::prelude::*;
 
 use crate::Graph;
 use crate::count::{Counter, TermCount};
@@ -23,23 +24,39 @@ pub(super) fn possible_size<C: Counter>(
     samples.try_into().is_ok_and(|s: C| count > &s)
 }
 
-pub(super) fn sample_batch<S: Sampler>(
+pub(super) fn sample_batch<const PARALLEL: bool, S: Sampler>(
     sampler: &S,
     id: EClassId,
     samples_per_size: &[(usize, u64)],
     seed: [u64; 2],
 ) -> HashSet<OriginTree<S::Label>> {
-    samples_per_size
-        .iter()
-        .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
-        .flat_map(|(size, samples)| {
-            (0..*samples).map(|s| {
-                sampler.sample(
-                    id,
-                    *size,
-                    &mut combined_rng([*size as u64, s, seed[0], seed[1]]),
-                )
+    if PARALLEL {
+        samples_per_size
+            .par_iter()
+            .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
+            .flat_map(|(size, samples)| {
+                (0..*samples).into_par_iter().map(|s| {
+                    sampler.sample(
+                        id,
+                        *size,
+                        &mut combined_rng([*size as u64, s, seed[0], seed[1]]),
+                    )
+                })
             })
-        })
-        .collect()
+            .collect()
+    } else {
+        samples_per_size
+            .iter()
+            .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
+            .flat_map(|(size, samples)| {
+                (0..*samples).map(|s| {
+                    sampler.sample(
+                        id,
+                        *size,
+                        &mut combined_rng([*size as u64, s, seed[0], seed[1]]),
+                    )
+                })
+            })
+            .collect()
+    }
 }

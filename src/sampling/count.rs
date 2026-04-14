@@ -33,13 +33,13 @@ impl<C: Counter, L: Label> Sampler for CountSampler<'_, '_, C, L> {
         super::common::possible_size(self.term_count, self.graph, id, size, samples)
     }
 
-    fn sample_batch(
+    fn sample_batch<const PARALLEL: bool>(
         &self,
         id: EClassId,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
     ) -> HashSet<OriginTree<L>> {
-        super::common::sample_batch(self, id, samples_per_size, seed)
+        super::common::sample_batch::<PARALLEL, _>(self, id, samples_per_size, seed)
     }
 
     fn sample(&self, id: EClassId, size: usize, rng: &mut ChaCha12Rng) -> OriginTree<L> {

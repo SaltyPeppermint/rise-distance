@@ -161,7 +161,7 @@ where
     }
 
     /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
-    pub fn sample_frontier_terms(
+    pub fn sample_frontier_terms<const PARALLEL: bool>(
         &self,
         count: usize,
         distribution: TermSampleDist,
@@ -186,23 +186,23 @@ where
             );
             let batch = match sample_strategy {
                 SampleStrategy::Naive => NaiveSampler::new(&self.tc, &self.graph)
-                    .sample_batch_root(&samples_per_size, seed),
+                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed),
                 SampleStrategy::CountBased => CountSampler::new(&self.tc, &self.graph)
-                    .sample_batch_root(&samples_per_size, seed),
+                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed),
                 SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
                     NaiveSampler::new(&self.tc, &self.graph),
                     UnitCost,
                     0.5,
                     false,
                 )
-                .sample_batch_root(&samples_per_size, seed),
+                .sample_batch_root::<PARALLEL>(&samples_per_size, seed),
                 SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
                     CountSampler::new(&self.tc, &self.graph),
                     UnitCost,
                     0.5,
                     false,
                 )
-                .sample_batch_root(&samples_per_size, seed),
+                .sample_batch_root::<PARALLEL>(&samples_per_size, seed),
             };
 
             let results = batch

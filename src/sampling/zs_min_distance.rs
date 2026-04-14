@@ -1,5 +1,6 @@
 use hashbrown::HashSet;
 use rand_chacha::ChaCha12Rng;
+use rayon::prelude::*;
 
 use crate::sampling::Sampler;
 use crate::tree::OriginTree;
@@ -47,11 +48,17 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    fn average_distance(&self, id: EClassId, size: usize, n: u64, seed: [u64; 2]) -> usize {
+    fn average_distance<const PARALLEL: bool>(
+        &self,
+        id: EClassId,
+        size: usize,
+        n: u64,
+        seed: [u64; 2],
+    ) -> usize {
         // Sample n unique trees of the given size.
         let trees = self
             .inner
-            .sample_batch(id, &[(size, n)], seed)
+            .sample_batch::<PARALLEL>(id, &[(size, n)], seed)
             .into_iter()
             .collect::<Vec<_>>();
         assert!(
@@ -83,6 +90,47 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
     }
 }
 
+impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
+    fn sample_for_size<const PARALLEL: bool>(
+        &self,
+        id: EClassId,
+        size: usize,
+        samples: u64,
+        seed: [u64; 2],
+    ) -> impl Iterator<Item = OriginTree<S::Label>> {
+        let mut samples_to_take = samples;
+        let mut existing_flat = HashSet::new();
+        let mut existing = HashSet::new();
+
+        let mut rejected = 0;
+        let cut_off = self.average_distance::<PARALLEL>(id, size, 1000, seed);
+
+        let mut rng = combined_rng([size as u64, seed[0], seed[1]]);
+        while samples_to_take > 0 {
+            let new_candidate = self.sample(id, size, &mut rng);
+            if existing.contains(&new_candidate) {
+                continue;
+            }
+            let candidate_flat = new_candidate.flatten(self.with_types);
+            if existing_flat
+                .iter()
+                .any(|e| tree_distance(e, &candidate_flat, &self.cost_fn) < cut_off)
+            {
+                rejected += 1;
+                if rejected % 100 == 0 {
+                    eprintln!("REJECTED: {rejected}");
+                    eprintln!("SO FAR THIS MANY {}", existing.len());
+                }
+                continue;
+            }
+            existing_flat.insert(candidate_flat);
+            existing.insert(new_candidate);
+            samples_to_take -= 1;
+        }
+        existing.into_iter()
+    }
+}
+
 impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
     type Label = S::Label;
 
@@ -94,53 +142,29 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
         self.inner.possible_size(id, size, samples)
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
-    fn sample_batch(
+    fn sample_batch<const PARALLEL: bool>(
         &self,
         id: EClassId,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
     ) -> HashSet<OriginTree<S::Label>> {
-        samples_per_size
-            .iter()
-            .filter(|(size, samples)| self.possible_size(id, *size, *samples))
-            .flat_map(|(size, samples)| {
-                let mut samples_to_take = *samples;
-                let mut existing_flat = HashSet::new();
-                let mut existing = HashSet::new();
-
-                let mut rejected = 0;
-                let cut_off = self.average_distance(id, *size, 1000, seed);
-
-                let mut rng = combined_rng([*size as u64, seed[0], seed[1]]);
-                while samples_to_take > 0 {
-                    let new_candidate = self.sample(id, *size, &mut rng);
-                    if existing.contains(&new_candidate) {
-                        continue;
-                    }
-                    let candidate_flat = new_candidate.flatten(self.with_types);
-                    if existing_flat
-                        .iter()
-                        .any(|e| tree_distance(e, &candidate_flat, &self.cost_fn) < cut_off)
-                    {
-                        rejected += 1;
-                        if rejected % 100 == 0 {
-                            eprintln!("REJECTED: {rejected}");
-                            eprintln!("SO FAR THIS MANY {}", existing.len());
-                        }
-                        continue;
-                    }
-                    existing_flat.insert(candidate_flat);
-                    existing.insert(new_candidate);
-                    samples_to_take -= 1;
-                }
-                existing.into_iter()
-            })
-            .collect()
+        if PARALLEL {
+            samples_per_size
+                .par_iter()
+                .filter(|(size, samples)| self.possible_size(id, *size, *samples))
+                .flat_map_iter(|(size, samples)| {
+                    self.sample_for_size::<PARALLEL>(id, *size, *samples, seed)
+                })
+                .collect()
+        } else {
+            samples_per_size
+                .iter()
+                .filter(|(size, samples)| self.possible_size(id, *size, *samples))
+                .flat_map(|(size, samples)| {
+                    self.sample_for_size::<PARALLEL>(id, *size, *samples, seed)
+                })
+                .collect()
+        }
     }
 
     /// Sample uniformly: each feasible choice gets equal weight.
