@@ -163,7 +163,8 @@ fn main() {
     let mut all_results: Vec<GoalResults> = Vec::new();
     let mut all_stats: Vec<serde_json::Value> = Vec::new();
 
-    for (seed_str, seed_expr, max_size) in &seeds {
+    for (i, (seed_str, seed_expr, max_size)) in seeds.iter().enumerate() {
+        tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
         if let Some((results, stats)) = process_seed(&cli, seed_str, seed_expr, *max_size) {
             all_stats.push(stats);
             all_results.extend(results);
@@ -184,15 +185,12 @@ fn process_seed(
     seed_expr: &RecExpr<Math>,
     max_size: usize,
 ) -> Option<(Vec<GoalResults>, serde_json::Value)> {
-    tee_println!("\n=== Seed: {seed_str} (max_size={max_size}) ===");
-
     let result = big_eqsat(
         seed_expr,
         RULES.iter(),
         Duration::from_secs_f64(cli.time_limit),
         cli.node_limit,
     )?;
-
     tee_println!("Goal Iterations: {}", result.goal_iters());
     tee_println!("Guide Iterations: {}", result.guide_iters());
     tee_println!("Stop Reason: {:?}", result.stop_reason());
