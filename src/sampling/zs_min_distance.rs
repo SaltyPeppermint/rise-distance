@@ -56,11 +56,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         seed: [u64; 2],
     ) -> usize {
         // Sample n unique trees of the given size.
-        let trees = self
-            .inner
-            .sample_batch::<PARALLEL>(id, &[(size, n)], seed)
-            .into_iter()
-            .collect::<Vec<_>>();
+        let trees = self.inner.sample_batch::<PARALLEL>(id, &[(size, n)], seed);
         assert!(
             trees.len() >= 2,
             "need at least 2 unique samples, got {}",
@@ -105,9 +101,12 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         let mut rejected = 0;
         let cut_off = self.average_distance::<PARALLEL>(id, size, 1000, seed);
 
-        let mut rng = combined_rng([size as u64, seed[0], seed[1]]);
+        let mut candidate_idx: u64 = 0;
         while samples_to_take > 0 {
+            let mut rng = combined_rng([size as u64, candidate_idx, seed[0], seed[1]]);
             let new_candidate = self.sample(id, size, &mut rng);
+            candidate_idx += 1;
+
             if existing.contains(&new_candidate) {
                 continue;
             }
