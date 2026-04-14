@@ -131,15 +131,6 @@ where
         let graph = convert(graph, root);
         let tc = TermCount::<C>::new(max_size, false, &graph);
         let histogram = tc.data.get(&graph.root())?;
-        let mut sorted_hist = histogram
-            .iter()
-            .map(|(a, b)| (*a, b.to_owned()))
-            .collect::<Vec<_>>();
-        sorted_hist.sort_unstable();
-        tee_println!("Terms in frontier:");
-        for (k, v) in &sorted_hist {
-            tee_println!("{v} terms of size {k}");
-        }
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
         Some(PrecomputePackage {
@@ -149,6 +140,28 @@ where
             prev_raw_egg: prev_graph,
             graph,
         })
+    }
+
+    /// Log the stats about the root
+    ///
+    /// # Panics
+    ///
+    /// Panics if there are no terms in the root
+    pub fn log_root(&self) {
+        let histogram = self
+            .tc
+            .data
+            .get(&self.graph.root())
+            .expect("Somehow the root does not contain any terms?");
+        let mut sorted_hist = histogram
+            .iter()
+            .map(|(a, b)| (*a, b.to_owned()))
+            .collect::<Vec<_>>();
+        sorted_hist.sort_unstable();
+        tee_println!("Terms in frontier:");
+        for (k, v) in &sorted_hist {
+            tee_println!("{v} terms of size {k}");
+        }
     }
 
     /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.

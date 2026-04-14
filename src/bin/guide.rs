@@ -215,21 +215,21 @@ fn process_seed(
     tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
 
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
-    let Some(goals) = PrecomputePackage::<BigUint, MathLabel, _, _>::precompute(
+    let pp = PrecomputePackage::<BigUint, MathLabel, _, _>::precompute(
         result.goal(),
         result.prev_goal().to_owned(),
         result.root(),
         max_size,
-    )?
-    .sample_frontier_terms(cli.goals, cli.size_distribution, cli.goal_sample_strategy) else {
-        tee_println!(
-            "WARNING: Not enough goals in the frontier for seed '{seed_str}'. Skipping. Try more iterations or a larger max-size."
-        );
+    )?;
+    pp.log_root();
+    let Some(goals) =
+        pp.sample_frontier_terms(cli.goals, cli.size_distribution, cli.goal_sample_strategy)
+    else {
+        tee_println!("WARNING: Not enough goals in the frontier for seed '{seed_str}'. Skipping.");
         return None;
     };
 
     tee_println!("Sampled {} goal(s)", goals.len());
-
     let stats = json!({
         "seed": seed_str,
         "max_size": max_size,
