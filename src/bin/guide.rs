@@ -366,30 +366,28 @@ where
     let bars = progress_bars();
     bars.into_par_iter()
         .map(|(k, pb)| {
-            let trials = if let Some(samples) = pc.sample_frontier_terms(
+            let Some(samples) = pc.sample_frontier_terms(
                 k * NUM_TRIALS,
                 cli.size_distribution,
                 cli.guide_sample_strategy,
                 [k as u64, 0],
-            ) {
-                samples
-                    .par_chunks(k)
-                    .map(|subset| {
-                        verify_reachability(
-                            subset,
-                            goal_recexpr,
-                            &RULES,
-                            Duration::from_secs_f64(cli.time_limit),
-                            cli.node_limit,
-                            cli.full_union,
-                        )
-                    })
-                    .progress_with(pb)
-                    .collect()
-            } else {
-                vec![Err(GuideError::InsufficientSamples); NUM_TRIALS]
+            ) else {
+                return (k, vec![Err(GuideError::InsufficientSamples); NUM_TRIALS]);
             };
-
+            let trials = samples
+                .par_chunks(k)
+                .map(|subset| {
+                    verify_reachability(
+                        subset,
+                        goal_recexpr,
+                        &RULES,
+                        Duration::from_secs_f64(cli.time_limit),
+                        cli.node_limit,
+                        cli.full_union,
+                    )
+                })
+                .progress_with(pb)
+                .collect();
             (k, trials)
         })
         .collect()
