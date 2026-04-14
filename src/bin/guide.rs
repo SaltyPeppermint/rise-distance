@@ -223,7 +223,7 @@ fn process_seed(
         max_size,
     )?;
     pp.log_root();
-    let Some(goals) = pp.sample_frontier_terms(
+    let Some(goals) = pp.sample_frontier_terms::<true>(
         cli.goals,
         cli.size_distribution,
         cli.goal_sample_strategy,
@@ -330,7 +330,7 @@ where
                 .into_par_iter()
                 .map(|s| {
                     let subset = pc
-                        .sample_frontier_terms(
+                        .sample_frontier_terms::<false>(
                             k,
                             cli.size_distribution,
                             cli.guide_sample_strategy,
@@ -366,7 +366,7 @@ where
     let bars = progress_bars();
     bars.into_par_iter()
         .map(|(k, pb)| {
-            let Some(samples) = pc.sample_frontier_terms(
+            let Some(samples) = pc.sample_frontier_terms::<true>(
                 k * NUM_TRIALS,
                 cli.size_distribution,
                 cli.guide_sample_strategy,

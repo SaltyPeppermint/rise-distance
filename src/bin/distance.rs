@@ -283,8 +283,11 @@ fn run_count_extraction<L: Label>(
     let samples_per_size =
         distribution.samples_per_size(histogram, min_size, max_size, total_samples);
 
-    let candidates =
-        CountSampler::new(term_count, graph).sample_batch_root::<true>(&samples_per_size, [0, 0]);
+    let candidates = CountSampler::new(term_count, graph).sample_batch_root::<true, _>(
+        &samples_per_size,
+        [0, 0],
+        &|_| true,
+    );
     let n_candidates = candidates.len();
     eprintln!("{n_candidates} unique candidates");
 

@@ -11,7 +11,6 @@ use std::fmt::Display;
 use std::path::PathBuf;
 
 use egg::{Analysis, Iteration, Language};
-use hashbrown::HashSet;
 use num::ToPrimitive;
 
 use crate::cli::argtypes::{SampleStrategy, TermSampleDist};
@@ -23,14 +22,16 @@ use crate::tree::{OriginTree, TreeShaped, UnfoldedTree};
 use crate::{Graph, Label, UnitCost, structural_diff, tree_distance_unit};
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
-pub fn is_frontier<T, L, N, LL>(tree: &T, prev_raw_egg: &egg::EGraph<L, N>) -> bool
+fn is_frontier<L, LL, N>(prev_raw_egg: &egg::EGraph<L, N>, t: &OriginTree<LL>) -> bool
 where
-    L: Language,
-    N: Analysis<L>,
-    LL: Label,
-    T: ToEgg<LL, Lang = L>,
+    L: Language + Sync,
+    L::Discriminant: Sync,
+    N: Analysis<L> + Sync,
+    N::Data: Sync,
+    LL: Label + for<'a> std::convert::From<&'a L>,
+    OriginTree<LL>: ToEgg<LL, Lang = L>,
 {
-    prev_raw_egg.lookup_expr(&tree.to_rec_expr()).is_none()
+    prev_raw_egg.lookup_expr(&t.to_rec_expr()).is_none()
 }
 
 pub fn trial_avg<
@@ -160,7 +161,7 @@ where
     }
 
     /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
-    pub fn sample_frontier_terms(
+    pub fn sample_frontier_terms<const PARALLEL: bool>(
         &self,
         count: usize,
         distribution: TermSampleDist,
@@ -177,6 +178,7 @@ where
     {
         let histogram = self.tc.data.get(&self.graph.root())?;
         OVERSAMPLE_SCHEDULE.iter().find_map(|oversample| {
+            let check = |t: &OriginTree<LL>| is_frontier(&self.prev_raw_egg, t);
             let samples_per_size = distribution.samples_per_size(
                 histogram,
                 self.min_size,
@@ -185,30 +187,37 @@ where
             );
             let batch = match sample_strategy {
                 SampleStrategy::Naive => NaiveSampler::new(&self.tc, &self.graph)
-                    .sample_batch_root::<false>(&samples_per_size, seed),
+                    .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
                 SampleStrategy::CountBased => CountSampler::new(&self.tc, &self.graph)
-                    .sample_batch_root::<false>(&samples_per_size, seed),
+                    .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
                 SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
                     NaiveSampler::new(&self.tc, &self.graph),
                     UnitCost,
                     0.5,
                     false,
                 )
-                .sample_batch_root::<false>(&samples_per_size, seed),
+                .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
                 SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
                     CountSampler::new(&self.tc, &self.graph),
                     UnitCost,
                     0.5,
                     false,
                 )
-                .sample_batch_root::<false>(&samples_per_size, seed),
+                .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
             };
 
-            let results = batch
-                .into_iter()
-                .filter(|t| is_frontier(t, &self.prev_raw_egg))
-                .collect::<HashSet<_>>();
-            (results.len() >= count).then(|| results.into_iter().take(count).collect())
+            // let results = if PARALLEL {
+            //     batch
+            //         .into_par_iter()
+            //         .filter(|t| is_frontier(t, &self.prev_raw_egg))
+            //         .collect::<HashSet<_>>()
+            // } else {
+            //     batch
+            //         .into_iter()
+            //         .filter(|t| is_frontier(t, &self.prev_raw_egg))
+            //         .collect::<HashSet<_>>()
+            // };
+            (batch.len() >= count).then(|| batch.into_iter().take(count).collect())
         })
     }
 }

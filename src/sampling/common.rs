@@ -24,23 +24,29 @@ pub(super) fn possible_size<C: Counter>(
     samples.try_into().is_ok_and(|s: C| count > &s)
 }
 
-pub(super) fn sample_batch<const PARALLEL: bool, S: Sampler>(
+pub(super) fn sample_batch<const PARALLEL: bool, S, F>(
     sampler: &S,
     id: EClassId,
     samples_per_size: &[(usize, u64)],
     seed: [u64; 2],
-) -> HashSet<OriginTree<S::Label>> {
+    check: F,
+) -> HashSet<OriginTree<S::Label>>
+where
+    S: Sampler,
+    F: for<'a> Fn(&'a OriginTree<S::Label>) -> bool + Sync,
+{
     if PARALLEL {
         samples_per_size
             .par_iter()
             .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
-            .flat_map_iter(|(size, samples)| {
-                (0..*samples).map(|s| {
-                    sampler.sample(
+            .flat_map(|(size, samples)| {
+                (0..*samples).into_par_iter().filter_map(|s| {
+                    let candidate = sampler.sample(
                         id,
                         *size,
                         &mut combined_rng([*size as u64, s, seed[0], seed[1]]),
-                    )
+                    );
+                    check(&candidate).then_some(candidate)
                 })
             })
             .collect()
@@ -49,12 +55,13 @@ pub(super) fn sample_batch<const PARALLEL: bool, S: Sampler>(
             .iter()
             .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
             .flat_map(|(size, samples)| {
-                (0..*samples).map(|s| {
-                    sampler.sample(
+                (0..*samples).filter_map(|s| {
+                    let candidate = sampler.sample(
                         id,
                         *size,
                         &mut combined_rng([*size as u64, s, seed[0], seed[1]]),
-                    )
+                    );
+                    check(&candidate).then_some(candidate)
                 })
             })
             .collect()

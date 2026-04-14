@@ -48,15 +48,21 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    fn average_distance<const PARALLEL: bool>(
+    fn average_distance<const PARALLEL: bool, F>(
         &self,
         id: EClassId,
         size: usize,
         n: u64,
         seed: [u64; 2],
-    ) -> usize {
+        check: &F,
+    ) -> usize
+    where
+        F: Fn(&OriginTree<S::Label>) -> bool + Sync,
+    {
         // Sample n unique trees of the given size.
-        let trees = self.inner.sample_batch::<PARALLEL>(id, &[(size, n)], seed);
+        let trees = self
+            .inner
+            .sample_batch::<PARALLEL, _>(id, &[(size, n)], seed, check);
         assert!(
             trees.len() >= 2,
             "need at least 2 unique samples, got {}",
@@ -87,19 +93,23 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
 }
 
 impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
-    fn sample_for_size<const PARALLEL: bool>(
+    fn sample_for_size<const PARALLEL: bool, F>(
         &self,
         id: EClassId,
         size: usize,
         samples: u64,
         seed: [u64; 2],
-    ) -> impl Iterator<Item = OriginTree<S::Label>> {
+        check: &F,
+    ) -> impl Iterator<Item = OriginTree<S::Label>>
+    where
+        F: Fn(&OriginTree<S::Label>) -> bool + Sync,
+    {
         let mut samples_to_take = samples;
         let mut existing_flat = HashSet::new();
         let mut existing = HashSet::new();
 
         let mut rejected = 0;
-        let cut_off = self.average_distance::<PARALLEL>(id, size, 1000, seed);
+        let cut_off = self.average_distance::<PARALLEL, _>(id, size, 1000, seed, check);
 
         let mut candidate_idx: u64 = 0;
         while samples_to_take > 0 {
@@ -141,18 +151,22 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
         self.inner.possible_size(id, size, samples)
     }
 
-    fn sample_batch<const PARALLEL: bool>(
+    fn sample_batch<const PARALLEL: bool, F>(
         &self,
         id: EClassId,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
-    ) -> HashSet<OriginTree<S::Label>> {
+        check: &F,
+    ) -> HashSet<OriginTree<S::Label>>
+    where
+        F: Fn(&OriginTree<Self::Label>) -> bool + Sync,
+    {
         if PARALLEL {
             samples_per_size
                 .par_iter()
                 .filter(|(size, samples)| self.possible_size(id, *size, *samples))
                 .flat_map_iter(|(size, samples)| {
-                    self.sample_for_size::<PARALLEL>(id, *size, *samples, seed)
+                    self.sample_for_size::<PARALLEL, _>(id, *size, *samples, seed, check)
                 })
                 .collect()
         } else {
@@ -160,7 +174,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
                 .iter()
                 .filter(|(size, samples)| self.possible_size(id, *size, *samples))
                 .flat_map(|(size, samples)| {
-                    self.sample_for_size::<PARALLEL>(id, *size, *samples, seed)
+                    self.sample_for_size::<PARALLEL, _>(id, *size, *samples, seed, check)
                 })
                 .collect()
         }

@@ -24,12 +24,16 @@ pub trait Sampler: Sync + Send {
     /// Sample unique terms across a range of sizes from root.
     ///
     /// See `sample_unique` for more info
-    fn sample_batch_root<const PARALLEL: bool>(
+    fn sample_batch_root<const PARALLEL: bool, F>(
         &self,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
-    ) -> HashSet<OriginTree<Self::Label>> {
-        self.sample_batch::<PARALLEL>(self.root(), samples_per_size, seed)
+        check: &F,
+    ) -> HashSet<OriginTree<Self::Label>>
+    where
+        F: Fn(&OriginTree<Self::Label>) -> bool + Sync,
+    {
+        self.sample_batch::<PARALLEL, _>(self.root(), samples_per_size, seed, check)
     }
 
     /// Sample unique terms across a range of sizes.
@@ -39,12 +43,15 @@ pub trait Sampler: Sync + Send {
     /// may have gaps in its reachable sizes (e.g. terms only at sizes 5, 7, 9),
     /// and calling `sample` with a size that has no terms would cause all node
     /// weights to be zero, panicking with `AllWeightsZero`.
-    fn sample_batch<const PARALLEL: bool>(
+    fn sample_batch<const PARALLEL: bool, F>(
         &self,
         id: EClassId,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
-    ) -> HashSet<OriginTree<Self::Label>>;
+        check: &F,
+    ) -> HashSet<OriginTree<Self::Label>>
+    where
+        F: Fn(&OriginTree<Self::Label>) -> bool + Sync;
 
     #[must_use]
     fn sample(&self, id: EClassId, size: usize, rng: &mut ChaCha12Rng) -> OriginTree<Self::Label>;
