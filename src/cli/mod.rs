@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use egg::{Analysis, Iteration, Language};
 use hashbrown::HashSet;
 use num::ToPrimitive;
-use rayon::prelude::*;
 
 use crate::cli::argtypes::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, TermCount};
@@ -161,7 +160,7 @@ where
     }
 
     /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
-    pub fn sample_frontier_terms<const PARALLEL: bool>(
+    pub fn sample_frontier_terms(
         &self,
         count: usize,
         distribution: TermSampleDist,
@@ -186,38 +185,30 @@ where
             );
             let batch = match sample_strategy {
                 SampleStrategy::Naive => NaiveSampler::new(&self.tc, &self.graph)
-                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed),
+                    .sample_batch_root::<false>(&samples_per_size, seed),
                 SampleStrategy::CountBased => CountSampler::new(&self.tc, &self.graph)
-                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed),
+                    .sample_batch_root::<false>(&samples_per_size, seed),
                 SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
                     NaiveSampler::new(&self.tc, &self.graph),
                     UnitCost,
                     0.5,
                     false,
                 )
-                .sample_batch_root::<PARALLEL>(&samples_per_size, seed),
+                .sample_batch_root::<false>(&samples_per_size, seed),
                 SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
                     CountSampler::new(&self.tc, &self.graph),
                     UnitCost,
                     0.5,
                     false,
                 )
-                .sample_batch_root::<PARALLEL>(&samples_per_size, seed),
+                .sample_batch_root::<false>(&samples_per_size, seed),
             };
 
             let results = batch
-                .into_par_iter()
+                .into_iter()
                 .filter(|t| is_frontier(t, &self.prev_raw_egg))
                 .collect::<HashSet<_>>();
-            if results.len() >= count {
-                Some(results.into_par_iter().take_any(count).collect())
-            } else {
-                // tee_println!(
-                //     "Have {}/{count} frontier terms with {oversample}x oversampling, retrying with double that...",
-                //     results.len()
-                // );
-                None
-            }
+            (results.len() >= count).then(|| results.into_iter().take(count).collect())
         })
     }
 }

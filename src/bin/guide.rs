@@ -223,7 +223,7 @@ fn process_seed(
         max_size,
     )?;
     pp.log_root();
-    let Some(goals) = pp.sample_frontier_terms::<true>(
+    let Some(goals) = pp.sample_frontier_terms(
         cli.goals,
         cli.size_distribution,
         cli.goal_sample_strategy,
@@ -254,19 +254,6 @@ fn process_seed(
         max_size,
     )?;
 
-    tee_println!("\nRunning top_k experiments WITH REPLACEMENT...");
-    let with_replacement = goals
-        .iter()
-        .map(|goal| {
-            tee_println!("Current goal: {}", goal.to_string());
-            GoalResults {
-                seed: seed_str.to_owned(),
-                goal: goal.to_string(),
-                runs: run_guide_set_trials_with_replacement(cli, &goal.to_rec_expr(), &pc),
-            }
-        })
-        .collect();
-
     tee_println!("\nRunning top_k experiments NO REPLACEMENT...");
     let no_replacement = goals
         .iter()
@@ -276,6 +263,19 @@ fn process_seed(
                 seed: seed_str.to_owned(),
                 goal: goal.to_string(),
                 runs: run_guide_set_trials_no_replacement(cli, &goal.to_rec_expr(), &pc),
+            }
+        })
+        .collect();
+
+    tee_println!("\nRunning top_k experiments WITH REPLACEMENT...");
+    let with_replacement = goals
+        .iter()
+        .map(|goal| {
+            tee_println!("Current goal: {}", goal.to_string());
+            GoalResults {
+                seed: seed_str.to_owned(),
+                goal: goal.to_string(),
+                runs: run_guide_set_trials_with_replacement(cli, &goal.to_rec_expr(), &pc),
             }
         })
         .collect();
@@ -330,7 +330,7 @@ where
                 .into_par_iter()
                 .map(|s| {
                     let subset = pc
-                        .sample_frontier_terms::<false>(
+                        .sample_frontier_terms(
                             k,
                             cli.size_distribution,
                             cli.guide_sample_strategy,
@@ -366,7 +366,7 @@ where
     let bars = progress_bars();
     bars.into_par_iter()
         .map(|(k, pb)| {
-            let trials = if let Some(samples) = pc.sample_frontier_terms::<true>(
+            let trials = if let Some(samples) = pc.sample_frontier_terms(
                 k * NUM_TRIALS,
                 cli.size_distribution,
                 cli.guide_sample_strategy,

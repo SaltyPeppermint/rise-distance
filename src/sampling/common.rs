@@ -34,8 +34,8 @@ pub(super) fn sample_batch<const PARALLEL: bool, S: Sampler>(
         samples_per_size
             .par_iter()
             .filter(|(size, samples)| sampler.possible_size(id, *size, *samples))
-            .flat_map(|(size, samples)| {
-                (0..*samples).into_par_iter().map(|s| {
+            .flat_map_iter(|(size, samples)| {
+                (0..*samples).map(|s| {
                     sampler.sample(
                         id,
                         *size,
