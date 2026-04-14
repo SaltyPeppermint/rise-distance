@@ -9,23 +9,19 @@ pub use types::*;
 use std::env::current_dir;
 use std::fmt::Display;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
-use egg::{Analysis, Iteration, Language, Rewrite};
+use egg::{Analysis, Iteration, Language};
 use hashbrown::HashSet;
 use num::ToPrimitive;
 use rayon::prelude::*;
 
 use crate::cli::argtypes::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, TermCount};
-use crate::egg::math::ConstantFold;
-use crate::egg::{Math, ToEgg, convert};
+use crate::egg::{ToEgg, convert};
 use crate::sampling::{CountSampler, NaiveSampler, Sampler, ZSDistanceSampler};
 use crate::tee_println;
 use crate::tree::{OriginTree, TreeShaped, UnfoldedTree};
 use crate::{Graph, Label, UnitCost, structural_diff, tree_distance_unit};
-
-pub static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
 pub fn is_frontier<T, L, N, LL>(tree: &T, prev_raw_egg: &egg::EGraph<L, N>) -> bool

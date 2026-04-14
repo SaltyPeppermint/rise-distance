@@ -18,8 +18,8 @@ use serde_json::json;
 use rise_distance::cli::argtypes::{SampleStrategy, SeedInput, TermSampleDist};
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{GoalSummary, GuideError, TrialsPerK};
-use rise_distance::cli::{PrecomputePackage, RULES, get_run_folder, init_log};
-use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
+use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log};
+use rise_distance::egg::math::{ConstantFold, Math, MathLabel, RULES};
 use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
 use rise_distance::tee_println;
 
@@ -188,7 +188,7 @@ fn process_seed(
 
     let result = big_eqsat(
         seed_expr,
-        RULES.get_or_init(math::rules),
+        RULES.iter(),
         Duration::from_secs_f64(cli.time_limit),
         cli.node_limit,
     )?;
@@ -387,7 +387,7 @@ where
                     verify_reachability(
                         &subset,
                         goal_recexpr,
-                        RULES.get_or_init(math::rules),
+                        &RULES,
                         Duration::from_secs_f64(cli.time_limit),
                         cli.node_limit,
                         cli.full_union,

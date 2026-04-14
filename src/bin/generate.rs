@@ -7,9 +7,9 @@ use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use rise_distance::cli::RULES;
-use rise_distance::egg::math::generate::BoltzmannSampler;
-use rise_distance::egg::{math, valididty_hook};
+use rise_distance::egg::math::BoltzmannSampler;
+use rise_distance::egg::math::RULES;
+use rise_distance::egg::valididty_hook;
 use serde::Serialize;
 
 use rise_distance::cli::argtypes::Distribution;
@@ -104,8 +104,6 @@ fn main() {
     .expect("valid template")
     .progress_chars("=>-");
 
-    let rules = RULES.get_or_init(math::rules);
-
     let big_collector = sized_rngs
         .into_par_iter()
         .progress_with_style(style)
@@ -118,7 +116,13 @@ fn main() {
                     for _ in 0..cli.retry_limit {
                         let (candidate, reason, attempts) = sampler
                             .sample(&mut rng, &|t| {
-                                valididty_hook(t, cli.min_iters, cli.min_nodes, cli.min_time, rules)
+                                valididty_hook(
+                                    t,
+                                    cli.min_iters,
+                                    cli.min_nodes,
+                                    cli.min_time,
+                                    &RULES,
+                                )
                             })
                             .expect("Too many failed sample attempts");
                         total_attempts += attempts;

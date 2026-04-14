@@ -1,5 +1,7 @@
-pub mod generate;
+mod generate;
 mod label;
+
+use std::sync::LazyLock;
 
 use egg::{
     Analysis, DidMerge, Id, Language, PatternAst, Rewrite, Subst, Symbol, define_language,
@@ -8,6 +10,7 @@ use egg::{
 
 use ordered_float::NotNan;
 
+pub use generate::BoltzmannSampler;
 pub use label::MathLabel;
 
 pub type Constant = NotNan<f64>;
@@ -133,6 +136,8 @@ fn is_not_zero(var: &str) -> impl Fn(&mut egg::EGraph<Math, ConstantFold>, Id, &
         }
     }
 }
+
+pub static RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(rules);
 
 #[rustfmt::skip]
 #[must_use]
