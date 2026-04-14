@@ -9,7 +9,6 @@ use egg::RecExpr;
 use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
-use rise_distance::count::Counter;
 use serde::Serialize;
 use serde_json::json;
 
@@ -17,6 +16,7 @@ use rise_distance::cli::argtypes::{SampleStrategy, SeedInput, TermSampleDist};
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{GoalSummary, GuideError, TrialsPerK};
 use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log};
+use rise_distance::count::Counter;
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel, RULES};
 use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
 use rise_distance::tee_println;
