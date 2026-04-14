@@ -25,8 +25,6 @@ use crate::tee_println;
 use crate::tree::{OriginTree, TreeShaped, UnfoldedTree};
 use crate::{Graph, Label, UnitCost, structural_diff, tree_distance_unit};
 
-pub const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
-
 pub static RULES: OnceLock<Vec<Rewrite<Math, ConstantFold>>> = OnceLock::new();
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).

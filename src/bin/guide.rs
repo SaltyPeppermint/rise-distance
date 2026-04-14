@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use egg::RecExpr;
+use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -17,7 +18,7 @@ use serde_json::json;
 use rise_distance::cli::argtypes::{SampleStrategy, SeedInput, TermSampleDist};
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{GoalSummary, GuideError, TrialsPerK};
-use rise_distance::cli::{PrecomputePackage, RULES, TRIAL_SIZE, get_run_folder, init_log};
+use rise_distance::cli::{PrecomputePackage, RULES, get_run_folder, init_log};
 use rise_distance::egg::math::{self, ConstantFold, Math, MathLabel};
 use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
 use rise_distance::tee_println;
@@ -105,6 +106,9 @@ struct Cli {
     #[arg(long)]
     measure: bool,
 }
+
+const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
+const NUM_TRIALS: u64 = 100;
 
 fn main() {
     let cli = Cli::parse();
@@ -357,12 +361,22 @@ fn run_guide_set_trials<C>(
 where
     C: Counter + Display + Ord,
 {
-    // assert!(sampler.len() >= 10 * TRIAL_SIZE[TRIAL_SIZE.len() - 1]);
-    TRIAL_SIZE
-        .into_par_iter()
-        .map(|k| {
+    let mp = MultiProgress::new();
+    let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
+        .unwrap()
+        .progress_chars("=> ");
+    let bars = TRIAL_SIZE
+        .iter()
+        .map(|&k| {
+            let pb = mp.add(ProgressBar::new(NUM_TRIALS).with_style(style.clone()));
+            pb.set_message(format!("k={k}"));
+            (k, pb)
+        })
+        .collect::<Vec<_>>();
+    bars.into_par_iter()
+        .map(|(k, pb)| {
             let outer_rng = ChaCha12Rng::seed_from_u64(k as u64);
-            let trials = (0..100)
+            let trials = (0..NUM_TRIALS)
                 .into_par_iter()
                 .map(|s| {
                     let mut inner_rng = outer_rng.clone();
@@ -379,6 +393,7 @@ where
                         cli.full_union,
                     )
                 })
+                .progress_with(pb)
                 .collect::<Vec<_>>();
 
             // log_trials(k, &trials);
