@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import itertools
+import os
 import subprocess
 
 params = {
@@ -16,18 +17,15 @@ base_cmd = [
     "--",
     "--seed-csv",
     "data/seed_terms/output.csv",
-    "-n",
-    "10",
-    "-i",
-    "5",
-    # "--max-size",
-    # "20",
     "--goals",
     "10",
     "--guides",
     "1000",
-    "--eval-all",
+    "--time-limit",
+    "0.2",
 ]
+
+env = os.environ | {"RUST_BACKTRACE": "1"}
 
 for i, combo in enumerate(itertools.product(*params.values())):
     extra = []
@@ -42,4 +40,4 @@ for i, combo in enumerate(itertools.product(*params.values())):
     print(f"RUN {i}")
     print(f"EXTRA ARGS:   {extra}\n")
     print(f"FULL COMMAND: {' '.join(base_cmd + extra)}")
-    subprocess.run(base_cmd + extra, check=True)
+    subprocess.run(base_cmd + extra, check=True, env=env)
