@@ -158,18 +158,23 @@ fn main() {
     tee_println!("Distribution: {}", cli.size_distribution);
     tee_println!("Seeds to process: {}", seeds.len());
 
-    let mut all_results: Vec<GoalResults> = Vec::new();
-    let mut all_stats: Vec<serde_json::Value> = Vec::new();
+    let mut all_with_replacement = Vec::new();
+    let mut all_no_replacement = Vec::new();
+    let mut all_stats = Vec::new();
 
     for (i, (seed_str, seed_expr, max_size)) in seeds.iter().enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        if let Some((results, stats)) = process_seed(&cli, seed_str, seed_expr, *max_size) {
+        if let Some((with_replacement, no_replacement, stats)) =
+            process_seed(&cli, seed_str, seed_expr, *max_size)
+        {
             all_stats.push(stats);
-            all_results.extend(results);
+            all_with_replacement.extend(with_replacement);
+            all_no_replacement.extend(no_replacement);
         }
     }
 
-    write_top_k_outputs(&run_folder, &all_results);
+    write_top_k_outputs(&run_folder, &all_with_replacement, "with_replacement");
+    write_top_k_outputs(&run_folder, &all_no_replacement, "no_replacement");
     write_config(&run_folder, &cli);
     write_stats(&run_folder, &all_stats);
 }
@@ -182,7 +187,7 @@ fn process_seed(
     seed_str: &str,
     seed_expr: &RecExpr<Math>,
     max_size: usize,
-) -> Option<(Vec<GoalResults>, serde_json::Value)> {
+) -> Option<(Vec<GoalResults>, Vec<GoalResults>, serde_json::Value)> {
     let result = big_eqsat(
         seed_expr,
         RULES.iter(),
@@ -249,93 +254,51 @@ fn process_seed(
         max_size,
     )?;
 
-    tee_println!("\nRunning top_k experiments...");
-    let goal_results = goals
+    tee_println!("\nRunning top_k experiments WITH REPLACEMENT...");
+    let with_replacement = goals
         .iter()
         .map(|goal| {
             tee_println!("Current goal: {}", goal.to_string());
             GoalResults {
                 seed: seed_str.to_owned(),
                 goal: goal.to_string(),
-                runs: run_guide_set_trials(cli, &goal.to_rec_expr(), &pc),
+                runs: run_guide_set_trials_with_replacement(cli, &goal.to_rec_expr(), &pc),
             }
         })
         .collect();
-    // if cli.eval_all {
-    //     tee_println!("\nRunning eval_all...");
-    //     let big_stats = goals
-    //         .iter()
-    //         .map(|goal| {
-    //             tee_println!("Current goal: {}", goal.to_string());
-    //             eval_all_fn(
-    //                 cli,
-    //                 goal,
-    //                 seed_str,
-    //                 run_folder,
-    //                 goal.to_rec_expr(),
-    //                 &sampled_guides,
-    //             )
-    //         })
-    //         .collect::<Vec<_>>();
-    //     stats["all_eval_stats"] = big_stats.into();
-    // }
-    Some((goal_results, stats))
+
+    tee_println!("\nRunning top_k experiments NO REPLACEMENT...");
+    let no_replacement = goals
+        .iter()
+        .map(|goal| {
+            tee_println!("Current goal: {}", goal.to_string());
+            GoalResults {
+                seed: seed_str.to_owned(),
+                goal: goal.to_string(),
+                runs: run_guide_set_trials_no_replacement(cli, &goal.to_rec_expr(), &pc),
+            }
+        })
+        .collect();
+
+    Some((with_replacement, no_replacement, stats))
 }
 
-// fn eval_all_fn(
-//     cli: &Cli,
-//     goal: &OriginTree<MathLabel>,
-//     seed_str: &str,
-//     run_folder: &Path,
-//     goal_recexpr: RecExpr<Math>,
-//     sampled_guides: &[OriginTree<MathLabel>],
-// ) -> serde_json::Value {
-//     let pb_style = ProgressStyle::with_template(
-//         "{bar:40.cyan/blue} {pos}/{len} [{elapsed_precise}<{eta_precise}] ranking guides",
-//     )
-//     .unwrap();
-//     let goal_flat = goal.flatten(false);
-//     let results = sampled_guides
-//         .into_par_iter()
-//         .progress_with_style(pb_style)
-//         .map(move |guide| {
-//             let measurements = measure_guide(guide, &goal_flat);
-//             let iterations = verify_reachability(
-//                 std::slice::from_ref(guide).iter(),
-//                 &goal_recexpr,
-//                 RULES.get_or_init(math::rules),
-//                 Duration::from_secs_f64(cli.time_limit),
-//                 cli.node_limit,
-//                 cli.full_union,
-//             );
-//             GuideEval {
-//                 guide: guide.clone(),
-//                 measurements,
-//                 iterations,
-//             }
-//         })
-//         .collect::<Vec<_>>();
-//     let stat = print_summary(&results, goal);
-//     dump_to_parquet(run_folder, seed_str, goal, &results);
-//     stat
-// }
-
-fn write_top_k_outputs(run_folder: &Path, all_results: &[GoalResults]) {
-    let output_path = run_folder.join("top_k.json");
+fn write_top_k_outputs(run_folder: &Path, results: &[GoalResults], suffix: &str) {
+    let output_path = run_folder.join(format!("{suffix}_top_k.json"));
     let output_file = File::create(output_path).expect("Failed to create output json file");
     let mut output_writer = BufWriter::new(output_file);
-    serde_json::to_writer(&mut output_writer, &all_results).expect("write top-k json");
+    serde_json::to_writer(&mut output_writer, &results).expect("write top-k json");
 
-    let summaries = all_results
+    let summaries = results
         .iter()
         .map(|r| GoalSummary::from_entries(&r.seed, &r.goal, &r.runs))
         .collect::<Vec<_>>();
-    let summary_path = run_folder.join("top_k_summary.json");
+    let summary_path = run_folder.join(format!("{suffix}_top_k_summary.json"));
     let summary_file = File::create(summary_path).expect("Failed to create summary json file");
     let summary_writer = BufWriter::new(summary_file);
     serde_json::to_writer(summary_writer, &summaries).expect("write top-k summary json");
 
-    let parquet_path = run_folder.join("top_k_summary.parquet");
+    let parquet_path = run_folder.join(format!("{suffix}_top_k_summary.parquet"));
     dump_summary_parquet(&parquet_path, &summaries);
 }
 
@@ -352,7 +315,7 @@ fn write_stats(run_folder: &Path, stats: &[serde_json::Value]) {
     serde_json::to_writer_pretty(stats_writer, stats).expect("write stats json");
 }
 
-fn run_guide_set_trials<C>(
+fn run_guide_set_trials_with_replacement<C>(
     cli: &Cli,
     goal_recexpr: &RecExpr<Math>,
     pc: &PrecomputePackage<C, MathLabel, Math, ConstantFold>,
@@ -392,7 +355,7 @@ where
         .collect()
 }
 
-fn run_guide_set_trials_without_replacement<C>(
+fn run_guide_set_trials_no_replacement<C>(
     cli: &Cli,
     goal_recexpr: &RecExpr<Math>,
     pc: &PrecomputePackage<C, MathLabel, Math, ConstantFold>,
@@ -448,88 +411,9 @@ fn progress_bars() -> Vec<(usize, ProgressBar)> {
         .collect::<Vec<_>>()
 }
 
-// fn log_trials(k: usize, trials: &[Result<Vec<egg::Iteration<()>>, GuideError>]) {
-//     let reached = trials.iter().filter(|v| v.is_some()).count();
-//     let combined_iters = trial_avg(trials, |t| Ok(t.len()));
-//     let combined_nodes = trial_avg(trials, |t| t.last().map(|i| i.egraph_nodes));
-//     let combined_time = trial_avg(trials, |t| t.last().map(|i| i.total_time));
-//     if let (Some(avg_i), Some(avg_n), Some(avg_t)) = (combined_iters, combined_nodes, combined_time)
-//     {
-//         tee_println!(
-//             "--- k = {k} guides ---\n\
-//                       Reached goal : {reached} / {}\n\
-//                       Avg iters    : {avg_i:.1}\n\
-//                       Avg nodes    : {avg_n:.0}\n\
-//                       Avg time     : {avg_t:.1}s",
-//             trials.len(),
-//         );
-//     } else {
-//         tee_println!(
-//             "--- k = {k} guides ---\n\
-//                       Reached goal : {reached} / {}\n\
-//                       Could NOT reach goal",
-//             trials.len()
-//         );
-//     }
-// }
-
 #[derive(Serialize)]
 struct GoalResults {
     seed: String,
     goal: String,
     runs: TrialsPerK,
 }
-
-// #[expect(clippy::cast_precision_loss, clippy::shadow_unrelated)]
-// fn print_summary(
-//     results: &[GuideEval<MathLabel>],
-//     goal: &OriginTree<MathLabel>,
-// ) -> serde_json::Value {
-//     let successful = results
-//         .iter()
-//         .filter(|r| r.iterations.is_some())
-//         .collect::<Vec<_>>();
-//     let total = results.len();
-//     let n_reached = successful.len();
-//     let goal_size = goal.size_without_types();
-//     let reach_pct = 100.0 * n_reached as f64 / total.max(1) as f64;
-
-//     tee_println!("\nSummary for goal: {goal}");
-//     tee_println!("  Goal size: {goal_size}");
-//     tee_println!("  Total guides evaluated: {total}");
-//     tee_println!("  Guides that reached goal: {n_reached}/{total} ({reach_pct:.1}%)");
-
-//     let mut stat = json!({
-//         "goal": goal.to_string(),
-//         "goal_size": goal_size,
-//         "total_guides": total,
-//         "reached": n_reached,
-//         "reach_pct": reach_pct,
-//     });
-//     if successful.is_empty() {
-//         return stat;
-//     }
-
-//     let (min, med, max) = min_med_max(&successful, |r| r.measurements.zs_distance);
-//     tee_println!(
-//         "  {:<30} min={min}, median={med}, max={max}",
-//         "Successful guide zs_dists:"
-//     );
-//     stat["zs_distance"] = json!({"min": min, "median": med, "max": max});
-
-//     let (min, med, max) = min_med_max(&successful, |r| r.measurements.structural_distance);
-//     tee_println!(
-//         "  {:<30} min={min}, median={med}, max={max}",
-//         "Successful guide struct_dist:"
-//     );
-//     stat["structural_distance"] = json!({"min": min, "median": med, "max": max});
-
-//     let (min, med, max) = min_med_max(&successful, |v| v.iterations.as_ref().unwrap().len());
-//     tee_println!(
-//         "  {:<30} min={min}, median={med}, max={max}",
-//         "Iterations to reach:"
-//     );
-//     stat["iterations_to_reach"] = json!({"min": min, "median": med, "max": max});
-
-//     stat
-// }
