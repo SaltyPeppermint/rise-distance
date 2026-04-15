@@ -26,3 +26,6 @@ dev = ["pre-commit>=4.5.1"]
 name = "pytorch"
 url = "https://download.pytorch.org/whl/cu130"
 # default = true
+
+[tool.ruff]
+line-length = 100
