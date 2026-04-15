@@ -185,86 +185,39 @@ def find_latest_run(pattern: str) -> Path:
     return candidates[-1]
 
 
-def best_single_from_trial(trial: dict) -> tuple[int | None, int | None]:
-    """Extract best single iters and nodes from a trial's single_iters list."""
-    reachable = [s for s in trial["single_iters"] if s is not None]
-    if not reachable:
-        return None, None
-    return min(s["iters"] for s in reachable), min(s["nodes"] for s in reachable)
+def parse_replacement_summary(raw: list[dict], strategy_name: str) -> list[dict]:
+    """Parse a no/with_replacement_top_k_summary.json into flat rows.
 
+    Format: [{seed, goal, entries_per_k: {k: [{'Ok': {...}} | {'Err': ...}]}}]
 
-def parse_random_trials(raw: list[dict], strategy_name: str, key: str) -> list[dict]:
-    """Flatten random trial entries into rows suitable for a polars DataFrame.
-
-    Each row has: goal, strategy, k, best_single_iters, best_single_nodes,
-    combined_iters, combined_nodes.
+    Each row has: goal, strategy, k, iters, nodes, classes, total_applied,
+    total_time, not_enough_samples, unreached, panic_while_sample.
     """
     rows = []
     for entry in raw:
         goal = entry["goal"]
-        for item in entry.get(key, []):
-            for trial in item["trials"]:
-                best_i, best_n = best_single_from_trial(trial)
-                rows.append(
-                    {
-                        "goal": goal,
-                        "strategy": strategy_name,
-                        "k": item["k"],
-                        "best_single_iters": best_i,
-                        "best_single_nodes": best_n,
-                        "combined_iters": trial["combined_iters"],
-                        "combined_nodes": trial["combined_nodes"],
-                    }
-                )
-    return rows
-
-
-def parse_top_k_trials(raw: list[dict], strategy_name: str) -> list[dict]:
-    """Parse the top_k msgpack/json format into flat rows.
-
-    New format: each trial is either null (unreachable) or an array of
-    iteration records. Metrics are derived:
-      - iters = len(trial)
-      - nodes = trial[-1]["egraph_nodes"]
-
-    Each row has: goal, strategy, k, iters, nodes.
-    """
-    rows = []
-    for entry in raw:
-        goal = entry["goal"]
-        for item in entry["entries"]:
-            k = item["k"]
-            for trial in item["trials"]:
-                if trial is None:
-                    iters = None
-                    nodes = None
+        for k_str, trials in entry["entries_per_k"].items():
+            k = int(k_str)
+            for trial in trials:
+                if "Ok" in trial:
+                    t = trial["Ok"]
+                    rows.append(
+                        {
+                            "goal": goal,
+                            "strategy": strategy_name,
+                            "k": k,
+                            "iters": t["iters"],
+                            "nodes": t["nodes"],
+                            "classes": t["classes"],
+                            "total_applied": t["total_applied"],
+                            "total_time": t["total_time"],
+                            "not_enough_samples": False,
+                            "unreached": False,
+                            "panic_while_sample": False,
+                        }
+                    )
                 else:
-                    iters = len(trial)
-                    nodes = trial[-1]["egraph_nodes"]
-                rows.append(
-                    {
-                        "goal": goal,
-                        "strategy": strategy_name,
-                        "k": k,
-                        "iters": iters,
-                        "nodes": nodes,
-                    }
-                )
-    return rows
-
-
-def parse_top_k_summary(raw: list[dict], strategy_name: str) -> list[dict]:
-    """Parse a top_k_summary.json (pre-computed by Rust) into flat rows.
-
-    Each row has: goal, strategy, k, iters, nodes, classes, total_applied, total_time.
-    """
-    rows = []
-    for entry in raw:
-        goal = entry["goal"]
-        for item in entry["entries"]:
-            k = item["k"]
-            for trial in item["trials"]:
-                if trial is None:
+                    err = trial.get("Err", "")
                     rows.append(
                         {
                             "goal": goal,
@@ -275,30 +228,21 @@ def parse_top_k_summary(raw: list[dict], strategy_name: str) -> list[dict]:
                             "classes": None,
                             "total_applied": None,
                             "total_time": None,
-                            "not_enough_samples": False,
-                            "unreached": True,
-                        }
-                    )
-                else:
-                    rows.append(
-                        {
-                            "goal": goal,
-                            "strategy": strategy_name,
-                            "k": k,
-                            "iters": trial["iters"],
-                            "nodes": trial["nodes"],
-                            "classes": trial["classes"],
-                            "total_applied": trial["total_applied"],
-                            "total_time": trial["total_time"],
-                            "not_enough_samples": trial["not_enough_samples"],
-                            "unreached": trial["unreached"],
+                            "not_enough_samples": err == "NotEnoughSamples",
+                            "unreached": err == "Unreached",
+                            "panic_while_sample": err == "PanicWhileSample",
                         }
                     )
     return rows
 
 
-def load_top_k(run_dir: Path, strategy_name: str) -> pl.DataFrame:
+def load_top_k(
+    run_dir: Path, strategy_name: str, with_replacement: bool = False
+) -> pl.DataFrame:
     """Load trial rows from a run directory, preferring parquet over JSON summary.
+
+    Pass ``with_replacement=True`` to load the with-replacement top-k data
+    instead of the default no-replacement variant.
 
     Adjusts `nodes` and `total_time` to account for the guide egraph overhead:
       - nodes = max(trial_nodes, guide_egraph_nodes)
@@ -309,16 +253,17 @@ def load_top_k(run_dir: Path, strategy_name: str) -> pl.DataFrame:
     guide_nodes = run_stats["guide_egraph_nodes"]
     guide_time = run_stats["guide_eqsat_time"]
 
-    parquet_path = run_dir / "top_k_summary.parquet"
+    prefix = "with_replacement" if with_replacement else "no_replacement"
+    parquet_path = run_dir / f"{prefix}_top_k_summary.parquet"
     if parquet_path.exists():
         df = pl.read_parquet(parquet_path).with_columns(
             pl.lit(strategy_name).alias("strategy")
         )
     else:
-        summary_path = run_dir / "top_k_summary.json"
+        summary_path = run_dir / f"{prefix}_top_k_summary.json"
         with open(summary_path, encoding="utf-8") as f:
             raw = json.load(f)
-        df = pl.DataFrame(parse_top_k_summary(raw, strategy_name))
+        df = pl.DataFrame(parse_replacement_summary(raw, strategy_name))
 
     return df.with_columns(
         pl.when(pl.col("nodes").is_not_null())
