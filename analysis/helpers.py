@@ -10,9 +10,7 @@ from scipy.stats import spearmanr, kendalltau
 KENDALL_MAX_N = 50_000
 
 
-def compute_correlations(
-    data: pl.DataFrame, predictors: list[str], target: str
-) -> pl.DataFrame:
+def compute_correlations(data: pl.DataFrame, predictors: list[str], target: str) -> pl.DataFrame:
     """Compute Spearman rho, Kendall tau, and OLS R² for each predictor vs target.
 
     OLS stats are computed via closed-form formulas (no sklearn overhead).
@@ -236,9 +234,7 @@ def parse_replacement_summary(raw: list[dict], strategy_name: str) -> list[dict]
     return rows
 
 
-def load_top_k(
-    run_dir: Path, strategy_name: str, with_replacement: bool = False
-) -> pl.DataFrame:
+def load_top_k(run_dir: Path, strategy_name: str, with_replacement: bool = False) -> pl.DataFrame:
     """Load trial rows from a run directory, preferring parquet over JSON summary.
 
     Pass ``with_replacement=True`` to load the with-replacement top-k data
@@ -256,9 +252,7 @@ def load_top_k(
     prefix = "with_replacement" if with_replacement else "no_replacement"
     parquet_path = run_dir / f"{prefix}_top_k_summary.parquet"
     if parquet_path.exists():
-        df = pl.read_parquet(parquet_path).with_columns(
-            pl.lit(strategy_name).alias("strategy")
-        )
+        df = pl.read_parquet(parquet_path).with_columns(pl.lit(strategy_name).alias("strategy"))
     else:
         summary_path = run_dir / f"{prefix}_top_k_summary.json"
         with open(summary_path, encoding="utf-8") as f:
@@ -274,6 +268,25 @@ def load_top_k(
         .then(pl.col("total_time") + guide_time)
         .otherwise(None)
         .alias("total_time"),
+    )
+
+
+def compute_goal_reach(df: pl.DataFrame) -> pl.DataFrame:
+    """Per-goal×k reachability aggregation.
+
+    cond_reach_rate excludes sampling-failure trials from the denominator:
+    "given we could sample k guides, did we reach the goal?"
+    """
+    return (
+        df.group_by("goal", "k")
+        .agg(
+            pl.col("iters").is_not_null().mean().alias("reach_rate"),
+            (
+                pl.col("iters").is_not_null().sum() / (pl.col("not_enough_samples").not_()).sum()
+            ).alias("cond_reach_rate"),
+            pl.col("not_enough_samples").mean().alias("insuf_rate"),
+        )
+        .sort("goal", "k")
     )
 
 
