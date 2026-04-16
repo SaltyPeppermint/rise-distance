@@ -86,3 +86,7 @@ path = "src/bin/guide.rs"
 [[bin]]
 name = "generate"
 path = "src/bin/generate.rs"
+
+[[bin]]
+name = "training-data"
+path = "src/bin/training_data.rs"
