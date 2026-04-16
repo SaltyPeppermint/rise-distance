@@ -4,7 +4,7 @@ use std::path::Path;
 use polars::prelude::*;
 
 use super::{GoalSummary, GuideError, GuideEval};
-use crate::{Label, OriginTree, tee_println};
+use crate::{Label, OriginTree, cli::ExperimentError, tee_println};
 
 /// Dump eval results to a new Parquet file inside `run_folder/out/`.
 ///
@@ -47,7 +47,7 @@ pub fn dump_full_eval_parquet<L: Label>(
         DataType::UInt64,
     );
     for r in results {
-        if let Some(iters) = &r.iterations {
+        if let Ok(iters) = &r.iterations {
             nodes_builder.append_slice(
                 &iters
                     .iter()
@@ -73,8 +73,8 @@ pub fn dump_full_eval_parquet<L: Label>(
         "zs_distance"         => results.iter().map(|r| r.measurements.zs_distance as u64).collect::<Vec<_>>(),
         "structural_overlap"  => results.iter().map(|r| r.measurements.structural_distance.overlap() as u64).collect::<Vec<_>>(),
         "structural_zs_sum"   => results.iter().map(|r| r.measurements.structural_distance.zs_sum() as u64).collect::<Vec<_>>(),
-        "iterations_to_reach" => results.iter().map(|r| r.iterations.as_ref().map(|i| i.len() as u64)).collect::<Vec<Option<u64>>>(),
-        "ms_to_reach"         => results.iter().map(|r| r.iterations.as_ref().map(|i| i.iter().map(|x| x.total_time).sum::<f64>())).collect::<Vec<Option<f64>>>(),
+        "iterations_to_reach" => results.iter().map(|r| r.iterations.as_ref().map(|i| i.len() as u64).ok()).collect::<Vec<Option<u64>>>(),
+        "ms_to_reach"         => results.iter().map(|r| r.iterations.as_ref().map(|i| i.iter().map(|x| x.total_time).sum::<f64>()).ok()).collect::<Vec<Option<f64>>>(),
     }
     .expect("build DataFrame");
 
@@ -143,9 +143,11 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
                         classes.push(None);
                         total_applied.push(None);
                         total_time.push(None);
-                        not_enough_samples.push(matches!(e, GuideError::InsufficientSamples));
-                        unreached.push(matches!(e, GuideError::Unreached));
-                        panic_while_sample.push(matches!(e, GuideError::PanicWhileAttempt));
+                        unreached.push(matches!(e, ExperimentError::Guide(GuideError::Unreached)));
+                        panic_while_sample.push(matches!(
+                            e,
+                            ExperimentError::Guide(GuideError::PanicWhileAttempt)
+                        ));
                     }
                 }
             }

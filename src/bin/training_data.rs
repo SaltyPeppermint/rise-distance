@@ -1,48 +1,45 @@
 use std::fmt::Display;
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
 use egg::RecExpr;
-use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 
-use rise_distance::cli::argtypes::{SampleStrategy, SeedInput, TermSampleDist};
-use rise_distance::cli::parquet::dump_summary_parquet;
-use rise_distance::cli::types::{GoalSummary, GuideError, TrialsPerK};
-use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log};
+use rise_distance::cli::argparse::{SampleStrategy, SeedInput, TermSampleDist, parse_seeds};
+use rise_distance::cli::parquet::dump_full_eval_parquet;
+use rise_distance::cli::{
+    ExperimentError, GuideEval, PrecomputePackage, get_run_folder, init_log, measure_guide,
+};
+use rise_distance::cli::{write_config, write_stats};
 use rise_distance::count::Counter;
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel, RULES};
 use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
-use rise_distance::tee_println;
+use rise_distance::{OriginTree, TreeShaped, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
-    about = "Evaluate distance metrics as guide predictors for equality saturation",
+    about = "Evaluate sampled guides against goals to generate training data",
     after_help = "\
 Examples:
-  # Basic evaluation with 100 random guides, single seed
-  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100
+  # Basic run with 100 random guides, single seed
+  training_data --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100
 
   # Sample 5 goals and 100 guides
-  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --goals 5
+  training_data --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --goals 5
 
   # Loop over many seeds from a CSV (size,term columns; size drives max-size)
-  guide --seed-csv seeds.csv -g 100
+  training_data --seed-csv seeds.csv -g 100
 
-  # Write JSON output to a folder
-  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 -o results/
+  # Write output to a specific folder
+  training_data --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 -o results/
 
   # Use the experimental full-union egraph
-  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --full-union
-
-  # Print top 20 guides in the summary table (default: 10)
-  guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --top 20
+  training_data --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --full-union
 "
 )]
 struct Cli {
@@ -95,14 +92,7 @@ struct Cli {
     /// Use the experimental `add_with_full_union` for the new egraph
     #[arg(long)]
     full_union: bool,
-
-    /// Measure the distance?
-    #[arg(long)]
-    measure: bool,
 }
-
-const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
-const NUM_TRIALS: usize = 100;
 
 fn main() {
     let cli = Cli::parse();
@@ -113,11 +103,10 @@ fn main() {
         cli.guide_sample_strategy,
         cli.full_union
     );
-    let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
+    let run_folder = get_run_folder(cli.output.as_deref(), "training_data", &prefix);
     init_log(&run_folder);
     tee_println!("Run Folder: {}", run_folder.to_string_lossy());
 
-    // Build the list of (seed_str, parsed_expr, max_size) to process.
     let seed_input = match (&cli.seed, &cli.seed_csv) {
         (Some(s), None) => SeedInput::Single {
             term: s.clone(),
@@ -126,50 +115,20 @@ fn main() {
         (None, Some(p)) => SeedInput::Csv(p.clone()),
         _ => panic!("clap group enforces exactly one of --seed / --seed-csv"),
     };
-
-    let seeds = match seed_input {
-        SeedInput::Single { term, max_size } => {
-            let expr = term
-                .parse::<RecExpr<Math>>()
-                .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
-            vec![(term, expr, max_size)]
-        }
-        SeedInput::Csv(path) => {
-            let mut rdr = csv::Reader::from_path(&path)
-                .unwrap_or_else(|e| panic!("Failed to open CSV {}: {e}", path.display()));
-            rdr.records()
-                .map(|rec| {
-                    let rec = rec.expect("CSV read error");
-                    let max_size: usize = rec[0].parse().expect("CSV size column must be usize");
-                    let term = rec[1].to_owned();
-                    let expr = term
-                        .parse::<RecExpr<Math>>()
-                        .unwrap_or_else(|e| panic!("Failed to parse term '{term}': {e}"));
-                    (term, expr, max_size * 2)
-                })
-                .collect()
-        }
-    };
+    let seeds = parse_seeds(seed_input);
 
     tee_println!("Distribution: {}", cli.size_distribution);
     tee_println!("Seeds to process: {}", seeds.len());
 
-    let mut all_with_replacement = Vec::new();
-    let mut all_no_replacement = Vec::new();
     let mut all_stats = Vec::new();
 
     for (i, (seed_str, seed_expr, max_size)) in seeds.iter().enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        if let Some((with_replacement, no_replacement, stats)) =
-            process_seed(&cli, seed_str, seed_expr, *max_size)
-        {
+        if let Some(stats) = process_seed(&cli, seed_str, seed_expr, *max_size, &run_folder) {
             all_stats.push(stats);
-            all_with_replacement.extend(with_replacement);
-            all_no_replacement.extend(no_replacement);
         }
     }
 
-    write_top_k_outputs(&run_folder, &all_with_replacement, "with_replacement");
     write_config(&run_folder, &cli);
     write_stats(&run_folder, &all_stats);
 }
@@ -182,7 +141,8 @@ fn process_seed(
     seed_str: &str,
     seed_expr: &RecExpr<Math>,
     max_size: usize,
-) -> Option<(Vec<GoalResults>, Vec<GoalResults>, serde_json::Value)> {
+    run_folder: &Path,
+) -> Option<serde_json::Value> {
     let result = big_eqsat(
         seed_expr,
         RULES.iter(),
@@ -218,7 +178,7 @@ fn process_seed(
         max_size,
     )?;
     pp.log_root();
-    let Some(goals) = pp.sample_frontier_terms::<true>(
+    let Ok(goals) = pp.sample_frontier_terms::<true>(
         cli.goals,
         cli.size_distribution,
         cli.goal_sample_strategy,
@@ -250,105 +210,56 @@ fn process_seed(
     )?;
 
     tee_println!("\nRunning top_k experiments NO REPLACEMENT...");
-    let no_replacement = goals
-        .iter()
-        .map(|goal| {
-            tee_println!("Current goal: {}", goal.to_string());
-            GoalResults {
-                seed: seed_str.to_owned(),
-                goal: goal.to_string(),
-                runs: try_all(cli, &goal.to_rec_expr(), &pc),
-            }
-        })
-        .collect();
+    for goal in goals {
+        tee_println!("Current goal: {}", goal.to_string());
+        match try_all(cli, &goal, &pc) {
+            Err(e) => tee_println!("ERROR TRYING TO SAMPLE FOR {goal}: {e}"),
+            Ok(results) => dump_full_eval_parquet(run_folder, seed_str, &goal, &results),
+        }
+    }
 
-    Some((with_replacement, no_replacement, stats))
-}
-
-fn write_top_k_outputs(run_folder: &Path, results: &[GoalResults], suffix: &str) {
-    let output_path = run_folder.join(format!("{suffix}_top_k.json"));
-    let output_file = File::create(output_path).expect("Failed to create output json file");
-    let mut output_writer = BufWriter::new(output_file);
-    serde_json::to_writer(&mut output_writer, &results).expect("write top-k json");
-
-    let summaries = results
-        .iter()
-        .map(|r| GoalSummary::from_entries(&r.seed, &r.goal, &r.runs))
-        .collect::<Vec<_>>();
-    let summary_path = run_folder.join(format!("{suffix}_top_k_summary.json"));
-    let summary_file = File::create(summary_path).expect("Failed to create summary json file");
-    let summary_writer = BufWriter::new(summary_file);
-    serde_json::to_writer(summary_writer, &summaries).expect("write top-k summary json");
-
-    let parquet_path = run_folder.join(format!("{suffix}_top_k_summary.parquet"));
-    dump_summary_parquet(&parquet_path, &summaries);
-}
-
-fn write_config(run_folder: &Path, cli: &Cli) {
-    let config_path = run_folder.join("config.json");
-    let config_file = File::create(config_path).expect("Failed to create output config.json file");
-    let config_writer = BufWriter::new(config_file);
-    serde_json::to_writer_pretty(config_writer, &cli).unwrap();
-}
-fn write_stats(run_folder: &Path, stats: &[serde_json::Value]) {
-    let stats_path = run_folder.join("stats.json");
-    let stats_file = File::create(&stats_path).expect("Failed to create stats.json");
-    let stats_writer = BufWriter::new(stats_file);
-    serde_json::to_writer_pretty(stats_writer, stats).expect("write stats json");
+    Some(stats)
 }
 
 fn try_all<C>(
     cli: &Cli,
-    goal_recexpr: &RecExpr<Math>,
+    goal: &OriginTree<MathLabel>,
     pc: &PrecomputePackage<C, MathLabel, Math, ConstantFold>,
-) -> Result<Vec<Result<Vec<Iteration<()>>, GuideError>>>
+) -> Result<Vec<GuideEval<MathLabel>>, ExperimentError>
 where
     C: Counter + Display + Ord,
 {
-    let Some(samples) = pc.sample_frontier_terms::<true>(
-        k * NUM_TRIALS,
+    let goal_recexpr = goal.to_rec_expr();
+    let samples = pc.sample_frontier_terms::<true>(
+        cli.guides,
         cli.size_distribution,
         cli.guide_sample_strategy,
-        [k as u64, 0],
-    ) else {
-        return Err(GuideError::InsufficientSamples);
-    };
+        [0, 0],
+    )?;
 
-    let trials = samples
-        .par_iter()
-        .map(|term| {
-            verify_reachability(
-                std::slice::from_ref(term),
-                goal_recexpr,
+    let goal_unfolded = goal.flatten(false);
+
+    let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
+        .unwrap()
+        .progress_chars("=> ");
+    samples
+        .into_par_iter()
+        .map(|guide| {
+            let v = verify_reachability(
+                std::slice::from_ref(&guide),
+                &goal_recexpr,
                 &RULES,
                 Duration::from_secs_f64(cli.time_limit),
                 cli.node_limit,
                 cli.full_union,
-            )
+            );
+            let measurements = measure_guide(&guide, &goal_unfolded);
+            Ok(GuideEval {
+                guide,
+                measurements,
+                iterations: v,
+            })
         })
-        .collect();
-    Ok(trials)
-}
-
-fn progress_bars() -> Vec<(usize, ProgressBar)> {
-    let mp = MultiProgress::new();
-    let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
-        .unwrap()
-        .progress_chars("=> ");
-
-    TRIAL_SIZE
-        .iter()
-        .map(|&k| {
-            let pb = mp.add(ProgressBar::new(NUM_TRIALS as u64).with_style(style.clone()));
-            pb.set_message(format!("k={k}"));
-            (k, pb)
-        })
-        .collect::<Vec<_>>()
-}
-
-#[derive(Serialize)]
-struct GoalResults {
-    seed: String,
-    goal: String,
-    runs: TrialsPerK,
+        .progress_with_style(style)
+        .collect()
 }

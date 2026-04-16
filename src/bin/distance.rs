@@ -7,7 +7,7 @@ use indicatif::ParallelProgressIterator;
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
-use rise_distance::cli::argtypes::{DistanceMetric, TermSampleDist};
+use rise_distance::cli::argparse::{DistanceMetric, TermSampleDist};
 use rise_distance::count::TermCount;
 use rise_distance::sampling::CountSampler;
 use rise_distance::sampling::Sampler;

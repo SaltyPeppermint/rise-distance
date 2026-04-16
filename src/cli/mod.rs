@@ -1,4 +1,4 @@
-pub mod argtypes;
+pub mod argparse;
 pub mod logging;
 pub mod parquet;
 pub mod types;
@@ -8,12 +8,15 @@ pub use types::*;
 
 use std::env::current_dir;
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::BufWriter;
+use std::path::{Path, PathBuf};
 
 use egg::{Analysis, Iteration, Language};
 use num::ToPrimitive;
+use serde::Serialize;
 
-use crate::cli::argtypes::{SampleStrategy, TermSampleDist};
+use crate::cli::argparse::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, TermCount};
 use crate::egg::{ToEgg, convert};
 use crate::sampling::{CountSampler, NaiveSampler, Sampler, ZSDistanceSampler};
@@ -161,13 +164,14 @@ where
     }
 
     /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
+    #[expect(clippy::missing_errors_doc)]
     pub fn sample_frontier_terms<const PARALLEL: bool>(
         &self,
         count: usize,
         distribution: TermSampleDist,
         sample_strategy: SampleStrategy,
         seed: [u64; 2],
-    ) -> Option<Vec<OriginTree<LL>>>
+    ) -> Result<Vec<OriginTree<LL>>, ExperimentError>
     where
         L: Language + Sync,
         L::Discriminant: Sync,
@@ -176,49 +180,56 @@ where
         LL: Label,
         OriginTree<LL>: ToEgg<LL, Lang = L>,
     {
-        let histogram = self.tc.data.get(&self.graph.root())?;
-        OVERSAMPLE_SCHEDULE.iter().find_map(|oversample| {
-            let check = |t: &OriginTree<LL>| is_frontier(&self.prev_raw_egg, t);
-            let samples_per_size = distribution.samples_per_size(
-                histogram,
-                self.min_size,
-                self.max_size,
-                count * oversample,
-            );
-            let batch = match sample_strategy {
-                SampleStrategy::Naive => NaiveSampler::new(&self.tc, &self.graph)
+        let histogram = self
+            .tc
+            .data
+            .get(&self.graph.root())
+            .ok_or(ExperimentError::InsufficientSamples)?;
+        OVERSAMPLE_SCHEDULE
+            .iter()
+            .find_map(|oversample| {
+                let check = |t: &OriginTree<LL>| is_frontier(&self.prev_raw_egg, t);
+                let samples_per_size = distribution.samples_per_size(
+                    histogram,
+                    self.min_size,
+                    self.max_size,
+                    count * oversample,
+                );
+                let batch = match sample_strategy {
+                    SampleStrategy::Naive => NaiveSampler::new(&self.tc, &self.graph)
+                        .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
+                    SampleStrategy::CountBased => CountSampler::new(&self.tc, &self.graph)
+                        .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
+                    SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
+                        NaiveSampler::new(&self.tc, &self.graph),
+                        UnitCost,
+                        0.5,
+                        false,
+                    )
                     .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                SampleStrategy::CountBased => CountSampler::new(&self.tc, &self.graph)
+                    SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
+                        CountSampler::new(&self.tc, &self.graph),
+                        UnitCost,
+                        0.5,
+                        false,
+                    )
                     .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
-                    NaiveSampler::new(&self.tc, &self.graph),
-                    UnitCost,
-                    0.5,
-                    false,
-                )
-                .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
-                    CountSampler::new(&self.tc, &self.graph),
-                    UnitCost,
-                    0.5,
-                    false,
-                )
-                .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-            };
+                };
 
-            // let results = if PARALLEL {
-            //     batch
-            //         .into_par_iter()
-            //         .filter(|t| is_frontier(t, &self.prev_raw_egg))
-            //         .collect::<HashSet<_>>()
-            // } else {
-            //     batch
-            //         .into_iter()
-            //         .filter(|t| is_frontier(t, &self.prev_raw_egg))
-            //         .collect::<HashSet<_>>()
-            // };
-            (batch.len() >= count).then(|| batch.into_iter().take(count).collect())
-        })
+                // let results = if PARALLEL {
+                //     batch
+                //         .into_par_iter()
+                //         .filter(|t| is_frontier(t, &self.prev_raw_egg))
+                //         .collect::<HashSet<_>>()
+                // } else {
+                //     batch
+                //         .into_iter()
+                //         .filter(|t| is_frontier(t, &self.prev_raw_egg))
+                //         .collect::<HashSet<_>>()
+                // };
+                (batch.len() >= count).then(|| batch.into_iter().take(count).collect())
+            })
+            .ok_or(ExperimentError::InsufficientSamples)
     }
 }
 
@@ -253,4 +264,29 @@ pub fn get_run_folder(output: Option<&str>, subdir: &str, prefix: &str) -> PathB
     );
     std::fs::create_dir_all(&this_run_dir).expect("Failed to create output directory");
     this_run_dir
+}
+
+/// Write the CLI configuration to `config.json` in the run folder.
+///
+/// # Panics
+///
+/// Panics if the file cannot be created or serialization fails.
+#[expect(clippy::impl_trait_in_params)]
+pub fn write_config(run_folder: &Path, cli: &impl Serialize) {
+    let config_path = run_folder.join("config.json");
+    let config_file = File::create(config_path).expect("Failed to create output config.json file");
+    let config_writer = BufWriter::new(config_file);
+    serde_json::to_writer_pretty(config_writer, cli).unwrap();
+}
+
+/// Write per-seed stats to `stats.json` in the run folder.
+///
+/// # Panics
+///
+/// Panics if the file cannot be created or serialization fails.
+pub fn write_stats(run_folder: &Path, stats: &[serde_json::Value]) {
+    let stats_path = run_folder.join("stats.json");
+    let stats_file = File::create(&stats_path).expect("Failed to create stats.json");
+    let stats_writer = BufWriter::new(stats_file);
+    serde_json::to_writer_pretty(stats_writer, stats).expect("write stats json");
 }

@@ -2,10 +2,12 @@ use std::fmt::Display;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use egg::RecExpr;
 use hashbrown::HashMap;
 use serde::Serialize;
 
 use crate::count::Counter;
+use crate::egg::math::Math;
 
 /// Either a single seed s-expression or a path to a CSV file with `size,term` columns.
 ///
@@ -202,6 +204,38 @@ impl TermSampleDist {
                     })
                     .collect()
             }
+        }
+    }
+}
+
+/// Parse a `SeedInput` into a list of `(seed_string, parsed_expr, max_size)` triples.
+///
+/// # Panics
+///
+/// Panics on malformed seed expressions or unreadable CSV files.
+#[must_use]
+pub fn parse_seeds(input: SeedInput) -> Vec<(String, RecExpr<Math>, usize)> {
+    match input {
+        SeedInput::Single { term, max_size } => {
+            let expr = term
+                .parse::<RecExpr<Math>>()
+                .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
+            vec![(term, expr, max_size)]
+        }
+        SeedInput::Csv(path) => {
+            let mut rdr = csv::Reader::from_path(&path)
+                .unwrap_or_else(|e| panic!("Failed to open CSV {}: {e}", path.display()));
+            rdr.records()
+                .map(|rec| {
+                    let rec = rec.expect("CSV read error");
+                    let max_size: usize = rec[0].parse().expect("CSV size column must be usize");
+                    let term = rec[1].to_owned();
+                    let expr = term
+                        .parse::<RecExpr<Math>>()
+                        .unwrap_or_else(|e| panic!("Failed to parse term '{term}': {e}"));
+                    (term, expr, max_size * 2)
+                })
+                .collect()
         }
     }
 }

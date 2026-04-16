@@ -12,7 +12,7 @@ use rise_distance::egg::math::RULES;
 use rise_distance::egg::valididty_hook;
 use serde::Serialize;
 
-use rise_distance::cli::argtypes::Distribution;
+use rise_distance::cli::argparse::Distribution;
 
 #[derive(Parser, Serialize)]
 #[command(

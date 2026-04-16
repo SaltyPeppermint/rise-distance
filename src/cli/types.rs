@@ -8,17 +8,22 @@ use crate::tree::OriginTree;
 use crate::{Label, StructuralDistance};
 
 #[derive(Debug, Error, Display, Serialize, Clone, Copy)]
-pub enum GuideError {
+pub enum ExperimentError {
+    Guide(#[from] GuideError),
     InsufficientSamples,
+}
+
+#[derive(Debug, Error, Display, Serialize, Clone, Copy)]
+pub enum GuideError {
     Unreached,
     PanicWhileAttempt,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct GuideEval<L: Label> {
     pub guide: OriginTree<L>,
     pub measurements: Measurements,
-    pub iterations: Option<Vec<Iteration<()>>>,
+    pub iterations: Result<Vec<Iteration<()>>, GuideError>,
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq, Hash, Clone)]
@@ -30,10 +35,10 @@ pub struct Measurements {
 
 /// Type alias for the per-k trial data: maps each guide-set size `k` to its
 /// trial results (one `Option` per trial. `None` means the goal was not reached).
-pub type TrialsPerK = HashMap<usize, Vec<Result<Vec<Iteration<()>>, GuideError>>>;
+pub type TrialsPerK = HashMap<usize, Vec<Result<Vec<Iteration<()>>, ExperimentError>>>;
 
 /// Same as `TrialsPerK` but with pre-computed summaries instead of full iteration data.
-pub type SummaryPerK = HashMap<usize, Vec<Result<TrialSummary, GuideError>>>;
+pub type SummaryPerK = HashMap<usize, Vec<Result<TrialSummary, ExperimentError>>>;
 
 /// Pre-computed per-trial summary. Much smaller than the full `Iteration`
 /// vectors, so Python can load it instantly.

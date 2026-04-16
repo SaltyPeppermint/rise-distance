@@ -12,10 +12,11 @@ use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 
-use rise_distance::cli::argtypes::{SampleStrategy, SeedInput, TermSampleDist};
+use rise_distance::cli::argparse::{SampleStrategy, SeedInput, TermSampleDist, parse_seeds};
 use rise_distance::cli::parquet::dump_summary_parquet;
-use rise_distance::cli::types::{GoalSummary, GuideError, TrialsPerK};
-use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log};
+use rise_distance::cli::types::{GoalSummary, TrialsPerK};
+use rise_distance::cli::{ExperimentError, PrecomputePackage, get_run_folder, init_log};
+use rise_distance::cli::{write_config, write_stats};
 use rise_distance::count::Counter;
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel, RULES};
 use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
@@ -121,7 +122,6 @@ fn main() {
     init_log(&run_folder);
     tee_println!("Run Folder: {}", run_folder.to_string_lossy());
 
-    // Build the list of (seed_str, parsed_expr, max_size) to process.
     let seed_input = match (&cli.seed, &cli.seed_csv) {
         (Some(s), None) => SeedInput::Single {
             term: s.clone(),
@@ -130,30 +130,7 @@ fn main() {
         (None, Some(p)) => SeedInput::Csv(p.clone()),
         _ => panic!("clap group enforces exactly one of --seed / --seed-csv"),
     };
-
-    let seeds = match seed_input {
-        SeedInput::Single { term, max_size } => {
-            let expr = term
-                .parse::<RecExpr<Math>>()
-                .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
-            vec![(term, expr, max_size)]
-        }
-        SeedInput::Csv(path) => {
-            let mut rdr = csv::Reader::from_path(&path)
-                .unwrap_or_else(|e| panic!("Failed to open CSV {}: {e}", path.display()));
-            rdr.records()
-                .map(|rec| {
-                    let rec = rec.expect("CSV read error");
-                    let max_size: usize = rec[0].parse().expect("CSV size column must be usize");
-                    let term = rec[1].to_owned();
-                    let expr = term
-                        .parse::<RecExpr<Math>>()
-                        .unwrap_or_else(|e| panic!("Failed to parse term '{term}': {e}"));
-                    (term, expr, max_size * 2)
-                })
-                .collect()
-        }
-    };
+    let seeds = parse_seeds(seed_input);
 
     tee_println!("Distribution: {}", cli.size_distribution);
     tee_println!("Seeds to process: {}", seeds.len());
@@ -223,7 +200,7 @@ fn process_seed(
         max_size,
     )?;
     pp.log_root();
-    let Some(goals) = pp.sample_frontier_terms::<true>(
+    let Ok(goals) = pp.sample_frontier_terms::<true>(
         cli.goals,
         cli.size_distribution,
         cli.goal_sample_strategy,
@@ -302,19 +279,6 @@ fn write_top_k_outputs(run_folder: &Path, results: &[GoalResults], suffix: &str)
     dump_summary_parquet(&parquet_path, &summaries);
 }
 
-fn write_config(run_folder: &Path, cli: &Cli) {
-    let config_path = run_folder.join("config.json");
-    let config_file = File::create(config_path).expect("Failed to create output config.json file");
-    let config_writer = BufWriter::new(config_file);
-    serde_json::to_writer_pretty(config_writer, &cli).unwrap();
-}
-fn write_stats(run_folder: &Path, stats: &[serde_json::Value]) {
-    let stats_path = run_folder.join("stats.json");
-    let stats_file = File::create(&stats_path).expect("Failed to create stats.json");
-    let stats_writer = BufWriter::new(stats_file);
-    serde_json::to_writer_pretty(stats_writer, stats).expect("write stats json");
-}
-
 fn run_guide_set_trials_with_replacement<C>(
     cli: &Cli,
     goal_recexpr: &RecExpr<Math>,
@@ -329,14 +293,12 @@ where
             let trials = (0..NUM_TRIALS)
                 .into_par_iter()
                 .map(|s| {
-                    let subset = pc
-                        .sample_frontier_terms::<false>(
-                            k,
-                            cli.size_distribution,
-                            cli.guide_sample_strategy,
-                            [k as u64, s as u64],
-                        )
-                        .ok_or(GuideError::InsufficientSamples)?;
+                    let subset = pc.sample_frontier_terms::<false>(
+                        k,
+                        cli.size_distribution,
+                        cli.guide_sample_strategy,
+                        [k as u64, s as u64],
+                    )?;
                     verify_reachability(
                         &subset,
                         goal_recexpr,
@@ -345,6 +307,7 @@ where
                         cli.node_limit,
                         cli.full_union,
                     )
+                    .map_err(|e| e.into())
                 })
                 .progress_with(pb)
                 .collect::<Vec<_>>();
@@ -366,28 +329,30 @@ where
     let bars = progress_bars();
     bars.into_par_iter()
         .map(|(k, pb)| {
-            let Some(samples) = pc.sample_frontier_terms::<true>(
+            let samples = pc.sample_frontier_terms::<true>(
                 k * NUM_TRIALS,
                 cli.size_distribution,
                 cli.guide_sample_strategy,
                 [k as u64, 0],
-            ) else {
-                return (k, vec![Err(GuideError::InsufficientSamples); NUM_TRIALS]);
+            );
+            let trials = match samples {
+                Err(e) => vec![Err(e); NUM_TRIALS],
+                Ok(samples) => samples
+                    .par_chunks(k)
+                    .map(|subset| -> Result<_, ExperimentError> {
+                        verify_reachability(
+                            subset,
+                            goal_recexpr,
+                            &RULES,
+                            Duration::from_secs_f64(cli.time_limit),
+                            cli.node_limit,
+                            cli.full_union,
+                        )
+                        .map_err(Into::into)
+                    })
+                    .progress_with(pb)
+                    .collect(),
             };
-            let trials = samples
-                .par_chunks(k)
-                .map(|subset| {
-                    verify_reachability(
-                        subset,
-                        goal_recexpr,
-                        &RULES,
-                        Duration::from_secs_f64(cli.time_limit),
-                        cli.node_limit,
-                        cli.full_union,
-                    )
-                })
-                .progress_with(pb)
-                .collect();
             (k, trials)
         })
         .collect()
