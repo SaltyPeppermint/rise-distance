@@ -10,8 +10,15 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, fenix }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      fenix,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs { inherit system; };
 
@@ -26,13 +33,20 @@
 
         # Stable with custom components
         toolchain = fenix.packages.${system}.stable.withComponents [
-          "cargo" "rustc" "rust-src" "rustfmt" "clippy" "rust-analyzer"
+          "cargo"
+          "rustc"
+          "rust-src"
+          "rustfmt"
+          "clippy"
+          "rust-analyzer"
         ];
-      in {
+      in
+      {
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
             toolchain
-          ] ++ (with pkgs; [
+          ]
+          ++ (with pkgs; [
             pkg-config
             lldb
             clang
@@ -46,6 +60,8 @@
             cargo-udeps
             cargo-unused-features
             samply
+            nixd
+            nixfmt
           ]);
 
           buildInputs = with pkgs; [
@@ -54,9 +70,17 @@
             expat
           ];
 
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [
-            fontconfig freetype expat vulkan-loader libGL
-          ]);
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+            with pkgs;
+            [
+              fontconfig
+              freetype
+              expat
+              vulkan-loader
+              libGL
+            ]
+          );
         };
-      });
+      }
+    );
 }
