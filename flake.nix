@@ -38,6 +38,14 @@
             clang
             lld
             uv
+            cargo-nextest
+            cargo-expand
+            cargo-show-asm
+            cargo-unused-features
+            cargo-wizard
+            cargo-udeps
+            cargo-unused-features
+            samply
           ]);
 
           buildInputs = with pkgs; [
