@@ -276,15 +276,15 @@ mod tests {
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(false);
+        .unfold(false);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(false);
+        .unfold(false);
         assert_eq!(tree_distance(&tree1, &tree2, &UnitCost), 0);
 
-        let tree3 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(false);
+        let tree3 = node("a".to_owned(), vec![leaf("b".to_owned())]).unfold(false);
         assert_eq!(tree_distance(&tree1, &tree3, &UnitCost), 1);
     }
 
@@ -294,30 +294,30 @@ mod tests {
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(false);
+        .unfold(false);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(false);
+        .unfold(false);
         assert_eq!(tree_distance_unit(&tree1, &tree2), 0);
     }
 
     #[test]
     fn single_node_difference() {
-        let tree1 = leaf("a".to_owned()).flatten(false);
-        let tree2 = leaf("b".to_owned()).flatten(false);
+        let tree1 = leaf("a".to_owned()).unfold(false);
+        let tree2 = leaf("b".to_owned()).unfold(false);
         assert_eq!(tree_distance_unit(&tree1, &tree2), 1); // relabel a -> b
     }
 
     #[test]
     fn insert_child() {
-        let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(false);
+        let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]).unfold(false);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(false);
+        .unfold(false);
         assert_eq!(tree_distance_unit(&tree1, &tree2), 1); // insert c
     }
 
@@ -327,20 +327,20 @@ mod tests {
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(false);
-        let tree2 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(false);
+        .unfold(false);
+        let tree2 = node("a".to_owned(), vec![leaf("b".to_owned())]).unfold(false);
         assert_eq!(tree_distance_unit(&tree1, &tree2), 1); // delete c
     }
 
     #[test]
     fn empty_to_tree() {
         // Empty tree represented as single node to non-empty
-        let tree1 = leaf("a".to_owned()).flatten(false);
+        let tree1 = leaf("a".to_owned()).unfold(false);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(false);
+        .unfold(false);
         assert_eq!(tree_distance_unit(&tree1, &tree2), 2); // insert b, insert c
     }
 
@@ -355,20 +355,20 @@ mod tests {
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(false);
+        .unfold(false);
         let tree2 = node(
             "a".to_owned(),
             vec![node("b".to_owned(), vec![leaf("c".to_owned())])],
         )
-        .flatten(false);
+        .unfold(false);
         // One way: delete c from tree1, insert c under b = 2 operations
         assert_eq!(tree_distance_unit(&tree1, &tree2), 2);
     }
 
     #[test]
     fn completely_different() {
-        let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(false);
-        let tree2 = node("x".to_owned(), vec![leaf("y".to_owned())]).flatten(false);
+        let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]).unfold(false);
+        let tree2 = node("x".to_owned(), vec![leaf("y".to_owned())]).unfold(false);
         // relabel a->x, relabel b->y = 2 operations
         assert_eq!(tree_distance_unit(&tree1, &tree2), 2);
     }
@@ -391,7 +391,7 @@ mod tests {
                 leaf("d".to_owned()),
             ],
         )
-        .flatten(false);
+        .unfold(false);
 
         // Tree 2:       a
         //             / | \
@@ -406,7 +406,7 @@ mod tests {
                 leaf("d".to_owned()),
             ],
         )
-        .flatten(false);
+        .unfold(false);
 
         // Delete f from tree1
         assert_eq!(tree_distance_unit(&tree1, &tree2), 1);
@@ -422,7 +422,7 @@ mod tests {
                 vec![node("c".to_owned(), vec![leaf("d".to_owned())])],
             )],
         )
-        .flatten(false);
+        .unfold(false);
 
         // Tree 2:    a
         //          / | \
@@ -435,7 +435,7 @@ mod tests {
                 leaf("d".to_owned()),
             ],
         )
-        .flatten(false);
+        .unfold(false);
 
         // Need to restructure: this requires delete and insert operations
         // The exact cost depends on the optimal alignment

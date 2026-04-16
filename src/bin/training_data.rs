@@ -237,7 +237,7 @@ where
         [0, 0],
     )?;
 
-    let goal_unfolded = goal.flatten(false);
+    let goal_unfolded = goal.unfold(false);
 
     let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
         .unwrap()

@@ -345,7 +345,7 @@ fn print_zs_result<L: Label>(
         100.0 * stats.full_comparisons as f64 / stats.trees_enumerated as f64
     );
 
-    let zs_dist = tree_distance_unit(&best.flatten(with_types), &ref_tree.flatten(with_types));
+    let zs_dist = tree_distance_unit(&best.unfold(with_types), &ref_tree.unfold(with_types));
     eprintln!("ZS distance to ref: {zs_dist}");
     print_tree_sizes(best, ref_tree);
     println!("{best}");
@@ -362,7 +362,7 @@ fn print_struct_result<L: Label>(
     eprintln!("Best structural zs_sum: {}", result.1.zs_sum());
     eprintln!("Time: {elapsed:.2?}");
 
-    let zs_dist = tree_distance_unit(&best.flatten(with_types), &ref_tree.flatten(with_types));
+    let zs_dist = tree_distance_unit(&best.unfold(with_types), &ref_tree.unfold(with_types));
     eprintln!("Raw ZS distance to ref: {zs_dist}");
     print_tree_sizes(best, ref_tree);
     println!("{best}");

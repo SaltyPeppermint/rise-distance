@@ -68,7 +68,7 @@ pub fn measure_guide<L: Label>(
     guide: &OriginTree<L>,
     goal_unfolded: &UnfoldedTree<L>,
 ) -> Measurements {
-    let guide_unfolded = guide.flatten(false);
+    let guide_unfolded = guide.unfold(false);
     let zs_dist = tree_distance_unit(&guide_unfolded, goal_unfolded);
     let structural_dist = structural_diff(goal_unfolded, &guide_unfolded, &UnitCost);
     Measurements {

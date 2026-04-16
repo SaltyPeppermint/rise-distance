@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn euler_string_leaf() {
-        let tree = leaf("a").flatten(false);
+        let tree = leaf("a").unfold(false);
         let euler = EulerString::new(&tree);
         assert_eq!(
             euler.string,
@@ -169,7 +169,7 @@ mod tests {
         //     a
         //    / \
         //   b   c
-        let tree = node("a", vec![leaf("b"), leaf("c")]).flatten(false);
+        let tree = node("a", vec![leaf("b"), leaf("c")]).unfold(false);
         let euler = EulerString::new(&tree);
         let [b, c] = tree.children() else { panic!() };
         // Enter a, enter b, leave b, enter c, leave c, leave a
@@ -193,7 +193,7 @@ mod tests {
         //     b
         //     |
         //     c
-        let tree = node("a", vec![node("b", vec![leaf("c")])]).flatten(false);
+        let tree = node("a", vec![node("b", vec![leaf("c")])]).unfold(false);
         let euler = EulerString::new(&tree);
         let [b] = tree.children() else { panic!() };
         let [c] = b.children() else { panic!() };
@@ -254,15 +254,15 @@ mod tests {
 
     #[test]
     fn lower_bound_identical() {
-        let tree = node("a", vec![leaf("b"), leaf("c")]).flatten(false);
+        let tree = node("a", vec![leaf("b"), leaf("c")]).unfold(false);
         assert_eq!(tree_distance_euler_bound(&tree, &tree, &UnitCost), 0);
     }
 
     #[test]
     fn lower_bound_valid() {
         // The lower bound should always be <= actual tree edit distance
-        let t1 = node("a", vec![leaf("b"), leaf("c")]).flatten(false);
-        let t2 = node("a", vec![leaf("b")]).flatten(false);
+        let t1 = node("a", vec![leaf("b"), leaf("c")]).unfold(false);
+        let t2 = node("a", vec![leaf("b")]).unfold(false);
 
         let lb = tree_distance_euler_bound(&t1, &t2, &UnitCost);
         // Actual distance is 1 (delete c), lower bound should be <= 1
@@ -271,8 +271,8 @@ mod tests {
 
     #[test]
     fn euler_string_precomputed() {
-        let t1 = node("a", vec![leaf("b"), leaf("c")]).flatten(false);
-        let t2 = node("a", vec![leaf("b")]).flatten(false);
+        let t1 = node("a", vec![leaf("b"), leaf("c")]).unfold(false);
+        let t2 = node("a", vec![leaf("b")]).unfold(false);
 
         let euler_ref = EulerString::new(&t1);
         let lb = euler_ref.lower_bound(&t2, &UnitCost);

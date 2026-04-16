@@ -77,7 +77,7 @@ mod tests {
                 ),
             ],
         )
-        .flatten(false);
+        .unfold(false);
 
         let tree2 = Tree::new_untyped(
             RiseLabel::App,
@@ -89,7 +89,7 @@ mod tests {
                 ),
             ],
         )
-        .flatten(false);
+        .unfold(false);
 
         // Same structure, different variable index - should be distance 1
         let distance = tree_distance_unit(&tree1, &tree2);
@@ -104,9 +104,9 @@ mod tests {
     fn rise_label_with_floats_in_zs() {
         use ordered_float::OrderedFloat;
 
-        let tree1 = Tree::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).flatten(false);
-        let tree2 = Tree::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).flatten(false);
-        let tree3 = Tree::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(2.71))).flatten(false);
+        let tree1 = Tree::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).unfold(false);
+        let tree2 = Tree::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(3.11))).unfold(false);
+        let tree3 = Tree::leaf_untyped(RiseLabel::FloatLit(OrderedFloat(2.71))).unfold(false);
 
         // Same float value - distance 0
         assert_eq!(tree_distance_unit(&tree1, &tree2), 0);
@@ -120,8 +120,8 @@ mod tests {
         let expr1 = "(app map (lam $e0))".parse::<Expr>().unwrap();
         let expr2 = "(app map (lam $e1))".parse::<Expr>().unwrap();
 
-        let tree1 = expr1.to_tree().flatten(false);
-        let tree2 = expr2.to_tree().flatten(false);
+        let tree1 = expr1.to_tree().unfold(false);
+        let tree2 = expr2.to_tree().unfold(false);
 
         // Different variable index - distance 1
         assert_eq!(tree_distance_unit(&tree1, &tree2), 1);

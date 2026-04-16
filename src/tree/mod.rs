@@ -20,14 +20,14 @@ pub trait TreeShaped<L: Label>: Sized {
 
     fn ty(&self) -> Option<&Self>;
 
-    fn flatten(&self, with_types: bool) -> UnfoldedTree<L> {
+    fn unfold(&self, with_types: bool) -> UnfoldedTree<L> {
         if !with_types {
             return UnfoldedTree {
                 label: self.label().clone(),
                 children: self
                     .children()
                     .iter()
-                    .map(|c| c.flatten(with_types))
+                    .map(|c| c.unfold(with_types))
                     .collect(),
             };
         }
@@ -40,10 +40,10 @@ pub trait TreeShaped<L: Label>: Sized {
                         children: self
                             .children()
                             .iter()
-                            .map(|c| c.flatten(with_types))
+                            .map(|c| c.unfold(with_types))
                             .collect(),
                     },
-                    ty.flatten(with_types),
+                    ty.unfold(with_types),
                 ],
             }
         } else {
@@ -52,7 +52,7 @@ pub trait TreeShaped<L: Label>: Sized {
                 children: self
                     .children()
                     .iter()
-                    .map(|c| c.flatten(with_types))
+                    .map(|c| c.unfold(with_types))
                     .collect(),
             }
         }

@@ -70,16 +70,19 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         );
 
         // Flatten once.
-        let flat = trees
+        let unfolded = trees
             .iter()
-            .map(|t| t.flatten(self.with_types))
+            .map(|t| t.unfold(self.with_types))
             .collect::<Vec<_>>();
         // Preprocess once for reuse.
-        let preprocessed = flat.iter().map(PreprocessedTree::new).collect::<Vec<_>>();
+        let preprocessed = unfolded
+            .iter()
+            .map(PreprocessedTree::new)
+            .collect::<Vec<_>>();
 
         // Compute all pairwise distances.
-        let mut distances = (0..flat.len())
-            .flat_map(|i| ((i + 1)..flat.len()).map(move |j| (i, j)))
+        let mut distances = (0..unfolded.len())
+            .flat_map(|i| ((i + 1)..unfolded.len()).map(move |j| (i, j)))
             .map(|(i, j)| {
                 tree_distance_preprocessed(&preprocessed[i], &preprocessed[j], &self.cost_fn)
             })
@@ -105,7 +108,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         F: Fn(&OriginTree<S::Label>) -> bool + Sync,
     {
         let mut samples_to_take = samples;
-        let mut existing_flat = HashSet::new();
+        let mut existing_unfolded = HashSet::new();
         let mut existing = HashSet::new();
 
         let mut rejected = 0;
@@ -120,10 +123,10 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
             if existing.contains(&new_candidate) {
                 continue;
             }
-            let candidate_flat = new_candidate.flatten(self.with_types);
-            if existing_flat
+            let candidate_unfolded = new_candidate.unfold(self.with_types);
+            if existing_unfolded
                 .iter()
-                .any(|e| tree_distance(e, &candidate_flat, &self.cost_fn) < cut_off)
+                .any(|e| tree_distance(e, &candidate_unfolded, &self.cost_fn) < cut_off)
             {
                 rejected += 1;
                 if rejected % 100 == 0 {
@@ -132,7 +135,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
                 }
                 continue;
             }
-            existing_flat.insert(candidate_flat);
+            existing_unfolded.insert(candidate_unfolded);
             existing.insert(new_candidate);
             samples_to_take -= 1;
         }

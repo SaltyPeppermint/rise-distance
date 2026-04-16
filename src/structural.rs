@@ -141,32 +141,32 @@ mod tests {
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(true);
+        .unfold(true);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(true);
+        .unfold(true);
         // All 3 nodes match: overlap = 3, zs_sum = 0
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(3, 0));
     }
 
     #[test]
     fn different_leaves() {
-        let tree1 = leaf("a".to_owned()).flatten(true);
-        let tree2 = leaf("b".to_owned()).flatten(true);
+        let tree1 = leaf("a".to_owned()).unfold(true);
+        let tree2 = leaf("b".to_owned()).unfold(true);
         // Labels differ at root -> tree_distance = 1, overlap = 0
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(0, 1));
     }
 
     #[test]
     fn different_child_count_at_root() {
-        let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(true);
+        let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]).unfold(true);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(true);
+        .unfold(true);
         // Root matches (1), b matches (1), extra c ignored -> overlap = 2
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(2, 0));
     }
@@ -185,7 +185,7 @@ mod tests {
                 vec![leaf("c".to_owned()), leaf("d".to_owned())],
             )],
         )
-        .flatten(true);
+        .unfold(true);
         // Tree 2:    a
         //            |
         //            b
@@ -195,7 +195,7 @@ mod tests {
             "a".to_owned(),
             vec![node("b".to_owned(), vec![leaf("c".to_owned())])],
         )
-        .flatten(true);
+        .unfold(true);
         // a(1), b(1), c(1) match, d ignored -> overlap = 3
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(3, 0));
     }
@@ -207,12 +207,12 @@ mod tests {
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(true);
+        .unfold(true);
         let tree2 = node(
             "x".to_owned(),
             vec![leaf("y".to_owned()), leaf("z".to_owned())],
         )
-        .flatten(true);
+        .unfold(true);
         // Root labels differ -> tree_distance = 3 (three relabels), overlap = 0
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(0, 3));
     }
@@ -228,7 +228,7 @@ mod tests {
                 vec![node("c".to_owned(), vec![leaf("d".to_owned())])],
             )],
         )
-        .flatten(true);
+        .unfold(true);
         let tree2 = node(
             "w".to_owned(),
             vec![node(
@@ -236,7 +236,7 @@ mod tests {
                 vec![node("y".to_owned(), vec![leaf("z".to_owned())])],
             )],
         )
-        .flatten(true);
+        .unfold(true);
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(0, 4));
     }
 
@@ -258,7 +258,7 @@ mod tests {
                 leaf("d".to_owned()),
             ],
         )
-        .flatten(true);
+        .unfold(true);
 
         // Tree 2:       a
         //             / | \
@@ -273,7 +273,7 @@ mod tests {
                 leaf("d".to_owned()),
             ],
         )
-        .flatten(true);
+        .unfold(true);
 
         // a(1), b(1), e(1), c(1), d(1) match, f ignored -> overlap = 5
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(5, 0));
@@ -281,12 +281,12 @@ mod tests {
 
     #[test]
     fn leaf_vs_node_with_children() {
-        let tree1 = leaf("a".to_owned()).flatten(true);
+        let tree1 = leaf("a".to_owned()).unfold(true);
         let tree2 = node(
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(true);
+        .unfold(true);
         // Root label matches (1), zip of 0 and 2 children = empty -> overlap = 1
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(1, 0));
     }
@@ -297,8 +297,8 @@ mod tests {
             "a".to_owned(),
             vec![leaf("b".to_owned()), leaf("c".to_owned())],
         )
-        .flatten(true);
-        let tree2 = leaf("a".to_owned()).flatten(true);
+        .unfold(true);
+        let tree2 = leaf("a".to_owned()).unfold(true);
         // Root label matches (1), zip of 2 and 0 children = empty -> overlap = 1
         assert_eq!(structural_diff(&tree1, &tree2, &UnitCost), sd(1, 0));
     }

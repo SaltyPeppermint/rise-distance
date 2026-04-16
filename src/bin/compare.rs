@@ -100,8 +100,8 @@ where
     for i in 0..n {
         for j in (i + 1)..n {
             let dist = tree_distance_unit(
-                &trees[i].1.flatten(with_types),
-                &trees[j].1.flatten(with_types),
+                &trees[i].1.unfold(with_types),
+                &trees[j].1.unfold(with_types),
             );
             distances[i][j] = dist;
             distances[j][i] = dist;
