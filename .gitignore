@@ -6,3 +6,11 @@ profile.json.gz
 *.log
 *.csv
 /data/guide_eval/
+
+# direnv
+.direnv/
+.envrc.cache
+
+# Nix
+result
+result-*
