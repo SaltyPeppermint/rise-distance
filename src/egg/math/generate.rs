@@ -157,7 +157,7 @@ impl BoltzmannSampler {
 
     /// Generate a random term whose size is in `[target - tolerance, target + tolerance]`
     /// and where every Diff/Integral node's bound variable appears free in its expression child.
-    /// Returns None if no valid tree is found within `10_000` attempts.
+    /// Returns None if no valid tree is found within `100_000` attempts.
     pub fn sample<R: Rng, F: Fn(&Tree<MathLabel>) -> Option<StopReason>>(
         &self,
         rng: &mut R,
@@ -165,15 +165,16 @@ impl BoltzmannSampler {
     ) -> Option<(Tree<MathLabel>, StopReason, usize)> {
         let lo = self.target.saturating_sub(self.tolerance);
         let hi = self.target + self.tolerance;
-        (0..100_000)
-            .map(|a| (self.gen_node(rng, 0), a))
-            .find_map(|(candidate, n)| {
-                if (lo..=hi).contains(&candidate.size_without_types()) && binders_valid(&candidate)
-                {
-                    return None;
-                }
-                filter_hook(&candidate).map(|reason| (candidate, reason, n))
-            })
+        (0..100_000).find_map(|n| {
+            let candidate = self.gen_node(rng, 0);
+            if (lo..=hi).contains(&candidate.size_without_types())
+                && binders_valid(&candidate)
+                && let Some(reason) = filter_hook(&candidate)
+            {
+                return Some((candidate, reason, n));
+            }
+            None
+        })
     }
 
     /// Generate `count` random terms within the size window.
