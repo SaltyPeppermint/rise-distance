@@ -1,11 +1,11 @@
-use egg::Iteration;
+use egg::{Iteration, Language};
 use hashbrown::HashMap;
 use serde::Serialize;
 use strum::Display;
 use thiserror::Error;
 
-use crate::tree::OriginTree;
-use crate::{Label, StructuralDistance};
+use crate::StructuralDistance;
+use crate::origin::OriginExpr;
 
 #[derive(Debug, Error, Display, Serialize, Clone, Copy)]
 pub enum ExperimentError {
@@ -20,8 +20,8 @@ pub enum GuideError {
 }
 
 #[derive(Serialize, Debug, Clone)]
-pub struct GuideEval<L: Label> {
-    pub guide: OriginTree<L>,
+pub struct GuideEval {
+    pub guide: String,
     pub measurements: Measurements,
     pub iterations: Result<Vec<Iteration<()>>, GuideError>,
 }

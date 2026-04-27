@@ -1,10 +1,13 @@
 use std::fs::File;
 use std::path::Path;
 
+use egg::Language;
 use polars::prelude::*;
 
 use super::{GoalSummary, GuideError, GuideEval};
-use crate::{Label, OriginTree, cli::ExperimentError, tee_println};
+use crate::cli::ExperimentError;
+use crate::origin::{self, OriginExpr, display_oe};
+use crate::tee_println;
 
 /// Dump eval results to a new Parquet file inside `run_folder/out/`.
 ///
@@ -13,11 +16,11 @@ use crate::{Label, OriginTree, cli::ExperimentError, tee_println};
 /// # Panics
 ///
 /// Panics if it cannot create/open the file or write the data.
-pub fn dump_full_eval_parquet<L: Label>(
+pub fn dump_full_eval_parquet<L: Language>(
     run_folder: &Path,
     seed: &str,
-    goal: &OriginTree<L>,
-    results: &[GuideEval<L>],
+    goal: &OriginExpr<L>,
+    results: &[GuideEval],
 ) {
     let out_dir = run_folder.join("out");
     std::fs::create_dir_all(&out_dir).expect("create out/ directory");
@@ -30,7 +33,7 @@ pub fn dump_full_eval_parquet<L: Label>(
         .map_or(0, |m| m + 1);
 
     let parquet_path = out_dir.join(format!("{next_id}.parquet"));
-    let goal_str = goal.to_string();
+    let goal_str = origin::display_oe(goal);
     let n = results.len();
 
     // List columns need a dedicated builder; df! doesn't handle them.

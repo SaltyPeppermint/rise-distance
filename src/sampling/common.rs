@@ -1,23 +1,22 @@
+use egg::{Analysis, EGraph, Id, Language, RecExpr};
 use hashbrown::HashSet;
 use rayon::prelude::*;
 
-use crate::Graph;
 use crate::count::{Counter, TermCount};
-use crate::ids::EClassId;
-use crate::nodes::Label;
-use crate::tree::OriginTree;
+use crate::egg::TypeAnalysisWrapper;
+use crate::origin::OriginNode;
 use crate::utils::combined_rng;
 
 use super::Sampler;
 
-pub(super) fn possible_size<C: Counter>(
+pub(super) fn possible_size<C: Counter, L: Language, N: Analysis<L>>(
     term_count: &TermCount<C>,
-    graph: &Graph<impl Label>,
-    id: EClassId,
+    graph: &EGraph<L, TypeAnalysisWrapper<N>>,
+    id: Id,
     size: usize,
     samples: u64,
 ) -> bool {
-    let canon_id = graph.canonicalize(id);
+    let canon_id = graph.find(id);
     let Some(count) = term_count.data.get(&canon_id).and_then(|h| h.get(&size)) else {
         return false;
     };
@@ -26,14 +25,14 @@ pub(super) fn possible_size<C: Counter>(
 
 pub(super) fn sample_batch<const PARALLEL: bool, S, F>(
     sampler: &S,
-    id: EClassId,
+    id: Id,
     samples_per_size: &[(usize, u64)],
     seed: [u64; 2],
     check: F,
-) -> HashSet<OriginTree<S::Label>>
+) -> HashSet<RecExpr<OriginNode<S::Lang>>>
 where
     S: Sampler,
-    F: for<'a> Fn(&'a OriginTree<S::Label>) -> bool + Sync,
+    F: for<'a> Fn(&'a RecExpr<OriginNode<S::Lang>>) -> bool + Sync,
 {
     if PARALLEL {
         samples_per_size

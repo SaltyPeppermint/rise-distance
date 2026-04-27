@@ -1,3 +1,5 @@
+use egg::Language;
+
 use crate::Tree;
 use crate::ids::EClassId;
 use crate::nodes::Label;
@@ -17,7 +19,7 @@ pub enum PartialChild<L: Label> {
 /// Resolved nodes come from matching the reference; holes are e-classes
 /// where the reference tree did not match and need to be filled by sampling.
 #[derive(Debug, Clone)]
-pub struct PartialTree<L: Label> {
+pub struct PartialTree<L: Language> {
     label: L,
     /// Type annotation, always fully resolved from the e-graph.
     ty: Option<Box<Tree<L>>>,
@@ -103,7 +105,7 @@ impl<L: Label> PartialTree<L> {
 /// Convert a fully-resolved `TreeNode` into a `PartialTree` with no holes.
 pub fn tree_node_to_partial<L: Label>(tree: &Tree<L>) -> PartialTree<L> {
     PartialTree::new(
-        tree.label().clone(),
+        tree.node().clone(),
         tree.ty().cloned(),
         tree.children()
             .iter()

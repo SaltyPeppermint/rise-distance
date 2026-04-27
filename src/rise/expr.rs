@@ -543,14 +543,14 @@ mod tests {
         let expr = "(app map (lam $e0))".parse::<Expr>().unwrap();
         let tree = expr.to_tree();
 
-        assert_eq!(tree.label(), &RiseLabel::App);
+        assert_eq!(tree.node(), &RiseLabel::App);
         assert_eq!(tree.children().len(), 2);
         assert_eq!(
-            tree.children()[0].label(),
+            tree.children()[0].node(),
             &RiseLabel::Primitive(Primitive::Map)
         );
-        assert_eq!(tree.children()[1].label(), &RiseLabel::Lambda);
-        assert_eq!(tree.children()[1].children()[0].label(), &RiseLabel::Var(0));
+        assert_eq!(tree.children()[1].node(), &RiseLabel::Lambda);
+        assert_eq!(tree.children()[1].children()[0].node(), &RiseLabel::Var(0));
     }
 
     #[test]
@@ -558,10 +558,10 @@ mod tests {
         let expr = "(typeOf $e0 f32)".parse::<Expr>().unwrap();
         let tree = expr.to_tree();
 
-        assert_eq!(tree.label(), &RiseLabel::Var(0));
+        assert_eq!(tree.node(), &RiseLabel::Var(0));
         assert!(tree.children().is_empty());
         let ty = tree.ty().unwrap();
-        assert_eq!(ty.label(), &RiseLabel::Scalar(ScalarType::F32));
+        assert_eq!(ty.node(), &RiseLabel::Scalar(ScalarType::F32));
     }
 
     #[test]
@@ -572,23 +572,23 @@ mod tests {
         let tree = expr.to_tree();
 
         // Root is Lambda with outer type (fun f32 f32)
-        assert_eq!(tree.label(), &RiseLabel::Lambda);
+        assert_eq!(tree.node(), &RiseLabel::Lambda);
         let outer_ty = tree.ty().unwrap();
-        assert_eq!(outer_ty.label(), &RiseLabel::Fun);
+        assert_eq!(outer_ty.node(), &RiseLabel::Fun);
         assert_eq!(
-            outer_ty.children()[0].label(),
+            outer_ty.children()[0].node(),
             &RiseLabel::Scalar(ScalarType::F32)
         );
         assert_eq!(
-            outer_ty.children()[1].label(),
+            outer_ty.children()[1].node(),
             &RiseLabel::Scalar(ScalarType::F32)
         );
 
         // Inner lambda body has type f32
         let lam_body = &tree.children()[0];
-        assert_eq!(lam_body.label(), &RiseLabel::Var(0));
+        assert_eq!(lam_body.node(), &RiseLabel::Var(0));
         let inner_ty = lam_body.ty().unwrap();
-        assert_eq!(inner_ty.label(), &RiseLabel::Scalar(ScalarType::F32));
+        assert_eq!(inner_ty.node(), &RiseLabel::Scalar(ScalarType::F32));
     }
 
     #[test]

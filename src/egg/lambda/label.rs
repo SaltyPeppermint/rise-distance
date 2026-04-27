@@ -4,7 +4,7 @@ use std::str::FromStr;
 use egg::{Id, Symbol};
 use serde::{Deserialize, Serialize};
 
-use crate::Label;
+use crate::LabelLanguage;
 use crate::egg::ToEgg;
 use crate::tree::TreeShaped;
 
@@ -43,7 +43,7 @@ pub enum LambdaLabel {
     Symbol(Symbol),
 }
 
-impl Label for LambdaLabel {
+impl LabelLanguage for LambdaLabel {
     fn type_of() -> Self {
         panic!("No types to see here");
     }
@@ -102,7 +102,7 @@ impl<T: TreeShaped<LambdaLabel>> ToEgg<LambdaLabel> for T {
             .iter()
             .map(|c| c.add_node(adder))
             .collect::<Vec<_>>();
-        let lambda_node = match self.label() {
+        let lambda_node = match self.node() {
             LambdaLabel::Bool(b) => Lambda::Bool(*b),
             LambdaLabel::Num(n) => Lambda::Num(*n),
             LambdaLabel::Var => Lambda::Var(child_ids[0]),

@@ -1,10 +1,8 @@
+use egg::{EGraph, Id};
 use hashbrown::{HashMap, HashSet};
 
-use crate::graph::Class;
-use crate::ids::{EClassId, ExprChildId};
-use crate::nodes::{ENode, Label};
+use crate::Tree;
 use crate::tree::TreeShaped;
-use crate::{Graph, PartialChild, PartialTree, Tree, tree_node_to_partial};
 
 /// Match a reference tree against an e-class, producing a partial tree
 /// that maximizes structural overlap with the reference.
@@ -12,9 +10,9 @@ use crate::{Graph, PartialChild, PartialTree, Tree, tree_node_to_partial};
 /// At each e-class, finds e-nodes whose label matches the `ref_tree`'s label.
 /// If multiple match, tries all and picks the one with the largest
 /// `resolved_count`. Returns `None` if no e-node matches (caller creates a Hole).
-pub fn match_ref_tree<L: Label>(
-    graph: &Graph<L>,
-    eclass_id: EClassId,
+pub fn match_ref_tree<L: LabelLanguage>(
+    graph: &EGraph<L>,
+    eclass_id: Id,
     ref_tree: &Tree<L>,
 ) -> Option<PartialTree<L>> {
     let canonical_id = graph.canonicalize(eclass_id);
@@ -26,7 +24,7 @@ pub fn match_ref_tree<L: Label>(
     for node in eclass
         .nodes()
         .iter()
-        .filter(|node| node.label() == ref_tree.label())
+        .filter(|node| node.label() == ref_tree.node())
     {
         let children = node.children();
         let ref_children = ref_tree.children();
@@ -85,8 +83,8 @@ pub fn match_ref_tree<L: Label>(
 ///
 /// Returns a map from canonical `EClassId` -> the chosen `ENode`.
 /// Classes where no e-node label matched are absent from the map (they are holes).
-fn collect_matched_nodes<'a, L: Label>(
-    graph: &'a Graph<L>,
+fn collect_matched_nodes<'a, L: LabelLanguage>(
+    graph: &'a EGraph<L>,
     eclass_id: EClassId,
     ref_tree: &Tree<L>,
 ) -> HashMap<EClassId, &'a ENode<L>> {
@@ -98,7 +96,7 @@ fn collect_matched_nodes<'a, L: Label>(
     for node in eclass
         .nodes()
         .iter()
-        .filter(|node| node.label() == ref_tree.label())
+        .filter(|node| node.label() == ref_tree.node())
     {
         let children = node.children();
         let ref_children = ref_tree.children();
@@ -144,8 +142,8 @@ fn collect_matched_nodes<'a, L: Label>(
 /// Collect all e-class IDs transitively reachable from a set of root classes,
 /// following all e-node children in the original graph.
 /// Essentially a transitive hull
-fn collect_reachable<L: Label>(
-    graph: &Graph<L>,
+fn collect_reachable<L: LabelLanguage>(
+    graph: &EGraph<L>,
     roots: impl IntoIterator<Item = EClassId>,
 ) -> HashSet<EClassId> {
     let mut visited = HashSet::new();
@@ -179,11 +177,11 @@ fn collect_reachable<L: Label>(
 ///
 /// Returns the pruned e-graph and a `Vec` of `EClassId`s whose e-classes had
 /// nodes removed.
-pub fn prune_by_ref_tree<L: Label>(
-    graph: &Graph<L>,
+pub fn prune_by_ref_tree<L: LabelLanguage>(
+    graph: &EGraph<L>,
     root: EClassId,
     ref_tree: &Tree<L>,
-) -> (Graph<L>, HashSet<EClassId>) {
+) -> (EGraph<L>, HashSet<EClassId>) {
     let matched = collect_matched_nodes(graph, root, ref_tree);
 
     // Find hole e-classes: matched e-nodes whose EClass children were NOT matched
@@ -232,7 +230,7 @@ pub fn prune_by_ref_tree<L: Label>(
         .collect();
 
     // TODO: fun_ty_nodes and data_ty_nodes could also be pruned to remove unreferenced entries
-    let pruned_graph = Graph::new(
+    let pruned_graph = EGraph::new(
         new_classes,
         graph.root(),
         graph.union_find().to_vec(),
@@ -247,7 +245,7 @@ pub fn prune_by_ref_tree<L: Label>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Graph;
+    use crate::EGraph;
     use crate::Tree;
     use crate::graph::Class;
     use crate::nodes::ENode;
@@ -260,7 +258,7 @@ mod tests {
         // Class 0: f(class1)
         // Class 1: leaf "a"
         // ref_tree: (f a) -> should match exactly with no holes
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![
                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
                 Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
@@ -285,7 +283,7 @@ mod tests {
         // Class 0: f(class1)
         // Class 1: leaf "a", leaf "b"
         // ref_tree: (f c) -> "f" matches at root, "c" does NOT match class1
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![
                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
                 Class::new(
@@ -312,7 +310,7 @@ mod tests {
     fn match_ref_tree_no_match_at_root() {
         // Class 0: leaf "a"
         // ref_tree: "b" -> no match
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned())],
                 dummy_ty(),
@@ -336,7 +334,7 @@ mod tests {
         // Class 2: leaf "b"
         // ref_tree: (f a) -> both f-nodes match at root, but only the one
         //   pointing to class1 can match child "a"
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![
                 Class::new(
                     vec![
@@ -368,7 +366,7 @@ mod tests {
         // Class 0: f(class1), g(class1)  -> two nodes in one class
         // Class 1: leaf "a"
         // ref_tree: (f a) -> matches f, should prune g away
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![
                 Class::new(
                     vec![
@@ -401,7 +399,7 @@ mod tests {
     fn prune_no_match_at_root_returns_identical() {
         // Class 0: leaf "a"
         // ref_tree: "b" -> no match at root, graph unchanged
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![Class::new(
                 vec![ENode::leaf("a".to_owned())],
                 dummy_ty(),
@@ -427,7 +425,7 @@ mod tests {
         // Class 2: g(class1)           -> also points to class1
         // ref_tree: (f c) -> f matches at root, but "c" doesn't match class1
         //   so class1 is a hole. Class1 should NOT be pruned despite having 2 nodes.
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![
                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
                 Class::new(
@@ -459,7 +457,7 @@ mod tests {
         // Class 2: leaf "x", leaf "y"  -> reachable from hole class1 via g
         // ref_tree: (f c) -> f matches, c doesn't match class1
         //   class1 is a hole, class2 is transitively reachable from the hole
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![
                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
                 Class::new(
@@ -497,7 +495,7 @@ mod tests {
         // Class 1: leaf "a"
         // Class 2: leaf "b"
         // ref_tree: (f a) -> should pick f->class1 and prune f->class2
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![
                 Class::new(
                     vec![
@@ -535,7 +533,7 @@ mod tests {
         // ref_tree: (f a c) -> f matches, "a" matches in class1, "c" doesn't match class2
         //   class2 is a hole, and class1 is reachable from class2 via g
         //   so class1 should be PROTECTED (not pruned) even though it was matched
-        let graph = Graph::new(
+        let graph = EGraph::new(
             cfv(vec![
                 Class::new(
                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(2)])],

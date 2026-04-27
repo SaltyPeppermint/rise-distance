@@ -10,7 +10,9 @@
 //! This provides a lower bound on tree edit distance that can be computed in O(n·m) time
 //! using standard string edit distance, useful for pruning in tree distance computations.
 
-use super::nodes::Label;
+use egg::Language;
+
+use super::nodes::LabelLanguage;
 use super::zs::EditCosts;
 use crate::tree::UnfoldedTree;
 
@@ -38,7 +40,7 @@ impl<L> EulerSymbol<'_, L> {
 /// The cost function operates on the underlying labels. Enter and Leave variants
 /// with the same label have the same insert/delete cost. Relabeling between
 /// Enter(a) and Leave(a) (same label, different variant) costs 1.
-fn euler_string_edit_distance<L: Label, C: EditCosts<L>>(
+fn euler_string_edit_distance<L: LabelLanguage, C: EditCosts<L>>(
     s1: &[EulerSymbol<L>],
     s2: &[EulerSymbol<L>],
     costs: &C,
@@ -79,7 +81,7 @@ fn euler_string_edit_distance<L: Label, C: EditCosts<L>>(
 ///
 /// Returns `ceil(EDS(euler(t1), euler(t2)) / 2)` which is a valid lower bound
 /// on the tree edit distance between t1 and t2.
-pub fn tree_distance_euler_bound<L: Label, C: EditCosts<L>>(
+pub fn tree_distance_euler_bound<L: LabelLanguage, C: EditCosts<L>>(
     t1: &UnfoldedTree<L>,
     t2: &UnfoldedTree<L>,
     costs: &C,
@@ -88,7 +90,7 @@ pub fn tree_distance_euler_bound<L: Label, C: EditCosts<L>>(
 }
 
 // Cost for relabeling Euler symbols
-fn relabel_cost<L: Label, C: EditCosts<L>>(
+fn relabel_cost<L: LabelLanguage, C: EditCosts<L>>(
     a: &EulerSymbol<L>,
     b: &EulerSymbol<L>,
     costs: &C,
@@ -110,13 +112,13 @@ pub struct EulerString<'a, L> {
     string: Vec<EulerSymbol<'a, L>>,
 }
 
-impl<'a, L: Label> EulerString<'a, L> {
+impl<'a, L: LabelLanguage> EulerString<'a, L> {
     /// Create an Euler string from a tree.
     ///
     /// The Euler string records each node with Enter when entering the subtree
     /// and Leave when leaving. This gives a string of length 2n for a tree with n nodes.
     pub fn new(tree: &'a UnfoldedTree<L>) -> Self {
-        fn build<'b, LL: Label>(node: &'b UnfoldedTree<LL>, out: &mut Vec<EulerSymbol<'b, LL>>) {
+        fn build<'b, LL: Language>(node: &'b UnfoldedTree<LL>, out: &mut Vec<EulerSymbol<'b, LL>>) {
             out.push(EulerSymbol::Enter(node.label()));
             for child in node.children() {
                 build(child, out);
@@ -138,16 +140,18 @@ impl<'a, L: Label> EulerString<'a, L> {
 
 #[cfg(test)]
 mod tests {
+    use egg::SymbolLang;
+
     use super::*;
     use crate::Tree;
     use crate::tree::TreeShaped;
     use crate::zs::UnitCost;
 
-    fn leaf(label: &str) -> Tree<String> {
+    fn leaf(label: &str) -> Tree<SymbolLang> {
         crate::test_utils::leaf(label.to_owned())
     }
 
-    fn node(label: &str, children: Vec<Tree<String>>) -> Tree<String> {
+    fn node(label: &str, children: Vec<Tree<SymbolLang>>) -> Tree<String> {
         crate::test_utils::node(label.to_owned(), children)
     }
 

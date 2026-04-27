@@ -12,8 +12,9 @@ use rise_distance::count::TermCount;
 use rise_distance::sampling::CountSampler;
 use rise_distance::sampling::Sampler;
 use rise_distance::{
-    EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, Tree, TreeShaped,
-    UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
+    EClassId, EGraph, Expr, LabelLanguage, NumericId, RiseLabel, StructuralDistance, Tree,
+    TreeShaped, UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree,
+    tree_distance_unit,
 };
 
 #[derive(Parser)]
@@ -123,7 +124,7 @@ fn main() {
     let cli = Cli::parse();
 
     std::eprintln!("Loading e-graph from: {}", cli.egraph);
-    let graph = Graph::<RiseLabel>::parse_from_file(Path::new(&cli.egraph));
+    let graph = EGraph::<RiseLabel>::parse_from_file(Path::new(&cli.egraph));
     let root = graph.root();
     std::eprintln!("Root e-class: {root:?}");
 
@@ -256,8 +257,8 @@ struct CountSampleConfig {
     distance: DistanceMetric,
 }
 
-fn run_count_extraction<L: Label>(
-    graph: &Graph<L>,
+fn run_count_extraction<L: LabelLanguage>(
+    graph: &EGraph<L>,
     term_count: &TermCount<BigUint>,
     ref_tree: &Tree<L>,
     config: &CountSampleConfig,
@@ -317,7 +318,7 @@ fn run_count_extraction<L: Label>(
 // --- Shared result printing ---
 
 #[expect(clippy::cast_precision_loss)]
-fn print_zs_result<L: Label>(
+fn print_zs_result<L: LabelLanguage>(
     result: &(Tree<L>, usize),
     ref_tree: &Tree<L>,
     stats: &ZSStats,
@@ -351,7 +352,7 @@ fn print_zs_result<L: Label>(
     println!("{best}");
 }
 
-fn print_struct_result<L: Label>(
+fn print_struct_result<L: LabelLanguage>(
     result: &(Tree<L>, StructuralDistance),
     ref_tree: &Tree<L>,
     elapsed: std::time::Duration,
@@ -368,7 +369,7 @@ fn print_struct_result<L: Label>(
     println!("{best}");
 }
 
-fn print_tree_sizes<L: Label>(best: &Tree<L>, ref_tree: &Tree<L>) {
+fn print_tree_sizes<L: LabelLanguage>(best: &Tree<L>, ref_tree: &Tree<L>) {
     eprintln!(
         "Best tree size: {} with types, {} without",
         best.size_with_types(),

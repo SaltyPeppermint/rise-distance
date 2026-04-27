@@ -3,6 +3,7 @@ mod count;
 mod naive;
 mod zs_min_distance;
 
+use egg::{Id, Language, RecExpr};
 use hashbrown::HashSet;
 
 pub use count::CountSampler;
@@ -10,16 +11,16 @@ pub use naive::NaiveSampler;
 use rand_chacha::ChaCha12Rng;
 pub use zs_min_distance::ZSDistanceSampler;
 
-use crate::{EClassId, Label, tree::OriginTree};
+use crate::origin::OriginNode;
 
 pub trait Sampler: Sync + Send {
-    type Label: Label;
+    type Lang: Language + Send + Sync;
 
     #[must_use]
-    fn root(&self) -> EClassId;
+    fn root(&self) -> Id;
 
     #[must_use]
-    fn possible_size(&self, id: EClassId, size: usize, samples: u64) -> bool;
+    fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool;
 
     /// Sample unique terms across a range of sizes from root.
     ///
@@ -29,9 +30,9 @@ pub trait Sampler: Sync + Send {
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
         check: &F,
-    ) -> HashSet<OriginTree<Self::Label>>
+    ) -> HashSet<RecExpr<OriginNode<Self::Lang>>>
     where
-        F: Fn(&OriginTree<Self::Label>) -> bool + Sync,
+        F: Fn(&RecExpr<OriginNode<Self::Lang>>) -> bool + Sync,
     {
         self.sample_batch::<PARALLEL, _>(self.root(), samples_per_size, seed, check)
     }
@@ -45,14 +46,15 @@ pub trait Sampler: Sync + Send {
     /// weights to be zero, panicking with `AllWeightsZero`.
     fn sample_batch<const PARALLEL: bool, F>(
         &self,
-        id: EClassId,
+        id: Id,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
         check: &F,
-    ) -> HashSet<OriginTree<Self::Label>>
+    ) -> HashSet<RecExpr<OriginNode<Self::Lang>>>
     where
-        F: Fn(&OriginTree<Self::Label>) -> bool + Sync;
+        F: Fn(&RecExpr<OriginNode<Self::Lang>>) -> bool + Sync;
 
     #[must_use]
-    fn sample(&self, id: EClassId, size: usize, rng: &mut ChaCha12Rng) -> OriginTree<Self::Label>;
+    fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng)
+    -> RecExpr<OriginNode<Self::Lang>>;
 }

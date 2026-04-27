@@ -11,7 +11,7 @@ use egg::{
 use ordered_float::NotNan;
 
 pub use generate::BoltzmannSampler;
-pub use label::MathLabel;
+// pub use label::MathLabel;
 
 pub type Constant = NotNan<f64>;
 

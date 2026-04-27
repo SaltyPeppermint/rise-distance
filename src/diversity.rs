@@ -6,11 +6,9 @@
 
 use std::hash::{BuildHasher, Hash, Hasher};
 
+use egg::Language;
 use hashbrown::{DefaultHashBuilder, HashSet};
 
-use crate::tree::TreeShaped;
-
-use super::nodes::Label;
 use super::tree::Tree;
 
 /// Configuration for diverse sampling.
@@ -25,14 +23,14 @@ pub struct DiverseSamplerConfig {
 }
 
 /// Iterator adapter that filters for diverse terms using structural deduplication.
-pub struct DiverseSampler<L: Label, I: Iterator<Item = Tree<L>>> {
+pub struct DiverseSampler<L: Language, I: Iterator<Item = Tree<L>>> {
     inner: I,
     config: DiverseSamplerConfig,
     seen_hashes: HashSet<u64>,
     seen_features: HashSet<(L, usize, L)>,
 }
 
-impl<L: Label, I: Iterator<Item = Tree<L>>> DiverseSampler<L, I> {
+impl<L: Language, I: Iterator<Item = Tree<L>>> DiverseSampler<L, I> {
     /// Create a new diverse sampler wrapping an existing iterator.
     pub fn new(inner: I, config: DiverseSamplerConfig) -> Self {
         Self {
@@ -94,7 +92,7 @@ impl<L: Label, I: Iterator<Item = Tree<L>>> DiverseSampler<L, I> {
     }
 }
 
-impl<L: Label, I: Iterator<Item = Tree<L>>> Iterator for DiverseSampler<L, I> {
+impl<L: Language, I: Iterator<Item = Tree<L>>> Iterator for DiverseSampler<L, I> {
     type Item = Tree<L>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -113,14 +111,14 @@ impl<L: Label, I: Iterator<Item = Tree<L>>> Iterator for DiverseSampler<L, I> {
 /// Compute a structural hash of a tree for diversity checking.
 /// Trees with the same structure and labels will have the same hash.
 #[must_use]
-pub fn structural_hash<L: Label>(tree: &Tree<L>) -> u64 {
+pub fn structural_hash<L: Language>(tree: &Tree<L>) -> u64 {
     let mut hasher = DefaultHashBuilder::default().build_hasher();
     hash_tree_rec(tree, &mut hasher);
     hasher.finish()
 }
 
-fn hash_tree_rec<L: Label, H: Hasher>(tree: &Tree<L>, hasher: &mut H) {
-    tree.label().hash(hasher);
+fn hash_tree_rec<L: Language, H: Hasher>(tree: &Tree<L>, hasher: &mut H) {
+    tree.node().hash(hasher);
     tree.children().len().hash(hasher);
     for child in tree.children() {
         hash_tree_rec(child, hasher);
@@ -130,16 +128,16 @@ fn hash_tree_rec<L: Label, H: Hasher>(tree: &Tree<L>, hasher: &mut H) {
 /// Extract structural features from a tree for diversity measurement.
 /// Returns bigrams of `(parent_label, child_index, child_label)`.
 #[must_use]
-pub fn extract_features<L: Label>(tree: &Tree<L>) -> HashSet<(L, usize, L)> {
+pub fn extract_features<L: Language>(tree: &Tree<L>) -> HashSet<(L, usize, L)> {
     let mut features = HashSet::new();
     collect_features(tree, &mut features);
     features
 }
 
-fn collect_features<L: Label>(tree: &Tree<L>, features: &mut HashSet<(L, usize, L)>) {
-    let parent = tree.label().clone();
+fn collect_features<L: Language>(tree: &Tree<L>, features: &mut HashSet<(L, usize, L)>) {
+    let parent = tree.node().clone();
     for (i, child) in tree.children().iter().enumerate() {
-        features.insert((parent.clone(), i, child.label().clone()));
+        features.insert((parent.clone(), i, child.node().clone()));
         collect_features(child, features);
     }
 }

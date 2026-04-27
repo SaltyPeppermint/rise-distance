@@ -11,7 +11,7 @@ use super::expr::{Expr, ExprNode, LiteralData};
 use super::nat::Nat;
 use super::primitive::Primitive;
 use super::types::{DataType, ScalarType, Type};
-use crate::nodes::Label;
+use crate::nodes::LabelLanguage;
 use crate::tree::{Tree, TreeShaped};
 
 /// A compact label type for Rise that implements the Label trait.
@@ -70,7 +70,7 @@ pub enum RiseLabel {
     VecT,
 }
 
-impl Label for RiseLabel {
+impl LabelLanguage for RiseLabel {
     fn type_of() -> Self {
         RiseLabel::TypeOf
     }
@@ -302,7 +302,7 @@ impl<'de> Deserialize<'de> for RiseLabel {
 impl From<&Tree<RiseLabel>> for Expr {
     fn from(tree: &Tree<RiseLabel>) -> Self {
         let ty = tree.ty().map(tree_to_type);
-        let node = match tree.label() {
+        let node = match tree.node() {
             // Leaf expression labels
             RiseLabel::Var(i) => ExprNode::Var(*i),
             RiseLabel::BoolLit(b) => ExprNode::Literal(LiteralData::Bool(*b)),
@@ -365,17 +365,14 @@ impl From<&Tree<RiseLabel>> for Expr {
                 ExprNode::IndexLiteral(i, n)
             }
 
-            _ => panic!(
-                "unexpected label in expression position: {:?}",
-                tree.label()
-            ),
+            _ => panic!("unexpected label in expression position: {:?}", tree.node()),
         };
         Expr { node, ty }
     }
 }
 
 fn tree_to_nat(tree: &Tree<RiseLabel>) -> Nat {
-    match tree.label() {
+    match tree.node() {
         RiseLabel::NatVar(i) => Nat::Var(*i),
         RiseLabel::NatCst(n) => Nat::Cst(*n),
         RiseLabel::NatAdd => Nat::Add(
@@ -398,23 +395,23 @@ fn tree_to_nat(tree: &Tree<RiseLabel>) -> Nat {
             Box::new(tree_to_nat(&tree.children()[0])),
             Box::new(tree_to_nat(&tree.children()[1])),
         ),
-        _ => panic!("unexpected label in nat position: {:?}", tree.label()),
+        _ => panic!("unexpected label in nat position: {:?}", tree.node()),
     }
 }
 
 fn tree_to_address(tree: &Tree<RiseLabel>) -> Address {
-    match tree.label() {
+    match tree.node() {
         RiseLabel::AddrVar(i) => Address::Var(*i),
         RiseLabel::Global => Address::Global,
         RiseLabel::Local => Address::Local,
         RiseLabel::Private => Address::Private,
         RiseLabel::Constant => Address::Constant,
-        _ => panic!("unexpected label in address position: {:?}", tree.label()),
+        _ => panic!("unexpected label in address position: {:?}", tree.node()),
     }
 }
 
 fn tree_to_data_type(tree: &Tree<RiseLabel>) -> DataType {
-    match tree.label() {
+    match tree.node() {
         RiseLabel::DataVar(i) => DataType::Var(*i),
         RiseLabel::Scalar(s) => DataType::Scalar(s.clone()),
         RiseLabel::NatT => DataType::NatT,
@@ -431,12 +428,12 @@ fn tree_to_data_type(tree: &Tree<RiseLabel>) -> DataType {
             Box::new(tree_to_nat(&tree.children()[0])),
             Box::new(tree_to_data_type(&tree.children()[1])),
         ),
-        _ => panic!("unexpected label in data type position: {:?}", tree.label()),
+        _ => panic!("unexpected label in data type position: {:?}", tree.node()),
     }
 }
 
 fn tree_to_type(tree: &Tree<RiseLabel>) -> Type {
-    match tree.label() {
+    match tree.node() {
         RiseLabel::Fun => Type::Fun(
             Box::new(tree_to_type(&tree.children()[0])),
             Box::new(tree_to_type(&tree.children()[1])),

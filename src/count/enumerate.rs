@@ -1,20 +1,26 @@
 use dashmap::DashMap;
+use egg::EGraph;
+use egg::Id;
+use egg::Language;
 use indicatif::{ParallelProgressIterator, ProgressBar};
 use rayon::prelude::*;
 
+use crate::egg::TypeAnalysis;
+use crate::tree::OriginExpr;
+
 use super::Counter;
 use super::TermCount;
-use crate::Graph;
-use crate::OriginTree;
-use crate::ids::{EClassId, ExprChildId};
-use crate::nodes::Label;
+// use crate::EGraph;
+// use crate::OriginTree;
+// use crate::ids::{EClassId, ExprChildId};
+// use crate::nodes::LabelLanguage;
 
 impl<C: Counter> TermCount<C> {
     /// Enumerate all terms from the root e-class with sizes in `1..=max_size`.
     #[must_use]
-    pub fn enumerate_root<L: Label>(
+    pub fn enumerate_root<L: Language, N: TypeAnalysis<L>>(
         &self,
-        graph: &Graph<L>,
+        graph: &EGraph<L, N>,
         max_size: usize,
         progress: Option<ProgressBar>,
     ) -> Vec<OriginTree<L>> {
@@ -24,13 +30,13 @@ impl<C: Counter> TermCount<C> {
     /// Enumerate all terms from an e-class with sizes in `1..=max_size`.
     #[must_use]
     #[expect(clippy::missing_panics_doc)]
-    pub fn enumerate<L: Label>(
+    pub fn enumerate<L: Language, N: TypeAnalysis<L>>(
         &self,
-        graph: &Graph<L>,
-        id: EClassId,
+        graph: &EGraph<L, N>,
+        id: Id,
         max_size: usize,
         progress: Option<ProgressBar>,
-    ) -> Vec<OriginTree<L>> {
+    ) -> Vec<OriginExpr<L>> {
         let canon_id = graph.canonicalize(id);
         let sum = self
             .data
@@ -84,13 +90,13 @@ impl<C: Counter> TermCount<C> {
     }
 
     /// Enumerate all terms of exactly `size` from an e-class, using a shared cache.
-    fn enumerate_class_cached<L: Label>(
+    fn enumerate_class_cached<L: Language, N: TypeAnalysis<L>>(
         &self,
-        graph: &Graph<L>,
-        id: EClassId,
+        graph: &EGraph<L>,
+        id: Id,
         size: usize,
-        cache: &DashMap<(EClassId, usize), Vec<OriginTree<L>>>,
-    ) -> Vec<OriginTree<L>> {
+        cache: &DashMap<(Id, usize), Vec<OriginExpr<L>>>,
+    ) -> Vec<OriginExpr<L>> {
         let canon_id = graph.canonicalize(id);
         let key = (canon_id, size);
 
@@ -105,13 +111,13 @@ impl<C: Counter> TermCount<C> {
     }
 
     /// Inner logic for enumerating all terms of exactly `size` from a canonical e-class.
-    fn enumerate_class_inner<L: Label>(
+    fn enumerate_class_inner<L: Language, N: TypeAnalysis<L>>(
         &self,
-        graph: &Graph<L>,
-        canon_id: EClassId,
+        graph: &EGraph<L>,
+        canon_id: Id,
         size: usize,
-        cache: &DashMap<(EClassId, usize), Vec<OriginTree<L>>>,
-    ) -> Vec<OriginTree<L>> {
+        cache: &DashMap<(Id, usize), Vec<OriginExpr<L>>>,
+    ) -> Vec<OriginExpr<L>> {
         // Check if this class has any terms at this size
         let Some(histogram) = self.get(&canon_id) else {
             return Vec::new();
@@ -150,13 +156,13 @@ impl<C: Counter> TermCount<C> {
 
     /// Enumerate all ways to fill `children` with exactly `budget` total size,
     /// returning the cartesian product of child terms for each valid size tuple.
-    fn enumerate_children<L: Label>(
+    fn enumerate_children<L: Language, N: TypeAnalysis<L>>(
         &self,
-        graph: &Graph<L>,
-        children: &[ExprChildId],
+        graph: &EGraph<L>,
+        children: &[Id],
         budget: usize,
-        cache: &DashMap<(EClassId, usize), Vec<OriginTree<L>>>,
-    ) -> impl Iterator<Item = Vec<OriginTree<L>>> {
+        cache: &DashMap<(Id, usize), Vec<OriginExpr<L>>>,
+    ) -> impl Iterator<Item = Vec<OriginExpr<L>>> {
         // Accumulate via left-fold: start with the empty tuple at budget=`budget`,
         // then for each child, expand every (remaining_budget, partial_combo) by
         // enumerating that child at each feasible size.
@@ -181,233 +187,234 @@ impl<C: Counter> TermCount<C> {
     }
 
     /// Expand a single partial combo by one child, returning all valid extensions.
-    fn expand_child<L: Label>(
+    fn expand_child<L: Language, N: TypeAnalysis<L>>(
         &self,
-        graph: &Graph<L>,
-        child_id: ExprChildId,
+        graph: &EGraph<L>,
+        child_id: Id,
         remaining: usize,
-        partial: Vec<OriginTree<L>>,
-        cache: &DashMap<(EClassId, usize), Vec<OriginTree<L>>>,
-    ) -> Vec<(usize, Vec<OriginTree<L>>)> {
-        match child_id {
-            ExprChildId::Nat(nat_id) => {
-                let child_size = self.type_sizes.get_nat_size(nat_id);
-                if child_size <= remaining {
-                    let tree = OriginTree::from_nat(graph, nat_id);
-                    let mut combo = partial;
-                    combo.push(tree);
-                    vec![(remaining - child_size, combo)]
-                } else {
-                    Vec::new()
-                }
-            }
-            ExprChildId::Data(data_id) => {
-                let child_size = self.type_sizes.get_data_size(data_id);
-                if child_size <= remaining {
-                    let tree = OriginTree::from_data(graph, data_id);
-                    let mut combo = partial;
-                    combo.push(tree);
-                    vec![(remaining - child_size, combo)]
-                } else {
-                    Vec::new()
-                }
-            }
-            ExprChildId::EClass(eclass_id) => {
-                let canonical_child = graph.canonicalize(eclass_id);
-                let Some(child_histogram) = self.get(&canonical_child) else {
-                    return Vec::new();
-                };
+        partial: Vec<OriginExpr<L>>,
+        cache: &DashMap<(Id, usize), Vec<OriginExpr<L>>>,
+    ) -> Vec<(usize, Vec<OriginExpr<L>>)> {
+        let canonical_child = graph.canonicalize(child_id);
+        let Some(child_histogram) = self.get(&canonical_child) else {
+            return Vec::new();
+        };
 
-                let mut results = Vec::new();
-                for (&child_size, _) in child_histogram {
-                    if child_size > remaining {
-                        continue;
-                    }
-                    let child_trees =
-                        self.enumerate_class_cached(graph, canonical_child, child_size, cache);
-                    for tree in child_trees {
-                        let mut combo = partial.clone();
-                        combo.push(tree.clone());
-                        results.push((remaining - child_size, combo));
-                    }
-                }
-                results
+        let mut results = Vec::new();
+        for (&child_size, _) in child_histogram {
+            if child_size > remaining {
+                continue;
+            }
+            let child_trees =
+                self.enumerate_class_cached(graph, canonical_child, child_size, cache);
+            for tree in child_trees {
+                let mut combo = partial.clone();
+                combo.push(tree.clone());
+                results.push((remaining - child_size, combo));
             }
         }
+        results
+        // match child_id {
+        //     ExprChildId::Nat(nat_id) => {
+        //         let child_size = self.type_sizes.get_nat_size(nat_id);
+        //         if child_size <= remaining {
+        //             let tree = OriginTree::from_nat(graph, nat_id);
+        //             let mut combo = partial;
+        //             combo.push(tree);
+        //             vec![(remaining - child_size, combo)]
+        //         } else {
+        //             Vec::new()
+        //         }
+        //     }
+        //     ExprChildId::Data(data_id) => {
+        //         let child_size = self.type_sizes.get_data_size(data_id);
+        //         if child_size <= remaining {
+        //             let tree = OriginTree::from_data(graph, data_id);
+        //             let mut combo = partial;
+        //             combo.push(tree);
+        //             vec![(remaining - child_size, combo)]
+        //         } else {
+        //             Vec::new()
+        //         }
+        //     }
+        //     ExprChildId::EClass(eclass_id) => {
+
+        //     }
+        // }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::graph::{Class, Graph};
-    use crate::nodes::ENode;
-    use crate::test_utils::*;
-    use crate::tree::TreeShaped;
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::graph::{Class, EGraph};
+//     use crate::nodes::ENode;
+//     use crate::test_utils::*;
+//     use crate::tree::TreeShaped;
 
-    use hashbrown::HashMap;
-    use num::BigUint;
+//     use hashbrown::HashMap;
+//     use num::BigUint;
 
-    #[test]
-    fn enumerate_single_leaf() {
-        let graph = Graph::new(
-            cfv(vec![Class::new(
-                vec![ENode::leaf("a".to_owned())],
-                dummy_ty(),
-            )]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn enumerate_single_leaf() {
+//         let graph = EGraph::new(
+//             cfv(vec![Class::new(
+//                 vec![ENode::leaf("a".to_owned())],
+//                 dummy_ty(),
+//             )]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let tc = TermCount::<BigUint>::new(10, false, &graph);
-        let terms = tc.enumerate_root(&graph, 10, None);
-        assert_eq!(terms.len(), 1);
-        assert_eq!(terms[0].label(), "a");
-    }
+//         let tc = TermCount::<BigUint>::new(10, false, &graph);
+//         let terms = tc.enumerate_root(&graph, 10, None);
+//         assert_eq!(terms.len(), 1);
+//         assert_eq!(terms[0].node(), "a");
+//     }
 
-    #[test]
-    fn enumerate_two_leaves() {
-        let graph = Graph::new(
-            cfv(vec![Class::new(
-                vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
-                dummy_ty(),
-            )]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn enumerate_two_leaves() {
+//         let graph = EGraph::new(
+//             cfv(vec![Class::new(
+//                 vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
+//                 dummy_ty(),
+//             )]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let tc = TermCount::<BigUint>::new(10, false, &graph);
-        let terms = tc.enumerate_root(&graph, 10, None);
-        assert_eq!(terms.len(), 2);
-        let labels: Vec<_> = terms.iter().map(|t| t.label().as_str()).collect();
-        assert!(labels.contains(&"a"));
-        assert!(labels.contains(&"b"));
-    }
+//         let tc = TermCount::<BigUint>::new(10, false, &graph);
+//         let terms = tc.enumerate_root(&graph, 10, None);
+//         assert_eq!(terms.len(), 2);
+//         let labels: Vec<_> = terms.iter().map(|t| t.node().as_str()).collect();
+//         assert!(labels.contains(&"a"));
+//         assert!(labels.contains(&"b"));
+//     }
 
-    #[test]
-    fn enumerate_parent_child() {
-        let graph = Graph::new(
-            cfv(vec![
-                Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-                Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
-            ]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn enumerate_parent_child() {
+//         let graph = EGraph::new(
+//             cfv(vec![
+//                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
+//                 Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
+//             ]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let tc = TermCount::<BigUint>::new(10, false, &graph);
-        let terms = tc.enumerate_root(&graph, 10, None);
-        assert_eq!(terms.len(), 1);
-        assert_eq!(terms[0].label(), "f");
-        assert_eq!(terms[0].children()[0].label(), "a");
-    }
+//         let tc = TermCount::<BigUint>::new(10, false, &graph);
+//         let terms = tc.enumerate_root(&graph, 10, None);
+//         assert_eq!(terms.len(), 1);
+//         assert_eq!(terms[0].node(), "f");
+//         assert_eq!(terms[0].children()[0].node(), "a");
+//     }
 
-    #[test]
-    fn enumerate_combinatorial() {
-        // Class 0: f(class1, class2)
-        // Class 1: "a1", "a2"
-        // Class 2: "b1", "b2", "b3"
-        let graph = Graph::new(
-            cfv(vec![
-                Class::new(
-                    vec![ENode::new("f".to_owned(), vec![eid(1), eid(2)])],
-                    dummy_ty(),
-                ),
-                Class::new(
-                    vec![ENode::leaf("a1".to_owned()), ENode::leaf("a2".to_owned())],
-                    dummy_ty(),
-                ),
-                Class::new(
-                    vec![
-                        ENode::leaf("b1".to_owned()),
-                        ENode::leaf("b2".to_owned()),
-                        ENode::leaf("b3".to_owned()),
-                    ],
-                    dummy_ty(),
-                ),
-            ]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn enumerate_combinatorial() {
+//         // Class 0: f(class1, class2)
+//         // Class 1: "a1", "a2"
+//         // Class 2: "b1", "b2", "b3"
+//         let graph = EGraph::new(
+//             cfv(vec![
+//                 Class::new(
+//                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(2)])],
+//                     dummy_ty(),
+//                 ),
+//                 Class::new(
+//                     vec![ENode::leaf("a1".to_owned()), ENode::leaf("a2".to_owned())],
+//                     dummy_ty(),
+//                 ),
+//                 Class::new(
+//                     vec![
+//                         ENode::leaf("b1".to_owned()),
+//                         ENode::leaf("b2".to_owned()),
+//                         ENode::leaf("b3".to_owned()),
+//                     ],
+//                     dummy_ty(),
+//                 ),
+//             ]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let tc = TermCount::<BigUint>::new(10, false, &graph);
-        let terms = tc.enumerate_root(&graph, 10, None);
-        // 2 * 3 = 6 combinations
-        assert_eq!(terms.len(), 6);
-    }
+//         let tc = TermCount::<BigUint>::new(10, false, &graph);
+//         let terms = tc.enumerate_root(&graph, 10, None);
+//         // 2 * 3 = 6 combinations
+//         assert_eq!(terms.len(), 6);
+//     }
 
-    #[test]
-    fn enumerate_respects_max_size() {
-        let graph = Graph::new(
-            cfv(vec![
-                Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-                Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
-            ]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn enumerate_respects_max_size() {
+//         let graph = EGraph::new(
+//             cfv(vec![
+//                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
+//                 Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
+//             ]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let tc = TermCount::<BigUint>::new(10, false, &graph);
-        // max_size=1 should not include f(a) which is size 2
-        let terms = tc.enumerate_root(&graph, 1, None);
-        assert_eq!(terms.len(), 0);
-    }
+//         let tc = TermCount::<BigUint>::new(10, false, &graph);
+//         // max_size=1 should not include f(a) which is size 2
+//         let terms = tc.enumerate_root(&graph, 1, None);
+//         assert_eq!(terms.len(), 0);
+//     }
 
-    #[test]
-    fn enumerate_count_matches_term_count() {
-        // Class 0: f(class1, class1) -> same child twice
-        // Class 1: "a", "b", g(class2)
-        // Class 2: "c"
-        let graph = Graph::new(
-            cfv(vec![
-                Class::new(
-                    vec![ENode::new("f".to_owned(), vec![eid(1), eid(1)])],
-                    dummy_ty(),
-                ),
-                Class::new(
-                    vec![
-                        ENode::leaf("a".to_owned()),
-                        ENode::leaf("b".to_owned()),
-                        ENode::new("g".to_owned(), vec![eid(2)]),
-                    ],
-                    dummy_ty(),
-                ),
-                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
-            ]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn enumerate_count_matches_term_count() {
+//         // Class 0: f(class1, class1) -> same child twice
+//         // Class 1: "a", "b", g(class2)
+//         // Class 2: "c"
+//         let graph = EGraph::new(
+//             cfv(vec![
+//                 Class::new(
+//                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(1)])],
+//                     dummy_ty(),
+//                 ),
+//                 Class::new(
+//                     vec![
+//                         ENode::leaf("a".to_owned()),
+//                         ENode::leaf("b".to_owned()),
+//                         ENode::new("g".to_owned(), vec![eid(2)]),
+//                     ],
+//                     dummy_ty(),
+//                 ),
+//                 Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+//             ]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let max_size = 10;
-        let tc = TermCount::<BigUint>::new(max_size, false, &graph);
+//         let max_size = 10;
+//         let tc = TermCount::<BigUint>::new(max_size, false, &graph);
 
-        let terms = tc.enumerate_root(&graph, max_size, None);
-        let expected_total: BigUint = tc
-            .data
-            .get(&graph.root())
-            .unwrap()
-            .iter()
-            .filter(|&(s, _)| *s <= max_size)
-            .map(|(_, c)| c.clone())
-            .sum();
-        assert_eq!(BigUint::from(terms.len()), expected_total);
-    }
-}
+//         let terms = tc.enumerate_root(&graph, max_size, None);
+//         let expected_total: BigUint = tc
+//             .data
+//             .get(&graph.root())
+//             .unwrap()
+//             .iter()
+//             .filter(|&(s, _)| *s <= max_size)
+//             .map(|(_, c)| c.clone())
+//             .sum();
+//         assert_eq!(BigUint::from(terms.len()), expected_total);
+//     }
+// }

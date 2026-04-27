@@ -1,22 +1,23 @@
+use egg::Id;
 use hashbrown::HashSet;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
+use crate::origin::OriginExpr;
 use crate::sampling::Sampler;
-use crate::tree::OriginTree;
+use crate::tree_distance;
 use crate::utils::combined_rng;
-use crate::zs::{EditCosts, PreprocessedTree, tree_distance_preprocessed};
-use crate::{EClassId, TreeShaped, tree_distance};
+use crate::zs::{EditCosts, PreprocessedTree, UnfoldedTree, tree_distance_preprocessed};
 
 /// Greedily only accepts new terms that have a bigger or equal zs distance
-pub struct ZSDistanceSampler<E: EditCosts<S::Label>, S: Sampler> {
+pub struct ZSDistanceSampler<E: EditCosts<S::Lang>, S: Sampler> {
     inner: S,
     cost_fn: E,
     percentile: f64,
     with_types: bool,
 }
 
-impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
+impl<E: EditCosts<S::Lang>, S: Sampler> ZSDistanceSampler<E, S> {
     #[must_use]
     /// Wrap an existing sampler in one that filters by zs
     ///
@@ -50,14 +51,14 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
     )]
     fn average_distance<const PARALLEL: bool, F>(
         &self,
-        id: EClassId,
+        id: Id,
         size: usize,
         n: u64,
         seed: [u64; 2],
         check: &F,
     ) -> usize
     where
-        F: Fn(&OriginTree<S::Label>) -> bool + Sync,
+        F: Fn(&OriginExpr<S::Lang>) -> bool + Sync,
     {
         // Sample n unique trees of the given size.
         let trees = self
@@ -72,7 +73,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
         // Flatten once.
         let unfolded = trees
             .iter()
-            .map(|t| t.unfold(self.with_types))
+            .map(|t| UnfoldedTree::from_rec_expr(t, true))
             .collect::<Vec<_>>();
         // Preprocess once for reuse.
         let preprocessed = unfolded
@@ -95,17 +96,17 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
     }
 }
 
-impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
+impl<E: EditCosts<S::Lang>, S: Sampler> ZSDistanceSampler<E, S> {
     fn sample_for_size<const PARALLEL: bool, F>(
         &self,
-        id: EClassId,
+        id: Id,
         size: usize,
         samples: u64,
         seed: [u64; 2],
         check: &F,
-    ) -> impl Iterator<Item = OriginTree<S::Label>>
+    ) -> impl Iterator<Item = OriginExpr<<ZSDistanceSampler<E, S> as Sampler>::Lang>>
     where
-        F: Fn(&OriginTree<S::Label>) -> bool + Sync,
+        F: Fn(&OriginExpr<<ZSDistanceSampler<E, S> as Sampler>::Lang>) -> bool + Sync,
     {
         let mut samples_to_take = samples;
         let mut existing_unfolded = HashSet::new();
@@ -123,7 +124,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
             if existing.contains(&new_candidate) {
                 continue;
             }
-            let candidate_unfolded = new_candidate.unfold(self.with_types);
+            let candidate_unfolded = UnfoldedTree::from_rec_expr(&new_candidate, self.with_types);
             if existing_unfolded
                 .iter()
                 .any(|e| tree_distance(e, &candidate_unfolded, &self.cost_fn) < cut_off)
@@ -143,26 +144,26 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
     }
 }
 
-impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
-    type Label = S::Label;
+impl<E: EditCosts<S::Lang>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
+    type Lang = S::Lang;
 
-    fn root(&self) -> EClassId {
+    fn root(&self) -> Id {
         self.inner.root()
     }
 
-    fn possible_size(&self, id: EClassId, size: usize, samples: u64) -> bool {
+    fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool {
         self.inner.possible_size(id, size, samples)
     }
 
     fn sample_batch<const PARALLEL: bool, F>(
         &self,
-        id: EClassId,
+        id: Id,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
         check: &F,
-    ) -> HashSet<OriginTree<S::Label>>
+    ) -> HashSet<OriginExpr<Self::Lang>>
     where
-        F: Fn(&OriginTree<Self::Label>) -> bool + Sync,
+        F: Fn(&OriginExpr<Self::Lang>) -> bool + Sync,
     {
         if PARALLEL {
             samples_per_size
@@ -184,7 +185,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> Sampler for ZSDistanceSampler<E, S> {
     }
 
     /// Sample uniformly: each feasible choice gets equal weight.
-    fn sample(&self, id: EClassId, size: usize, rng: &mut ChaCha12Rng) -> OriginTree<S::Label> {
+    fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> OriginExpr<Self::Lang> {
         self.inner.sample(id, size, rng)
     }
 }

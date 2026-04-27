@@ -61,7 +61,7 @@ impl From<SexpError> for ParseError {
 mod tests {
     use super::*;
 
-    use crate::tree::{Tree, TreeShaped};
+    use crate::tree::Tree;
     use crate::zs::tree_distance_unit;
 
     #[test]
