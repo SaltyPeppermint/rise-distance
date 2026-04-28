@@ -25,14 +25,13 @@ use crate::tree::{FlatTree, OriginTree, TreeShaped};
 use crate::{Graph, Label, UnitCost, structural_diff, tree_distance_unit};
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
-fn is_frontier<L, LL, N>(prev_raw_egg: &egg::EGraph<L, N>, t: &OriginTree<LL>) -> bool
+fn is_frontier<L, N>(prev_raw_egg: &egg::EGraph<L, N>, t: &OriginTree<L>) -> bool
 where
-    L: Language + Sync,
+    L: Label + Language + Sync,
     L::Discriminant: Sync,
     N: Analysis<L> + Sync,
     N::Data: Sync,
-    LL: Label + for<'a> std::convert::From<&'a L>,
-    OriginTree<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<L>: ToEgg<L>,
 {
     prev_raw_egg.lookup_expr(&t.to_rec_expr()).is_none()
 }
@@ -90,31 +89,29 @@ const OVERSAMPLE_SCHEDULE: [usize; 16] = {
     arr
 };
 
-pub struct PrecomputePackage<C, LL, L, N>
+pub struct PrecomputePackage<C, L, N>
 where
-    L: Language + Sync,
+    L: Label + Language + Sync,
     L::Discriminant: Sync,
     N: Analysis<L> + Sync,
     N::Data: Sync,
-    LL: Label + for<'a> std::convert::From<&'a L>,
-    OriginTree<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<L>: ToEgg<L>,
     C: Counter + Display + Ord,
 {
     tc: TermCount<C>,
     min_size: usize,
     max_size: usize,
     prev_raw_egg: egg::EGraph<L, N>,
-    graph: Graph<LL>,
+    graph: Graph<L>,
 }
 
-impl<C, LL, L, N> PrecomputePackage<C, LL, L, N>
+impl<C, L, N> PrecomputePackage<C, L, N>
 where
-    L: Language + Sync,
+    L: Label + Language + Sync,
     L::Discriminant: Sync,
     N: Analysis<L> + Sync,
     N::Data: Sync,
-    LL: Label + for<'a> std::convert::From<&'a L>,
-    OriginTree<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<L>: ToEgg<L>,
     C: Counter + Display + Ord,
 {
     /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg` for the sampling process later
@@ -123,7 +120,7 @@ where
         prev_graph: egg::EGraph<L, N>,
         root: egg::Id,
         max_size: usize,
-    ) -> Option<PrecomputePackage<C, LL, L, N>> {
+    ) -> Option<PrecomputePackage<C, L, N>> {
         let graph = convert(graph, root);
         let tc = TermCount::<C>::new(max_size, false, &graph);
         let histogram = tc.data.get(&graph.root())?;
@@ -168,14 +165,13 @@ where
         distribution: TermSampleDist,
         sample_strategy: SampleStrategy,
         seed: [u64; 2],
-    ) -> Result<Vec<OriginTree<LL>>, ExperimentError>
+    ) -> Result<Vec<OriginTree<L>>, ExperimentError>
     where
-        L: Language + Sync,
+        L: Label + Language + Sync,
         L::Discriminant: Sync,
         N: Analysis<L> + Sync,
         N::Data: Sync,
-        LL: Label,
-        OriginTree<LL>: ToEgg<LL, Lang = L>,
+        OriginTree<L>: ToEgg<L>,
     {
         let histogram = self
             .tc
@@ -185,7 +181,7 @@ where
         OVERSAMPLE_SCHEDULE
             .iter()
             .find_map(|oversample| {
-                let check = |t: &OriginTree<LL>| is_frontier(&self.prev_raw_egg, t);
+                let check = |t: &OriginTree<L>| is_frontier(&self.prev_raw_egg, t);
                 let samples_per_size = distribution.samples_per_size(
                     histogram,
                     self.min_size,

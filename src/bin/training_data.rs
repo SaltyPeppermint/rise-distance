@@ -17,7 +17,7 @@ use rise_distance::cli::{
 };
 use rise_distance::cli::{write_config, write_stats};
 use rise_distance::count::Counter;
-use rise_distance::egg::math::{ConstantFold, Math, MathLabel, RULES};
+use rise_distance::egg::math::{ConstantFold, Math, RULES};
 use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
 use rise_distance::{OriginTree, TreeShaped, tee_println};
 
@@ -171,7 +171,7 @@ fn process_seed(
     tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
 
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
-    let pp = PrecomputePackage::<BigUint, MathLabel, _, _>::precompute(
+    let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
         result.goal(),
         result.prev_goal().to_owned(),
         result.root(),
@@ -202,7 +202,7 @@ fn process_seed(
         "goal_eqsat_time": goal_secs,
     });
 
-    let pc = PrecomputePackage::<BigUint, _, _, _>::precompute(
+    let pc = PrecomputePackage::<BigUint, _, _>::precompute(
         result.guide(),
         result.prev_guide().clone(),
         result.root(),
@@ -221,14 +221,11 @@ fn process_seed(
     Some(stats)
 }
 
-fn try_all<C>(
+fn try_all<C: Counter + Display + Ord>(
     cli: &Cli,
-    goal: &OriginTree<MathLabel>,
-    pc: &PrecomputePackage<C, MathLabel, Math, ConstantFold>,
-) -> Result<Vec<GuideEval<MathLabel>>, ExperimentError>
-where
-    C: Counter + Display + Ord,
-{
+    goal: &OriginTree<Math>,
+    pc: &PrecomputePackage<C, Math, ConstantFold>,
+) -> Result<Vec<GuideEval<Math>>, ExperimentError> {
     let goal_recexpr = goal.to_rec_expr();
     let samples = pc.sample_frontier_terms::<true>(
         cli.guides,

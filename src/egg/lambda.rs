@@ -1,14 +1,18 @@
-mod label;
+// mod label;
 
-pub use label::LambdaLabel;
+// pub use label::Lambda;
 
 use egg::{
     Analysis, Applier, ConditionEqual, DidMerge, EGraph, Id, Language, Pattern, PatternAst,
     Rewrite, Subst, Symbol, Var, define_language, merge_option, rewrite,
 };
 use hashbrown::HashSet;
+use serde::{Deserialize, Serialize};
+
+use crate::{Label, TreeShaped, egg::ToEgg};
 
 define_language! {
+    #[derive(Deserialize,Serialize)]
     pub enum Lambda {
         Bool(bool),
         Num(i32),
@@ -137,6 +141,36 @@ fn is_const(v: Var) -> impl Fn(&mut EGraph<Lambda, LambdaAnalysis>, Id, &Subst) 
     move |egraph, _, subst| egraph[subst[v]].data.constant.is_some()
 }
 
+impl Label for Lambda {
+    fn type_of() -> Self {
+        panic!("No types to see here");
+    }
+}
+
+impl<T: TreeShaped<Lambda>> ToEgg<Lambda> for T {
+    fn add_node<F: FnMut(&Self, Lambda) -> Id>(&self, adder: &mut F) -> Id {
+        let child_ids = self
+            .children()
+            .iter()
+            .map(|c| c.add_node(adder))
+            .collect::<Vec<_>>();
+        let lambda_node = match self.label() {
+            Lambda::Bool(b) => Lambda::Bool(*b),
+            Lambda::Num(n) => Lambda::Num(*n),
+            Lambda::Var(_) => Lambda::Var(child_ids[0]),
+            Lambda::Add(_) => Lambda::Add([child_ids[0], child_ids[1]]),
+            Lambda::Eq(_) => Lambda::Eq([child_ids[0], child_ids[1]]),
+            Lambda::App(_) => Lambda::App([child_ids[0], child_ids[1]]),
+            Lambda::Lambda(_) => Lambda::Lambda([child_ids[0], child_ids[1]]),
+            Lambda::Let(_) => Lambda::Let([child_ids[0], child_ids[1], child_ids[2]]),
+            Lambda::Fix(_) => Lambda::Fix([child_ids[0], child_ids[1]]),
+            Lambda::If(_) => Lambda::If([child_ids[0], child_ids[1], child_ids[2]]),
+            Lambda::Symbol(s) => Lambda::Symbol(*s),
+        };
+        adder(self, lambda_node)
+    }
+}
+
 #[must_use]
 #[expect(clippy::missing_panics_doc)]
 pub fn rules() -> Vec<Rewrite<Lambda, LambdaAnalysis>> {
@@ -211,6 +245,10 @@ impl Applier<Lambda, LambdaAnalysis> for CaptureAvoid {
 
 #[cfg(test)]
 mod tests {
+    use egg::RecExpr;
+
+    use crate::{TypedTree, egg::id0};
+
     use super::*;
 
     egg::test_fn! {
@@ -418,4 +456,150 @@ mod tests {
 
         egg::test::bench_egraph("lambda", rules(), exprs, extra_patterns);
     }
+
+    fn leaf(label: Lambda) -> TypedTree<Lambda> {
+        TypedTree::leaf_untyped(label)
+    }
+
+    fn node(label: Lambda, children: Vec<TypedTree<Lambda>>) -> TypedTree<Lambda> {
+        TypedTree::new_untyped(label, children)
+    }
+
+    fn sym(s: &str) -> TypedTree<Lambda> {
+        leaf(Lambda::Symbol(s.into()))
+    }
+
+    fn assert_eq_recexpr(tree: &TypedTree<Lambda>, expected_str: &str) {
+        let from_tree: RecExpr<Lambda> = tree.to_rec_expr();
+        let direct: RecExpr<Lambda> = expected_str.parse().unwrap();
+        assert_eq!(from_tree, direct, "mismatch for {expected_str}");
+    }
+
+    #[test]
+    fn leaf_symbol() {
+        assert_eq_recexpr(&sym("x"), "x");
+    }
+
+    #[test]
+    fn leaf_bool_true() {
+        assert_eq_recexpr(&leaf(Lambda::Bool(true)), "true");
+    }
+
+    #[test]
+    fn leaf_bool_false() {
+        assert_eq_recexpr(&leaf(Lambda::Bool(false)), "false");
+    }
+
+    #[test]
+    fn leaf_num() {
+        assert_eq_recexpr(&leaf(Lambda::Num(42)), "42");
+    }
+
+    #[test]
+    fn unary_var() {
+        assert_eq_recexpr(&node(Lambda::Var(id0()), vec![sym("x")]), "(var x)");
+    }
+
+    #[test]
+    fn binary_add() {
+        assert_eq_recexpr(
+            &node(Lambda::Add([id0(), id0()]), vec![sym("x"), sym("y")]),
+            "(+ x y)",
+        );
+    }
+
+    #[test]
+    fn binary_eq() {
+        assert_eq_recexpr(
+            &node(Lambda::Eq([id0(), id0()]), vec![sym("x"), sym("y")]),
+            "(= x y)",
+        );
+    }
+
+    #[test]
+    fn binary_app() {
+        assert_eq_recexpr(
+            &node(Lambda::App([id0(), id0()]), vec![sym("f"), sym("x")]),
+            "(app f x)",
+        );
+    }
+
+    #[test]
+    fn binary_lam() {
+        assert_eq_recexpr(
+            &node(Lambda::Lambda([id0(), id0()]), vec![sym("x"), sym("body")]),
+            "(lam x body)",
+        );
+    }
+
+    #[test]
+    fn binary_fix() {
+        assert_eq_recexpr(
+            &node(Lambda::Fix([id0(), id0()]), vec![sym("f"), sym("body")]),
+            "(fix f body)",
+        );
+    }
+
+    #[test]
+    fn ternary_let() {
+        assert_eq_recexpr(
+            &node(
+                Lambda::Let([id0(), id0(), id0()]),
+                vec![sym("x"), sym("e"), sym("body")],
+            ),
+            "(let x e body)",
+        );
+    }
+
+    #[test]
+    fn ternary_if() {
+        assert_eq_recexpr(
+            &node(
+                Lambda::If([id0(), id0(), id0()]),
+                vec![leaf(Lambda::Bool(true)), sym("then"), sym("else")],
+            ),
+            "(if true then else)",
+        );
+    }
+
+    #[test]
+    fn nested() {
+        // (app (lam x (var x)) 0)
+        let var_x = node(Lambda::Var(id0()), vec![sym("x")]);
+        let lam = node(Lambda::Lambda([id0(), id0()]), vec![sym("x"), var_x]);
+        let zero = leaf(Lambda::Num(0));
+        let app = node(Lambda::App([id0(), id0()]), vec![lam, zero]);
+        assert_eq_recexpr(&app, "(app (lam x (var x)) 0)");
+    }
+
+    #[test]
+    fn roundtrip_from_lambda() {
+        // Build Lambda nodes and convert back via Lambda::from
+        assert_eq!(Lambda::Bool(true), Lambda::Bool(true));
+        assert_eq!(Lambda::Num(-1), Lambda::Num(-1));
+        assert_eq!(Lambda::Symbol("z".into()), Lambda::Symbol("z".into()));
+    }
+
+    // #[test]
+    // fn fromstr_roundtrip() {
+    //     let cases: &[(&str, Lambda)] = &[
+    //         ("true", Lambda::Bool(true)),
+    //         ("false", Lambda::Bool(false)),
+    //         ("7", Lambda::Num(7)),
+    //         ("var", Lambda::Var(id0())),
+    //         ("+", Lambda::Add([id0(), id0()])),
+    //         ("=", Lambda::Eq([id0(), id0()])),
+    //         ("app", Lambda::App([id0(), id0()])),
+    //         ("lam", Lambda::Lambda([id0(), id0()])),
+    //         ("let", Lambda::Let([id0(), id0(), id0()])),
+    //         ("fix", Lambda::Fix([id0(), id0()])),
+    //         ("if", Lambda::If([id0(), id0(), id0()])),
+    //         ("foo", Lambda::Symbol("foo".into())),
+    //     ];
+    //     for (s, expected) in cases {
+    //         let parsed: Lambda = s.parse().unwrap();
+    //         assert_eq!(parsed, *expected, "fromstr failed for {s:?}");
+    //         assert_eq!(expected.to_string(), *s, "display failed for {expected:?}");
+    //     }
+    // }
 }

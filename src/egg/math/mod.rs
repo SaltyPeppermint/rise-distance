@@ -1,5 +1,4 @@
 mod generate;
-mod label;
 
 use std::sync::LazyLock;
 
@@ -7,15 +6,19 @@ use egg::{
     Analysis, DidMerge, Id, Language, PatternAst, Rewrite, Subst, Symbol, define_language,
     merge_option, rewrite,
 };
-
 use ordered_float::NotNan;
+use serde::{Deserialize, Serialize};
 
 pub use generate::BoltzmannSampler;
-pub use label::MathLabel;
+
+use crate::egg::ToEgg;
+use crate::{Label, TreeShaped};
+// pub use label::MathLabel;
 
 pub type Constant = NotNan<f64>;
 
 define_language! {
+    #[derive(Deserialize,Serialize)]
     pub enum Math {
         "d" = Diff([Id; 2]),
         "i" = Integral([Id; 2]),
@@ -139,6 +142,38 @@ fn is_not_zero(var: &str) -> impl Fn(&mut egg::EGraph<Math, ConstantFold>, Id, &
 
 pub static RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(rules);
 
+impl Label for Math {
+    fn type_of() -> Self {
+        panic!("No types to see here");
+    }
+}
+
+impl<T: TreeShaped<Math>> ToEgg<Math> for T {
+    fn add_node<F: FnMut(&Self, Math) -> Id>(&self, adder: &mut F) -> Id {
+        let child_ids = self
+            .children()
+            .iter()
+            .map(|c| c.add_node(adder))
+            .collect::<Vec<_>>();
+        let math_node = match self.label() {
+            Math::Diff(_) => Math::Diff([child_ids[0], child_ids[1]]),
+            Math::Integral(_) => Math::Integral([child_ids[0], child_ids[1]]),
+            Math::Add(_) => Math::Add([child_ids[0], child_ids[1]]),
+            Math::Sub(_) => Math::Sub([child_ids[0], child_ids[1]]),
+            Math::Mul(_) => Math::Mul([child_ids[0], child_ids[1]]),
+            Math::Div(_) => Math::Div([child_ids[0], child_ids[1]]),
+            Math::Pow(_) => Math::Pow([child_ids[0], child_ids[1]]),
+            Math::Ln(_) => Math::Ln(child_ids[0]),
+            Math::Sqrt(_) => Math::Sqrt(child_ids[0]),
+            Math::Sin(_) => Math::Sin(child_ids[0]),
+            Math::Cos(_) => Math::Cos(child_ids[0]),
+            Math::Constant(c) => Math::Constant(*c),
+            Math::Symbol(s) => Math::Symbol(*s),
+        };
+        adder(self, math_node)
+    }
+}
+
 #[rustfmt::skip]
 #[must_use]
 pub fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
@@ -210,6 +245,8 @@ pub fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
 #[cfg(test)]
 mod tests {
     use egg::{RecExpr, Runner, SimpleScheduler, StopReason};
+
+    use crate::{TypedTree, egg::id0};
 
     use super::*;
 
@@ -534,5 +571,101 @@ mod tests {
             egraph3.add_expr(&"(ln k)".parse().unwrap()),
             egraph3.add_expr(&"(+ (* k pi) (* k pi))".parse().unwrap())
         );
+    }
+
+    fn leaf(label: Math) -> TypedTree<Math> {
+        TypedTree::leaf_untyped(label)
+    }
+
+    fn node(label: Math, children: Vec<TypedTree<Math>>) -> TypedTree<Math> {
+        TypedTree::new_untyped(label, children)
+    }
+
+    fn sym(s: &str) -> TypedTree<Math> {
+        leaf(Math::Symbol(s.into()))
+    }
+
+    /// Build tree, convert to `RecExpr`, check it matches the directly parsed `RecExpr`.
+    fn assert_eq_recexpr(tree: &TypedTree<Math>, expected_str: &str) {
+        let from_tree: RecExpr<Math> = (tree).to_rec_expr();
+        let direct: RecExpr<Math> = expected_str.parse().unwrap();
+        assert_eq!(from_tree, direct, "mismatch for {expected_str}");
+    }
+
+    #[test]
+    fn leaf_symbol() {
+        assert_eq_recexpr(&sym("x"), "x");
+    }
+
+    #[test]
+    fn leaf_constant() {
+        assert_eq_recexpr(&leaf(Math::Constant("42".parse().unwrap())), "42");
+    }
+
+    #[test]
+    fn binary_add() {
+        assert_eq_recexpr(
+            &node(Math::Add([id0(), id0()]), vec![sym("x"), sym("y")]),
+            "(+ x y)",
+        );
+    }
+
+    #[test]
+    fn unary_ln() {
+        assert_eq_recexpr(&node(Math::Ln(id0()), vec![sym("x")]), "(ln x)");
+    }
+
+    #[test]
+    fn unary_sqrt() {
+        assert_eq_recexpr(&node(Math::Sqrt(id0()), vec![sym("x")]), "(sqrt x)");
+    }
+
+    #[test]
+    fn nested() {
+        // (+ (* x 1) y)
+        let one = leaf(Math::Constant("1".parse().unwrap()));
+        let mul = node(Math::Mul([id0(), id0()]), vec![sym("x"), one]);
+        let add = node(Math::Add([id0(), id0()]), vec![mul, sym("y")]);
+        assert_eq_recexpr(&add, "(+ (* x 1) y)");
+    }
+
+    #[test]
+    fn deeply_nested() {
+        // (d (sin (+ x y)) x)
+        let sum = node(Math::Add([id0(), id0()]), vec![sym("x"), sym("y")]);
+        let sin = node(Math::Sin(id0()), vec![sum]);
+        let diff = node(Math::Diff([id0(), id0()]), vec![sin, sym("x")]);
+        assert_eq_recexpr(&diff, "(d (sin (+ x y)) x)");
+    }
+
+    #[test]
+    fn all_binary_ops() {
+        let ops = [
+            (Math::Add([id0(), id0()]), "+"),
+            (Math::Sub([id0(), id0()]), "-"),
+            (Math::Mul([id0(), id0()]), "*"),
+            (Math::Div([id0(), id0()]), "/"),
+            (Math::Pow([id0(), id0()]), "pow"),
+            (Math::Diff([id0(), id0()]), "d"),
+            (Math::Integral([id0(), id0()]), "i"),
+        ];
+        for (label, op_str) in ops {
+            let tree = node(label, vec![sym("x"), sym("y")]);
+            assert_eq_recexpr(&tree, &format!("({op_str} x y)"));
+        }
+    }
+
+    #[test]
+    fn all_unary_ops() {
+        let ops = [
+            (Math::Ln(id0()), "ln"),
+            (Math::Sqrt(id0()), "sqrt"),
+            (Math::Sin(id0()), "sin"),
+            (Math::Cos(id0()), "cos"),
+        ];
+        for (label, op_str) in ops {
+            let tree = node(label, vec![sym("x")]);
+            assert_eq_recexpr(&tree, &format!("({op_str} x)"));
+        }
     }
 }

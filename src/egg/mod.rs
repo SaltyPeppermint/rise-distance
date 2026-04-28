@@ -16,8 +16,8 @@ use crate::nodes::ENode;
 use crate::tree::TreeShaped;
 use crate::{Class, Graph, Label, OriginTree, tee_println};
 
-pub use lambda::{Lambda, LambdaLabel};
-pub use math::{Math, MathLabel};
+pub use lambda::Lambda;
+pub use math::Math;
 
 /// Result of [`run_guide_goal`]: egraph snapshots at guide and goal iterations,
 /// plus the total node count of the final egraph.
@@ -181,24 +181,21 @@ where
     })
 }
 
-pub trait ToEgg<L: Label>: TreeShaped<L> {
-    type Lang: Language;
-
-    fn to_rec_expr(&self) -> RecExpr<Self::Lang> {
+pub trait ToEgg<L: Label + Language>: TreeShaped<L> {
+    fn to_rec_expr(&self) -> RecExpr<L> {
         let mut expr = RecExpr::default();
         let mut adder = |_: &_, x| expr.add(x);
         self.add_node(&mut adder);
         expr
     }
 
-    fn add_node<F: FnMut(&Self, Self::Lang) -> Id>(&self, adder: &mut F) -> Id;
+    fn add_node<F: FnMut(&Self, L) -> Id>(&self, adder: &mut F) -> Id;
 }
 
-pub fn convert<L, N, LL>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<LL>
+pub fn convert<L, N>(egg_graph: &EGraph<L, N>, root: Id) -> Graph<L>
 where
-    L: Language,
+    L: Label + Language,
     N: Analysis<L>,
-    LL: Label + for<'a> From<&'a L>,
 {
     // Works because classes are unique!
     let classes = egg_graph
@@ -217,7 +214,7 @@ where
                             ExprChildId::EClass(EClassId::new(egg_graph.find(child_id).into()))
                         })
                         .collect::<Vec<_>>();
-                    ENode::new(math_node.into(), children)
+                    ENode::new(math_node.to_owned().map_children(|_| id0()), children)
                 })
                 .collect();
             (eclass_id, Class::new(nodes, None))
@@ -263,8 +260,8 @@ where
 /// # Panics
 ///
 /// Panics if not at least one guide is given
-pub fn verify_reachability<L, N, LL>(
-    guides: &[OriginTree<LL>],
+pub fn verify_reachability<L, N>(
+    guides: &[OriginTree<L>],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     time_limit: Duration,
@@ -272,10 +269,9 @@ pub fn verify_reachability<L, N, LL>(
     full_union: bool,
 ) -> Result<Vec<egg::Iteration<()>>, GuideError>
 where
-    L: Language + Display + 'static,
+    L: Label + Language + Display + 'static,
     N: Analysis<L> + Default,
-    LL: Label,
-    OriginTree<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<L>: ToEgg<L>,
 {
     assert!(!guides.is_empty(), "must have at least one guide");
     let goal_clone = goal.clone();
@@ -310,17 +306,13 @@ where
         .ok_or(GuideError::Unreached)
 }
 
-fn add_with_root_union<'a, LL, L, N, D, I>(
-    mut runner: Runner<L, N, D>,
-    guides: I,
-) -> Runner<L, N, D>
+fn add_with_root_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>
 where
-    LL: Label + 'a,
-    L: Language,
+    L: Label + 'a + Language,
     N: Analysis<L>,
     D: IterationData<L, N>,
-    OriginTree<LL>: ToEgg<LL, Lang = L>,
-    I: IntoIterator<Item = &'a OriginTree<LL>>,
+    OriginTree<L>: ToEgg<L>,
+    I: IntoIterator<Item = &'a OriginTree<L>>,
 {
     for guide in guides {
         let expr = guide.to_rec_expr();
@@ -334,17 +326,13 @@ where
     runner
 }
 
-fn add_with_full_union<'a, LL, L, N, D, I>(
-    mut runner: Runner<L, N, D>,
-    guides: I,
-) -> Runner<L, N, D>
+fn add_with_full_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>
 where
-    LL: Label + 'a,
-    L: Language,
+    L: Label + 'a + Language,
     N: Analysis<L>,
     D: IterationData<L, N>,
-    OriginTree<LL>: ToEgg<LL, Lang = L>,
-    I: IntoIterator<Item = &'a OriginTree<LL>>,
+    OriginTree<L>: ToEgg<L>,
+    I: IntoIterator<Item = &'a OriginTree<L>>,
 {
     let mut origin_to_new_ids = HashMap::new();
 
@@ -365,18 +353,17 @@ where
     runner
 }
 
-fn add_uncanon_remember<LL, L, N>(
+fn add_uncanon_remember<L, N>(
     graph: &mut EGraph<L, N>,
-    guide: &OriginTree<LL>,
+    guide: &OriginTree<L>,
     origin_to_new_ids: &mut HashMap<AnyId, HashSet<Id>>,
 ) -> Id
 where
-    LL: Label,
-    L: Language,
+    L: Language + Label,
     N: Analysis<L>,
-    OriginTree<LL>: ToEgg<LL, Lang = L>,
+    OriginTree<L>: ToEgg<L>,
 {
-    let mut adder = |node: &OriginTree<LL>, lang_node| {
+    let mut adder = |node: &OriginTree<L>, lang_node| {
         let new_id = graph.add_uncanonical(lang_node);
         origin_to_new_ids
             .entry(node.origin())
@@ -387,12 +374,7 @@ where
     guide.add_node(&mut adder)
 }
 
-pub fn valididty_hook<
-    L: Language + Display,
-    N: Analysis<L> + Default,
-    LL: Label,
-    T: ToEgg<LL, Lang = L>,
->(
+pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T: ToEgg<L>>(
     tree: &T,
     max_iters: usize,
     max_nodes: usize,
@@ -425,6 +407,11 @@ pub fn valididty_hook<
             StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
         )
     })
+}
+
+#[must_use]
+pub fn id0() -> Id {
+    Id::from(0)
 }
 
 // fn add_expr_uncanonical<L: Language, N: Analysis<L>>(
@@ -463,7 +450,7 @@ mod tests {
     #[test]
     fn convert_single_symbol() {
         let (egg, root) = build("x");
-        let g = convert::<_, _, MathLabel>(&egg, root);
+        let g = convert(&egg, root);
 
         assert_eq!(g.root().to_index(), usize::from(egg.find(root)));
         // The root class must exist and contain exactly the Symbol node
@@ -473,7 +460,7 @@ mod tests {
             class
                 .nodes()
                 .iter()
-                .any(|n| *n.label() == MathLabel::Symbol("x".into()))
+                .any(|n| *n.label() == Math::Symbol("x".into()))
         );
     }
 
@@ -484,14 +471,14 @@ mod tests {
     #[expect(clippy::float_cmp)]
     fn convert_single_constant() {
         let (egg, root) = build("42");
-        let g = convert::<_, _, MathLabel>(&egg, root);
+        let g = convert(&egg, root);
 
         let class = g.class(g.root());
         assert!(
             class
                 .nodes()
                 .iter()
-                .any(|n| matches!(n.label(), MathLabel::Constant(c) if **c == 42.0))
+                .any(|n| matches!(n.label(), Math::Constant(c) if **c == 42.0))
         );
     }
 
@@ -501,14 +488,14 @@ mod tests {
     #[test]
     fn convert_unary_ln() {
         let (egg, root) = build("(ln x)");
-        let g = convert::<_, _, MathLabel>(&egg, root);
+        let g = convert(&egg, root);
 
         // Root class has an Ln node with one EClass child
         let root_class = g.class(g.root());
         let ln_node = root_class
             .nodes()
             .iter()
-            .find(|n| *n.label() == MathLabel::Ln);
+            .find(|n| n.label().matches(&Math::Ln(id0())));
         assert!(ln_node.is_some(), "expected Ln node in root class");
         let ln_node = ln_node.unwrap();
         assert_eq!(ln_node.children().len(), 1);
@@ -522,7 +509,7 @@ mod tests {
             child_class
                 .nodes()
                 .iter()
-                .any(|n| *n.label() == MathLabel::Symbol("x".into()))
+                .any(|n| *n.label() == Math::Symbol("x".into()))
         );
     }
 
@@ -532,13 +519,13 @@ mod tests {
     #[test]
     fn convert_binary_add() {
         let (egg, root) = build("(+ x y)");
-        let g = convert::<_, _, MathLabel>(&egg, root);
+        let g = convert(&egg, root);
 
         let root_class = g.class(g.root());
         let add_node = root_class
             .nodes()
             .iter()
-            .find(|n| *n.label() == MathLabel::Add);
+            .find(|n| n.label().matches(&Math::Add([id0(), id0()])));
         assert!(add_node.is_some(), "expected Add node in root class");
         assert_eq!(add_node.unwrap().children().len(), 2);
     }
@@ -549,7 +536,7 @@ mod tests {
     #[test]
     fn convert_class_count_matches() {
         let (egg, root) = build("(* (+ x 1) (- y 2))");
-        let g = convert::<_, _, MathLabel>(&egg, root);
+        let g = convert(&egg, root);
 
         let egg_class_count = egg.number_of_classes();
         let converted_count = g.class_ids().count();
@@ -571,7 +558,7 @@ mod tests {
         egg_graph.union(a, b);
         egg_graph.rebuild();
 
-        let g = convert::<_, _, MathLabel>(&egg_graph, root);
+        let g = convert(&egg_graph, root);
 
         // Every EClass child referenced by a node must be a key in the graph
         for id in g.class_ids() {
@@ -593,7 +580,7 @@ mod tests {
     fn convert_union_find_is_populated() {
         // Build an expression with children so the union-find has entries
         let (egg, root) = build("(+ x y)");
-        let g = convert::<_, _, MathLabel>(&egg, root);
+        let g = convert(&egg, root);
 
         // Every entry in the union-find must resolve to a canonical class id
         for (i, &canonical) in g.union_find().iter().enumerate() {
@@ -614,7 +601,7 @@ mod tests {
     #[test]
     fn convert_root_matches_egg_root() {
         let (egg, root) = build("(sin x)");
-        let g = convert::<_, _, MathLabel>(&egg, root);
+        let g = convert(&egg, root);
 
         assert_eq!(g.root().to_index(), usize::from(egg.find(root)));
     }
@@ -631,7 +618,7 @@ mod tests {
             .with_expr(&expr)
             .run(&[]);
         let root = runner.roots[0];
-        let g = convert::<_, _, MathLabel>(&runner.egraph, root);
+        let g = convert(&runner.egraph, root);
 
         // The root class must contain the folded constant 5.0
         let root_class = g.class(g.root());
@@ -639,7 +626,7 @@ mod tests {
             root_class
                 .nodes()
                 .iter()
-                .any(|n| matches!(n.label(), MathLabel::Constant(c) if **c == 5.0)),
+                .any(|n| matches!(n.label(), Math::Constant(c) if **c == 5.0)),
             "expected folded constant 5.0 in root class"
         );
     }
@@ -650,7 +637,7 @@ mod tests {
     #[test]
     fn convert_leaf_has_empty_union_find() {
         let (egg, root) = build("x");
-        let g = convert::<_, _, MathLabel>(&egg, root);
+        let g = convert(&egg, root);
 
         // Even a lone symbol has a class ID, so the union-find covers that entry.
         // Every entry must map to a canonical class.

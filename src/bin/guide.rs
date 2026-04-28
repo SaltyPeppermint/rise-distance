@@ -18,7 +18,7 @@ use rise_distance::cli::types::{GoalSummary, TrialsPerK};
 use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log};
 use rise_distance::cli::{write_config, write_stats};
 use rise_distance::count::Counter;
-use rise_distance::egg::math::{ConstantFold, Math, MathLabel, RULES};
+use rise_distance::egg::math::{ConstantFold, Math, RULES};
 use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
 use rise_distance::tee_println;
 
@@ -193,7 +193,7 @@ fn process_seed(
     tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
 
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
-    let pp = PrecomputePackage::<BigUint, MathLabel, _, _>::precompute(
+    let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
         result.goal(),
         result.prev_goal().to_owned(),
         result.root(),
@@ -224,7 +224,7 @@ fn process_seed(
         "goal_eqsat_time": goal_secs,
     });
 
-    let pc = PrecomputePackage::<BigUint, _, _, _>::precompute(
+    let pc = PrecomputePackage::<BigUint, _, _>::precompute(
         result.guide(),
         result.prev_guide().clone(),
         result.root(),
@@ -282,7 +282,7 @@ fn write_top_k_outputs(run_folder: &Path, results: &[GoalResults], suffix: &str)
 fn run_guide_set_trials_with_replacement<C>(
     cli: &Cli,
     goal_recexpr: &RecExpr<Math>,
-    pc: &PrecomputePackage<C, MathLabel, Math, ConstantFold>,
+    pc: &PrecomputePackage<C, Math, ConstantFold>,
 ) -> TrialsPerK
 where
     C: Counter + Display + Ord,
@@ -321,7 +321,7 @@ where
 fn run_guide_set_trials_no_replacement<C>(
     cli: &Cli,
     goal_recexpr: &RecExpr<Math>,
-    pc: &PrecomputePackage<C, MathLabel, Math, ConstantFold>,
+    pc: &PrecomputePackage<C, Math, ConstantFold>,
 ) -> TrialsPerK
 where
     C: Counter + Display + Ord,
