@@ -10,7 +10,7 @@ use egg::{
 
 use ordered_float::NotNan;
 
-pub use generate::math_spec;
+pub use generate::BoltzmannSampler;
 pub use label::MathLabel;
 
 pub type Constant = NotNan<f64>;
