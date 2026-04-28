@@ -1,3 +1,4 @@
+mod generate;
 pub mod lambda;
 pub mod math;
 
@@ -16,6 +17,7 @@ use crate::nodes::ENode;
 use crate::tree::TreeShaped;
 use crate::{Class, Graph, Label, OriginTree, tee_println};
 
+pub use generate::{BoltzmannSampler, LanguageSpec};
 pub use lambda::{Lambda, LambdaLabel};
 pub use math::{Math, MathLabel};
 

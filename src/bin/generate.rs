@@ -7,8 +7,8 @@ use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use rise_distance::egg::math::BoltzmannSampler;
-use rise_distance::egg::math::RULES;
+use rise_distance::egg::BoltzmannSampler;
+use rise_distance::egg::math::{RULES, math_spec};
 use rise_distance::egg::valididty_hook;
 use serde::Serialize;
 
@@ -108,7 +108,8 @@ fn main() {
         .into_par_iter()
         .progress_with_style(style)
         .map(|(size, n, mut rng)| {
-            let sampler = BoltzmannSampler::new(*size, cli.tolerance, None);
+            let sampler = BoltzmannSampler::new(*size, cli.tolerance, math_spec());
+
             let mut collector = HashMap::new();
             while (collector.len() as u64) < *n {
                 let mut total_attempts = 0;
