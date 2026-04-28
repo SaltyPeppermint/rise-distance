@@ -67,16 +67,16 @@ struct Cli {
     path: PathBuf,
 
     /// Minimum iter complexity for the term
-    #[arg(long)]
-    min_iters: Option<usize>,
+    #[arg(long, default_value_t = 11)]
+    min_iters: usize,
 
     /// Minimum nodes complexity for the term
-    #[arg(long)]
-    min_nodes: Option<usize>,
+    #[arg(long, default_value_t = 100_000)]
+    min_nodes: usize,
 
     /// Minimum time complexity for the term
-    #[arg(long)]
-    min_time: Option<f64>,
+    #[arg(long, default_value_t = 1.0)]
+    min_time: f64,
 }
 
 fn main() {

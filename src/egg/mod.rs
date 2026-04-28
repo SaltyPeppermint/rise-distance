@@ -394,9 +394,9 @@ pub fn valididty_hook<
     T: ToEgg<LL, Lang = L>,
 >(
     tree: &T,
-    min_iters: Option<usize>,
-    min_nodes: Option<usize>,
-    min_time: Option<f64>,
+    min_iters: usize,
+    min_nodes: usize,
+    min_time: f64,
     rules: &[Rewrite<L, N>],
 ) -> Option<StopReason> {
     let expr = tree.to_rec_expr();
@@ -407,33 +407,23 @@ pub fn valididty_hook<
     // '(cos (* (sqrt (* x (sqrt (i (/ 0 x) x)))) (sin (+ (pow 1 (/ 1 2)) (cos 2)))))'
     // The issue is that the binder check does not catch (i (/ 0 x) x) although (/ 0 x)
     // trivially simplifies to 0
-    let mut runner = Runner::default()
+    let runner = Runner::default()
         .with_expr(&expr)
+        .with_iter_limit(min_iters)
+        .with_node_limit(min_nodes)
+        .with_time_limit(Duration::from_secs_f64(min_time))
         .with_scheduler(SimpleScheduler);
-
-    if let Some(i) = min_iters {
-        runner = runner.with_iter_limit(i);
-    }
-
-    if let Some(n) = min_nodes {
-        runner = runner.with_node_limit(n);
-    }
-
-    if let Some(t) = min_time {
-        runner = runner.with_time_limit(Duration::from_secs_f64(t));
-    }
 
     let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
         println!("panic caught in iter_check_hook for expr: {expr}");
         println!("It is safe to ignore the output of egg here");
         return None;
     };
-    let all_none = min_iters.is_none() && min_nodes.is_none() && min_time.is_none();
-    r.stop_reason.filter(|reason| match reason {
-        StopReason::IterationLimit(_) => all_none || min_iters.is_some(),
-        StopReason::NodeLimit(_) => all_none || min_nodes.is_some(),
-        StopReason::TimeLimit(_) => all_none || min_time.is_some(),
-        _ => false,
+    r.stop_reason.filter(|reason| {
+        matches!(
+            reason,
+            StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
+        )
     })
 }
 
