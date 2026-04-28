@@ -428,10 +428,11 @@ pub fn valididty_hook<
         println!("It is safe to ignore the output of egg here");
         return None;
     };
+    let all_none = min_iters.is_none() && min_nodes.is_none() && min_time.is_none();
     r.stop_reason.filter(|reason| match reason {
-        StopReason::IterationLimit(_) => min_iters.is_some(),
-        StopReason::NodeLimit(_) => min_nodes.is_some(),
-        StopReason::TimeLimit(_) => min_time.is_some(),
+        StopReason::IterationLimit(_) => all_none || min_iters.is_some(),
+        StopReason::NodeLimit(_) => all_none || min_nodes.is_some(),
+        StopReason::TimeLimit(_) => all_none || min_time.is_some(),
         _ => false,
     })
 }
