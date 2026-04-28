@@ -394,9 +394,9 @@ pub fn valididty_hook<
     T: ToEgg<LL, Lang = L>,
 >(
     tree: &T,
-    min_iters: usize,
-    min_nodes: usize,
-    min_time: f64,
+    max_iters: usize,
+    max_nodes: usize,
+    max_time: f64,
     rules: &[Rewrite<L, N>],
 ) -> Option<StopReason> {
     let expr = tree.to_rec_expr();
@@ -409,9 +409,9 @@ pub fn valididty_hook<
     // trivially simplifies to 0
     let runner = Runner::default()
         .with_expr(&expr)
-        .with_iter_limit(min_iters)
-        .with_node_limit(min_nodes)
-        .with_time_limit(Duration::from_secs_f64(min_time))
+        .with_iter_limit(max_iters)
+        .with_node_limit(max_nodes)
+        .with_time_limit(Duration::from_secs_f64(max_time))
         .with_scheduler(SimpleScheduler);
 
     let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {

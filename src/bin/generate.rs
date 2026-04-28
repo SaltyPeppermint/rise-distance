@@ -68,15 +68,15 @@ struct Cli {
 
     /// Minimum iter complexity for the term
     #[arg(long, default_value_t = 11)]
-    min_iters: usize,
+    max_iters: usize,
 
     /// Minimum nodes complexity for the term
     #[arg(long, default_value_t = 100_000)]
-    min_nodes: usize,
+    max_nodes: usize,
 
     /// Minimum time complexity for the term
     #[arg(long, default_value_t = 1.0)]
-    min_time: f64,
+    max_time: f64,
 }
 
 fn main() {
@@ -118,9 +118,9 @@ fn main() {
                             .sample(&mut rng, &|t| {
                                 valididty_hook(
                                     t,
-                                    cli.min_iters,
-                                    cli.min_nodes,
-                                    cli.min_time,
+                                    cli.max_iters,
+                                    cli.max_nodes,
+                                    cli.max_time,
                                     &RULES,
                                 )
                             })
