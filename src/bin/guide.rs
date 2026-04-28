@@ -15,7 +15,7 @@ use serde_json::json;
 use rise_distance::cli::argparse::{SampleStrategy, SeedInput, TermSampleDist, parse_seeds};
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{GoalSummary, TrialsPerK};
-use rise_distance::cli::{ExperimentError, PrecomputePackage, get_run_folder, init_log};
+use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log};
 use rise_distance::cli::{write_config, write_stats};
 use rise_distance::count::Counter;
 use rise_distance::egg::math::{ConstantFold, Math, MathLabel, RULES};
@@ -339,7 +339,7 @@ where
                 Err(e) => vec![Err(e); NUM_TRIALS],
                 Ok(samples) => samples
                     .par_chunks(k)
-                    .map(|subset| -> Result<_, ExperimentError> {
+                    .map(|subset| {
                         verify_reachability(
                             subset,
                             goal_recexpr,
