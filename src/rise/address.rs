@@ -7,7 +7,7 @@ use symbolic_expressions::{IntoSexp, Sexp};
 
 use super::ParseError;
 use super::label::RiseLabel;
-use crate::tree::Tree;
+use crate::tree::TypedTree;
 
 /// Memory address spaces in Rise (for GPU programming).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -45,8 +45,8 @@ impl IntoSexp for Address {
 impl Address {
     /// Convert this address to a `TreeNode<RiseLabel>`.
     #[must_use]
-    pub fn to_tree(&self) -> Tree<RiseLabel> {
-        Tree::leaf_untyped(self.into())
+    pub fn to_tree(&self) -> TypedTree<RiseLabel> {
+        TypedTree::leaf_untyped(self.into())
     }
 }
 

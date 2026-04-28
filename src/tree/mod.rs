@@ -1,14 +1,14 @@
+mod flat;
 mod origin;
 mod partial;
-mod simple;
-mod unfolded;
+mod typed;
 
-use super::nodes::Label;
-
+pub use flat::FlatTree;
 pub use origin::OriginTree;
 pub use partial::{PartialChild, PartialTree, tree_node_to_partial};
-pub use simple::Tree;
-pub use unfolded::UnfoldedTree;
+pub use typed::TypedTree;
+
+use crate::Label;
 
 pub trait TreeShaped<L: Label>: Sized {
     /// Returns true if this node has no children.
@@ -20,39 +20,39 @@ pub trait TreeShaped<L: Label>: Sized {
 
     fn ty(&self) -> Option<&Self>;
 
-    fn unfold(&self, with_types: bool) -> UnfoldedTree<L> {
+    fn flatten(&self, with_types: bool) -> FlatTree<L> {
         if !with_types {
-            return UnfoldedTree {
+            return FlatTree {
                 label: self.label().clone(),
                 children: self
                     .children()
                     .iter()
-                    .map(|c| c.unfold(with_types))
+                    .map(|c| c.flatten(with_types))
                     .collect(),
             };
         }
         if let Some(ty) = &self.ty() {
-            UnfoldedTree {
+            FlatTree {
                 label: L::type_of(),
                 children: vec![
-                    UnfoldedTree {
+                    FlatTree {
                         label: self.label().clone(),
                         children: self
                             .children()
                             .iter()
-                            .map(|c| c.unfold(with_types))
+                            .map(|c| c.flatten(with_types))
                             .collect(),
                     },
-                    ty.unfold(with_types),
+                    ty.flatten(with_types),
                 ],
             }
         } else {
-            UnfoldedTree {
+            FlatTree {
                 label: self.label().clone(),
                 children: self
                     .children()
                     .iter()
-                    .map(|c| c.unfold(with_types))
+                    .map(|c| c.flatten(with_types))
                     .collect(),
             }
         }
@@ -95,7 +95,7 @@ mod tests {
 
         // Parse a simple s-expression and serialize it back
         let input = "(f a b)";
-        let tree = input.parse::<Tree<String>>().unwrap();
+        let tree = input.parse::<TypedTree<String>>().unwrap();
 
         assert_eq!(tree.label(), "f");
         assert_eq!(tree.children().len(), 2);
@@ -112,7 +112,7 @@ mod tests {
 
         // Nested s-expressions
         let input = "(a (b c) (d e))";
-        let tree = input.parse::<Tree<String>>().unwrap();
+        let tree = input.parse::<TypedTree<String>>().unwrap();
 
         assert_eq!(tree.label(), "a");
         assert_eq!(tree.children().len(), 2);
@@ -131,7 +131,7 @@ mod tests {
 
         // Expression with a type-like structure
         let input = "(-> int (-> int int))";
-        let tree = input.parse::<Tree<String>>().unwrap();
+        let tree = input.parse::<TypedTree<String>>().unwrap();
 
         assert_eq!(tree.label(), "->");
         assert_eq!(tree.children().len(), 2);
@@ -147,7 +147,7 @@ mod tests {
         use symbolic_expressions::IntoSexp;
 
         let input = "(natLam (natLam (natLam (lam (lam (app (app map (lam (app (app map (lam (app (app (app reduce add) 0.0) (app (app map (lam (app (app mul (app fst $e0)) (app snd $e0)))) (app (app zip $e1) $e0))))) (app transpose $e1)))) $e1))))))";
-        let tree = input.parse::<Tree<String>>().unwrap();
+        let tree = input.parse::<TypedTree<String>>().unwrap();
 
         assert_eq!(tree.label(), "natLam");
 
@@ -160,7 +160,7 @@ mod tests {
         use symbolic_expressions::IntoSexp;
 
         let input = "x";
-        let tree = input.parse::<Tree<String>>().unwrap();
+        let tree = input.parse::<TypedTree<String>>().unwrap();
 
         assert_eq!(tree.label(), "x");
         assert!(tree.is_leaf());

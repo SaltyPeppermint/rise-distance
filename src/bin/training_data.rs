@@ -237,7 +237,7 @@ where
         [0, 0],
     )?;
 
-    let goal_unfolded = goal.unfold(false);
+    let goal_flat = goal.flatten(false);
 
     let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
         .unwrap()
@@ -253,7 +253,7 @@ where
                 cli.node_limit,
                 cli.full_union,
             );
-            let measurements = measure_guide(&guide, &goal_unfolded);
+            let measurements = measure_guide(&guide, &goal_flat);
             Ok(GuideEval {
                 guide,
                 measurements,

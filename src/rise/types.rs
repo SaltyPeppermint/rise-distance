@@ -9,7 +9,7 @@ use symbolic_expressions::{IntoSexp, Sexp};
 use super::ParseError;
 use super::label::RiseLabel;
 use super::nat::{Nat, parse_nat};
-use crate::tree::Tree;
+use crate::tree::TypedTree;
 
 // ============================================================================
 // Scalar types
@@ -145,15 +145,17 @@ impl IntoSexp for DataType {
 impl DataType {
     /// Convert this data type to a `TreeNode<RiseLabel>`.
     #[must_use]
-    pub fn to_tree(&self) -> Tree<RiseLabel> {
+    pub fn to_tree(&self) -> TypedTree<RiseLabel> {
         match self {
             DataType::Var(_) | DataType::Scalar(_) | DataType::NatT => {
-                Tree::leaf_untyped(self.into())
+                TypedTree::leaf_untyped(self.into())
             }
-            DataType::Index(n) => Tree::new_untyped(self.into(), vec![n.to_tree()]),
-            DataType::Pair(a, b) => Tree::new_untyped(self.into(), vec![a.to_tree(), b.to_tree()]),
+            DataType::Index(n) => TypedTree::new_untyped(self.into(), vec![n.to_tree()]),
+            DataType::Pair(a, b) => {
+                TypedTree::new_untyped(self.into(), vec![a.to_tree(), b.to_tree()])
+            }
             DataType::Array(n, dt) | DataType::Vector(n, dt) => {
-                Tree::new_untyped(self.into(), vec![n.to_tree(), dt.to_tree()])
+                TypedTree::new_untyped(self.into(), vec![n.to_tree(), dt.to_tree()])
             }
         }
     }
@@ -287,12 +289,12 @@ impl Type {
 
     /// Convert this type to a `TreeNode<RiseLabel>`.
     #[must_use]
-    pub fn to_tree(&self) -> Tree<RiseLabel> {
+    pub fn to_tree(&self) -> TypedTree<RiseLabel> {
         match self {
             Type::Data(dt) => dt.to_tree(),
-            Type::Fun(a, b) => Tree::new_untyped(self.into(), vec![a.to_tree(), b.to_tree()]),
+            Type::Fun(a, b) => TypedTree::new_untyped(self.into(), vec![a.to_tree(), b.to_tree()]),
             Type::NatFun(t) | Type::DataFun(t) | Type::AddrFun(t) | Type::NatNatFun(t) => {
-                Tree::new_untyped(self.into(), vec![t.to_tree()])
+                TypedTree::new_untyped(self.into(), vec![t.to_tree()])
             }
         }
     }

@@ -12,7 +12,7 @@ use rise_distance::count::TermCount;
 use rise_distance::sampling::CountSampler;
 use rise_distance::sampling::Sampler;
 use rise_distance::{
-    EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, Tree, TreeShaped,
+    EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, TreeShaped, TypedTree,
     UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
 };
 
@@ -214,7 +214,7 @@ fn main() {
     }
 }
 
-fn parse_ref(source: &RefSource) -> Tree<RiseLabel> {
+fn parse_ref(source: &RefSource) -> TypedTree<RiseLabel> {
     let parse_tree = |sexpr: &str| {
         sexpr
             .parse::<Expr>()
@@ -259,7 +259,7 @@ struct CountSampleConfig {
 fn run_count_extraction<L: Label>(
     graph: &Graph<L>,
     term_count: &TermCount<BigUint>,
-    ref_tree: &Tree<L>,
+    ref_tree: &TypedTree<L>,
     config: &CountSampleConfig,
 ) {
     let CountSampleConfig {
@@ -318,8 +318,8 @@ fn run_count_extraction<L: Label>(
 
 #[expect(clippy::cast_precision_loss)]
 fn print_zs_result<L: Label>(
-    result: &(Tree<L>, usize),
-    ref_tree: &Tree<L>,
+    result: &(TypedTree<L>, usize),
+    ref_tree: &TypedTree<L>,
     stats: &ZSStats,
     elapsed: std::time::Duration,
     with_types: bool,
@@ -345,15 +345,15 @@ fn print_zs_result<L: Label>(
         100.0 * stats.full_comparisons as f64 / stats.trees_enumerated as f64
     );
 
-    let zs_dist = tree_distance_unit(&best.unfold(with_types), &ref_tree.unfold(with_types));
+    let zs_dist = tree_distance_unit(&best.flatten(with_types), &ref_tree.flatten(with_types));
     eprintln!("ZS distance to ref: {zs_dist}");
     print_tree_sizes(best, ref_tree);
     println!("{best}");
 }
 
 fn print_struct_result<L: Label>(
-    result: &(Tree<L>, StructuralDistance),
-    ref_tree: &Tree<L>,
+    result: &(TypedTree<L>, StructuralDistance),
+    ref_tree: &TypedTree<L>,
     elapsed: std::time::Duration,
     with_types: bool,
 ) {
@@ -362,13 +362,13 @@ fn print_struct_result<L: Label>(
     eprintln!("Best structural zs_sum: {}", result.1.zs_sum());
     eprintln!("Time: {elapsed:.2?}");
 
-    let zs_dist = tree_distance_unit(&best.unfold(with_types), &ref_tree.unfold(with_types));
+    let zs_dist = tree_distance_unit(&best.flatten(with_types), &ref_tree.flatten(with_types));
     eprintln!("Raw ZS distance to ref: {zs_dist}");
     print_tree_sizes(best, ref_tree);
     println!("{best}");
 }
 
-fn print_tree_sizes<L: Label>(best: &Tree<L>, ref_tree: &Tree<L>) {
+fn print_tree_sizes<L: Label>(best: &TypedTree<L>, ref_tree: &TypedTree<L>) {
     eprintln!(
         "Best tree size: {} with types, {} without",
         best.size_with_types(),

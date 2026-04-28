@@ -123,23 +123,23 @@ impl<T: TreeShaped<LambdaLabel>> ToEgg<LambdaLabel> for T {
 mod tests {
     use egg::RecExpr;
 
-    use crate::Tree;
+    use crate::TypedTree;
 
     use super::*;
 
-    fn leaf(label: LambdaLabel) -> Tree<LambdaLabel> {
-        Tree::leaf_untyped(label)
+    fn leaf(label: LambdaLabel) -> TypedTree<LambdaLabel> {
+        TypedTree::leaf_untyped(label)
     }
 
-    fn node(label: LambdaLabel, children: Vec<Tree<LambdaLabel>>) -> Tree<LambdaLabel> {
-        Tree::new_untyped(label, children)
+    fn node(label: LambdaLabel, children: Vec<TypedTree<LambdaLabel>>) -> TypedTree<LambdaLabel> {
+        TypedTree::new_untyped(label, children)
     }
 
-    fn sym(s: &str) -> Tree<LambdaLabel> {
+    fn sym(s: &str) -> TypedTree<LambdaLabel> {
         leaf(LambdaLabel::Symbol(s.into()))
     }
 
-    fn assert_eq_recexpr(tree: &Tree<LambdaLabel>, expected_str: &str) {
+    fn assert_eq_recexpr(tree: &TypedTree<LambdaLabel>, expected_str: &str) {
         let from_tree: RecExpr<Lambda> = tree.to_rec_expr();
         let direct: RecExpr<Lambda> = expected_str.parse().unwrap();
         assert_eq!(from_tree, direct, "mismatch for {expected_str}");

@@ -4,7 +4,7 @@ use crate::graph::Class;
 use crate::ids::{EClassId, ExprChildId, NatId, TypeChildId};
 use crate::nodes::Label;
 use crate::nodes::NatNode;
-use crate::tree::Tree;
+use crate::tree::TypedTree;
 
 pub fn eid(i: usize) -> ExprChildId {
     ExprChildId::EClass(EClassId::new(i))
@@ -29,10 +29,10 @@ pub fn cfv(classes: Vec<Class<String>>) -> HashMap<EClassId, Class<String>> {
         .collect()
 }
 
-pub fn leaf<L: Label>(label: L) -> Tree<L> {
-    Tree::leaf_untyped(label)
+pub fn leaf<L: Label>(label: L) -> TypedTree<L> {
+    TypedTree::leaf_untyped(label)
 }
 
-pub fn node<L: Label>(label: L, children: Vec<Tree<L>>) -> Tree<L> {
-    Tree::new_untyped(label, children)
+pub fn node<L: Label>(label: L, children: Vec<TypedTree<L>>) -> TypedTree<L> {
+    TypedTree::new_untyped(label, children)
 }

@@ -5,7 +5,7 @@ use egg::{StopReason, Symbol};
 use ordered_float::NotNan;
 use rand::Rng;
 
-use crate::tree::{Tree, TreeShaped};
+use crate::tree::{TreeShaped, TypedTree};
 
 use super::label::MathLabel;
 
@@ -132,37 +132,37 @@ impl BoltzmannSampler {
         }
     }
 
-    fn gen_node(&self, rng: &mut impl Rng, depth: usize) -> Tree<MathLabel> {
+    fn gen_node(&self, rng: &mut impl Rng, depth: usize) -> TypedTree<MathLabel> {
         let r = rng.r#gen::<f64>();
         if depth >= self.max_depth || r < self.p_leaf {
             let label = self.symbols[rng.gen_range(0..self.symbols.len())];
-            Tree::leaf_untyped(label)
+            TypedTree::leaf_untyped(label)
         } else if r < self.p_unary {
             let op = self.unary_ops[rng.gen_range(0..self.unary_ops.len())];
             let child = self.gen_node(rng, depth + 1);
-            Tree::new_untyped(op, vec![child])
+            TypedTree::new_untyped(op, vec![child])
         } else if r < self.p_binder {
             let op = self.binder_ops[rng.gen_range(0..self.binder_ops.len())];
             let expr = self.gen_node(rng, depth + 1);
             let var_label = self.var_symbols[rng.gen_range(0..self.var_symbols.len())];
-            let var = Tree::leaf_untyped(var_label);
-            Tree::new_untyped(op, vec![expr, var])
+            let var = TypedTree::leaf_untyped(var_label);
+            TypedTree::new_untyped(op, vec![expr, var])
         } else {
             let op = self.normal_binary_ops[rng.gen_range(0..self.normal_binary_ops.len())];
             let left = self.gen_node(rng, depth + 1);
             let right = self.gen_node(rng, depth + 1);
-            Tree::new_untyped(op, vec![left, right])
+            TypedTree::new_untyped(op, vec![left, right])
         }
     }
 
     /// Generate a random term whose size is in `[target - tolerance, target + tolerance]`
     /// and where every Diff/Integral node's bound variable appears free in its expression child.
     /// Returns None if no valid tree is found within `100_000` attempts.
-    pub fn sample<R: Rng, F: Fn(&Tree<MathLabel>) -> Option<StopReason>>(
+    pub fn sample<R: Rng, F: Fn(&TypedTree<MathLabel>) -> Option<StopReason>>(
         &self,
         rng: &mut R,
         filter_hook: &F,
-    ) -> Option<(Tree<MathLabel>, StopReason, usize)> {
+    ) -> Option<(TypedTree<MathLabel>, StopReason, usize)> {
         let lo = self.target.saturating_sub(self.tolerance);
         let hi = self.target + self.tolerance;
         (0..100_000).find_map(|n| {
@@ -178,12 +178,12 @@ impl BoltzmannSampler {
     }
 
     /// Generate `count` random terms within the size window.
-    pub fn sample_many<R: Rng, F: Fn(&Tree<MathLabel>) -> Option<StopReason>>(
+    pub fn sample_many<R: Rng, F: Fn(&TypedTree<MathLabel>) -> Option<StopReason>>(
         &self,
         rng: &mut R,
         count: usize,
         filter_hook: &F,
-    ) -> Vec<(Tree<MathLabel>, StopReason)> {
+    ) -> Vec<(TypedTree<MathLabel>, StopReason)> {
         let (trees, total_attempts, failed) =
             (0..count).map(|_| self.sample(rng, filter_hook)).fold(
                 (Vec::with_capacity(count), 0, 0),
@@ -205,7 +205,7 @@ impl BoltzmannSampler {
 
 /// Returns true if every Diff/Integral node in the tree has its bound variable
 /// appearing free somewhere in its expression child (child[0]).
-fn binders_valid(tree: &Tree<MathLabel>) -> bool {
+fn binders_valid(tree: &TypedTree<MathLabel>) -> bool {
     if let MathLabel::Diff | MathLabel::Integral = tree.label() {
         let children = tree.children();
         let expr = &children[0];
@@ -221,7 +221,7 @@ fn binders_valid(tree: &Tree<MathLabel>) -> bool {
 /// Collect all variable symbols that appear free in the tree.
 /// Variables bound by an enclosing Diff/Integral are excluded from the free
 /// set of that binder's expression child.
-fn free_vars(tree: &Tree<MathLabel>) -> HashSet<Symbol> {
+fn free_vars(tree: &TypedTree<MathLabel>) -> HashSet<Symbol> {
     match tree.label() {
         MathLabel::Symbol(s) => {
             let mut set = HashSet::new();
@@ -399,7 +399,7 @@ mod tests {
         }
     }
 
-    fn assert_no_constant_binder(tree: &Tree<MathLabel>) {
+    fn assert_no_constant_binder(tree: &TypedTree<MathLabel>) {
         if matches!(tree.label(), MathLabel::Diff | MathLabel::Integral) {
             let children = tree.children();
             assert!(
@@ -415,16 +415,16 @@ mod tests {
 
     // --- helpers for hand-crafted trees ---
 
-    fn sym(name: &str) -> Tree<MathLabel> {
-        Tree::leaf_untyped(MathLabel::Symbol(name.into()))
+    fn sym(name: &str) -> TypedTree<MathLabel> {
+        TypedTree::leaf_untyped(MathLabel::Symbol(name.into()))
     }
 
-    fn diff(expr: Tree<MathLabel>, var: Tree<MathLabel>) -> Tree<MathLabel> {
-        Tree::new_untyped(MathLabel::Diff, vec![expr, var])
+    fn diff(expr: TypedTree<MathLabel>, var: TypedTree<MathLabel>) -> TypedTree<MathLabel> {
+        TypedTree::new_untyped(MathLabel::Diff, vec![expr, var])
     }
 
-    fn add(l: Tree<MathLabel>, r: Tree<MathLabel>) -> Tree<MathLabel> {
-        Tree::new_untyped(MathLabel::Add, vec![l, r])
+    fn add(l: TypedTree<MathLabel>, r: TypedTree<MathLabel>) -> TypedTree<MathLabel> {
+        TypedTree::new_untyped(MathLabel::Add, vec![l, r])
     }
 
     // --- free_vars ---

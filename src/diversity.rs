@@ -11,7 +11,7 @@ use hashbrown::{DefaultHashBuilder, HashSet};
 use crate::tree::TreeShaped;
 
 use super::nodes::Label;
-use super::tree::Tree;
+use super::tree::TypedTree;
 
 /// Configuration for diverse sampling.
 #[derive(Debug, Clone, bon::Builder)]
@@ -25,14 +25,14 @@ pub struct DiverseSamplerConfig {
 }
 
 /// Iterator adapter that filters for diverse terms using structural deduplication.
-pub struct DiverseSampler<L: Label, I: Iterator<Item = Tree<L>>> {
+pub struct DiverseSampler<L: Label, I: Iterator<Item = TypedTree<L>>> {
     inner: I,
     config: DiverseSamplerConfig,
     seen_hashes: HashSet<u64>,
     seen_features: HashSet<(L, usize, L)>,
 }
 
-impl<L: Label, I: Iterator<Item = Tree<L>>> DiverseSampler<L, I> {
+impl<L: Label, I: Iterator<Item = TypedTree<L>>> DiverseSampler<L, I> {
     /// Create a new diverse sampler wrapping an existing iterator.
     pub fn new(inner: I, config: DiverseSamplerConfig) -> Self {
         Self {
@@ -44,7 +44,7 @@ impl<L: Label, I: Iterator<Item = Tree<L>>> DiverseSampler<L, I> {
     }
 
     /// Check if a term is novel enough to accept.
-    fn is_novel(&self, term: &Tree<L>) -> (bool, u64, HashSet<(L, usize, L)>) {
+    fn is_novel(&self, term: &TypedTree<L>) -> (bool, u64, HashSet<(L, usize, L)>) {
         let hash = structural_hash(term);
         let features = extract_features(term);
 
@@ -94,8 +94,8 @@ impl<L: Label, I: Iterator<Item = Tree<L>>> DiverseSampler<L, I> {
     }
 }
 
-impl<L: Label, I: Iterator<Item = Tree<L>>> Iterator for DiverseSampler<L, I> {
-    type Item = Tree<L>;
+impl<L: Label, I: Iterator<Item = TypedTree<L>>> Iterator for DiverseSampler<L, I> {
+    type Item = TypedTree<L>;
 
     fn next(&mut self) -> Option<Self::Item> {
         for _ in 0..self.config.max_attempts_per_sample {
@@ -113,13 +113,13 @@ impl<L: Label, I: Iterator<Item = Tree<L>>> Iterator for DiverseSampler<L, I> {
 /// Compute a structural hash of a tree for diversity checking.
 /// Trees with the same structure and labels will have the same hash.
 #[must_use]
-pub fn structural_hash<L: Label>(tree: &Tree<L>) -> u64 {
+pub fn structural_hash<L: Label>(tree: &TypedTree<L>) -> u64 {
     let mut hasher = DefaultHashBuilder::default().build_hasher();
     hash_tree_rec(tree, &mut hasher);
     hasher.finish()
 }
 
-fn hash_tree_rec<L: Label, H: Hasher>(tree: &Tree<L>, hasher: &mut H) {
+fn hash_tree_rec<L: Label, H: Hasher>(tree: &TypedTree<L>, hasher: &mut H) {
     tree.label().hash(hasher);
     tree.children().len().hash(hasher);
     for child in tree.children() {
@@ -130,13 +130,13 @@ fn hash_tree_rec<L: Label, H: Hasher>(tree: &Tree<L>, hasher: &mut H) {
 /// Extract structural features from a tree for diversity measurement.
 /// Returns bigrams of `(parent_label, child_index, child_label)`.
 #[must_use]
-pub fn extract_features<L: Label>(tree: &Tree<L>) -> HashSet<(L, usize, L)> {
+pub fn extract_features<L: Label>(tree: &TypedTree<L>) -> HashSet<(L, usize, L)> {
     let mut features = HashSet::new();
     collect_features(tree, &mut features);
     features
 }
 
-fn collect_features<L: Label>(tree: &Tree<L>, features: &mut HashSet<(L, usize, L)>) {
+fn collect_features<L: Label>(tree: &TypedTree<L>, features: &mut HashSet<(L, usize, L)>) {
     let parent = tree.label().clone();
     for (i, child) in tree.children().iter().enumerate() {
         features.insert((parent.clone(), i, child.label().clone()));

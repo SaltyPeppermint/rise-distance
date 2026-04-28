@@ -12,7 +12,7 @@ use super::nat::Nat;
 use super::primitive::Primitive;
 use super::types::{DataType, ScalarType, Type};
 use crate::nodes::Label;
-use crate::tree::{Tree, TreeShaped};
+use crate::tree::{TreeShaped, TypedTree};
 
 /// A compact label type for Rise that implements the Label trait.
 ///
@@ -299,8 +299,8 @@ impl<'de> Deserialize<'de> for RiseLabel {
     }
 }
 
-impl From<&Tree<RiseLabel>> for Expr {
-    fn from(tree: &Tree<RiseLabel>) -> Self {
+impl From<&TypedTree<RiseLabel>> for Expr {
+    fn from(tree: &TypedTree<RiseLabel>) -> Self {
         let ty = tree.ty().map(tree_to_type);
         let node = match tree.label() {
             // Leaf expression labels
@@ -374,7 +374,7 @@ impl From<&Tree<RiseLabel>> for Expr {
     }
 }
 
-fn tree_to_nat(tree: &Tree<RiseLabel>) -> Nat {
+fn tree_to_nat(tree: &TypedTree<RiseLabel>) -> Nat {
     match tree.label() {
         RiseLabel::NatVar(i) => Nat::Var(*i),
         RiseLabel::NatCst(n) => Nat::Cst(*n),
@@ -402,7 +402,7 @@ fn tree_to_nat(tree: &Tree<RiseLabel>) -> Nat {
     }
 }
 
-fn tree_to_address(tree: &Tree<RiseLabel>) -> Address {
+fn tree_to_address(tree: &TypedTree<RiseLabel>) -> Address {
     match tree.label() {
         RiseLabel::AddrVar(i) => Address::Var(*i),
         RiseLabel::Global => Address::Global,
@@ -413,7 +413,7 @@ fn tree_to_address(tree: &Tree<RiseLabel>) -> Address {
     }
 }
 
-fn tree_to_data_type(tree: &Tree<RiseLabel>) -> DataType {
+fn tree_to_data_type(tree: &TypedTree<RiseLabel>) -> DataType {
     match tree.label() {
         RiseLabel::DataVar(i) => DataType::Var(*i),
         RiseLabel::Scalar(s) => DataType::Scalar(s.clone()),
@@ -435,7 +435,7 @@ fn tree_to_data_type(tree: &Tree<RiseLabel>) -> DataType {
     }
 }
 
-fn tree_to_type(tree: &Tree<RiseLabel>) -> Type {
+fn tree_to_type(tree: &TypedTree<RiseLabel>) -> Type {
     match tree.label() {
         RiseLabel::Fun => Type::Fun(
             Box::new(tree_to_type(&tree.children()[0])),

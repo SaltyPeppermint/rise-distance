@@ -138,24 +138,24 @@ impl<T: TreeShaped<MathLabel>> ToEgg<MathLabel> for T {
 mod tests {
     use egg::RecExpr;
 
-    use crate::Tree;
+    use crate::TypedTree;
 
     use super::*;
 
-    fn leaf(label: MathLabel) -> Tree<MathLabel> {
-        Tree::leaf_untyped(label)
+    fn leaf(label: MathLabel) -> TypedTree<MathLabel> {
+        TypedTree::leaf_untyped(label)
     }
 
-    fn node(label: MathLabel, children: Vec<Tree<MathLabel>>) -> Tree<MathLabel> {
-        Tree::new_untyped(label, children)
+    fn node(label: MathLabel, children: Vec<TypedTree<MathLabel>>) -> TypedTree<MathLabel> {
+        TypedTree::new_untyped(label, children)
     }
 
-    fn sym(s: &str) -> Tree<MathLabel> {
+    fn sym(s: &str) -> TypedTree<MathLabel> {
         leaf(MathLabel::Symbol(s.into()))
     }
 
     /// Build tree, convert to `RecExpr`, check it matches the directly parsed `RecExpr`.
-    fn assert_eq_recexpr(tree: &Tree<MathLabel>, expected_str: &str) {
+    fn assert_eq_recexpr(tree: &TypedTree<MathLabel>, expected_str: &str) {
         let from_tree: RecExpr<Math> = (tree).to_rec_expr();
         let direct: RecExpr<Math> = expected_str.parse().unwrap();
         assert_eq!(from_tree, direct, "mismatch for {expected_str}");

@@ -1,4 +1,4 @@
-use crate::Tree;
+use crate::TypedTree;
 use crate::ids::EClassId;
 use crate::nodes::Label;
 
@@ -20,12 +20,12 @@ pub enum PartialChild<L: Label> {
 pub struct PartialTree<L: Label> {
     label: L,
     /// Type annotation, always fully resolved from the e-graph.
-    ty: Option<Box<Tree<L>>>,
+    ty: Option<Box<TypedTree<L>>>,
     children: Vec<PartialChild<L>>,
 }
 
 impl<L: Label> PartialTree<L> {
-    pub fn new(label: L, ty: Option<Tree<L>>, children: Vec<PartialChild<L>>) -> Self {
+    pub fn new(label: L, ty: Option<TypedTree<L>>, children: Vec<PartialChild<L>>) -> Self {
         PartialTree {
             label,
             ty: ty.map(Box::new),
@@ -87,7 +87,7 @@ impl<L: Label> PartialTree<L> {
     /// Fill all holes with the provided `TreeNode`s (in the same depth-first
     /// order as `holes()` returns them), producing a complete `TreeNode`.
     #[expect(clippy::missing_panics_doc, clippy::impl_trait_in_params)]
-    pub fn fill(self, fill: &mut impl Iterator<Item = Tree<L>>) -> Tree<L> {
+    pub fn fill(self, fill: &mut impl Iterator<Item = TypedTree<L>>) -> TypedTree<L> {
         let children = self
             .children
             .into_iter()
@@ -96,12 +96,12 @@ impl<L: Label> PartialTree<L> {
                 PartialChild::Hole(_) => fill.next().expect("not enough fill trees"),
             })
             .collect();
-        Tree::new_typed(self.label, children, self.ty.map(|b| *b))
+        TypedTree::new_typed(self.label, children, self.ty.map(|b| *b))
     }
 }
 
 /// Convert a fully-resolved `TreeNode` into a `PartialTree` with no holes.
-pub fn tree_node_to_partial<L: Label>(tree: &Tree<L>) -> PartialTree<L> {
+pub fn tree_node_to_partial<L: Label>(tree: &TypedTree<L>) -> PartialTree<L> {
     PartialTree::new(
         tree.label().clone(),
         tree.ty().cloned(),

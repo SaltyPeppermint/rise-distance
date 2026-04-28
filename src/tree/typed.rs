@@ -13,16 +13,16 @@ use super::TreeShaped;
 /// A node in a labeled, ordered tree.
 #[derive(Debug, Clone, Serialize, Deserialize, std::hash::Hash, PartialEq, Eq)]
 #[serde(bound(deserialize = "L: Label"))]
-pub struct Tree<L: Label> {
+pub struct TypedTree<L: Label> {
     pub(super) label: L,
-    pub(super) ty: Option<Box<Tree<L>>>,
-    pub(super) children: Vec<Tree<L>>,
+    pub(super) ty: Option<Box<TypedTree<L>>>,
+    pub(super) children: Vec<TypedTree<L>>,
 }
 
-impl<L: Label> Tree<L> {
+impl<L: Label> TypedTree<L> {
     /// Create a leaf node with no children.
     pub fn leaf_untyped(label: L) -> Self {
-        Tree {
+        TypedTree {
             label,
             ty: None,
             children: Vec::new(),
@@ -30,8 +30,8 @@ impl<L: Label> Tree<L> {
     }
 
     /// Create a leaf node with no children.
-    pub fn leaf_typed(label: L, ty: Option<Tree<L>>) -> Self {
-        Tree {
+    pub fn leaf_typed(label: L, ty: Option<TypedTree<L>>) -> Self {
+        TypedTree {
             label,
             ty: ty.map(Box::new),
             children: Vec::new(),
@@ -39,8 +39,8 @@ impl<L: Label> Tree<L> {
     }
 
     /// Create a node with the given children.
-    pub fn new_untyped(label: L, children: Vec<Tree<L>>) -> Self {
-        Tree {
+    pub fn new_untyped(label: L, children: Vec<TypedTree<L>>) -> Self {
+        TypedTree {
             label,
             ty: None,
             children,
@@ -48,8 +48,8 @@ impl<L: Label> Tree<L> {
     }
 
     /// Create a node with the given children.
-    pub fn new_typed(label: L, children: Vec<Tree<L>>, ty: Option<Tree<L>>) -> Self {
-        Tree {
+    pub fn new_typed(label: L, children: Vec<TypedTree<L>>, ty: Option<TypedTree<L>>) -> Self {
+        TypedTree {
             label,
             ty: ty.map(Box::new),
             children,
@@ -79,7 +79,7 @@ impl<L: Label> Tree<L> {
             .iter()
             .map(|&c_id| Self::from_type(graph, c_id))
             .collect();
-        Tree::new_untyped(node, children)
+        TypedTree::new_untyped(node, children)
     }
 
     #[must_use]
@@ -94,7 +94,7 @@ impl<L: Label> Tree<L> {
                 DataChildId::DataType(data_ty_id) => Self::from_data(graph, data_ty_id),
             })
             .collect();
-        Tree::new_untyped(node, children)
+        TypedTree::new_untyped(node, children)
     }
 
     #[must_use]
@@ -106,11 +106,11 @@ impl<L: Label> Tree<L> {
             .iter()
             .map(|&c_id| Self::from_nat(graph, c_id))
             .collect();
-        Tree::new_untyped(node, children)
+        TypedTree::new_untyped(node, children)
     }
 }
 
-impl<L: Label> TreeShaped<L> for Tree<L> {
+impl<L: Label> TreeShaped<L> for TypedTree<L> {
     /// Returns true if this node has no children.
     fn is_leaf(&self) -> bool {
         self.children.is_empty()
@@ -124,12 +124,12 @@ impl<L: Label> TreeShaped<L> for Tree<L> {
         &self.label
     }
 
-    fn ty(&self) -> Option<&Tree<L>> {
+    fn ty(&self) -> Option<&TypedTree<L>> {
         self.ty.as_deref()
     }
 }
 
-impl<L: Label + Display> Display for Tree<L> {
+impl<L: Label + Display> Display for TypedTree<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.ty.is_some() {
             write!(f, "({} ", L::type_of())?;
@@ -150,7 +150,7 @@ impl<L: Label + Display> Display for Tree<L> {
     }
 }
 
-impl<L> FromStr for Tree<L>
+impl<L> FromStr for TypedTree<L>
 where
     L: Label + FromStr,
     <L as FromStr>::Err: Display,
@@ -159,13 +159,13 @@ where
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         /// Parse a type tree (no typeOf wrappers).
-        fn parse_expr<L>(sexp: Sexp) -> Result<Tree<L>, SexpError>
+        fn parse_expr<L>(sexp: Sexp) -> Result<TypedTree<L>, SexpError>
         where
             L: Label + FromStr,
             <L as FromStr>::Err: Display,
         {
             match sexp {
-                Sexp::String(s) => Ok(Tree::leaf_untyped(
+                Sexp::String(s) => Ok(TypedTree::leaf_untyped(
                     s.parse::<L>()
                         .map_err(|e| SexpError::Other(e.to_string()))?,
                 )),
@@ -189,7 +189,7 @@ where
                     let Some(Sexp::String(label)) = iter.next() else {
                         return Err(SexpError::Other("expected (label ...)".to_owned()));
                     };
-                    Ok(Tree::new_untyped(
+                    Ok(TypedTree::new_untyped(
                         label
                             .parse::<L>()
                             .map_err(|e| SexpError::Other(e.to_string()))?,
@@ -204,7 +204,7 @@ where
     }
 }
 
-impl IntoSexp for Tree<String> {
+impl IntoSexp for TypedTree<String> {
     fn into_sexp(&self) -> Sexp {
         if self.is_leaf() {
             // Leaf with no type - just the label

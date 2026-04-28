@@ -12,7 +12,7 @@ use crate::tree::TreeShaped;
 use super::euler_str::EulerString;
 use super::nodes::Label;
 use super::structural::structural_diff;
-use super::tree::Tree;
+use super::tree::TypedTree;
 use super::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
 
 /// Core Zhang-Shasha minimum distance search over a parallel iterator of candidate trees.
@@ -21,36 +21,36 @@ use super::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
 /// the full edit distance.
 pub fn find_min_zs<L, CF, I>(
     candidates: I,
-    reference: &Tree<L>,
+    reference: &TypedTree<L>,
     costs: &CF,
     with_types: bool,
-) -> (Option<(Tree<L>, usize)>, ZSStats)
+) -> (Option<(TypedTree<L>, usize)>, ZSStats)
 where
     L: Label,
     CF: EditCosts<L>,
-    I: ParallelIterator<Item = Tree<L>>,
+    I: ParallelIterator<Item = TypedTree<L>>,
 {
-    let ref_unfolded = reference.unfold(with_types);
+    let ref_flat = reference.flatten(with_types);
 
-    let ref_size = ref_unfolded.size();
-    let ref_euler = EulerString::new(&ref_unfolded);
-    let ref_pp = PreprocessedTree::new(&ref_unfolded);
+    let ref_size = ref_flat.size();
+    let ref_euler = EulerString::new(&ref_flat);
+    let ref_pp = PreprocessedTree::new(&ref_flat);
     let running_best = AtomicUsize::new(usize::MAX);
 
     candidates
         .map(|candidate| {
-            let candidate_unfold = candidate.unfold(with_types);
+            let candidate_flat = candidate.flatten(with_types);
             let best = running_best.load(Ordering::Relaxed);
 
-            if candidate_unfold.size().abs_diff(ref_size) > best {
+            if candidate_flat.size().abs_diff(ref_size) > best {
                 return (None, ZSStats::size_pruned());
             }
 
-            if ref_euler.lower_bound(&candidate_unfold, costs) > best {
+            if ref_euler.lower_bound(&candidate_flat, costs) > best {
                 return (None, ZSStats::euler_pruned());
             }
 
-            let distance = tree_distance_with_ref(&candidate_unfold, &ref_pp, costs);
+            let distance = tree_distance_with_ref(&candidate_flat, &ref_pp, costs);
             running_best.fetch_min(distance, Ordering::Relaxed);
 
             (Some((candidate, distance)), ZSStats::compared())
@@ -132,21 +132,21 @@ impl std::ops::Add for ZSStats {
 #[must_use]
 pub fn find_min_struct<L, CF, I>(
     candidates: I,
-    reference: &Tree<L>,
+    reference: &TypedTree<L>,
     costs: &CF,
     with_types: bool,
-) -> Option<(Tree<L>, StructuralDistance)>
+) -> Option<(TypedTree<L>, StructuralDistance)>
 where
     L: Label,
     CF: EditCosts<L>,
-    I: ParallelIterator<Item = Tree<L>>,
+    I: ParallelIterator<Item = TypedTree<L>>,
 {
     let running_best_overlap = AtomicUsize::new(0);
     let running_best_zs = AtomicUsize::new(usize::MAX);
-    let ref_tree = reference.unfold(with_types);
+    let ref_tree = reference.flatten(with_types);
     candidates
         .filter_map(|candidate| {
-            let flat_candidate = candidate.unfold(with_types);
+            let flat_candidate = candidate.flatten(with_types);
             let distance = structural_diff(&ref_tree, &flat_candidate, costs);
             let best_overlap =
                 running_best_overlap.fetch_max(distance.overlap(), Ordering::Relaxed);

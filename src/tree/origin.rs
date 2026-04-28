@@ -4,7 +4,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use hashbrown::DefaultHashBuilder;
 use serde::Serialize;
 
-use crate::Tree;
+use crate::TypedTree;
 use crate::graph::Graph;
 use crate::ids::{AnyId, DataChildId, DataId, EClassId, FunId, NatId, TypeChildId};
 use crate::nodes::Label;
@@ -211,9 +211,9 @@ impl<L: Label + Display> Display for OriginTree<L> {
     }
 }
 
-impl<L: Label> From<OriginTree<L>> for Tree<L> {
+impl<L: Label> From<OriginTree<L>> for TypedTree<L> {
     fn from(value: OriginTree<L>) -> Self {
-        Tree {
+        TypedTree {
             label: value.label,
             ty: value.ty.map(|t| Box::new((*t).into())),
             children: value.children.into_iter().map(|x| x.into()).collect(),

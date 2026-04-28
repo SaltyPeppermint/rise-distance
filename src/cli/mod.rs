@@ -21,7 +21,7 @@ use crate::count::{Counter, TermCount};
 use crate::egg::{ToEgg, convert};
 use crate::sampling::{CountSampler, NaiveSampler, Sampler, ZSDistanceSampler};
 use crate::tee_println;
-use crate::tree::{OriginTree, TreeShaped, UnfoldedTree};
+use crate::tree::{FlatTree, OriginTree, TreeShaped};
 use crate::{Graph, Label, UnitCost, structural_diff, tree_distance_unit};
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
@@ -64,13 +64,10 @@ pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T
 }
 
 /// Measure guides by distance to the goal.
-pub fn measure_guide<L: Label>(
-    guide: &OriginTree<L>,
-    goal_unfolded: &UnfoldedTree<L>,
-) -> Measurements {
-    let guide_unfolded = guide.unfold(false);
-    let zs_dist = tree_distance_unit(&guide_unfolded, goal_unfolded);
-    let structural_dist = structural_diff(goal_unfolded, &guide_unfolded, &UnitCost);
+pub fn measure_guide<L: Label>(guide: &OriginTree<L>, goal_flat: &FlatTree<L>) -> Measurements {
+    let guide_flat = guide.flatten(false);
+    let zs_dist = tree_distance_unit(&guide_flat, goal_flat);
+    let structural_dist = structural_diff(goal_flat, &guide_flat, &UnitCost);
     Measurements {
         zs_distance: zs_dist,
         structural_distance: structural_dist,

@@ -3,13 +3,13 @@ use std::fmt::{self, Display};
 use crate::nodes::Label;
 
 #[derive(Debug, Clone, std::hash::Hash, PartialEq, Eq)]
-pub struct UnfoldedTree<L: Label> {
+pub struct FlatTree<L: Label> {
     pub(super) label: L,
-    pub(super) children: Vec<UnfoldedTree<L>>,
+    pub(super) children: Vec<FlatTree<L>>,
 }
 
-impl<L: Label> UnfoldedTree<L> {
-    pub fn children(&self) -> &[UnfoldedTree<L>] {
+impl<L: Label> FlatTree<L> {
+    pub fn children(&self) -> &[FlatTree<L>] {
         &self.children
     }
 
@@ -27,7 +27,7 @@ impl<L: Label> UnfoldedTree<L> {
     }
 }
 
-impl<L: Label + Display> Display for UnfoldedTree<L> {
+impl<L: Label + Display> Display for FlatTree<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_leaf() {
             write!(f, "{}", self.label)
