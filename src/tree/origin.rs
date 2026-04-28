@@ -1,7 +1,7 @@
 use std::fmt::{self, Display};
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::Hash;
 
-use hashbrown::DefaultHashBuilder;
+// use hashbrown::DefaultHashBuilder;
 use serde::Serialize;
 
 use crate::TypedTree;
@@ -12,87 +12,87 @@ use crate::nodes::Label;
 use super::TreeShaped;
 
 /// A node in a labeled, ordered tree.
-#[derive(Serialize, Debug, Clone, Eq)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OriginTree<L: Label> {
     label: L,
     ty: Option<Box<OriginTree<L>>>,
     children: Vec<OriginTree<L>>,
     origin: AnyId,
-    /// Precomputed structural hash for O(1) hashing.
-    #[serde(skip)]
-    cached_hash: u64,
+    // /// Precomputed structural hash for O(1) hashing.
+    // #[serde(skip)]
+    // cached_hash: u64,
 }
 
-impl<L: Label> PartialEq for OriginTree<L> {
-    fn eq(&self, other: &Self) -> bool {
-        if self.cached_hash != other.cached_hash {
-            return false;
-        }
-        self.origin == other.origin
-            && self.label == other.label
-            && self.ty == other.ty
-            && self.children == other.children
-    }
-}
+// impl<L: Label> PartialEq for OriginTree<L> {
+//     fn eq(&self, other: &Self) -> bool {
+//         if self.cached_hash != other.cached_hash {
+//             return false;
+//         }
+//         self.origin == other.origin
+//             && self.label == other.label
+//             && self.ty == other.ty
+//             && self.children == other.children
+//     }
+// }
 
-impl<L: Label> Hash for OriginTree<L> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.cached_hash.hash(state);
-    }
-}
+// impl<L: Label> Hash for OriginTree<L> {
+//     fn hash<H: Hasher>(&self, state: &mut H) {
+//         self.cached_hash.hash(state);
+//     }
+// }
 
-fn compute_hash<L: Label>(
-    label: &L,
-    ty: Option<&OriginTree<L>>,
-    children: &[OriginTree<L>],
-    origin: AnyId,
-) -> u64 {
-    let mut hasher = DefaultHashBuilder::default().build_hasher();
-    label.hash(&mut hasher);
-    origin.hash(&mut hasher);
-    if let Some(t) = ty {
-        t.cached_hash.hash(&mut hasher);
-    }
-    for child in children {
-        child.cached_hash.hash(&mut hasher);
-    }
-    hasher.finish()
-}
+// fn compute_hash<L: Label>(
+//     label: &L,
+//     ty: Option<&OriginTree<L>>,
+//     children: &[OriginTree<L>],
+//     origin: AnyId,
+// ) -> u64 {
+//     let mut hasher = DefaultHashBuilder::default().build_hasher();
+//     label.hash(&mut hasher);
+//     origin.hash(&mut hasher);
+//     if let Some(t) = ty {
+//         t.cached_hash.hash(&mut hasher);
+//     }
+//     for child in children {
+//         child.cached_hash.hash(&mut hasher);
+//     }
+//     hasher.finish()
+// }
 
 impl<L: Label> OriginTree<L> {
     /// Create a leaf node with no children.
     pub fn leaf_untyped(label: L, origin: AnyId) -> Self {
-        let cached_hash = compute_hash(&label, None, &[], origin);
+        // let cached_hash = compute_hash(&label, None, &[], origin);
         OriginTree {
             label,
             ty: None,
             children: Vec::new(),
             origin,
-            cached_hash,
+            // cached_hash,
         }
     }
 
     /// Create a leaf node with no children.
     pub fn leaf_typed(label: L, ty: Option<OriginTree<L>>, origin: AnyId) -> Self {
-        let cached_hash = compute_hash(&label, ty.as_ref(), &[], origin);
+        // let cached_hash = compute_hash(&label, ty.as_ref(), &[], origin);
         OriginTree {
             label,
             ty: ty.map(Box::new),
             children: Vec::new(),
             origin,
-            cached_hash,
+            // cached_hash,
         }
     }
 
     /// Create a node with the given children.
     pub fn new_untyped(label: L, children: Vec<OriginTree<L>>, origin: AnyId) -> Self {
-        let cached_hash = compute_hash(&label, None, &children, origin);
+        // let cached_hash = compute_hash(&label, None, &children, origin);
         OriginTree {
             label,
             ty: None,
             children,
             origin,
-            cached_hash,
+            // cached_hash,
         }
     }
 
@@ -103,13 +103,13 @@ impl<L: Label> OriginTree<L> {
         ty: Option<OriginTree<L>>,
         origin: AnyId,
     ) -> Self {
-        let cached_hash = compute_hash(&label, ty.as_ref(), &children, origin);
+        // let cached_hash = compute_hash(&label, ty.as_ref(), &children, origin);
         OriginTree {
             label,
             ty: ty.map(Box::new),
             children,
             origin,
-            cached_hash,
+            // cached_hash,
         }
     }
 
