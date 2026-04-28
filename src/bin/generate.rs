@@ -7,8 +7,8 @@ use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use rise_distance::egg::BoltzmannSampler;
-use rise_distance::egg::math::{RULES, math_spec};
+use rise_distance::egg::FixPointSampler;
+use rise_distance::egg::math::{MathSpec, RULES};
 use rise_distance::egg::valididty_hook;
 use serde::Serialize;
 
@@ -28,7 +28,7 @@ Examples:
   # Generate with a normal distribution and custom sigma
   generate --total-samples 1000 --min-size 5 --max-size 50 --distribution normal:3.0 --seed 42 --path output.csv
 
-  # Adjust retry limit and Boltzmann tolerance
+  # Adjust retry limit and Fixpoint sampler tolerance
   generate --total-samples 500 --min-size 10 --max-size 30 --distribution uniform --seed 1 --path out.csv --tolerance 2 --retry-limit 5000
 "
 )]
@@ -45,7 +45,7 @@ struct Cli {
     #[arg(long)]
     max_size: usize,
 
-    /// Tolerance in the boltzman sampler
+    /// Tolerance in the fixpoint sampler
     #[arg(long, default_value_t = 1)]
     tolerance: usize,
 
@@ -108,24 +108,19 @@ fn main() {
         .into_par_iter()
         .progress_with_style(style)
         .map(|(size, n, mut rng)| {
-            let sampler = BoltzmannSampler::new(*size, cli.tolerance, math_spec());
+            let sampler = FixPointSampler::new(*size, cli.tolerance, MathSpec);
 
             let mut collector = HashMap::new();
             while (collector.len() as u64) < *n {
                 let mut total_attempts = 0;
                 let inserted = 'retry: {
                     for _ in 0..cli.retry_limit {
-                        let (candidate, reason, attempts) = sampler
-                            .sample(&mut rng, &|t| {
-                                valididty_hook(
-                                    t,
-                                    cli.min_iters,
-                                    cli.min_nodes,
-                                    cli.min_time,
-                                    &RULES,
-                                )
-                            })
-                            .expect("Too many failed sample attempts");
+                        let Some((candidate, reason, attempts)) = sampler.sample(&mut rng, &|t| {
+                            valididty_hook(t, cli.min_iters, cli.min_nodes, cli.min_time, &RULES)
+                        }) else {
+                            eprintln!("Too many failed sample attempts");
+                            break 'retry true;
+                        };
                         total_attempts += attempts;
                         if let Entry::Vacant(e) = collector.entry(candidate) {
                             e.insert((total_attempts, reason));

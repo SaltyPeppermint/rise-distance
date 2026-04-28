@@ -1,5 +1,7 @@
+mod generate;
 mod label;
 
+pub use generate::LambdaSpec;
 pub use label::LambdaLabel;
 
 use egg::{

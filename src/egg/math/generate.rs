@@ -1,16 +1,20 @@
+use std::collections::HashSet;
+use std::sync::LazyLock;
+
 use ordered_float::NotNan;
 
-use crate::egg::LanguageSpec;
+use crate::egg::generate::{BinderOp, LanguageSpec};
 use crate::egg::math::MathLabel;
+use crate::tree::{TreeShaped, TypedTree};
 
-const UNARY_OPS: [MathLabel; 4] = [
+const UNARY_OPS: &[MathLabel] = &[
     MathLabel::Ln,
     MathLabel::Sqrt,
     MathLabel::Sin,
     MathLabel::Cos,
 ];
 
-const NORMAL_BINARY_OPS: [MathLabel; 5] = [
+const NORMAL_BINARY_OPS: &[MathLabel] = &[
     MathLabel::Add,
     MathLabel::Sub,
     MathLabel::Mul,
@@ -18,31 +22,22 @@ const NORMAL_BINARY_OPS: [MathLabel; 5] = [
     MathLabel::Pow,
 ];
 
-const BINDER_OPS: [MathLabel; 2] = [MathLabel::Diff, MathLabel::Integral];
+const BINDERS: &[BinderOp<MathLabel>] = &[
+    BinderOp {
+        op: MathLabel::Diff,
+        arity: 2,
+        bound_slot: 1,
+        scope_slots: &[0],
+    },
+    BinderOp {
+        op: MathLabel::Integral,
+        arity: 2,
+        bound_slot: 1,
+        scope_slots: &[0],
+    },
+];
 
-/// Build a `LanguageSpec` for `MathLabel`.
-///
-/// `leaves` is the full pool of leaf labels (variables and constants).
-/// Variable symbols are those of the form `MathLabel::Symbol(_)`.
-/// If `None`, defaults to `[x, y, 0, 1, 2]`.
-#[must_use]
-pub fn math_spec() -> LanguageSpec<MathLabel> {
-    let leaves = default_symbols();
-    let variables = leaves
-        .iter()
-        .filter(|l| matches!(l, MathLabel::Symbol(_)))
-        .copied()
-        .collect();
-    LanguageSpec {
-        leaves,
-        variables,
-        unary_ops: UNARY_OPS.to_vec(),
-        normal_binary_ops: NORMAL_BINARY_OPS.to_vec(),
-        binder_ops: BINDER_OPS.to_vec(),
-    }
-}
-
-fn default_symbols() -> Vec<MathLabel> {
+static LEAVES: LazyLock<Vec<MathLabel>> = LazyLock::new(|| {
     vec![
         MathLabel::Symbol("x".into()),
         MathLabel::Symbol("y".into()),
@@ -50,6 +45,97 @@ fn default_symbols() -> Vec<MathLabel> {
         MathLabel::Constant(NotNan::new(1.0).unwrap()),
         MathLabel::Constant(NotNan::new(2.0).unwrap()),
     ]
+});
+
+static VARIABLES: LazyLock<Vec<MathLabel>> = LazyLock::new(|| {
+    LEAVES
+        .iter()
+        .filter(|l| matches!(l, MathLabel::Symbol(_)))
+        .copied()
+        .collect()
+});
+
+/// `LanguageSpec` for the math language.
+///
+/// Leaves are `[x, y, 0, 1, 2]`; variables are the `Symbol(_)` subset.
+/// `Diff` and `Integral` are arity-2 binders with the bound variable in
+/// child[1] and scope on child[0].
+#[derive(Default)]
+pub struct MathSpec;
+
+impl LanguageSpec for MathSpec {
+    type Label = MathLabel;
+
+    const NORMAL_OPS: &'static [&'static [MathLabel]] = &[UNARY_OPS, NORMAL_BINARY_OPS];
+    const BINDERS: &'static [BinderOp<MathLabel>] = BINDERS;
+
+    fn leaves(&self) -> &'static [MathLabel] {
+        &LEAVES
+    }
+
+    fn variables(&self) -> &'static [MathLabel] {
+        &VARIABLES
+    }
+
+    /// Math validity: every binder's bound variable must appear free in at
+    /// least one of its `scope_slots` children.
+    fn is_valid_tree(&self, tree: &TypedTree<MathLabel>) -> bool {
+        if let Some(b) = Self::BINDERS.iter().find(|b| &b.op == tree.label()) {
+            let children = tree.children();
+            if children.len() != b.arity {
+                return false;
+            }
+            let bound = children[b.bound_slot].label();
+            if !self.variables().contains(bound) {
+                return false;
+            }
+            let scoped_has_bound = b
+                .scope_slots
+                .iter()
+                .any(|&i| self.free_vars(&children[i]).contains(bound));
+            if !scoped_has_bound {
+                return false;
+            }
+            children.iter().all(|c| self.is_valid_tree(c))
+        } else {
+            tree.children().iter().all(|c| self.is_valid_tree(c))
+        }
+    }
+
+    fn free_vars(&self, tree: &TypedTree<MathLabel>) -> HashSet<MathLabel> {
+        if let Some(b) = Self::BINDERS.iter().find(|b| &b.op == tree.label()) {
+            let children = tree.children();
+            let bound = if children.len() == b.arity {
+                let lbl = children[b.bound_slot].label();
+                self.variables().contains(lbl).then_some(*lbl)
+            } else {
+                None
+            };
+            let mut out = HashSet::new();
+            for (i, c) in children.iter().enumerate() {
+                if i == b.bound_slot {
+                    continue;
+                }
+                let mut fv = self.free_vars(c);
+                if b.scope_slots.contains(&i)
+                    && let Some(v) = bound
+                {
+                    fv.remove(&v);
+                }
+                out.extend(fv);
+            }
+            out
+        } else if self.variables().contains(tree.label()) {
+            let mut set = HashSet::new();
+            set.insert(*tree.label());
+            set
+        } else {
+            tree.children()
+                .iter()
+                .flat_map(|c| self.free_vars(c))
+                .collect()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -59,13 +145,13 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
 
     use super::*;
-    use crate::egg::BoltzmannSampler;
-    use crate::egg::generate::{binders_valid, free_vars};
+    use crate::egg::FixPointSampler;
+    use crate::egg::generate::LanguageSpec;
     use crate::tree::{TreeShaped, TypedTree};
 
     #[test]
     fn sampler_produces_trees_near_target() {
-        let sampler = BoltzmannSampler::new(15, 5, math_spec());
+        let sampler = FixPointSampler::new(15, 5, MathSpec);
         let mut rng = ChaCha8Rng::seed_from_u64(42);
 
         let trees = sampler.sample_many(&mut rng, 50, &|_| Some(StopReason::Other(String::new())));
@@ -81,7 +167,7 @@ mod tests {
 
     #[test]
     fn small_target_size() {
-        let sampler = BoltzmannSampler::new(5, 2, math_spec());
+        let sampler = FixPointSampler::new(5, 2, MathSpec);
         let mut rng = ChaCha8Rng::seed_from_u64(123);
 
         let trees = sampler.sample_many(&mut rng, 30, &|_| Some(StopReason::Other(String::new())));
@@ -93,14 +179,14 @@ mod tests {
 
     #[test]
     fn binders_have_valid_bound_variables() {
-        let sampler = BoltzmannSampler::new(15, 5, math_spec());
+        let sampler = FixPointSampler::new(15, 5, MathSpec);
         let mut rng = ChaCha8Rng::seed_from_u64(99);
 
-        let spec = math_spec();
+        let spec = MathSpec;
         let trees = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
         for tree in &trees {
             assert!(
-                binders_valid(&tree.0, &spec),
+                spec.is_valid_tree(&tree.0),
                 "tree has binder with non-free bound variable: {tree:?}"
             );
         }
@@ -108,7 +194,7 @@ mod tests {
 
     #[test]
     fn binder_child1_is_always_a_variable() {
-        let sampler = BoltzmannSampler::new(15, 5, math_spec());
+        let sampler = FixPointSampler::new(15, 5, MathSpec);
         let mut rng = ChaCha8Rng::seed_from_u64(7);
 
         let trees = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
@@ -131,8 +217,6 @@ mod tests {
         }
     }
 
-    // --- helpers for hand-crafted trees ---
-
     fn sym(name: &str) -> TypedTree<MathLabel> {
         TypedTree::leaf_untyped(MathLabel::Symbol(name.into()))
     }
@@ -145,28 +229,26 @@ mod tests {
         TypedTree::new_untyped(MathLabel::Add, vec![l, r])
     }
 
-    // --- free_vars ---
-
     #[test]
     fn free_vars_single_symbol() {
-        let spec = math_spec();
+        let spec = MathSpec;
         let tree = sym("x");
-        let fv = free_vars(&tree, &spec);
+        let fv = spec.free_vars(&tree);
         assert_eq!(fv, [MathLabel::Symbol("x".into())].into());
     }
 
     #[test]
     fn free_vars_binder_removes_bound_var() {
-        let spec = math_spec();
+        let spec = MathSpec;
         let tree = diff(sym("x"), sym("x"));
-        assert!(free_vars(&tree, &spec).is_empty());
+        assert!(spec.free_vars(&tree).is_empty());
     }
 
     #[test]
     fn free_vars_binder_keeps_other_vars() {
-        let spec = math_spec();
+        let spec = MathSpec;
         let tree = diff(add(sym("x"), sym("y")), sym("x"));
-        let fv = free_vars(&tree, &spec);
+        let fv = spec.free_vars(&tree);
         assert!(
             !fv.contains(&MathLabel::Symbol("x".into())),
             "x should be bound"
@@ -179,70 +261,68 @@ mod tests {
 
     #[test]
     fn free_vars_nested_binders() {
-        let spec = math_spec();
+        let spec = MathSpec;
         let inner = diff(add(sym("x"), sym("y")), sym("x"));
         let tree = diff(inner, sym("y"));
-        assert!(free_vars(&tree, &spec).is_empty());
+        assert!(spec.free_vars(&tree).is_empty());
     }
 
     #[test]
     fn free_vars_no_binders_collects_all_symbols() {
-        let spec = math_spec();
+        let spec = MathSpec;
         let tree = add(sym("x"), sym("y"));
-        let fv = free_vars(&tree, &spec);
+        let fv = spec.free_vars(&tree);
         assert_eq!(
             fv,
             [MathLabel::Symbol("x".into()), MathLabel::Symbol("y".into())].into()
         );
     }
 
-    // --- binders_valid ---
-
     #[test]
     fn binders_valid_simple_valid() {
-        let spec = math_spec();
-        assert!(binders_valid(&diff(sym("x"), sym("x")), &spec));
+        let spec = MathSpec;
+        assert!(spec.is_valid_tree(&diff(sym("x"), sym("x"))));
     }
 
     #[test]
     fn binders_valid_simple_invalid() {
-        let spec = math_spec();
-        assert!(!binders_valid(&diff(sym("x"), sym("y")), &spec));
+        let spec = MathSpec;
+        assert!(!spec.is_valid_tree(&diff(sym("x"), sym("y"))));
     }
 
     #[test]
     fn binders_valid_no_binders() {
-        let spec = math_spec();
-        assert!(binders_valid(&add(sym("x"), sym("y")), &spec));
+        let spec = MathSpec;
+        assert!(spec.is_valid_tree(&add(sym("x"), sym("y"))));
     }
 
     #[test]
     fn binders_valid_nested_valid() {
-        let spec = math_spec();
+        let spec = MathSpec;
         let inner = diff(add(sym("x"), sym("y")), sym("x"));
         let tree = diff(inner, sym("y"));
-        assert!(binders_valid(&tree, &spec));
+        assert!(spec.is_valid_tree(&tree));
     }
 
     #[test]
     fn binders_valid_nested_outer_invalid() {
-        let spec = math_spec();
+        let spec = MathSpec;
         let inner = diff(sym("x"), sym("x"));
         let tree = diff(inner, sym("y"));
-        assert!(!binders_valid(&tree, &spec));
+        assert!(!spec.is_valid_tree(&tree));
     }
 
     #[test]
     fn sample_many_count_zero() {
-        let sampler = BoltzmannSampler::new(10, 3, math_spec());
+        let sampler = FixPointSampler::new(10, 3, MathSpec);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
         let trees = sampler.sample_many(&mut rng, 0, &|_| Some(StopReason::Other(String::new())));
         assert!(trees.is_empty());
     }
 
     #[test]
-    fn default_symbols_contains_expected_leaves() {
-        let syms = default_symbols();
+    fn default_leaves_contains_expected() {
+        let syms = MathSpec.leaves();
         assert!(syms.contains(&MathLabel::Symbol("x".into())));
         assert!(syms.contains(&MathLabel::Symbol("y".into())));
         assert!(syms.contains(&MathLabel::Constant(NotNan::new(0.0).unwrap())));
