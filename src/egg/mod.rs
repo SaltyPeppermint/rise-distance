@@ -10,6 +10,7 @@ use egg::{
     SimpleScheduler, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
+use num::ToPrimitive;
 
 use crate::cli::GuideError;
 use crate::ids::AnyId;
@@ -325,6 +326,7 @@ pub struct ValidationResult {
     pub last_classes: usize,
     pub last_time: f64,
     pub measured_mem: Option<usize>,
+    pub estimated_mem: usize,
     pub egraph_bytes: usize,
 }
 
@@ -386,6 +388,18 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
         stop_reason,
         StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
     ) {
+        let estimated_mem = predict_mem(
+            &stop_reason,
+            stop_nodes,
+            stop_classes,
+            stop_time,
+            last_nodes,
+            last_classes,
+            last_time,
+            egraph_bytes,
+        )
+        .to_usize()
+        .unwrap_or(0);
         return Some(ValidationResult {
             stop_reason,
             stop_nodes,
@@ -395,6 +409,7 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
             last_classes,
             last_time,
             measured_mem,
+            estimated_mem,
             egraph_bytes,
         });
     }
@@ -500,3 +515,59 @@ pub fn id0() -> Id {
 //     }
 //     *new_ids.last().unwrap()
 // }
+
+const INTERCEPT: f64 = -3.332_997_509_4e+07;
+const COEFS: [f64; 10] = [
+    1.728_212_245_9e+01,  // stop_nodes
+    -7.280_704_373_3e+02, // stop_classes
+    4.587_598_965_2e+07,  // stop_time
+    -4.782_449_196_5e+02, // last_nodes
+    1.110_653_182_3e+03,  // last_classes
+    -5.457_025_325_1e+07, // last_time
+    3.325_451_938_8e+00,  // estimated_mem_egraph
+    3.677_274_422_9e+07,  // stop_kind_NodeLimit
+    -3.677_274_422_9e+07, // stop_kind_TimeLimit
+    3.497_742_819_0e+00,  // stop_limit
+];
+
+/// Predicted `measured_mem_total` in bytes. Coefficients fit in
+/// `analysis/size_estimate.ipynb` (linear regression, R^2 ~ 0.9875 on a held-out
+/// 20% split of `output_new_100.csv`).
+#[expect(clippy::too_many_arguments)]
+fn predict_mem(
+    stop_reason: &StopReason,
+    stop_nodes: usize,
+    stop_classes: usize,
+    stop_time: f64,
+    last_nodes: usize,
+    last_classes: usize,
+    last_time: f64,
+    egraph_bytes: usize,
+) -> f64 {
+    let (stop_kind_node, stop_kind_time, stop_limit) = match stop_reason {
+        #[expect(clippy::cast_precision_loss)]
+        StopReason::NodeLimit(n) => (1.0, 0.0, *n as f64),
+        StopReason::TimeLimit(t) => (0.0, 1.0, *t),
+        _ => (0.0, 0.0, 0.0),
+    };
+
+    #[expect(clippy::cast_precision_loss)]
+    let xs: [f64; 10] = [
+        stop_nodes as f64,
+        stop_classes as f64,
+        stop_time,
+        last_nodes as f64,
+        last_classes as f64,
+        last_time,
+        egraph_bytes as f64,
+        stop_kind_node,
+        stop_kind_time,
+        stop_limit,
+    ];
+
+    let mut acc = INTERCEPT;
+    for k in 0..COEFS.len() {
+        acc += COEFS[k] * xs[k];
+    }
+    acc
+}

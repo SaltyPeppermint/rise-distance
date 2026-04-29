@@ -82,15 +82,26 @@ struct Cli {
     max_time: f64,
 }
 
+const COLUMN_NAMES: [&str; 13] = [
+    "size",
+    "term",
+    "attempts",
+    "stop_reason",
+    "stop_nodes",
+    "stop_classes",
+    "stop_time",
+    "last_nodes",
+    "last_classes",
+    "last_time",
+    "measured_mem_total",
+    "estimated_mem",
+    "estimated_mem_egraph",
+];
+
 fn main() {
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
     let cli = Cli::parse();
-    // // Limit parallelism to cope with memory requirements
-    // rayon::ThreadPoolBuilder::new()
-    //     .num_threads(4)
-    //     .build_global()
-    //     .unwrap();
 
     let samples_per_size =
         cli.distribution
@@ -159,22 +170,8 @@ fn main() {
         big_collector.iter().map(|x| x.1.len()).sum::<usize>()
     );
     let mut writer = Writer::from_path(&cli.path).expect("File does not exist");
-    writer
-        .write_record([
-            "size",
-            "term",
-            "attempts",
-            "stop_reason",
-            "stop_nodes",
-            "stop_classes",
-            "stop_time",
-            "last_nodes",
-            "last_classes",
-            "last_time",
-            "measured_mem_total",
-            "estimated_mem_egraph",
-        ])
-        .unwrap();
+
+    writer.write_record(COLUMN_NAMES).unwrap();
 
     for (size, terms) in big_collector {
         let size_str = size.to_string();
@@ -192,6 +189,7 @@ fn main() {
                     &vr.last_classes.to_string(),
                     &vr.last_time.to_string(),
                     &vr.measured_mem.map(|m| m.to_string()).unwrap_or_default(),
+                    &vr.estimated_mem.to_string(),
                     &vr.egraph_bytes.to_string(),
                 ])
                 .unwrap();
