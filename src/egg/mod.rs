@@ -347,11 +347,17 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
         .with_scheduler(SimpleScheduler);
 
     let before_eqsat_mem = memory_stats()?;
+
+    // Setting and unsetting the panic hook so we dont get debug spam. it is fine to ignore the output
+    // Afterwards we reinstall the old default panic hook
+    std::panic::set_hook(Box::new(|_| {}));
     let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
-        println!("panic caught in iter_check_hook for expr: {expr}");
-        println!("It is safe to ignore the output of egg here");
+        // println!("panic caught in iter_check_hook for expr: {expr}");
+        // println!("It is safe to ignore the output of egg here");
+        let _ = std::panic::take_hook();
         return None;
     };
+    let _ = std::panic::take_hook();
     let after_eqsat_mem = memory_stats()?;
 
     let mem_usage = after_eqsat_mem.physical_mem - before_eqsat_mem.physical_mem;
