@@ -162,8 +162,10 @@ fn main() {
             "nodes",
             "classes",
             "time",
-            "mem_in_bytes",
-            "mem_in_gb",
+            "measured_mem_in_bytes",
+            "measured_mem_in_gb",
+            "estimated_egraph_in_bytes",
+            "estimated_egraph_in_gb",
         ])
         .unwrap();
 
@@ -182,6 +184,9 @@ fn main() {
                     &vr.mem.to_string(),
                     #[expect(clippy::cast_precision_loss)]
                     &(vr.mem as f64 / 10e9).to_string(),
+                    &vr.egraph_bytes.to_string(),
+                    #[expect(clippy::cast_precision_loss)]
+                    &(vr.egraph_bytes as f64 / 10e9).to_string(),
                 ])
                 .unwrap();
         }
