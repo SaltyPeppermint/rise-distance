@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::cli::argparse::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, TermCount};
-use crate::egg::{ToEgg, convert};
+use crate::egg::ToEgg;
 use crate::sampling::{CountSampler, NaiveSampler, Sampler, ZSDistanceSampler};
 use crate::tee_println;
 use crate::tree::{FlatTree, OriginTree, TreeShaped};
@@ -121,7 +121,7 @@ where
         root: egg::Id,
         max_size: usize,
     ) -> Option<PrecomputePackage<C, L, N>> {
-        let graph = convert(graph, root);
+        let graph = Graph::from_egg(graph, root);
         let tc = TermCount::<C>::new(max_size, false, &graph);
         let histogram = tc.data.get(&graph.root())?;
 
