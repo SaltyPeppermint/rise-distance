@@ -33,6 +33,7 @@ symbolic_expressions = "5"
 thiserror = "2"
 plotters = "0.3"
 csv = "1"
+memory-stats = { version = "1", features = ["serde"] }
 
 [lints.clippy]
 all = { level = "deny", priority = -2 }

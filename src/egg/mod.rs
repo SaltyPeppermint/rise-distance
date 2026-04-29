@@ -9,6 +9,7 @@ use egg::{
     SimpleScheduler, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
+use memory_stats::memory_stats;
 
 use crate::cli::GuideError;
 use crate::ids::{AnyId, EClassId, ExprChildId};
@@ -374,13 +375,22 @@ where
     guide.add_node(&mut adder)
 }
 
+#[derive(Clone, Debug)]
+pub struct ValidationResult {
+    pub stop_reason: StopReason,
+    pub nodes: usize,
+    pub classes: usize,
+    pub time: f64,
+    pub mem: usize,
+}
+
 pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T: ToEgg<L>>(
     tree: &T,
     max_iters: usize,
     max_nodes: usize,
     max_time: f64,
     rules: &[Rewrite<L, N>],
-) -> Option<StopReason> {
+) -> Option<ValidationResult> {
     let expr = tree.to_rec_expr();
     // egg's Runner can panic on certain malformed inside its merge check.
     // Fixing this would require only constructing correct terms and that is too complicated
@@ -396,17 +406,32 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
         .with_time_limit(Duration::from_secs_f64(max_time))
         .with_scheduler(SimpleScheduler);
 
+    let before_eqsat_mem = memory_stats()?;
     let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
         println!("panic caught in iter_check_hook for expr: {expr}");
         println!("It is safe to ignore the output of egg here");
         return None;
     };
-    r.stop_reason.filter(|reason| {
-        matches!(
-            reason,
-            StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
-        )
-    })
+    let after_eqsat_mem = memory_stats()?;
+
+    let mem_usage = after_eqsat_mem.physical_mem - before_eqsat_mem.physical_mem;
+
+    let stop_reason = r.stop_reason.clone()?;
+
+    if matches!(
+        stop_reason,
+        StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
+    ) {
+        let last_iter = r.iterations.last()?;
+        return Some(ValidationResult {
+            stop_reason,
+            nodes: last_iter.egraph_nodes,
+            classes: last_iter.egraph_classes,
+            time: last_iter.total_time,
+            mem: mem_usage,
+        });
+    }
+    None
 }
 
 #[must_use]

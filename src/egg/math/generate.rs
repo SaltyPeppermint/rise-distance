@@ -1,7 +1,7 @@
 #![expect(clippy::similar_names)]
 use std::{collections::HashSet, sync::LazyLock};
 
-use egg::{StopReason, Symbol};
+use egg::Symbol;
 use ordered_float::NotNan;
 use rand::Rng;
 
@@ -166,11 +166,11 @@ impl BoltzmannSampler {
     /// Generate a random term whose size is in `[target - tolerance, target + tolerance]`
     /// and where every Diff/Integral node's bound variable appears free in its expression child.
     /// Returns None if no valid tree is found within `100_000` attempts.
-    pub fn sample<R: Rng, F: Fn(&TypedTree<Math>) -> Option<StopReason>>(
+    pub fn sample<R: Rng, T, F: Fn(&TypedTree<Math>) -> Option<T>>(
         &self,
         rng: &mut R,
         filter_hook: &F,
-    ) -> Option<(TypedTree<Math>, StopReason, usize)> {
+    ) -> Option<(TypedTree<Math>, T, usize)> {
         let lo = self.target.saturating_sub(self.tolerance);
         let hi = self.target + self.tolerance;
         (0..100_000).find_map(|n| {
@@ -186,12 +186,12 @@ impl BoltzmannSampler {
     }
 
     /// Generate `count` random terms within the size window.
-    pub fn sample_many<R: Rng, F: Fn(&TypedTree<Math>) -> Option<StopReason>>(
+    pub fn sample_many<R: Rng, T, F: Fn(&TypedTree<Math>) -> Option<T>>(
         &self,
         rng: &mut R,
         count: usize,
         filter_hook: &F,
-    ) -> Vec<(TypedTree<Math>, StopReason)> {
+    ) -> Vec<(TypedTree<Math>, T)> {
         let (trees, total_attempts, failed) =
             (0..count).map(|_| self.sample(rng, filter_hook)).fold(
                 (Vec::with_capacity(count), 0, 0),
@@ -335,6 +335,7 @@ fn default_symbols() -> Vec<Math> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egg::StopReason;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 

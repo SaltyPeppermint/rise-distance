@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use csv::Writer;
 use hashbrown::{HashMap, hash_map::Entry};
+use indicatif::ProgressIterator;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
@@ -105,7 +106,7 @@ fn main() {
     .progress_chars("=>-");
 
     let big_collector = sized_rngs
-        .into_par_iter()
+        .into_iter()
         .progress_with_style(style)
         .map(|(size, n, mut rng)| {
             let sampler = BoltzmannSampler::new(*size, cli.tolerance, None);
@@ -114,7 +115,7 @@ fn main() {
                 let mut total_attempts = 0;
                 let inserted = 'retry: {
                     for _ in 0..cli.retry_limit {
-                        let (candidate, reason, attempts) = sampler
+                        let (candidate, validation_result, attempts) = sampler
                             .sample(&mut rng, &|t| {
                                 valididty_hook(
                                     t,
@@ -127,7 +128,7 @@ fn main() {
                             .expect("Too many failed sample attempts");
                         total_attempts += attempts;
                         if let Entry::Vacant(e) = collector.entry(candidate) {
-                            e.insert((total_attempts, reason));
+                            e.insert((total_attempts, validation_result));
                             break 'retry true;
                         }
                     }
@@ -149,18 +150,31 @@ fn main() {
     );
     let mut writer = Writer::from_path(&cli.path).expect("File does not exist");
     writer
-        .write_record(["size", "term", "attempts", "reason"])
+        .write_record([
+            "size",
+            "term",
+            "attempts",
+            "stop_reason",
+            "nodes",
+            "classes",
+            "time",
+            "mem_in_bytes",
+        ])
         .unwrap();
 
     for (size, terms) in big_collector {
         let size_str = size.to_string();
-        for (tree, (attempts, reason)) in terms {
+        for (tree, (attempts, vr)) in terms {
             writer
                 .write_record([
                     &size_str,
                     &tree.to_string(),
                     &attempts.to_string(),
-                    &format!("{reason:?}"),
+                    &format!("{vr:?}"),
+                    &vr.nodes.to_string(),
+                    &vr.classes.to_string(),
+                    &vr.time.to_string(),
+                    &vr.mem.to_string(),
                 ])
                 .unwrap();
         }
