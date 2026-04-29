@@ -3,11 +3,9 @@ use std::path::PathBuf;
 use clap::Parser;
 use csv::Writer;
 use hashbrown::{HashMap, hash_map::Entry};
-use indicatif::ProgressIterator;
-use indicatif::{ParallelProgressIterator, ProgressStyle};
+use indicatif::{ProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rise_distance::egg::math::BoltzmannSampler;
 use rise_distance::egg::math::RULES;
 use rise_distance::egg::valididty_hook;
@@ -82,6 +80,11 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
+    // // Limit parallelism to cope with memory requirements
+    // rayon::ThreadPoolBuilder::new()
+    //     .num_threads(4)
+    //     .build_global()
+    //     .unwrap();
 
     let samples_per_size =
         cli.distribution
@@ -105,6 +108,7 @@ fn main() {
     .expect("valid template")
     .progress_chars("=>-");
 
+    // No parallelism, otherwise the memory hook wouldnt work correctly
     let big_collector = sized_rngs
         .into_iter()
         .progress_with_style(style)
