@@ -79,9 +79,8 @@ struct Cli {
     #[arg(long, default_value_t = 1.0)]
     max_time: f64,
 
-    /// Minimum time complexity for the term
-    #[arg(long, default_value_t = 4)]
-    parallelism: usize,
+    #[arg(long)]
+    parallelism: Option<usize>,
 }
 
 const COLUMN_NAMES: [&str; 12] = [
@@ -102,10 +101,12 @@ const COLUMN_NAMES: [&str; 12] = [
 fn main() {
     let cli = Cli::parse();
     // set parallelism not too high or else memory-out
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(cli.parallelism)
-        .build_global()
-        .unwrap();
+    if let Some(p) = cli.parallelism {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(p)
+            .build_global()
+            .unwrap();
+    }
 
     let samples_per_size =
         cli.distribution
