@@ -3,7 +3,7 @@ pub mod math;
 
 use std::fmt::Display;
 use std::mem;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egg::{
     Analysis, EClass, EGraph, Id, Iteration, IterationData, Language, RecExpr, Rewrite, Runner,
@@ -319,9 +319,12 @@ where
 
 pub struct ValidationResult {
     pub stop_reason: StopReason,
-    pub nodes: usize,
-    pub classes: usize,
-    pub time: f64,
+    pub stop_nodes: usize,
+    pub stop_classes: usize,
+    pub stop_time: f64,
+    pub last_nodes: usize,
+    pub last_classes: usize,
+    pub last_time: f64,
     pub mem: usize,
     pub egraph_bytes: usize,
 }
@@ -348,41 +351,41 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
         .with_time_limit(Duration::from_secs_f64(max_time))
         .with_scheduler(SimpleScheduler);
 
-    let before_eqsat_mem = memory_stats()?;
-
     // Setting and unsetting the panic hook so we dont get debug spam. it is fine to ignore the output
     // Afterwards we reinstall the old default panic hook
-    std::panic::set_hook(Box::new(|_| {}));
+    let start = Instant::now();
     let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
-        // println!("panic caught in iter_check_hook for expr: {expr}");
-        // println!("It is safe to ignore the output of egg here");
-        let _ = std::panic::take_hook();
+        println!("panic caught in iter_check_hook for expr: {expr}");
+        println!("It is safe to ignore the output of egg here");
         return None;
     };
-    let _ = std::panic::take_hook();
+    let stop_time = start.elapsed().as_secs_f64();
 
-    let last_iter = r.iterations.last()?;
-    let egraph_bytes = estimate_egraph_bytes(&r.egraph);
-    let nodes = last_iter.egraph_nodes;
-    let classes = last_iter.egraph_classes;
-    let time = last_iter.total_time;
     let stop_reason = r.stop_reason.clone()?;
+    let egraph_bytes = estimate_egraph_bytes(&r.egraph);
+    let stop_nodes = r.egraph.nodes().len();
+    let stop_classes = r.egraph.classes().len();
 
+    let last_nodes = r.iterations.last()?.egraph_nodes;
+    let last_classes = r.iterations.last()?.egraph_classes;
+    let last_time = r.iterations.last()?.total_time;
+
+    let before_drop = memory_stats()?;
     drop(r);
-
-    let after_eqsat_mem = memory_stats()?;
-    let mem_usage = after_eqsat_mem.physical_mem - before_eqsat_mem.physical_mem;
-
+    let after_drop = memory_stats()?;
     if matches!(
         stop_reason,
         StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
     ) {
         return Some(ValidationResult {
             stop_reason,
-            nodes,
-            classes,
-            time,
-            mem: mem_usage,
+            stop_nodes,
+            stop_classes,
+            stop_time,
+            last_nodes,
+            last_classes,
+            last_time,
+            mem: before_drop.physical_mem - after_drop.physical_mem,
             egraph_bytes,
         });
     }

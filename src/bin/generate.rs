@@ -159,13 +159,14 @@ fn main() {
             "term",
             "attempts",
             "stop_reason",
-            "nodes",
-            "classes",
-            "time",
-            "measured_mem_in_bytes",
-            "measured_mem_in_gb",
-            "estimated_egraph_in_bytes",
-            "estimated_egraph_in_gb",
+            "stop_nodes",
+            "stop_classes",
+            "stop_time",
+            "last_nodes",
+            "last_classes",
+            "last_time",
+            "measured_mem_total",
+            "estimated_mem_egraph",
         ])
         .unwrap();
 
@@ -178,15 +179,14 @@ fn main() {
                     &tree.to_string(),
                     &attempts.to_string(),
                     &format!("{:?}", vr.stop_reason),
-                    &vr.nodes.to_string(),
-                    &vr.classes.to_string(),
-                    &vr.time.to_string(),
+                    &vr.stop_nodes.to_string(),
+                    &vr.stop_classes.to_string(),
+                    &vr.stop_time.to_string(),
+                    &vr.last_nodes.to_string(),
+                    &vr.last_classes.to_string(),
+                    &vr.last_time.to_string(),
                     &vr.mem.to_string(),
-                    #[expect(clippy::cast_precision_loss)]
-                    &(vr.mem as f64 / 10e9).to_string(),
                     &vr.egraph_bytes.to_string(),
-                    #[expect(clippy::cast_precision_loss)]
-                    &(vr.egraph_bytes as f64 / 10e9).to_string(),
                 ])
                 .unwrap();
         }
