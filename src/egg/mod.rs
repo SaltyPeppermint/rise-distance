@@ -375,7 +375,6 @@ where
     guide.add_node(&mut adder)
 }
 
-#[derive(Clone, Debug)]
 pub struct ValidationResult {
     pub stop_reason: StopReason,
     pub nodes: usize,

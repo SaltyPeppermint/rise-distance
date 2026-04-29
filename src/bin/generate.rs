@@ -159,6 +159,7 @@ fn main() {
             "classes",
             "time",
             "mem_in_bytes",
+            "mem_in_gb",
         ])
         .unwrap();
 
@@ -170,11 +171,13 @@ fn main() {
                     &size_str,
                     &tree.to_string(),
                     &attempts.to_string(),
-                    &format!("{vr:?}"),
+                    &format!("{:?}", vr.stop_reason),
                     &vr.nodes.to_string(),
                     &vr.classes.to_string(),
                     &vr.time.to_string(),
                     &vr.mem.to_string(),
+                    #[expect(clippy::cast_precision_loss)]
+                    &(vr.mem as f64 / 10e9).to_string(),
                 ])
                 .unwrap();
         }
