@@ -13,6 +13,10 @@ use serde::Serialize;
 
 use rise_distance::cli::argparse::Distribution;
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[derive(Parser, Serialize)]
 #[command(
     about = "Generate random math terms and write them to a CSV file",
@@ -79,6 +83,8 @@ struct Cli {
 }
 
 fn main() {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
     let cli = Cli::parse();
     // // Limit parallelism to cope with memory requirements
     // rayon::ThreadPoolBuilder::new()
@@ -185,7 +191,7 @@ fn main() {
                     &vr.last_nodes.to_string(),
                     &vr.last_classes.to_string(),
                     &vr.last_time.to_string(),
-                    &vr.mem.to_string(),
+                    &vr.measured_mem.map(|m| m.to_string()).unwrap_or_default(),
                     &vr.egraph_bytes.to_string(),
                 ])
                 .unwrap();

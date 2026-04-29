@@ -10,7 +10,6 @@ use egg::{
     SimpleScheduler, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
-use memory_stats::memory_stats;
 
 use crate::cli::GuideError;
 use crate::ids::AnyId;
@@ -325,7 +324,7 @@ pub struct ValidationResult {
     pub last_nodes: usize,
     pub last_classes: usize,
     pub last_time: f64,
-    pub mem: usize,
+    pub measured_mem: Option<usize>,
     pub egraph_bytes: usize,
 }
 
@@ -370,9 +369,19 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
     let last_classes = r.iterations.last()?.egraph_classes;
     let last_time = r.iterations.last()?.total_time;
 
-    let before_drop = memory_stats()?;
-    drop(r);
-    let after_drop = memory_stats()?;
+    #[cfg(feature = "dhat-heap")]
+    let measured_mem = {
+        let before_drop = dhat::HeapStats::get();
+        drop(r);
+        let after_drop = dhat::HeapStats::get();
+        Some(before_drop.curr_bytes - after_drop.curr_bytes)
+    };
+    #[cfg(not(feature = "dhat-heap"))]
+    let measured_mem = {
+        drop(r);
+        None
+    };
+
     if matches!(
         stop_reason,
         StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
@@ -385,7 +394,7 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
             last_nodes,
             last_classes,
             last_time,
-            mem: before_drop.physical_mem - after_drop.physical_mem,
+            measured_mem,
             egraph_bytes,
         });
     }

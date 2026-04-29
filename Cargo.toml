@@ -33,7 +33,7 @@ symbolic_expressions = "5"
 thiserror = "2"
 plotters = "0.3"
 csv = "1"
-memory-stats = { version = "1", features = ["serde"] }
+dhat = { version = "0.3", optional = true }
 
 [lints.clippy]
 all = { level = "deny", priority = -2 }
@@ -68,9 +68,15 @@ unnecessary_self_imports = "warn"
 verbose_file_reads = "warn"
 shadow_unrelated = "warn"
 
-[profile.release-with-debug]
-inherits = "release"
-debug = true
+# [profile.release-with-debug]
+# inherits = "release"
+# debug = true
+
+[profile.release]
+debug = 1
+
+[features]
+dhat-heap = ["dep:dhat"]
 
 [[bin]]
 name = "compare"
