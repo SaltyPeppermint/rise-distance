@@ -33,7 +33,7 @@ symbolic_expressions = "5"
 thiserror = "2"
 plotters = "0.3"
 csv = "1"
-dhat = { version = "0.3", optional = true }
+dhat = "0.3"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -75,8 +75,6 @@ shadow_unrelated = "warn"
 [profile.release]
 debug = 1
 
-[features]
-dhat-heap = ["dep:dhat"]
 
 [[bin]]
 name = "compare"
@@ -97,3 +95,7 @@ path = "src/bin/generate.rs"
 [[bin]]
 name = "training-data"
 path = "src/bin/training_data.rs"
+
+[[bin]]
+name = "measure-size"
+path = "src/bin/measure_size.rs"

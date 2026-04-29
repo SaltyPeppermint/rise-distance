@@ -325,7 +325,6 @@ pub struct ValidationResult {
     pub last_nodes: usize,
     pub last_classes: usize,
     pub last_time: f64,
-    pub measured_mem: Option<usize>,
     pub estimated_mem: usize,
     pub egraph_bytes: usize,
 }
@@ -371,18 +370,7 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
     let last_classes = r.iterations.last()?.egraph_classes;
     let last_time = r.iterations.last()?.total_time;
 
-    #[cfg(feature = "dhat-heap")]
-    let measured_mem = {
-        let before_drop = dhat::HeapStats::get();
-        drop(r);
-        let after_drop = dhat::HeapStats::get();
-        Some(before_drop.curr_bytes - after_drop.curr_bytes)
-    };
-    #[cfg(not(feature = "dhat-heap"))]
-    let measured_mem = {
-        drop(r);
-        None
-    };
+    drop(r);
 
     if matches!(
         stop_reason,
@@ -405,7 +393,6 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
             last_nodes,
             last_classes,
             last_time,
-            measured_mem,
             estimated_mem,
             egraph_bytes,
         });

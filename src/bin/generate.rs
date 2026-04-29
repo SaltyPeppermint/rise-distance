@@ -2,20 +2,18 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use csv::Writer;
-use hashbrown::{HashMap, hash_map::Entry};
-use indicatif::{ProgressIterator, ProgressStyle};
+use hashbrown::HashMap;
+use hashbrown::hash_map::Entry;
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
+use rayon::prelude::*;
 use rise_distance::egg::math::BoltzmannSampler;
 use rise_distance::egg::math::RULES;
 use rise_distance::egg::valididty_hook;
 use serde::Serialize;
 
 use rise_distance::cli::argparse::Distribution;
-
-#[cfg(feature = "dhat-heap")]
-#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc;
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -80,9 +78,13 @@ struct Cli {
     /// Minimum time complexity for the term
     #[arg(long, default_value_t = 1.0)]
     max_time: f64,
+
+    /// Minimum time complexity for the term
+    #[arg(long, default_value_t = 4)]
+    parallelism: usize,
 }
 
-const COLUMN_NAMES: [&str; 13] = [
+const COLUMN_NAMES: [&str; 12] = [
     "size",
     "term",
     "attempts",
@@ -93,15 +95,17 @@ const COLUMN_NAMES: [&str; 13] = [
     "last_nodes",
     "last_classes",
     "last_time",
-    "measured_mem_total",
     "estimated_mem",
     "estimated_mem_egraph",
 ];
 
 fn main() {
-    #[cfg(feature = "dhat-heap")]
-    let _profiler = dhat::Profiler::new_heap();
     let cli = Cli::parse();
+    // set parallelism not too high or else memory-out
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(cli.parallelism)
+        .build_global()
+        .unwrap();
 
     let samples_per_size =
         cli.distribution
@@ -127,7 +131,7 @@ fn main() {
 
     // No parallelism, otherwise the memory hook wouldnt work correctly
     let big_collector = sized_rngs
-        .into_iter()
+        .into_par_iter()
         .progress_with_style(style)
         .map(|(size, n, mut rng)| {
             let sampler = BoltzmannSampler::new(*size, cli.tolerance, None);
@@ -188,7 +192,6 @@ fn main() {
                     &vr.last_nodes.to_string(),
                     &vr.last_classes.to_string(),
                     &vr.last_time.to_string(),
-                    &vr.measured_mem.map(|m| m.to_string()).unwrap_or_default(),
                     &vr.estimated_mem.to_string(),
                     &vr.egraph_bytes.to_string(),
                 ])
