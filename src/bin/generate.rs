@@ -1,15 +1,13 @@
 use std::fmt::Display;
-use std::mem;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
 use clap::Parser;
 use csv::Writer;
-use egg::{Analysis, EClass, EGraph, Id, Language, Rewrite, Runner, SimpleScheduler, StopReason};
-use hashbrown::{HashMap, HashSet, hash_map::Entry};
+use egg::{Analysis, Language, Rewrite, Runner, SimpleScheduler, StopReason};
+use hashbrown::{HashMap, hash_map::Entry};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
-use num::ToPrimitive;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
@@ -89,7 +87,7 @@ struct Cli {
     parallelism: Option<usize>,
 }
 
-const COLUMN_NAMES: [&str; 12] = [
+const COLUMN_NAMES: [&str; 10] = [
     "size",
     "term",
     "attempts",
@@ -100,8 +98,6 @@ const COLUMN_NAMES: [&str; 12] = [
     "last_nodes",
     "last_classes",
     "last_time",
-    "estimated_mem",
-    "estimated_mem_egraph",
 ];
 
 fn main() {
@@ -199,8 +195,6 @@ fn main() {
                     &vr.last_nodes.to_string(),
                     &vr.last_classes.to_string(),
                     &vr.last_time.to_string(),
-                    &vr.estimated_mem.to_string(),
-                    &vr.egraph_bytes.to_string(),
                 ])
                 .unwrap();
         }
@@ -215,8 +209,6 @@ pub struct ValidationResult {
     pub last_nodes: usize,
     pub last_classes: usize,
     pub last_time: f64,
-    pub estimated_mem: usize,
-    pub egraph_bytes: usize,
 }
 
 pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T: ToEgg<L>>(
@@ -252,156 +244,136 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
     let stop_time = start.elapsed().as_secs_f64();
 
     let stop_reason = r.stop_reason.clone()?;
-    let egraph_bytes = estimate_egraph_bytes(&r.egraph);
-    let stop_nodes = r.egraph.nodes().len();
-    let stop_classes = r.egraph.classes().len();
-
-    let last_nodes = r.iterations.last()?.egraph_nodes;
-    let last_classes = r.iterations.last()?.egraph_classes;
-    let last_time = r.iterations.last()?.total_time;
-
-    drop(r);
 
     if matches!(
         stop_reason,
         StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
     ) {
-        let estimated_mem = predict_mem(
-            stop_nodes,
-            stop_classes,
-            last_nodes,
-            last_classes,
-            egraph_bytes,
-        )
-        .to_usize()
-        .unwrap_or(0);
         return Some(ValidationResult {
             stop_reason,
-            stop_nodes,
-            stop_classes,
+            stop_nodes: r.egraph.nodes().len(),
+            stop_classes: r.egraph.classes().len(),
             stop_time,
-            last_nodes,
-            last_classes,
-            last_time,
-            estimated_mem,
-            egraph_bytes,
+            last_nodes: r.iterations.last()?.egraph_nodes,
+            last_classes: r.iterations.last()?.egraph_classes,
+            last_time: r.iterations.last()?.total_time,
         });
     }
     None
 }
 
-/// Structural estimate of the heap bytes held by `g`.
-///
-/// Walks only the public API ([`EGraph::nodes`], [`EGraph::classes`],
-/// [`EGraph::total_size`], [`EGraph::total_number_of_nodes`],
-/// [`EGraph::number_of_classes`]) and assumes:
-/// - `L` and `N::Data` are `'static` and own no heap allocations themselves
-///   (true for our `Math`/`Lambda` languages).
-/// - Explanations are disabled, so `explain: Option<Explain<L>>` contributes
-///   only its discriminant.
-/// - The egraph has just been rebuilt, so `pending` and `analysis_pending`
-///   are effectively empty.
-///
-/// Approximations:
-/// - `memo` and `classes` are sized assuming hashbrown's load factor (≤ 7/8)
-///   and a power-of-two bucket count, plus one metadata byte per slot.
-/// - `unionfind` is treated as a `Vec<Id>` with one slot per id ever added
-///   (i.e. `nodes().len()`); the real `UnionFind` has identical asymptotic
-///   storage but may carry a small constant of bookkeeping.
-/// - `classes_by_op` is sized by walking `g.nodes()` to collect the distinct
-///   discriminants actually present, then querying [`EGraph::classes_for_op`]
-///   for each to learn the per-op `HashSet<Id>` length. Each set is sized
-///   individually with the same hashbrown formula. This is exact in the
-///   payload (one `Id` per canonical enode) and tight on the per-op bucket
-///   overhead, but still ignores any unused-but-allocated capacity in those
-///   sets.
-///
-/// Things deliberately not counted:
-/// - `explain` contents (assumed disabled).
-/// - Transient queues (`pending`, `analysis_pending`).
-/// - Allocator slack and per-allocation headers.
-/// - Any heap data hanging off `L` or `N::Data` (caller's responsibility).
-pub fn estimate_egraph_bytes<L, N>(g: &EGraph<L, N>) -> usize
-where
-    L: Language,
-    N: Analysis<L>,
-{
-    let n_nodes_total = g.nodes().len();
+// /// Structural estimate of the heap bytes held by `g`.
+// ///
+// /// Walks only the public API ([`EGraph::nodes`], [`EGraph::classes`],
+// /// [`EGraph::total_size`], [`EGraph::total_number_of_nodes`],
+// /// [`EGraph::number_of_classes`]) and assumes:
+// /// - `L` and `N::Data` are `'static` and own no heap allocations themselves
+// ///   (true for our `Math`/`Lambda` languages).
+// /// - Explanations are disabled, so `explain: Option<Explain<L>>` contributes
+// ///   only its discriminant.
+// /// - The egraph has just been rebuilt, so `pending` and `analysis_pending`
+// ///   are effectively empty.
+// ///
+// /// Approximations:
+// /// - `memo` and `classes` are sized assuming hashbrown's load factor (≤ 7/8)
+// ///   and a power-of-two bucket count, plus one metadata byte per slot.
+// /// - `unionfind` is treated as a `Vec<Id>` with one slot per id ever added
+// ///   (i.e. `nodes().len()`); the real `UnionFind` has identical asymptotic
+// ///   storage but may carry a small constant of bookkeeping.
+// /// - `classes_by_op` is sized by walking `g.nodes()` to collect the distinct
+// ///   discriminants actually present, then querying [`EGraph::classes_for_op`]
+// ///   for each to learn the per-op `HashSet<Id>` length. Each set is sized
+// ///   individually with the same hashbrown formula. This is exact in the
+// ///   payload (one `Id` per canonical enode) and tight on the per-op bucket
+// ///   overhead, but still ignores any unused-but-allocated capacity in those
+// ///   sets.
+// ///
+// /// Things deliberately not counted:
+// /// - `explain` contents (assumed disabled).
+// /// - Transient queues (`pending`, `analysis_pending`).
+// /// - Allocator slack and per-allocation headers.
+// /// - Any heap data hanging off `L` or `N::Data` (caller's responsibility).
+// pub fn estimate_egraph_bytes<L, N>(g: &EGraph<L, N>) -> usize
+// where
+//     L: Language,
+//     N: Analysis<L>,
+// {
+//     let n_nodes_total = g.nodes().len();
 
-    let mut bytes = mem::size_of::<EGraph<L, N>>();
+//     let mut bytes = mem::size_of::<EGraph<L, N>>();
 
-    // `nodes: Vec<L>` with one slot per id ever added (non-canonical included).
-    bytes += mem::size_of_val(g.nodes());
+//     // `nodes: Vec<L>` with one slot per id ever added (non-canonical included).
+//     bytes += mem::size_of_val(g.nodes());
 
-    // `unionfind`: one parent Id per id ever added.
-    bytes += n_nodes_total * mem::size_of::<Id>();
+//     // `unionfind`: one parent Id per id ever added.
+//     bytes += n_nodes_total * mem::size_of::<Id>();
 
-    // `memo: HashMap<L, Id>`
-    bytes += hashbrown_bytes::<L, Id>(g.total_size());
+//     // `memo: HashMap<L, Id>`
+//     bytes += hashbrown_bytes::<L, Id>(g.total_size());
 
-    // Per-class storage.
-    for class in g.classes() {
-        bytes += mem::size_of::<EClass<L, N::Data>>();
-        bytes += class.nodes.len() * mem::size_of::<L>();
-        bytes += class.parents().len() * mem::size_of::<Id>();
-    }
+//     // Per-class storage.
+//     for class in g.classes() {
+//         bytes += mem::size_of::<EClass<L, N::Data>>();
+//         bytes += class.nodes.len() * mem::size_of::<L>();
+//         bytes += class.parents().len() * mem::size_of::<Id>();
+//     }
 
-    // `classes_by_op`: discriminants present, then per-op HashSet<Id> sizes.
-    let mut discriminants = HashSet::new();
-    for node in g.nodes() {
-        discriminants.insert(node.discriminant());
-    }
-    bytes += hashbrown_bytes::<L::Discriminant, ()>(discriminants.len());
-    for disc in &discriminants {
-        let len = g.classes_for_op(disc).map_or(0, |it| it.len());
-        bytes += hashbrown_bytes::<Id, ()>(len);
-    }
+//     // `classes_by_op`: discriminants present, then per-op HashSet<Id> sizes.
+//     let mut discriminants = HashSet::new();
+//     for node in g.nodes() {
+//         discriminants.insert(node.discriminant());
+//     }
+//     bytes += hashbrown_bytes::<L::Discriminant, ()>(discriminants.len());
+//     for disc in &discriminants {
+//         let len = g.classes_for_op(disc).map_or(0, |it| it.len());
+//         bytes += hashbrown_bytes::<Id, ()>(len);
+//     }
 
-    // `classes: HashMap<Id, EClass<..>>` shell (EClass bodies counted above).
-    bytes += hashbrown_bytes::<Id, ()>(g.number_of_classes());
+//     // `classes: HashMap<Id, EClass<..>>` shell (EClass bodies counted above).
+//     bytes += hashbrown_bytes::<Id, ()>(g.number_of_classes());
 
-    bytes
-}
+//     bytes
+// }
 
-fn hashbrown_bytes<K, V>(len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    let cap = (len * 8).div_ceil(7).next_power_of_two();
-    cap * (mem::size_of::<(K, V)>() + 1)
-}
+// fn hashbrown_bytes<K, V>(len: usize) -> usize {
+//     if len == 0 {
+//         return 0;
+//     }
+//     let cap = (len * 8).div_ceil(7).next_power_of_two();
+//     cap * (mem::size_of::<(K, V)>() + 1)
+// }
 
-const INTERCEPT: f64 = 1.524_602_184_0e+06;
-const COEFS: [f64; 5] = [
-    2.846_220_556_5e+01,  // stop_nodes
-    -4.064_005_731_4e+02, // stop_classes
-    -1.503_030_448_2e+02, // last_nodes
-    3.727_468_060_5e+02,  // last_classes
-    2.433_465_461_1e+00,  // estimated_mem_egraph
-];
+// const INTERCEPT: f64 = 1.524_602_184_0e+06;
+// const COEFS: [f64; 5] = [
+//     2.846_220_556_5e+01,  // stop_nodes
+//     -4.064_005_731_4e+02, // stop_classes
+//     -1.503_030_448_2e+02, // last_nodes
+//     3.727_468_060_5e+02,  // last_classes
+//     2.433_465_461_1e+00,  // estimated_mem_egraph
+// ];
 
-/// Predicted `measured_mem_total` in bytes. Coefficients fit in
-/// `analysis/size_estimate.ipynb` (linear regression, R^2 ~ 0.9875 on a held-out
-/// 20% split of `output_new_100.csv`).
-fn predict_mem(
-    stop_nodes: usize,
-    stop_classes: usize,
-    last_nodes: usize,
-    last_classes: usize,
-    egraph_bytes: usize,
-) -> f64 {
-    #[expect(clippy::cast_precision_loss)]
-    let xs = [
-        stop_nodes as f64,
-        stop_classes as f64,
-        last_nodes as f64,
-        last_classes as f64,
-        egraph_bytes as f64,
-    ];
+// /// Predicted `measured_mem_total` in bytes. Coefficients fit in
+// /// `analysis/size_estimate.ipynb` (linear regression, R^2 ~ 0.9875 on a held-out
+// /// 20% split of `output_new_100.csv`).
+// fn predict_mem(
+//     stop_nodes: usize,
+//     stop_classes: usize,
+//     last_nodes: usize,
+//     last_classes: usize,
+//     egraph_bytes: usize,
+// ) -> f64 {
+//     #[expect(clippy::cast_precision_loss)]
+//     let xs = [
+//         stop_nodes as f64,
+//         stop_classes as f64,
+//         last_nodes as f64,
+//         last_classes as f64,
+//         egraph_bytes as f64,
+//     ];
 
-    let mut acc = INTERCEPT;
-    for k in 0..COEFS.len() {
-        acc += COEFS[k] * xs[k];
-    }
-    acc
-}
+//     let mut acc = INTERCEPT;
+//     for k in 0..COEFS.len() {
+//         acc += COEFS[k] * xs[k];
+//     }
+//     acc
+// }

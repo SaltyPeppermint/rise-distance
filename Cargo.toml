@@ -33,7 +33,8 @@ symbolic_expressions = "5"
 thiserror = "2"
 plotters = "0.3"
 csv = "1"
-dhat = "0.3"
+peak_alloc = "0.3"
+rlimit = "0.11"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
