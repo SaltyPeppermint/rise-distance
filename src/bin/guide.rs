@@ -93,17 +93,13 @@ struct Cli {
     #[arg(short, long)]
     output: Option<String>,
 
-    /// Number of top guides to print in summary table (default: 10)
-    #[arg(long, default_value_t = 11)]
-    top: usize,
-
     /// Use the experimental `add_with_full_union` for the new egraph
     #[arg(long)]
     full_union: bool,
 
-    /// Measure the distance?
-    #[arg(long)]
-    measure: bool,
+    /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
+    #[arg(long, default_value_t = false)]
+    backoff_scheduler: bool,
 }
 
 const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
@@ -170,6 +166,7 @@ fn process_seed(
         RULES.iter(),
         Duration::from_secs_f64(cli.time_limit),
         cli.node_limit,
+        cli.backoff_scheduler,
     )?;
     tee_println!("Goal Iterations: {}", result.goal_iters());
     tee_println!("Guide Iterations: {}", result.guide_iters());
@@ -306,6 +303,7 @@ where
                         Duration::from_secs_f64(cli.time_limit),
                         cli.node_limit,
                         cli.full_union,
+                        cli.backoff_scheduler,
                     )
                     .map_err(|e| e.into())
                 })
@@ -347,6 +345,7 @@ where
                             Duration::from_secs_f64(cli.time_limit),
                             cli.node_limit,
                             cli.full_union,
+                            cli.backoff_scheduler,
                         )
                         .map_err(Into::into)
                     })

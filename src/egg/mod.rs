@@ -5,8 +5,8 @@ use std::fmt::Display;
 use std::time::Duration;
 
 use egg::{
-    Analysis, EGraph, Id, Iteration, IterationData, Language, RecExpr, Rewrite, Runner,
-    SimpleScheduler, StopReason,
+    Analysis, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language, RecExpr, Rewrite,
+    Runner, SimpleScheduler, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
 
@@ -130,6 +130,7 @@ pub fn big_eqsat<'a, L, N, R>(
     rules: R,
     time_limit: Duration,
     node_limit: usize,
+    backoff_scheduler: bool,
 ) -> Option<GuideGoalResult<L, N>>
 where
     L: Language + 'static,
@@ -137,12 +138,17 @@ where
     N::Data: Clone,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
-    let runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
-        .with_scheduler(SimpleScheduler)
+    let mut runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
         .with_time_limit(time_limit)
         .with_node_limit(node_limit)
-        .with_expr(start)
-        .run(rules);
+        .with_expr(start);
+
+    runner = if backoff_scheduler {
+        runner.with_scheduler(BackoffScheduler::default())
+    } else {
+        runner.with_scheduler(SimpleScheduler)
+    }
+    .run(rules);
 
     if !matches!(
         runner.stop_reason.as_ref().unwrap(),
@@ -208,6 +214,7 @@ pub fn verify_reachability<L, N>(
     time_limit: Duration,
     node_limit: usize,
     full_union: bool,
+    backoff_scheduler: bool,
 ) -> Result<Vec<egg::Iteration<()>>, GuideError>
 where
     L: Label + Language + Display + 'static,
@@ -218,7 +225,6 @@ where
     let goal_clone = goal.clone();
 
     let mut runner = Runner::default()
-        .with_scheduler(SimpleScheduler)
         .with_time_limit(time_limit)
         .with_node_limit(node_limit)
         .with_hook(move |runner| {
@@ -228,11 +234,18 @@ where
             Ok(())
         });
 
+    runner = if backoff_scheduler {
+        runner.with_scheduler(BackoffScheduler::default())
+    } else {
+        runner.with_scheduler(SimpleScheduler)
+    };
+
     runner = if full_union {
         add_with_full_union(runner, guides)
     } else {
         add_with_root_union(runner, guides)
     };
+
     runner.egraph.rebuild();
 
     let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {

@@ -92,6 +92,10 @@ struct Cli {
     /// Use the experimental `add_with_full_union` for the new egraph
     #[arg(long)]
     full_union: bool,
+
+    /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
+    #[arg(long, default_value_t = false)]
+    backoff_scheduler: bool,
 }
 
 fn main() {
@@ -148,6 +152,7 @@ fn process_seed(
         RULES.iter(),
         Duration::from_secs_f64(cli.time_limit),
         cli.node_limit,
+        cli.backoff_scheduler,
     )?;
     tee_println!("Goal Iterations: {}", result.goal_iters());
     tee_println!("Guide Iterations: {}", result.guide_iters());
@@ -249,6 +254,7 @@ fn try_all<C: Counter + Display + Ord>(
                 Duration::from_secs_f64(cli.time_limit),
                 cli.node_limit,
                 cli.full_union,
+                cli.backoff_scheduler,
             );
             let measurements = measure_guide(&guide, &goal_flat);
             Ok(GuideEval {
