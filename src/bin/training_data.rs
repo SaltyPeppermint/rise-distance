@@ -42,7 +42,7 @@ Examples:
   training_data --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --full-union
 "
 )]
-struct Cli {
+struct Args {
     /// Seed term as an s-expression (Math language). Requires --max-size.
     #[arg(long, group = "seed_input", requires = "max_size")]
     seed: Option<String>,
@@ -99,41 +99,41 @@ struct Cli {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let args = Args::parse();
     let prefix = format!(
         "nodes-{}-timems-{}-strategy-{}-fullunion-{}",
-        cli.node_limit,
-        Duration::from_secs_f64(cli.time_limit).as_millis(),
-        cli.guide_sample_strategy,
-        cli.full_union
+        args.node_limit,
+        Duration::from_secs_f64(args.time_limit).as_millis(),
+        args.guide_sample_strategy,
+        args.full_union
     );
-    let run_folder = get_run_folder(cli.output.as_deref(), "training_data", &prefix);
+    let run_folder = get_run_folder(args.output.as_deref(), "training_data", &prefix);
     init_log(&run_folder);
     tee_println!("Run Folder: {}", run_folder.to_string_lossy());
 
-    let seed_input = match (&cli.seed, &cli.seed_csv) {
+    let seed_input = match (&args.seed, &args.seed_csv) {
         (Some(s), None) => SeedInput::Single {
             term: s.clone(),
-            max_size: cli.max_size.expect("--max-size required with --seed"),
+            max_size: args.max_size.expect("--max-size required with --seed"),
         },
         (None, Some(p)) => SeedInput::Csv(p.clone()),
         _ => panic!("clap group enforces exactly one of --seed / --seed-csv"),
     };
     let seeds = parse_seeds(seed_input);
 
-    tee_println!("Distribution: {}", cli.size_distribution);
+    tee_println!("Distribution: {}", args.size_distribution);
     tee_println!("Seeds to process: {}", seeds.len());
 
     let mut all_stats = Vec::new();
 
     for (i, (seed_str, seed_expr, max_size)) in seeds.iter().enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        if let Some(stats) = process_seed(&cli, seed_str, seed_expr, *max_size, &run_folder) {
+        if let Some(stats) = process_seed(&args, seed_str, seed_expr, *max_size, &run_folder) {
             all_stats.push(stats);
         }
     }
 
-    write_config(&run_folder, &cli);
+    write_config(&run_folder, &args);
     write_stats(&run_folder, &all_stats);
 }
 
@@ -141,7 +141,7 @@ fn main() {
 /// collected results and per-goal stats. Returns `None` if the goal frontier
 /// is empty (seed is skipped with a warning).
 fn process_seed(
-    cli: &Cli,
+    args: &Args,
     seed_str: &str,
     seed_expr: &RecExpr<Math>,
     max_size: usize,
@@ -150,9 +150,9 @@ fn process_seed(
     let result = big_eqsat(
         seed_expr,
         RULES.iter(),
-        Duration::from_secs_f64(cli.time_limit),
-        cli.node_limit,
-        cli.backoff_scheduler,
+        Duration::from_secs_f64(args.time_limit),
+        args.node_limit,
+        args.backoff_scheduler,
     )?;
     tee_println!("Goal Iterations: {}", result.goal_iters());
     tee_println!("Guide Iterations: {}", result.guide_iters());
@@ -184,9 +184,9 @@ fn process_seed(
     )?;
     pp.log_root();
     let Ok(goals) = pp.sample_frontier_terms::<true>(
-        cli.goals,
-        cli.size_distribution,
-        cli.goal_sample_strategy,
+        args.goals,
+        args.size_distribution,
+        args.goal_sample_strategy,
         [0, 0],
     ) else {
         tee_println!("WARNING: Not enough goals in the frontier for seed '{seed_str}'. Skipping.");
@@ -217,7 +217,7 @@ fn process_seed(
     tee_println!("\nRunning top_k experiments NO REPLACEMENT...");
     for goal in goals {
         tee_println!("Current goal: {}", goal.to_string());
-        match try_all(cli, &goal, &pc) {
+        match try_all(args, &goal, &pc) {
             Err(e) => tee_println!("ERROR TRYING TO SAMPLE FOR {goal}: {e}"),
             Ok(results) => dump_full_eval_parquet(run_folder, seed_str, &goal, &results),
         }
@@ -227,15 +227,15 @@ fn process_seed(
 }
 
 fn try_all<C: Counter + Display + Ord>(
-    cli: &Cli,
+    args: &Args,
     goal: &OriginTree<Math>,
     pc: &PrecomputePackage<C, Math, ConstantFold>,
 ) -> Result<Vec<GuideEval<Math>>, ExperimentError> {
     let goal_recexpr = goal.to_rec_expr();
     let samples = pc.sample_frontier_terms::<true>(
-        cli.guides,
-        cli.size_distribution,
-        cli.guide_sample_strategy,
+        args.guides,
+        args.size_distribution,
+        args.guide_sample_strategy,
         [0, 0],
     )?;
 
@@ -251,10 +251,10 @@ fn try_all<C: Counter + Display + Ord>(
                 std::slice::from_ref(&guide),
                 &goal_recexpr,
                 &RULES,
-                Duration::from_secs_f64(cli.time_limit),
-                cli.node_limit,
-                cli.full_union,
-                cli.backoff_scheduler,
+                Duration::from_secs_f64(args.time_limit),
+                args.node_limit,
+                args.full_union,
+                args.backoff_scheduler,
             );
             let measurements = measure_guide(&guide, &goal_flat);
             Ok(GuideEval {

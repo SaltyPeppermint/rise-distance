@@ -46,7 +46,7 @@ Examples:
   guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --top 20
 "
 )]
-struct Cli {
+struct Args {
     /// Seed term as an s-expression (Math language). Requires --max-size.
     #[arg(long, group = "seed_input", requires = "max_size")]
     seed: Option<String>,
@@ -106,29 +106,29 @@ const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
 const NUM_TRIALS: usize = 100;
 
 fn main() {
-    let cli = Cli::parse();
+    let args = Args::parse();
     let prefix = format!(
         "nodes-{}-timems-{}-strategy-{}-fullunion-{}",
-        cli.node_limit,
-        Duration::from_secs_f64(cli.time_limit).as_millis(),
-        cli.guide_sample_strategy,
-        cli.full_union
+        args.node_limit,
+        Duration::from_secs_f64(args.time_limit).as_millis(),
+        args.guide_sample_strategy,
+        args.full_union
     );
-    let run_folder = get_run_folder(cli.output.as_deref(), "guide_eval", &prefix);
+    let run_folder = get_run_folder(args.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
     tee_println!("Run Folder: {}", run_folder.to_string_lossy());
 
-    let seed_input = match (&cli.seed, &cli.seed_csv) {
+    let seed_input = match (&args.seed, &args.seed_csv) {
         (Some(s), None) => SeedInput::Single {
             term: s.clone(),
-            max_size: cli.max_size.expect("--max-size required with --seed"),
+            max_size: args.max_size.expect("--max-size required with --seed"),
         },
         (None, Some(p)) => SeedInput::Csv(p.clone()),
         _ => panic!("clap group enforces exactly one of --seed / --seed-csv"),
     };
     let seeds = parse_seeds(seed_input);
 
-    tee_println!("Distribution: {}", cli.size_distribution);
+    tee_println!("Distribution: {}", args.size_distribution);
     tee_println!("Seeds to process: {}", seeds.len());
 
     let mut all_with_replacement = Vec::new();
@@ -138,7 +138,7 @@ fn main() {
     for (i, (seed_str, seed_expr, max_size)) in seeds.iter().enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
         if let Some((with_replacement, no_replacement, stats)) =
-            process_seed(&cli, seed_str, seed_expr, *max_size)
+            process_seed(&args, seed_str, seed_expr, *max_size)
         {
             all_stats.push(stats);
             all_with_replacement.extend(with_replacement);
@@ -148,7 +148,7 @@ fn main() {
 
     write_top_k_outputs(&run_folder, &all_with_replacement, "with_replacement");
     write_top_k_outputs(&run_folder, &all_no_replacement, "no_replacement");
-    write_config(&run_folder, &cli);
+    write_config(&run_folder, &args);
     write_stats(&run_folder, &all_stats);
 }
 
@@ -156,7 +156,7 @@ fn main() {
 /// collected results and per-goal stats. Returns `None` if the goal frontier
 /// is empty (seed is skipped with a warning).
 fn process_seed(
-    cli: &Cli,
+    args: &Args,
     seed_str: &str,
     seed_expr: &RecExpr<Math>,
     max_size: usize,
@@ -164,9 +164,9 @@ fn process_seed(
     let result = big_eqsat(
         seed_expr,
         RULES.iter(),
-        Duration::from_secs_f64(cli.time_limit),
-        cli.node_limit,
-        cli.backoff_scheduler,
+        Duration::from_secs_f64(args.time_limit),
+        args.node_limit,
+        args.backoff_scheduler,
     )?;
     tee_println!("Goal Iterations: {}", result.goal_iters());
     tee_println!("Guide Iterations: {}", result.guide_iters());
@@ -198,9 +198,9 @@ fn process_seed(
     )?;
     pp.log_root();
     let Ok(goals) = pp.sample_frontier_terms::<true>(
-        cli.goals,
-        cli.size_distribution,
-        cli.goal_sample_strategy,
+        args.goals,
+        args.size_distribution,
+        args.goal_sample_strategy,
         [0, 0],
     ) else {
         tee_println!("WARNING: Not enough goals in the frontier for seed '{seed_str}'. Skipping.");
@@ -236,7 +236,7 @@ fn process_seed(
             GoalResults {
                 seed: seed_str.to_owned(),
                 goal: goal.to_string(),
-                runs: run_guide_set_trials_no_replacement(cli, &goal.to_rec_expr(), &pc),
+                runs: run_guide_set_trials_no_replacement(args, &goal.to_rec_expr(), &pc),
             }
         })
         .collect();
@@ -249,7 +249,7 @@ fn process_seed(
             GoalResults {
                 seed: seed_str.to_owned(),
                 goal: goal.to_string(),
-                runs: run_guide_set_trials_with_replacement(cli, &goal.to_rec_expr(), &pc),
+                runs: run_guide_set_trials_with_replacement(args, &goal.to_rec_expr(), &pc),
             }
         })
         .collect();
@@ -276,14 +276,11 @@ fn write_top_k_outputs(run_folder: &Path, results: &[GoalResults], suffix: &str)
     dump_summary_parquet(&parquet_path, &summaries);
 }
 
-fn run_guide_set_trials_with_replacement<C>(
-    cli: &Cli,
+fn run_guide_set_trials_with_replacement<C: Counter + Display + Ord>(
+    args: &Args,
     goal_recexpr: &RecExpr<Math>,
     pc: &PrecomputePackage<C, Math, ConstantFold>,
-) -> TrialsPerK
-where
-    C: Counter + Display + Ord,
-{
+) -> TrialsPerK {
     let bars = progress_bars();
     bars.into_par_iter()
         .map(|(k, pb)| {
@@ -292,18 +289,18 @@ where
                 .map(|s| {
                     let subset = pc.sample_frontier_terms::<false>(
                         k,
-                        cli.size_distribution,
-                        cli.guide_sample_strategy,
+                        args.size_distribution,
+                        args.guide_sample_strategy,
                         [k as u64, s as u64],
                     )?;
                     verify_reachability(
                         &subset,
                         goal_recexpr,
                         &RULES,
-                        Duration::from_secs_f64(cli.time_limit),
-                        cli.node_limit,
-                        cli.full_union,
-                        cli.backoff_scheduler,
+                        Duration::from_secs_f64(args.time_limit),
+                        args.node_limit,
+                        args.full_union,
+                        args.backoff_scheduler,
                     )
                     .map_err(|e| e.into())
                 })
@@ -316,21 +313,18 @@ where
         .collect()
 }
 
-fn run_guide_set_trials_no_replacement<C>(
-    cli: &Cli,
+fn run_guide_set_trials_no_replacement<C: Counter + Display + Ord>(
+    args: &Args,
     goal_recexpr: &RecExpr<Math>,
     pc: &PrecomputePackage<C, Math, ConstantFold>,
-) -> TrialsPerK
-where
-    C: Counter + Display + Ord,
-{
+) -> TrialsPerK {
     let bars = progress_bars();
     bars.into_par_iter()
         .map(|(k, pb)| {
             let samples = pc.sample_frontier_terms::<true>(
                 k * NUM_TRIALS,
-                cli.size_distribution,
-                cli.guide_sample_strategy,
+                args.size_distribution,
+                args.guide_sample_strategy,
                 [k as u64, 0],
             );
             let trials = match samples {
@@ -342,10 +336,10 @@ where
                             subset,
                             goal_recexpr,
                             &RULES,
-                            Duration::from_secs_f64(cli.time_limit),
-                            cli.node_limit,
-                            cli.full_union,
-                            cli.backoff_scheduler,
+                            Duration::from_secs_f64(args.time_limit),
+                            args.node_limit,
+                            args.full_union,
+                            args.backoff_scheduler,
                         )
                         .map_err(Into::into)
                     })

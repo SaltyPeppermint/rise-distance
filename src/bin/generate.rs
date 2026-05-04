@@ -40,7 +40,7 @@ Examples:
   cargo run --release --bin generate -- --total-samples 1000 --min-size 10 --max-size 50 --distribution uniform --seed 42 --path output_new.csv --max-iters 50 --max-nodes 100000 --max-time 10 --backoff-scheduler
 "
 )]
-struct Cli {
+struct Args {
     /// Total number of samples to generate across all sizes
     #[arg(long)]
     total_samples: usize,
@@ -108,9 +108,9 @@ const COLUMN_NAMES: [&str; 10] = [
 ];
 
 fn main() {
-    let cli = Cli::parse();
+    let args = Args::parse();
     // set parallelism not too high or else memory-out
-    if let Some(p) = cli.parallelism {
+    if let Some(p) = args.parallelism {
         rayon::ThreadPoolBuilder::new()
             .num_threads(p)
             .build_global()
@@ -118,13 +118,13 @@ fn main() {
     }
 
     let samples_per_size =
-        cli.distribution
-            .samples_per_size(cli.min_size, cli.max_size, cli.total_samples);
+        args.distribution
+            .samples_per_size(args.min_size, args.max_size, args.total_samples);
 
-    let validity_config = (&cli).into();
+    let validity_config = (&args).into();
 
     // Derive one RNG per size by advancing the root RNG sequentially, making it deterministic and ordered.
-    let mut root_rng = ChaCha12Rng::seed_from_u64(cli.seed);
+    let mut root_rng = ChaCha12Rng::seed_from_u64(args.seed);
     let mut sized_rngs = samples_per_size
         .iter()
         .map(|(size, n)| {
@@ -146,12 +146,12 @@ fn main() {
         .into_par_iter()
         .progress_with_style(style)
         .map(|(size, n, mut rng)| {
-            let sampler = BoltzmannSampler::new(*size, cli.tolerance, None);
+            let sampler = BoltzmannSampler::new(*size, args.tolerance, None);
             let mut collector = HashMap::new();
             while (collector.len() as u64) < *n {
                 let mut total_attempts = 0;
                 let inserted = 'retry: {
-                    for _ in 0..cli.retry_limit {
+                    for _ in 0..args.retry_limit {
                         let (candidate, validation_result, attempts) = sampler
                             .sample(&mut rng, &|t| valididty_hook(t, &validity_config, &RULES))
                             .expect("Too many failed sample attempts");
@@ -177,7 +177,7 @@ fn main() {
             .sum::<usize>(),
         big_collector.iter().map(|x| x.1.len()).sum::<usize>()
     );
-    let mut writer = Writer::from_path(&cli.path).expect("File does not exist");
+    let mut writer = Writer::from_path(&args.path).expect("File does not exist");
 
     writer.write_record(COLUMN_NAMES).unwrap();
 
@@ -219,13 +219,13 @@ pub struct ValidityConfig {
     pub backoff_scheduler: bool,
 }
 
-impl From<&Cli> for ValidityConfig {
-    fn from(cli: &Cli) -> Self {
+impl From<&Args> for ValidityConfig {
+    fn from(args: &Args) -> Self {
         Self {
-            max_iters: cli.max_iters,
-            max_nodes: cli.max_nodes,
-            max_time: cli.max_time,
-            backoff_scheduler: cli.backoff_scheduler,
+            max_iters: args.max_iters,
+            max_nodes: args.max_nodes,
+            max_time: args.max_time,
+            backoff_scheduler: args.backoff_scheduler,
         }
     }
 }
