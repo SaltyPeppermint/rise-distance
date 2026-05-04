@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["polars", "tqdm"]
+# dependencies = ["polars", "tqdm", "tyro", "diceware"]
 # ///
 """Generate random math terms and measure peak heap memory of eqsat on each.
 
@@ -12,22 +12,26 @@ Shells out to `target/release/generate` to produce a CSV of terms, then to
 On any per-term failure (non-zero exit, RLIMIT kill, timeout, unparseable
 output), `peak_memory_bytes` is -1.
 
-Example:
-    cargo build --release --bin generate --bin measure-size
-    uv run scripts/generate_and_measure.py \\
-        --path output.csv --total-samples 1000 --min-size 10 --max-size 50 \\
-        --distribution uniform --seed 42 --max-memory 8G \\
-        --max-iters 50 --max-nodes 100000 --max-time 10 --backoff-scheduler
+If `--path` is omitted, a fresh `data/seed_terms/<adjective>-<noun>/`
+directory is created (collision-retry against existing siblings). The output
+CSV `terms.csv` and a sidecar `args.json` recording all CLI args are written
+into the directory.
 """
 
 from __future__ import annotations
 
-import argparse
+import dataclasses
+import json
+import os
+import secrets
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import polars as pl
+import tyro
+from diceware.wordlist import WordList, get_wordlists_dir
 from tqdm import tqdm
 
 
@@ -42,45 +46,83 @@ def parse_size(s: str) -> int:
     return int(float(s) * mult)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--path", type=Path, required=True, help="Output CSV path.")
-    parser.add_argument(
-        "--generate-binary",
-        type=Path,
-        default=Path("target/release/generate"),
-    )
-    parser.add_argument(
-        "--measure-binary",
-        type=Path,
-        default=Path("target/release/measure-size"),
+def _load_wordlist(name: str) -> list[str]:
+    path = os.path.join(get_wordlists_dir(), f"wordlist_{name}.txt")
+    return list(WordList(path))
+
+
+def generate_unique_dir(parent: Path, max_attempts: int = 100) -> Path:
+    parent.mkdir(parents=True, exist_ok=True)
+    adjectives = _load_wordlist("en_adjectives")
+    nouns = _load_wordlist("en_nouns")
+    for _ in range(max_attempts):
+        name = f"{secrets.choice(adjectives)}-{secrets.choice(nouns)}"
+        candidate = parent / name
+        if not candidate.exists():
+            candidate.mkdir()
+            return candidate
+    raise RuntimeError(
+        f"Could not find an unused diceware name under {parent} "
+        f"after {max_attempts} attempts."
     )
 
-    # generate-only args
-    parser.add_argument("--total-samples", type=int, required=True)
-    parser.add_argument("--min-size", type=int, required=True)
-    parser.add_argument("--max-size", type=int, required=True)
-    parser.add_argument("--distribution", type=str, required=True)
-    parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--tolerance", type=int, default=1)
-    parser.add_argument("--retry-limit", type=int, default=10000)
-    parser.add_argument("--parallelism", type=int, default=None)
 
-    # measure-only args
-    parser.add_argument(
-        "--max-memory",
-        type=parse_size,
-        required=True,
-        help="Per-term virtual-memory cap (e.g. 8G). Backstop only.",
-    )
+@dataclass
+class Args:
+    # I/O
+    path: Path | None = None
+    """Output directory. Will contain `terms.csv` and `args.json`. If
+    omitted, a fresh `data/seed_terms/<adjective>-<noun>/` is created."""
+
+    generate_binary: Path = Path("target/release/generate")
+    measure_binary: Path = Path("target/release/measure-size")
+
+    # generate-only
+    total_samples: int = tyro.MISSING
+    min_size: int = tyro.MISSING
+    max_size: int = tyro.MISSING
+    distribution: str = tyro.MISSING
+    seed: int = tyro.MISSING
+    tolerance: int = 1
+    retry_limit: int = 10000
+    parallelism: int | None = None
+
+    # measure-only; per-term virtual-memory cap (e.g. "8G"). Backstop only.
+    max_memory: str = tyro.MISSING
 
     # shared egg args
-    parser.add_argument("--max-iters", type=int, default=11)
-    parser.add_argument("--max-nodes", type=int, default=100_000)
-    parser.add_argument("--max-time", type=float, default=1.0)
-    parser.add_argument("--backoff-scheduler", action="store_true")
+    max_iters: int = 11
+    max_nodes: int = 100_000
+    max_time: float = 1.0
+    backoff_scheduler: bool = False
 
-    args = parser.parse_args()
+
+def main() -> int:
+    description = (__doc__ or "") + (
+        "\n"
+        "Example:\n"
+        "    cargo build --release --bin generate --bin measure-size\n"
+        "    uv run scripts/generate_and_measure.py \\\n"
+        "        --total-samples 1000 --min-size 10 --max-size 50 \\\n"
+        "        --distribution uniform --seed 42 --max-memory 8G \\\n"
+        "        --max-iters 50 --max-nodes 100000 --max-time 10 \\\n"
+        "        --backoff-scheduler"
+    )
+    args = tyro.cli(Args, description=description)
+
+    if args.path is None:
+        args.path = generate_unique_dir(Path("data/seed_terms"))
+        print(f"Auto-generated output dir: {args.path}", file=sys.stderr)
+    else:
+        args.path.mkdir(parents=True, exist_ok=True)
+
+    csv_path = args.path / "terms.csv"
+    json_path = args.path / "args.json"
+
+    max_memory_bytes = parse_size(args.max_memory)
+
+    with json_path.open("w") as f:
+        json.dump(dataclasses.asdict(args), f, indent=2, default=str)
 
     for binary in (args.generate_binary, args.measure_binary):
         if not binary.exists():
@@ -108,7 +150,7 @@ def main() -> int:
         "--retry-limit",
         str(args.retry_limit),
         "--path",
-        str(args.path),
+        str(csv_path),
         "--max-iters",
         str(args.max_iters),
         "--max-nodes",
@@ -121,13 +163,13 @@ def main() -> int:
     if args.backoff_scheduler:
         gen_cmd.append("--backoff-scheduler")
 
-    print(f"Generating terms -> {args.path}", file=sys.stderr)
+    print(f"Generating terms -> {csv_path}", file=sys.stderr)
     gen = subprocess.run(gen_cmd)
     if gen.returncode != 0:
         print(f"generate failed (exit {gen.returncode})", file=sys.stderr)
         return gen.returncode
 
-    df = pl.read_csv(args.path)
+    df = pl.read_csv(csv_path)
     if "term" not in df.columns:
         print("Generated CSV is missing a `term` column", file=sys.stderr)
         return 2
@@ -142,7 +184,7 @@ def main() -> int:
         "--max-time",
         str(args.max_time),
         "--max-memory",
-        str(args.max_memory),
+        str(max_memory_bytes),
     ]
     if args.backoff_scheduler:
         measure_base.append("--backoff-scheduler")
@@ -165,7 +207,7 @@ def main() -> int:
             peak = -1
         measurements.append(peak)
 
-    df.with_columns(pl.Series("peak_memory_bytes", measurements)).write_csv(args.path)
+    df.with_columns(pl.Series("peak_memory_bytes", measurements)).write_csv(csv_path)
     return 0
 
 
