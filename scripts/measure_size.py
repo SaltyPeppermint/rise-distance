@@ -2,12 +2,13 @@
 # requires-python = ">=3.11"
 # dependencies = ["polars", "tqdm"]
 # ///
-"""Measure peak heap memory of running eqsat on each term in a CSV.
+"""Measure peak resident set size of running eqsat on each term in a CSV.
 
-Spawns the `measure-size` Rust binary once per row. The binary tracks
-its own peak heap usage via a `peak_alloc` global allocator and prints
-the value (bytes) on stdout. A virtual-memory cap is enforced inside
-the binary via RLIMIT_AS as a safety net against runaways.
+Spawns the `measure-size` Rust binary once per row. The binary reads its
+own peak RSS from `/proc/self/status` (VmHWM) at exit and prints the
+value (bytes) on stdout -> this matches what htop reports. A virtual-
+memory cap is enforced inside the binary via RLIMIT_AS as a safety net
+against runaways.
 
 Writes the result back to the CSV in a `peak_memory_bytes` column.
 On any failure (non-zero exit, RLIMIT kill, timeout, unparseable

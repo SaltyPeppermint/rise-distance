@@ -2,16 +2,12 @@ use std::time::Duration;
 
 use clap::Parser;
 use egg::{BackoffScheduler, RecExpr, Runner, SimpleScheduler};
-use peak_alloc::PeakAlloc;
 use rise_distance::egg::math::{Math, RULES};
 use rlimit::{Resource, setrlimit};
 
-#[global_allocator]
-static ALLOC: PeakAlloc = PeakAlloc;
-
 #[derive(Parser)]
-#[command(about = "Run eqsat on a single term and print peak heap usage in bytes.")]
-struct Cli {
+#[command(about = "Run eqsat on a single term and print peak RSS in bytes.")]
+struct Args {
     /// Term to run eqsat on (s-expression).
     #[arg(long)]
     term: String,
@@ -40,23 +36,23 @@ struct Cli {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let args = Args::parse();
 
-    if let Some(cap) = cli.max_memory {
+    if let Some(cap) = args.max_memory {
         setrlimit(Resource::AS, cap, cap).expect("setrlimit RLIMIT_AS failed");
     }
 
-    let expr: RecExpr<Math> = cli
+    let expr: RecExpr<Math> = args
         .term
         .parse()
-        .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", cli.term));
+        .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
 
     let runner = Runner::default()
         .with_expr(&expr)
-        .with_iter_limit(cli.max_iters)
-        .with_node_limit(cli.max_nodes)
-        .with_time_limit(Duration::from_secs_f64(cli.max_time));
-    let runner = if cli.backoff_scheduler {
+        .with_iter_limit(args.max_iters)
+        .with_node_limit(args.max_nodes)
+        .with_time_limit(Duration::from_secs_f64(args.max_time));
+    let runner = if args.backoff_scheduler {
         runner.with_scheduler(BackoffScheduler::default())
     } else {
         runner.with_scheduler(SimpleScheduler)
@@ -65,5 +61,23 @@ fn main() {
 
     drop(runner);
 
-    println!("{}", ALLOC.peak_usage());
+    println!("{}", peak_rss_bytes());
+}
+
+/// Peak resident set size of this process in bytes, read from
+/// `/proc/self/status` (`VmHWM`). Matches what htop reports.
+fn peak_rss_bytes() -> u64 {
+    let status =
+        std::fs::read_to_string("/proc/self/status").expect("failed to read /proc/self/status");
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmHWM:") {
+            let kb: u64 = rest
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .expect("malformed VmHWM line");
+            return kb * 1024;
+        }
+    }
+    panic!("VmHWM not found in /proc/self/status");
 }

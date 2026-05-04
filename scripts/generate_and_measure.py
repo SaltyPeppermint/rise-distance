@@ -2,12 +2,13 @@
 # requires-python = ">=3.11"
 # dependencies = ["polars", "tqdm", "tyro", "diceware"]
 # ///
-"""Generate random math terms and measure peak heap memory of eqsat on each.
+"""Generate random math terms and measure peak RSS of eqsat on each.
 
 Shells out to `target/release/generate` to produce a CSV of terms, then to
-`target/release/measure-size` once per row to record peak heap usage in a
-`peak_memory_bytes` column. Egg limits (`--max-iters`, `--max-nodes`,
-`--max-time`, `--backoff-scheduler`) are forwarded to both binaries.
+`target/release/measure-size` once per row to record peak resident set
+size (VmHWM, matching htop) in a `peak_memory_bytes` column. Egg limits
+(`--max-iters`, `--max-nodes`, `--max-time`, `--backoff-scheduler`) are
+forwarded to both binaries.
 
 On any per-term failure (non-zero exit, RLIMIT kill, timeout, unparseable
 output), `peak_memory_bytes` is -1.
