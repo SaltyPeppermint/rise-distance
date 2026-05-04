@@ -60,6 +60,11 @@ def main() -> int:
     parser.add_argument("--max-iters", type=int, default=11)
     parser.add_argument("--max-nodes", type=int, default=100_000)
     parser.add_argument("--max-time", type=float, default=1.0)
+    parser.add_argument(
+        "--backoff-scheduler",
+        action="store_true",
+        help="Use egg's BackoffScheduler instead of the SimpleScheduler.",
+    )
     args = parser.parse_args()
 
     if not args.binary.exists():
@@ -86,6 +91,8 @@ def main() -> int:
         "--max-memory",
         str(args.max_memory),
     ]
+    if args.backoff_scheduler:
+        cmd_base.append("--backoff-scheduler")
 
     measurements: list[int] = []
     for term in tqdm(df["term"].to_list(), desc="terms"):

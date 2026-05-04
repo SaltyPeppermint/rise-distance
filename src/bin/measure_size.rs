@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use egg::{RecExpr, Runner, SimpleScheduler};
+use egg::{BackoffScheduler, RecExpr, Runner, SimpleScheduler};
 use peak_alloc::PeakAlloc;
 use rise_distance::egg::math::{Math, RULES};
 use rlimit::{Resource, setrlimit};
@@ -33,6 +33,10 @@ struct Cli {
     /// this generously vs. the real RSS budget.
     #[arg(long)]
     max_memory: Option<u64>,
+
+    /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
+    #[arg(long, default_value_t = false)]
+    backoff_scheduler: bool,
 }
 
 fn main() {
@@ -51,9 +55,13 @@ fn main() {
         .with_expr(&expr)
         .with_iter_limit(cli.max_iters)
         .with_node_limit(cli.max_nodes)
-        .with_time_limit(Duration::from_secs_f64(cli.max_time))
-        .with_scheduler(SimpleScheduler)
-        .run(&*RULES);
+        .with_time_limit(Duration::from_secs_f64(cli.max_time));
+    let runner = if cli.backoff_scheduler {
+        runner.with_scheduler(BackoffScheduler::default())
+    } else {
+        runner.with_scheduler(SimpleScheduler)
+    };
+    let runner = runner.run(&*RULES);
 
     drop(runner);
 

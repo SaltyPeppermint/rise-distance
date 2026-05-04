@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use csv::Writer;
-use egg::{Analysis, Language, Rewrite, Runner, SimpleScheduler, StopReason};
+use egg::{Analysis, BackoffScheduler, Language, Rewrite, Runner, SimpleScheduler, StopReason};
 use hashbrown::{HashMap, hash_map::Entry};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
@@ -35,56 +35,63 @@ Examples:
 
   # Adjust retry limit and Boltzmann tolerance
   generate --total-samples 500 --min-size 10 --max-size 30 --distribution uniform --seed 1 --path out.csv --tolerance 2 --retry-limit 5000
+
+  # Use the BackoffScheduler with custom egg limits
+  cargo run --release --bin generate -- --total-samples 1000 --min-size 10 --max-size 50 --distribution uniform --seed 42 --path output_new.csv --max-iters 50 --max-nodes 100000 --max-time 10 --backoff-scheduler
 "
 )]
 struct Cli {
-    /// Total number of samples
+    /// Total number of samples to generate across all sizes
     #[arg(long)]
     total_samples: usize,
 
-    /// Min term size
+    /// Minimum term size (inclusive)
     #[arg(long)]
     min_size: usize,
 
-    /// Max term size
+    /// Maximum term size (inclusive)
     #[arg(long)]
     max_size: usize,
 
-    /// Tolerance in the boltzman sampler
+    /// Size tolerance for the Boltzmann sampler
     #[arg(long, default_value_t = 1)]
     tolerance: usize,
 
-    /// Seed
+    /// RNG seed for deterministic sampling
     #[arg(long)]
     seed: u64,
 
-    /// Retry limit when rejecting previously seen terms
-    /// Should only be an issue for really small terms
+    /// Maximum retries when rejecting previously seen terms (mainly relevant for small term sizes)
     #[arg(long, default_value_t = 10000)]
     retry_limit: usize,
 
-    /// Size Distribution to sample
+    /// Size distribution used to allocate samples across sizes
     #[arg(long)]
     distribution: Distribution,
 
-    /// Size Distribution to sample
+    /// Output CSV path
     #[arg(long)]
     path: PathBuf,
 
-    /// Minimum iter complexity for the term
+    /// Maximum egg iterations per term
     #[arg(long, default_value_t = 11)]
     max_iters: usize,
 
-    /// Minimum nodes complexity for the term
+    /// Maximum egraph nodes per term
     #[arg(long, default_value_t = 100_000)]
     max_nodes: usize,
 
-    /// Minimum time complexity for the term
+    /// Maximum runtime in seconds per term
     #[arg(long, default_value_t = 1.0)]
     max_time: f64,
 
+    /// Number of rayon worker threads (defaults to rayon's default; lower to reduce memory pressure)
     #[arg(long)]
     parallelism: Option<usize>,
+
+    /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
+    #[arg(long, default_value_t = false)]
+    backoff_scheduler: bool,
 }
 
 const COLUMN_NAMES: [&str; 10] = [
@@ -113,6 +120,8 @@ fn main() {
     let samples_per_size =
         cli.distribution
             .samples_per_size(cli.min_size, cli.max_size, cli.total_samples);
+
+    let validity_config = (&cli).into();
 
     // Derive one RNG per size by advancing the root RNG sequentially, making it deterministic and ordered.
     let mut root_rng = ChaCha12Rng::seed_from_u64(cli.seed);
@@ -144,15 +153,7 @@ fn main() {
                 let inserted = 'retry: {
                     for _ in 0..cli.retry_limit {
                         let (candidate, validation_result, attempts) = sampler
-                            .sample(&mut rng, &|t| {
-                                valididty_hook(
-                                    t,
-                                    cli.max_iters,
-                                    cli.max_nodes,
-                                    cli.max_time,
-                                    &RULES,
-                                )
-                            })
+                            .sample(&mut rng, &|t| valididty_hook(t, &validity_config, &RULES))
                             .expect("Too many failed sample attempts");
                         total_attempts += attempts;
                         if let Entry::Vacant(e) = collector.entry(candidate) {
@@ -211,11 +212,27 @@ pub struct ValidationResult {
     pub last_time: f64,
 }
 
+pub struct ValidityConfig {
+    pub max_iters: usize,
+    pub max_nodes: usize,
+    pub max_time: f64,
+    pub backoff_scheduler: bool,
+}
+
+impl From<&Cli> for ValidityConfig {
+    fn from(cli: &Cli) -> Self {
+        Self {
+            max_iters: cli.max_iters,
+            max_nodes: cli.max_nodes,
+            max_time: cli.max_time,
+            backoff_scheduler: cli.backoff_scheduler,
+        }
+    }
+}
+
 pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T: ToEgg<L>>(
     tree: &T,
-    max_iters: usize,
-    max_nodes: usize,
-    max_time: f64,
+    config: &ValidityConfig,
     rules: &[Rewrite<L, N>],
 ) -> Option<ValidationResult> {
     let expr = tree.to_rec_expr();
@@ -228,10 +245,14 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
     // trivially simplifies to 0
     let runner = Runner::default()
         .with_expr(&expr)
-        .with_iter_limit(max_iters)
-        .with_node_limit(max_nodes)
-        .with_time_limit(Duration::from_secs_f64(max_time))
-        .with_scheduler(SimpleScheduler);
+        .with_iter_limit(config.max_iters)
+        .with_node_limit(config.max_nodes)
+        .with_time_limit(Duration::from_secs_f64(config.max_time));
+    let runner = if config.backoff_scheduler {
+        runner.with_scheduler(BackoffScheduler::default())
+    } else {
+        runner.with_scheduler(SimpleScheduler)
+    };
 
     // Setting and unsetting the panic hook so we dont get debug spam. it is fine to ignore the output
     // Afterwards we reinstall the old default panic hook
@@ -261,119 +282,3 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
     }
     None
 }
-
-// /// Structural estimate of the heap bytes held by `g`.
-// ///
-// /// Walks only the public API ([`EGraph::nodes`], [`EGraph::classes`],
-// /// [`EGraph::total_size`], [`EGraph::total_number_of_nodes`],
-// /// [`EGraph::number_of_classes`]) and assumes:
-// /// - `L` and `N::Data` are `'static` and own no heap allocations themselves
-// ///   (true for our `Math`/`Lambda` languages).
-// /// - Explanations are disabled, so `explain: Option<Explain<L>>` contributes
-// ///   only its discriminant.
-// /// - The egraph has just been rebuilt, so `pending` and `analysis_pending`
-// ///   are effectively empty.
-// ///
-// /// Approximations:
-// /// - `memo` and `classes` are sized assuming hashbrown's load factor (≤ 7/8)
-// ///   and a power-of-two bucket count, plus one metadata byte per slot.
-// /// - `unionfind` is treated as a `Vec<Id>` with one slot per id ever added
-// ///   (i.e. `nodes().len()`); the real `UnionFind` has identical asymptotic
-// ///   storage but may carry a small constant of bookkeeping.
-// /// - `classes_by_op` is sized by walking `g.nodes()` to collect the distinct
-// ///   discriminants actually present, then querying [`EGraph::classes_for_op`]
-// ///   for each to learn the per-op `HashSet<Id>` length. Each set is sized
-// ///   individually with the same hashbrown formula. This is exact in the
-// ///   payload (one `Id` per canonical enode) and tight on the per-op bucket
-// ///   overhead, but still ignores any unused-but-allocated capacity in those
-// ///   sets.
-// ///
-// /// Things deliberately not counted:
-// /// - `explain` contents (assumed disabled).
-// /// - Transient queues (`pending`, `analysis_pending`).
-// /// - Allocator slack and per-allocation headers.
-// /// - Any heap data hanging off `L` or `N::Data` (caller's responsibility).
-// pub fn estimate_egraph_bytes<L, N>(g: &EGraph<L, N>) -> usize
-// where
-//     L: Language,
-//     N: Analysis<L>,
-// {
-//     let n_nodes_total = g.nodes().len();
-
-//     let mut bytes = mem::size_of::<EGraph<L, N>>();
-
-//     // `nodes: Vec<L>` with one slot per id ever added (non-canonical included).
-//     bytes += mem::size_of_val(g.nodes());
-
-//     // `unionfind`: one parent Id per id ever added.
-//     bytes += n_nodes_total * mem::size_of::<Id>();
-
-//     // `memo: HashMap<L, Id>`
-//     bytes += hashbrown_bytes::<L, Id>(g.total_size());
-
-//     // Per-class storage.
-//     for class in g.classes() {
-//         bytes += mem::size_of::<EClass<L, N::Data>>();
-//         bytes += class.nodes.len() * mem::size_of::<L>();
-//         bytes += class.parents().len() * mem::size_of::<Id>();
-//     }
-
-//     // `classes_by_op`: discriminants present, then per-op HashSet<Id> sizes.
-//     let mut discriminants = HashSet::new();
-//     for node in g.nodes() {
-//         discriminants.insert(node.discriminant());
-//     }
-//     bytes += hashbrown_bytes::<L::Discriminant, ()>(discriminants.len());
-//     for disc in &discriminants {
-//         let len = g.classes_for_op(disc).map_or(0, |it| it.len());
-//         bytes += hashbrown_bytes::<Id, ()>(len);
-//     }
-
-//     // `classes: HashMap<Id, EClass<..>>` shell (EClass bodies counted above).
-//     bytes += hashbrown_bytes::<Id, ()>(g.number_of_classes());
-
-//     bytes
-// }
-
-// fn hashbrown_bytes<K, V>(len: usize) -> usize {
-//     if len == 0 {
-//         return 0;
-//     }
-//     let cap = (len * 8).div_ceil(7).next_power_of_two();
-//     cap * (mem::size_of::<(K, V)>() + 1)
-// }
-
-// const INTERCEPT: f64 = 1.524_602_184_0e+06;
-// const COEFS: [f64; 5] = [
-//     2.846_220_556_5e+01,  // stop_nodes
-//     -4.064_005_731_4e+02, // stop_classes
-//     -1.503_030_448_2e+02, // last_nodes
-//     3.727_468_060_5e+02,  // last_classes
-//     2.433_465_461_1e+00,  // estimated_mem_egraph
-// ];
-
-// /// Predicted `measured_mem_total` in bytes. Coefficients fit in
-// /// `analysis/size_estimate.ipynb` (linear regression, R^2 ~ 0.9875 on a held-out
-// /// 20% split of `output_new_100.csv`).
-// fn predict_mem(
-//     stop_nodes: usize,
-//     stop_classes: usize,
-//     last_nodes: usize,
-//     last_classes: usize,
-//     egraph_bytes: usize,
-// ) -> f64 {
-//     #[expect(clippy::cast_precision_loss)]
-//     let xs = [
-//         stop_nodes as f64,
-//         stop_classes as f64,
-//         last_nodes as f64,
-//         last_classes as f64,
-//         egraph_bytes as f64,
-//     ];
-
-//     let mut acc = INTERCEPT;
-//     for k in 0..COEFS.len() {
-//         acc += COEFS[k] * xs[k];
-//     }
-//     acc
-// }
