@@ -27,6 +27,7 @@ import os
 import secrets
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,6 +92,10 @@ class Args:
     # measure-only; per-term virtual-memory cap (e.g. "8G"). Backstop only.
     max_memory: str = tyro.MISSING
 
+    # measure-only; number of concurrent measure-size processes. Defaults
+    # to 1 because parallel runs compete for RAM and can perturb peak RSS.
+    measure_parallelism: int = 1
+
     # shared egg args
     max_iters: int = 11
     max_nodes: int = 100_000
@@ -107,7 +112,7 @@ def main() -> int:
         "        --total-samples 1000 --min-size 10 --max-size 50 \\\n"
         "        --distribution uniform --seed 42 --max-memory 8G \\\n"
         "        --max-iters 50 --max-nodes 100000 --max-time 10 \\\n"
-        "        --backoff-scheduler"
+        "        --backoff-scheduler --measure_parallelism 10"
     )
     args = tyro.cli(Args, description=description)
 
@@ -190,8 +195,7 @@ def main() -> int:
     if args.backoff_scheduler:
         measure_base.append("--backoff-scheduler")
 
-    measurements: list[int] = []
-    for term in tqdm(df["term"].to_list(), desc="terms"):
+    def measure_one(term: str) -> int:
         try:
             proc = subprocess.run(
                 [*measure_base, "--term", term],
@@ -199,14 +203,21 @@ def main() -> int:
                 text=True,
                 timeout=timeout,
             )
-            peak = (
+            return (
                 int(proc.stdout.strip().splitlines()[-1])
                 if proc.returncode == 0
                 else -1
             )
         except (subprocess.TimeoutExpired, ValueError, IndexError):
-            peak = -1
-        measurements.append(peak)
+            return -1
+
+    terms = df["term"].to_list()
+    measurements: list[int] = [-1] * len(terms)
+    workers = max(1, args.measure_parallelism)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(measure_one, t): i for i, t in enumerate(terms)}
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="terms"):
+            measurements[futures[fut]] = fut.result()
 
     df.with_columns(pl.Series("peak_memory_bytes", measurements)).write_csv(csv_path)
     return 0
