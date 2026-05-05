@@ -11,6 +11,7 @@ use egg::{
 use hashbrown::{HashMap, HashSet};
 
 use crate::cli::GuideError;
+use crate::cli::argparse::EqsatConfig;
 use crate::ids::AnyId;
 use crate::tree::TreeShaped;
 use crate::{Label, OriginTree, tee_println};
@@ -128,9 +129,7 @@ where
 pub fn big_eqsat<'a, L, N, R>(
     start: &RecExpr<L>,
     rules: R,
-    time_limit: Duration,
-    node_limit: usize,
-    backoff_scheduler: bool,
+    eqsat: &EqsatConfig,
 ) -> Option<GuideGoalResult<L, N>>
 where
     L: Language + 'static,
@@ -139,11 +138,12 @@ where
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
     let mut runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
-        .with_time_limit(time_limit)
-        .with_node_limit(node_limit)
+        .with_time_limit(Duration::from_secs_f64(eqsat.max_time))
+        .with_node_limit(eqsat.max_nodes)
+        .with_iter_limit(eqsat.max_iters)
         .with_expr(start);
 
-    runner = if backoff_scheduler {
+    runner = if eqsat.backoff_scheduler {
         runner.with_scheduler(BackoffScheduler::default())
     } else {
         runner.with_scheduler(SimpleScheduler)
@@ -211,10 +211,8 @@ pub fn verify_reachability<L, N>(
     guides: &[OriginTree<L>],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
-    time_limit: Duration,
-    node_limit: usize,
+    eqsat: &EqsatConfig,
     full_union: bool,
-    backoff_scheduler: bool,
 ) -> Result<Vec<egg::Iteration<()>>, GuideError>
 where
     L: Label + Language + Display + 'static,
@@ -225,8 +223,9 @@ where
     let goal_clone = goal.clone();
 
     let mut runner = Runner::default()
-        .with_time_limit(time_limit)
-        .with_node_limit(node_limit)
+        .with_time_limit(Duration::from_secs_f64(eqsat.max_time))
+        .with_node_limit(eqsat.max_nodes)
+        .with_iter_limit(eqsat.max_iters)
         .with_hook(move |runner| {
             if runner.egraph.lookup_expr(&goal_clone).is_some() {
                 return Err("goal found".to_owned());
@@ -234,7 +233,7 @@ where
             Ok(())
         });
 
-    runner = if backoff_scheduler {
+    runner = if eqsat.backoff_scheduler {
         runner.with_scheduler(BackoffScheduler::default())
     } else {
         runner.with_scheduler(SimpleScheduler)

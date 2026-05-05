@@ -10,7 +10,9 @@ use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 
-use rise_distance::cli::argparse::{SampleStrategy, SeedInput, TermSampleDist, parse_seeds};
+use rise_distance::cli::argparse::{
+    EqsatConfig, SampleStrategy, SeedInput, TermSampleDist, parse_seeds,
+};
 use rise_distance::cli::parquet::dump_full_eval_parquet;
 use rise_distance::cli::{
     ExperimentError, GuideEval, PrecomputePackage, get_run_folder, init_log, measure_guide,
@@ -54,11 +56,15 @@ struct Args {
 
     /// Node limit for the baseline egraph
     #[arg(long, default_value_t = 1_000_000_000)]
-    node_limit: usize,
+    max_nodes: usize,
 
     /// Time limit for the baseline egraph in seconds
     #[arg(long, default_value_t = 0.2)]
-    time_limit: f64,
+    max_time: f64,
+
+    /// Iteration limit for the baseline egraph
+    #[arg(long, default_value_t = usize::MAX)]
+    max_iters: usize,
 
     /// Number of guide candidates to sample from the n-1 frontier
     #[arg(short, long)]
@@ -100,10 +106,16 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+    let eqsat = EqsatConfig {
+        max_iters: args.max_iters,
+        max_nodes: args.max_nodes,
+        max_time: args.max_time,
+        backoff_scheduler: args.backoff_scheduler,
+    };
     let prefix = format!(
         "nodes-{}-timems-{}-strategy-{}-fullunion-{}",
-        args.node_limit,
-        Duration::from_secs_f64(args.time_limit).as_millis(),
+        eqsat.max_nodes,
+        Duration::from_secs_f64(eqsat.max_time).as_millis(),
         args.guide_sample_strategy,
         args.full_union
     );
@@ -128,7 +140,9 @@ fn main() {
 
     for (i, (seed_str, seed_expr, max_size)) in seeds.iter().enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        if let Some(stats) = process_seed(&args, seed_str, seed_expr, *max_size, &run_folder) {
+        if let Some(stats) =
+            process_seed(&args, &eqsat, seed_str, seed_expr, *max_size, &run_folder)
+        {
             all_stats.push(stats);
         }
     }
@@ -142,18 +156,13 @@ fn main() {
 /// is empty (seed is skipped with a warning).
 fn process_seed(
     args: &Args,
+    eqsat: &EqsatConfig,
     seed_str: &str,
     seed_expr: &RecExpr<Math>,
     max_size: usize,
     run_folder: &Path,
 ) -> Option<serde_json::Value> {
-    let result = big_eqsat(
-        seed_expr,
-        RULES.iter(),
-        Duration::from_secs_f64(args.time_limit),
-        args.node_limit,
-        args.backoff_scheduler,
-    )?;
+    let result = big_eqsat(seed_expr, RULES.iter(), eqsat)?;
     tee_println!("Goal Iterations: {}", result.goal_iters());
     tee_println!("Guide Iterations: {}", result.guide_iters());
     tee_println!("Stop Reason: {:?}", result.stop_reason());
@@ -217,7 +226,7 @@ fn process_seed(
     tee_println!("\nRunning top_k experiments NO REPLACEMENT...");
     for goal in goals {
         tee_println!("Current goal: {}", goal.to_string());
-        match try_all(args, &goal, &pc) {
+        match try_all(args, eqsat, &goal, &pc) {
             Err(e) => tee_println!("ERROR TRYING TO SAMPLE FOR {goal}: {e}"),
             Ok(results) => dump_full_eval_parquet(run_folder, seed_str, &goal, &results),
         }
@@ -228,6 +237,7 @@ fn process_seed(
 
 fn try_all<C: Counter + Display + Ord>(
     args: &Args,
+    eqsat: &EqsatConfig,
     goal: &OriginTree<Math>,
     pc: &PrecomputePackage<C, Math, ConstantFold>,
 ) -> Result<Vec<GuideEval<Math>>, ExperimentError> {
@@ -251,10 +261,8 @@ fn try_all<C: Counter + Display + Ord>(
                 std::slice::from_ref(&guide),
                 &goal_recexpr,
                 &RULES,
-                Duration::from_secs_f64(args.time_limit),
-                args.node_limit,
+                eqsat,
                 args.full_union,
-                args.backoff_scheduler,
             );
             let measurements = measure_guide(&guide, &goal_flat);
             Ok(GuideEval {

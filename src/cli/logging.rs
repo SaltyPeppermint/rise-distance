@@ -30,9 +30,9 @@ macro_rules! tee_println {
         $crate::cli::_tee_print(format_args!("\n"))
     };
     ($($arg:tt)*) => {{
-        #[allow(clippy::used_underscore_items)]
+        #[expect(clippy::used_underscore_items)]
         $crate::cli::_tee_print(format_args!($($arg)*));
-        #[allow(clippy::used_underscore_items)]
+        #[expect(clippy::used_underscore_items)]
         $crate::cli::_tee_print(format_args!("\n"));
     }};
 }

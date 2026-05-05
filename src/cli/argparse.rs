@@ -1,23 +1,48 @@
 use std::fmt::Display;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use egg::RecExpr;
 use hashbrown::HashMap;
 use num::ToPrimitive;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::count::Counter;
 use crate::egg::math::Math;
 
 /// Either a single seed s-expression or a path to a JSON file with objects containing `size` and `term` fields.
-///
-/// Pass as `--seed '(d x ...)'` or `--seed-json path/to/file.json`.
 #[derive(Debug, Clone)]
 pub enum SeedInput {
     Single { term: String, max_size: usize },
     JSON(PathBuf),
+}
+
+/// Eqsat resource limits and scheduler choice.
+///
+/// Used both as the CLI-derived config in the binaries and as the
+/// deserialization target for the `args.json` written by
+/// `scripts/generate_and_measure.py`.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct EqsatConfig {
+    pub max_iters: usize,
+    pub max_nodes: usize,
+    pub max_time: f64,
+    pub backoff_scheduler: bool,
+}
+
+/// Read `<folder>/args.json` into an `EqsatConfig`.
+///
+/// # Panics
+///
+/// Panics if `args.json` is missing, unreadable, or the required fields are missing/wrong-typed.
+#[must_use]
+pub fn read_folder_args(folder: &Path) -> EqsatConfig {
+    let path = folder.join("args.json");
+    let reader =
+        File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
+    serde_json::from_reader(reader)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()))
 }
 
 #[derive(Serialize, Debug, Clone, Copy, clap::ValueEnum, strum::Display)]
@@ -121,7 +146,7 @@ impl Distribution {
                 remainders
                     .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
                 let mut counts = floors;
-                #[allow(clippy::cast_possible_truncation)]
+                #[expect(clippy::cast_possible_truncation)]
                 for (i, _) in remainders.iter().take(remainder as usize) {
                     counts[*i] += 1;
                 }

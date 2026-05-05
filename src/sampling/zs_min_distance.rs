@@ -43,7 +43,7 @@ impl<E: EditCosts<S::Label>, S: Sampler> ZSDistanceSampler<E, S> {
     /// # Panics
     ///
     /// Panics if fewer than 2 unique samples are drawn.
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
