@@ -2,7 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["polars", "tqdm"]
 # ///
-"""Measure peak resident set size of running eqsat on each term in a CSV.
+"""Measure peak resident set size of running eqsat on each term in a JSON.
 
 Spawns the `measure-size` Rust binary once per row. The binary reads its
 own peak RSS from `/proc/self/status` (VmHWM) at exit and prints the
@@ -10,13 +10,13 @@ value (bytes) on stdout -> this matches what htop reports. A virtual-
 memory cap is enforced inside the binary via RLIMIT_AS as a safety net
 against runaways.
 
-Writes the result back to the CSV in a `peak_memory_bytes` column.
+Writes the result back to the JSON in a `peak_memory_bytes` column.
 On any failure (non-zero exit, RLIMIT kill, timeout, unparseable
 output), the value is -1.
 
 Example:
     cargo build --release --bin measure-size
-    uv run scripts/measure_size.py --path output.csv --max-memory 8G --max-time 30
+    uv run scripts/measure_size.py --path output.json --max-memory 8G --max-time 30
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def main() -> int:
         "--path",
         type=Path,
         required=True,
-        help="CSV with a `term` column. Edited in place.",
+        help="JSON with a `term` column. Edited in place.",
     )
     parser.add_argument(
         "--binary", type=Path, default=Path("target/release/measure-size")
@@ -75,9 +75,9 @@ def main() -> int:
         )
         return 2
 
-    df = pl.read_csv(args.path)
+    df = pl.read_json(args.path)
     if "term" not in df.columns:
-        print("CSV must contain a `term` column", file=sys.stderr)
+        print("JSON must contain a `term` column", file=sys.stderr)
         return 2
 
     timeout = max(1, int(args.max_time * 4) + 5)
@@ -113,7 +113,7 @@ def main() -> int:
             peak = -1
         measurements.append(peak)
 
-    df.with_columns(pl.Series("peak_memory_bytes", measurements)).write_csv(args.path)
+    df.with_columns(pl.Series("peak_memory_bytes", measurements)).write_json(args.path)
     return 0
 
 
