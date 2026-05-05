@@ -1,10 +1,12 @@
 use std::fmt::Display;
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
 use clap::Parser;
-use csv::Writer;
 use egg::{Analysis, BackoffScheduler, Language, Rewrite, Runner, SimpleScheduler, StopReason};
 use hashbrown::{HashMap, hash_map::Entry};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
@@ -21,23 +23,23 @@ use rise_distance::cli::argparse::Distribution;
 
 #[derive(Parser, Serialize)]
 #[command(
-    about = "Generate random math terms and write them to a CSV file",
+    about = "Generate random math terms and write them to a JSON file",
     after_help = "\
 Examples:
   # Generate 1000 uniform samples between size 5 and 50
-  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution uniform --seed 42 --path output.csv
+  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution uniform --seed 42 --path output.json
 
   # Generate with a normal distribution (default sigma=2.6)
-  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution normal --seed 42 --path output.csv
+  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution normal --seed 42 --path output.json
 
   # Generate with a normal distribution and custom sigma
-  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution normal:3.0 --seed 42 --path output.csv
+  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution normal:3.0 --seed 42 --path output.json
 
   # Adjust retry limit and Boltzmann tolerance
-  generate --total-samples 500 --min-size 10 --max-size 30 --distribution uniform --seed 1 --path out.csv --tolerance 2 --retry-limit 5000
+  generate --total-samples 500 --min-size 10 --max-size 30 --distribution uniform --seed 1 --path out.json --tolerance 2 --retry-limit 5000
 
   # Use the BackoffScheduler with custom egg limits
-  cargo run --release --bin generate -- --total-samples 1000 --min-size 10 --max-size 50 --distribution uniform --seed 42 --path output_new.csv --max-iters 50 --max-nodes 100000 --max-time 10 --backoff-scheduler
+  cargo run --release --bin generate -- --total-samples 1000 --min-size 10 --max-size 50 --distribution uniform --seed 42 --path output_new.json --max-iters 50 --max-nodes 100000 --max-time 10 --backoff-scheduler
 "
 )]
 struct Args {
@@ -69,7 +71,7 @@ struct Args {
     #[arg(long)]
     distribution: Distribution,
 
-    /// Output CSV path
+    /// Output JSON path
     #[arg(long)]
     path: PathBuf,
 
@@ -93,19 +95,6 @@ struct Args {
     #[arg(long, default_value_t = false)]
     backoff_scheduler: bool,
 }
-
-const COLUMN_NAMES: [&str; 10] = [
-    "size",
-    "term",
-    "attempts",
-    "stop_reason",
-    "stop_nodes",
-    "stop_classes",
-    "stop_time",
-    "last_nodes",
-    "last_classes",
-    "last_time",
-];
 
 fn main() {
     let args = Args::parse();
@@ -144,7 +133,6 @@ fn main() {
     // No parallelism, otherwise the memory hook wouldnt work correctly
     let big_collector = sized_rngs
         .into_par_iter()
-        .progress_with_style(style)
         .map(|(size, n, mut rng)| {
             let sampler = BoltzmannSampler::new(*size, args.tolerance, None);
             let mut collector = HashMap::new();
@@ -155,8 +143,9 @@ fn main() {
                         let (candidate, validation_result, attempts) = sampler
                             .sample(&mut rng, &|t| valididty_hook(t, &validity_config, &RULES))
                             .expect("Too many failed sample attempts");
+                        let candidate_str = candidate.to_string();
                         total_attempts += attempts;
-                        if let Entry::Vacant(e) = collector.entry(candidate) {
+                        if let Entry::Vacant(e) = collector.entry(candidate_str) {
                             e.insert((total_attempts, validation_result));
                             break 'retry true;
                         }
@@ -167,6 +156,7 @@ fn main() {
             }
             (size, collector)
         })
+        .progress_with_style(style)
         .collect::<Vec<_>>();
 
     println!(
@@ -177,31 +167,13 @@ fn main() {
             .sum::<usize>(),
         big_collector.iter().map(|x| x.1.len()).sum::<usize>()
     );
-    let mut writer = Writer::from_path(&args.path).expect("File does not exist");
+    let mut writer = BufWriter::new(File::create(&args.path).unwrap());
 
-    writer.write_record(COLUMN_NAMES).unwrap();
-
-    for (size, terms) in big_collector {
-        let size_str = size.to_string();
-        for (tree, (attempts, vr)) in terms {
-            writer
-                .write_record([
-                    &size_str,
-                    &tree.to_string(),
-                    &attempts.to_string(),
-                    &format!("{:?}", vr.stop_reason),
-                    &vr.stop_nodes.to_string(),
-                    &vr.stop_classes.to_string(),
-                    &vr.stop_time.to_string(),
-                    &vr.last_nodes.to_string(),
-                    &vr.last_classes.to_string(),
-                    &vr.last_time.to_string(),
-                ])
-                .unwrap();
-        }
-    }
+    serde_json::to_writer(&mut writer, &big_collector).unwrap();
+    writer.flush().unwrap();
 }
 
+#[derive(Serialize)]
 pub struct ValidationResult {
     pub stop_reason: StopReason,
     pub stop_nodes: usize,
@@ -210,6 +182,7 @@ pub struct ValidationResult {
     pub last_nodes: usize,
     pub last_classes: usize,
     pub last_time: f64,
+    pub iterations: usize,
 }
 
 pub struct ValidityConfig {
@@ -278,6 +251,7 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
             last_nodes: r.iterations.last()?.egraph_nodes,
             last_classes: r.iterations.last()?.egraph_classes,
             last_time: r.iterations.last()?.total_time,
+            iterations: r.iterations.len(),
         });
     }
     None

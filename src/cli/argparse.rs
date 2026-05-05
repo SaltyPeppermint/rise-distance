@@ -1,9 +1,11 @@
 use std::fmt::Display;
+use std::fs::File;
 use std::path::PathBuf;
 use std::str::FromStr;
 
 use egg::RecExpr;
 use hashbrown::HashMap;
+use num::ToPrimitive;
 use serde::Serialize;
 
 use crate::count::Counter;
@@ -15,7 +17,7 @@ use crate::egg::math::Math;
 #[derive(Debug, Clone)]
 pub enum SeedInput {
     Single { term: String, max_size: usize },
-    Csv(PathBuf),
+    JSON(PathBuf),
 }
 
 #[derive(Serialize, Debug, Clone, Copy, clap::ValueEnum, strum::Display)]
@@ -212,7 +214,7 @@ impl TermSampleDist {
 ///
 /// # Panics
 ///
-/// Panics on malformed seed expressions or unreadable CSV files.
+/// Panics on malformed seed expressions or unreadable JSON files.
 #[must_use]
 pub fn parse_seeds(input: SeedInput) -> Vec<(String, RecExpr<Math>, usize)> {
     match input {
@@ -222,18 +224,32 @@ pub fn parse_seeds(input: SeedInput) -> Vec<(String, RecExpr<Math>, usize)> {
                 .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
             vec![(term, expr, max_size)]
         }
-        SeedInput::Csv(path) => {
-            let mut rdr = csv::Reader::from_path(&path)
-                .unwrap_or_else(|e| panic!("Failed to open CSV {}: {e}", path.display()));
-            rdr.records()
-                .map(|rec| {
-                    let rec = rec.expect("CSV read error");
-                    let max_size: usize = rec[0].parse().expect("CSV size column must be usize");
-                    let term = rec[1].to_owned();
-                    let expr = term
-                        .parse::<RecExpr<Math>>()
-                        .unwrap_or_else(|e| panic!("Failed to parse term '{term}': {e}"));
-                    (term, expr, max_size * 2)
+        SeedInput::JSON(path) => {
+            let reader = File::open(&path)
+                .unwrap_or_else(|e| panic!("Failed to open JSON {}: {e}", path.display()));
+            serde_json::from_reader::<_, serde_json::Value>(reader)
+                .unwrap()
+                .as_array()
+                .unwrap_or_else(|| panic!("Expected top-level JSON array in {}", path.display()))
+                .iter()
+                .flat_map(|group| {
+                    let pair = group.as_array().expect("Expected [size, {{terms}}]");
+                    let max_size = 2 * pair[0]
+                        .as_u64()
+                        .expect("Expected size as u64 in")
+                        .to_usize()
+                        .unwrap();
+
+                    pair[1]
+                        .as_object()
+                        .expect("Expected term object as second element")
+                        .keys()
+                        .map(move |term| {
+                            let expr = term
+                                .parse::<RecExpr<Math>>()
+                                .unwrap_or_else(|e| panic!("Failed to parse seed '{term}': {e}"));
+                            (term.clone(), expr, max_size)
+                        })
                 })
                 .collect()
         }

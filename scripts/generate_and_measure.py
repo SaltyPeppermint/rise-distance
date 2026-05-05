@@ -1,21 +1,24 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["polars", "tqdm", "tyro", "diceware"]
+# dependencies = ["tqdm", "tyro", "diceware"]
 # ///
 """Generate random math terms and measure peak RSS of eqsat on each.
 
-Shells out to `target/release/generate` to produce a CSV of terms, then to
-`target/release/measure-size` once per row to record peak resident set
-size (VmHWM, matching htop) in a `peak_memory_bytes` column. Egg limits
-(`--max-iters`, `--max-nodes`, `--max-time`, `--backoff-scheduler`) are
-forwarded to both binaries.
+Shells out to `target/release/generate` to produce a nested JSON of terms
+grouped by size, then to `target/release/measure-size` once per term to
+record peak resident set size (VmHWM, matching htop). The peak is appended
+to each inner term record. Egg limits (`--max-iters`, `--max-nodes`,
+`--max-time`, `--backoff-scheduler`) are forwarded to both binaries.
+
+The `terms.json` payload has shape
+`[[size, {term: [attempts, validation_result, peak_memory_bytes]}], ...]`.
 
 On any per-term failure (non-zero exit, RLIMIT kill, timeout, unparseable
 output), `peak_memory_bytes` is -1.
 
 If `--path` is omitted, a fresh `data/seed_terms/<adjective>-<noun>/`
 directory is created (collision-retry against existing siblings). The output
-CSV `terms.csv` and a sidecar `args.json` recording all CLI args are written
+`terms.json` and a sidecar `args.json` recording all CLI args are written
 into the directory.
 """
 
@@ -31,7 +34,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-import polars as pl
 import tyro
 from diceware.wordlist import WordList, get_wordlists_dir
 from tqdm import tqdm
@@ -73,7 +75,7 @@ def generate_unique_dir(parent: Path, max_attempts: int = 100) -> Path:
 class Args:
     # I/O
     path: Path | None = None
-    """Output directory. Will contain `terms.csv` and `args.json`. If
+    """Output directory. Will contain `terms.json` and `args.json`. If
     omitted, a fresh `data/seed_terms/<adjective>-<noun>/` is created."""
 
     generate_binary: Path = Path("target/release/generate")
@@ -122,12 +124,12 @@ def main() -> int:
     else:
         args.path.mkdir(parents=True, exist_ok=True)
 
-    csv_path = args.path / "terms.csv"
-    json_path = args.path / "args.json"
+    terms_path = args.path / "terms.json"
+    args_path = args.path / "args.json"
 
     max_memory_bytes = parse_size(args.max_memory)
 
-    with json_path.open("w") as f:
+    with args_path.open("w") as f:
         json.dump(dataclasses.asdict(args), f, indent=2, default=str)
 
     for binary in (args.generate_binary, args.measure_binary):
@@ -156,7 +158,7 @@ def main() -> int:
         "--retry-limit",
         str(args.retry_limit),
         "--path",
-        str(csv_path),
+        str(terms_path),
         "--max-iters",
         str(args.max_iters),
         "--max-nodes",
@@ -169,16 +171,14 @@ def main() -> int:
     if args.backoff_scheduler:
         gen_cmd.append("--backoff-scheduler")
 
-    print(f"Generating terms -> {csv_path}", file=sys.stderr)
+    print(f"Generating terms -> {terms_path}", file=sys.stderr)
     gen = subprocess.run(gen_cmd)
     if gen.returncode != 0:
         print(f"generate failed (exit {gen.returncode})", file=sys.stderr)
         return gen.returncode
 
-    df = pl.read_csv(csv_path)
-    if "term" not in df.columns:
-        print("Generated CSV is missing a `term` column", file=sys.stderr)
-        return 2
+    with terms_path.open("r") as f:
+        big_collector = json.load(f)
 
     timeout = max(1, int(args.max_time * 4) + 5)
     measure_base = [
@@ -211,15 +211,26 @@ def main() -> int:
         except (subprocess.TimeoutExpired, ValueError, IndexError):
             return -1
 
-    terms = df["term"].to_list()
-    measurements: list[int] = [-1] * len(terms)
+    # big_collector is [[size, {term_str: [attempts, validation_result]}], ...].
+    # Collect (size_idx, term_str) refs in a flat list, measure in parallel,
+    # then write the peak_memory_bytes back into each inner record in place.
+    flat: list[tuple[int, str]] = [
+        (size_idx, term)
+        for size_idx, (_size, terms_map) in enumerate(big_collector)
+        for term in terms_map
+    ]
+    measurements: list[int] = [-1] * len(flat)
     workers = max(1, args.measure_parallelism)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(measure_one, t): i for i, t in enumerate(terms)}
+        futures = {pool.submit(measure_one, t): i for i, (_, t) in enumerate(flat)}
         for fut in tqdm(as_completed(futures), total=len(futures), desc="terms"):
             measurements[futures[fut]] = fut.result()
 
-    df.with_columns(pl.Series("peak_memory_bytes", measurements)).write_csv(csv_path)
+    for (size_idx, term), peak in zip(flat, measurements):
+        big_collector[size_idx][1][term].append(peak)
+
+    with terms_path.open("w") as f:
+        json.dump(big_collector, f)
     return 0
 
 

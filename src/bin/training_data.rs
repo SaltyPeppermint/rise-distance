@@ -116,7 +116,7 @@ fn main() {
             term: s.clone(),
             max_size: args.max_size.expect("--max-size required with --seed"),
         },
-        (None, Some(p)) => SeedInput::Csv(p.clone()),
+        (None, Some(p)) => SeedInput::JSON(p.clone()),
         _ => panic!("clap group enforces exactly one of --seed / --seed-csv"),
     };
     let seeds = parse_seeds(seed_input);
