@@ -32,8 +32,8 @@ Examples:
   # Sample 5 goals and 100 guides
   training_data --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --goals 5
 
-  # Loop over many seeds from a CSV (size,term columns; size drives max-size)
-  training_data --seed-csv seeds.csv -g 100
+  # Loop over many seeds from a JSON file (objects with size and term fields; size drives max-size)
+  training_data --seed-json seeds.json -g 100
 
   # Write output to a specific folder
   training_data --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 -o results/
@@ -47,12 +47,12 @@ struct Args {
     #[arg(long, group = "seed_input", requires = "max_size")]
     seed: Option<String>,
 
-    /// Path to a CSV file with `size,term` columns. The `size` column drives --max-size.
+    /// Path to a JSON file with objects containing `size` and `term` fields. The `size` field drives --max-size.
     /// Mutually exclusive with --seed / --max-size.
     #[arg(long, group = "seed_input", conflicts_with = "max_size")]
-    seed_csv: Option<PathBuf>,
+    seed_json: Option<PathBuf>,
 
-    /// Node limit for the baseline egraph in seconds
+    /// Node limit for the baseline egraph
     #[arg(long, default_value_t = 1_000_000_000)]
     node_limit: usize,
 
@@ -68,7 +68,7 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     goals: usize,
 
-    /// Max term size for counting/sampling. Required with --seed; forbidden with --seed-csv.
+    /// Max term size for counting/sampling. Required with --seed; forbidden with --seed-json.
     #[arg(long)]
     max_size: Option<usize>,
 
@@ -111,13 +111,13 @@ fn main() {
     init_log(&run_folder);
     tee_println!("Run Folder: {}", run_folder.to_string_lossy());
 
-    let seed_input = match (&args.seed, &args.seed_csv) {
+    let seed_input = match (&args.seed, &args.seed_json) {
         (Some(s), None) => SeedInput::Single {
             term: s.clone(),
             max_size: args.max_size.expect("--max-size required with --seed"),
         },
         (None, Some(p)) => SeedInput::JSON(p.clone()),
-        _ => panic!("clap group enforces exactly one of --seed / --seed-csv"),
+        _ => panic!("clap group enforces exactly one of --seed / --seed-json"),
     };
     let seeds = parse_seeds(seed_input);
 

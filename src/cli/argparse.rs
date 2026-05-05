@@ -11,9 +11,9 @@ use serde::Serialize;
 use crate::count::Counter;
 use crate::egg::math::Math;
 
-/// Either a single seed s-expression or a path to a CSV file with `size,term` columns.
+/// Either a single seed s-expression or a path to a JSON file with objects containing `size` and `term` fields.
 ///
-/// Pass as `--seed '(d x ...)'` or `--seed-csv path/to/file.csv`.
+/// Pass as `--seed '(d x ...)'` or `--seed-json path/to/file.json`.
 #[derive(Debug, Clone)]
 pub enum SeedInput {
     Single { term: String, max_size: usize },
