@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
-use egg::RecExpr;
+use egg::{AstSize, EGraph, Extractor, Id, RecExpr};
+use hashbrown::HashMap;
 use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
@@ -20,7 +21,7 @@ use rise_distance::cli::{write_config, write_stats};
 use rise_distance::count::Counter;
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
 use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
-use rise_distance::tee_println;
+use rise_distance::{OriginTree, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -131,23 +132,20 @@ fn main() {
     tee_println!("Distribution: {}", args.size_distribution);
     tee_println!("Seeds to process: {}", seeds.len());
 
-    let mut all_with_replacement = Vec::new();
-    let mut all_no_replacement = Vec::new();
+    let mut all: HashMap<String, Vec<GoalResults>> = HashMap::new();
     let mut all_stats = Vec::new();
 
     for (i, (seed_str, seed_expr, max_size)) in seeds.iter().enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        if let Some((with_replacement, no_replacement, stats)) =
-            process_seed(&args, seed_str, seed_expr, *max_size)
-        {
+        if let Some((r, stats)) = process_seed(&args, seed_str, seed_expr, *max_size) {
             all_stats.push(stats);
-            all_with_replacement.extend(with_replacement);
-            all_no_replacement.extend(no_replacement);
+            for (name, r_s) in r {
+                all.entry(name).or_default().extend(r_s);
+            }
         }
     }
 
-    write_top_k_outputs(&run_folder, &all_with_replacement, "with_replacement");
-    write_top_k_outputs(&run_folder, &all_no_replacement, "no_replacement");
+    write_top_k_outputs(&run_folder, all);
     write_config(&run_folder, &args);
     write_stats(&run_folder, &all_stats);
 }
@@ -160,7 +158,7 @@ fn process_seed(
     seed_str: &str,
     seed_expr: &RecExpr<Math>,
     max_size: usize,
-) -> Option<(Vec<GoalResults>, Vec<GoalResults>, serde_json::Value)> {
+) -> Option<(HashMap<String, Vec<GoalResults>>, serde_json::Value)> {
     let result = big_eqsat(
         seed_expr,
         RULES.iter(),
@@ -229,111 +227,90 @@ fn process_seed(
     )?;
 
     tee_println!("\nRunning top_k experiments NO REPLACEMENT...");
-    let no_replacement = goals
-        .iter()
-        .map(|goal| {
-            tee_println!("Current goal: {}", goal.to_string());
-            GoalResults {
-                seed: seed_str.to_owned(),
-                goal: goal.to_string(),
-                runs: run_guide_set_trials_no_replacement(args, &goal.to_rec_expr(), &pc),
-            }
-        })
-        .collect();
-
+    let no_repl = GuideSetNoReplacement::new(&pc).run_trials(args, seed_str, &goals);
     tee_println!("\nRunning top_k experiments WITH REPLACEMENT...");
-    let with_replacement = goals
-        .iter()
-        .map(|goal| {
-            tee_println!("Current goal: {}", goal.to_string());
-            GoalResults {
-                seed: seed_str.to_owned(),
-                goal: goal.to_string(),
-                runs: run_guide_set_trials_with_replacement(args, &goal.to_rec_expr(), &pc),
-            }
-        })
-        .collect();
-
-    Some((with_replacement, no_replacement, stats))
+    let with_repl = GuideSetWithReplacement::new(&pc).run_trials(args, seed_str, &goals);
+    tee_println!("\nRunning single experiments ONLY SMALLEST...");
+    let just_smallest =
+        JustSmallest::new(result.goal(), result.root()).run_trials(args, seed_str, &goals);
+    let r = HashMap::from([
+        ("no_replacement".to_owned(), no_repl),
+        ("with_replacement".to_owned(), with_repl),
+        ("just_smallest".to_owned(), just_smallest),
+    ]);
+    Some((r, stats))
 }
 
-fn write_top_k_outputs(run_folder: &Path, results: &[GoalResults], suffix: &str) {
-    let output_path = run_folder.join(format!("{suffix}_top_k.json"));
-    let output_file = File::create(output_path).expect("Failed to create output json file");
-    let mut output_writer = BufWriter::new(output_file);
-    serde_json::to_writer(&mut output_writer, &results).expect("write top-k json");
+fn write_top_k_outputs(run_folder: &Path, all: HashMap<String, Vec<GoalResults>>) {
+    for (name, results) in all {
+        let output_path = run_folder.join(format!("{name}_top_k.json"));
+        let output_file = File::create(output_path).expect("Failed to create output json file");
+        let mut output_writer = BufWriter::new(output_file);
+        serde_json::to_writer(&mut output_writer, &results).expect("write top-k json");
 
-    let summaries = results
-        .iter()
-        .map(|r| GoalSummary::from_entries(&r.seed, &r.goal, &r.runs))
-        .collect::<Vec<_>>();
-    let summary_path = run_folder.join(format!("{suffix}_top_k_summary.json"));
-    let summary_file = File::create(summary_path).expect("Failed to create summary json file");
-    let summary_writer = BufWriter::new(summary_file);
-    serde_json::to_writer(summary_writer, &summaries).expect("write top-k summary json");
+        let summaries = results
+            .iter()
+            .map(|r| GoalSummary::from_entries(&r.seed, &r.goal, &r.runs))
+            .collect::<Vec<_>>();
+        let summary_path = run_folder.join(format!("{name}_top_k_summary.json"));
+        let summary_file = File::create(summary_path).expect("Failed to create summary json file");
+        let summary_writer = BufWriter::new(summary_file);
+        serde_json::to_writer(summary_writer, &summaries).expect("write top-k summary json");
 
-    let parquet_path = run_folder.join(format!("{suffix}_top_k_summary.parquet"));
-    dump_summary_parquet(&parquet_path, &summaries);
+        let parquet_path = run_folder.join(format!("{name}_top_k_summary.parquet"));
+        dump_summary_parquet(&parquet_path, &summaries);
+    }
 }
 
-fn run_guide_set_trials_with_replacement<C: Counter + Display + Ord>(
-    args: &Args,
-    goal_recexpr: &RecExpr<Math>,
-    pc: &PrecomputePackage<C, Math, ConstantFold>,
-) -> TrialsPerK {
-    let bars = progress_bars();
-    bars.into_par_iter()
-        .map(|(k, pb)| {
-            let trials = (0..NUM_TRIALS)
-                .into_par_iter()
-                .map(|s| {
-                    let subset = pc.sample_frontier_terms::<false>(
-                        k,
-                        args.size_distribution,
-                        args.guide_sample_strategy,
-                        [k as u64, s as u64],
-                    )?;
-                    verify_reachability(
-                        &subset,
-                        goal_recexpr,
-                        &RULES,
-                        Duration::from_secs_f64(args.time_limit),
-                        args.node_limit,
-                        args.full_union,
-                        args.backoff_scheduler,
-                    )
-                    .map_err(|e| e.into())
-                })
-                .progress_with(pb)
-                .collect::<Vec<_>>();
+trait Strategy {
+    fn run_trial(&self, args: &Args, goal_recexpr: &RecExpr<Math>) -> TrialsPerK;
 
-            // log_trials(k, &trials);
-            (k, trials)
-        })
-        .collect()
+    fn run_trials(
+        &self,
+        args: &Args,
+        seed_str: &str,
+        goals: &[OriginTree<Math>],
+    ) -> Vec<GoalResults> {
+        goals
+            .iter()
+            .map(|goal| {
+                tee_println!("Current goal: {}", goal.to_string());
+                GoalResults {
+                    seed: seed_str.to_owned(),
+                    goal: goal.to_string(),
+                    runs: self.run_trial(args, &goal.to_rec_expr()),
+                }
+            })
+            .collect()
+    }
 }
 
-fn run_guide_set_trials_no_replacement<C: Counter + Display + Ord>(
-    args: &Args,
-    goal_recexpr: &RecExpr<Math>,
-    pc: &PrecomputePackage<C, Math, ConstantFold>,
-) -> TrialsPerK {
-    let bars = progress_bars();
-    bars.into_par_iter()
-        .map(|(k, pb)| {
-            let samples = pc.sample_frontier_terms::<true>(
-                k * NUM_TRIALS,
-                args.size_distribution,
-                args.guide_sample_strategy,
-                [k as u64, 0],
-            );
-            let trials = match samples {
-                Err(e) => vec![Err(e); NUM_TRIALS],
-                Ok(samples) => samples
-                    .par_chunks(k)
-                    .map(|subset| {
+struct GuideSetWithReplacement<'a, C: Counter + Display + Ord>(
+    &'a PrecomputePackage<C, Math, ConstantFold>,
+);
+
+impl<'a, C: Counter + Display + Ord> GuideSetWithReplacement<'a, C> {
+    fn new(precompute_package: &'a PrecomputePackage<C, Math, ConstantFold>) -> Self {
+        Self(precompute_package)
+    }
+}
+
+impl<C: Counter + Display + Ord> Strategy for GuideSetWithReplacement<'_, C> {
+    fn run_trial(&self, args: &Args, goal_recexpr: &RecExpr<Math>) -> TrialsPerK {
+        let bars = progress_bars();
+        bars.into_par_iter()
+            .map(|(k, pb)| {
+                let trials = (0..NUM_TRIALS)
+                    .into_par_iter()
+                    .map(|s| {
+                        let subset = self.0.sample_frontier_terms::<false>(
+                            k,
+                            args.size_distribution,
+                            args.guide_sample_strategy,
+                            [k as u64, s as u64],
+                        )?;
                         verify_reachability(
-                            subset,
+                            &subset,
                             goal_recexpr,
                             &RULES,
                             Duration::from_secs_f64(args.time_limit),
@@ -341,14 +318,87 @@ fn run_guide_set_trials_no_replacement<C: Counter + Display + Ord>(
                             args.full_union,
                             args.backoff_scheduler,
                         )
-                        .map_err(Into::into)
+                        .map_err(|e| e.into())
                     })
                     .progress_with(pb)
-                    .collect(),
-            };
-            (k, trials)
-        })
-        .collect()
+                    .collect::<Vec<_>>();
+
+                // log_trials(k, &trials);
+                (k, trials)
+            })
+            .collect()
+    }
+}
+
+struct GuideSetNoReplacement<'a, C: Counter + Display + Ord>(
+    &'a PrecomputePackage<C, Math, ConstantFold>,
+);
+
+impl<'a, C: Counter + Display + Ord> GuideSetNoReplacement<'a, C> {
+    fn new(precompute_package: &'a PrecomputePackage<C, Math, ConstantFold>) -> Self {
+        Self(precompute_package)
+    }
+}
+
+impl<C: Counter + Display + Ord> Strategy for GuideSetNoReplacement<'_, C> {
+    fn run_trial(&self, args: &Args, goal_recexpr: &RecExpr<Math>) -> TrialsPerK {
+        let bars = progress_bars();
+        bars.into_par_iter()
+            .map(|(k, pb)| {
+                let samples = self.0.sample_frontier_terms::<true>(
+                    k * NUM_TRIALS,
+                    args.size_distribution,
+                    args.guide_sample_strategy,
+                    [k as u64, 0],
+                );
+                let trials = match samples {
+                    Err(e) => vec![Err(e); NUM_TRIALS],
+                    Ok(samples) => samples
+                        .par_chunks(k)
+                        .map(|subset| {
+                            verify_reachability(
+                                subset,
+                                goal_recexpr,
+                                &RULES,
+                                Duration::from_secs_f64(args.time_limit),
+                                args.node_limit,
+                                args.full_union,
+                                args.backoff_scheduler,
+                            )
+                            .map_err(Into::into)
+                        })
+                        .progress_with(pb)
+                        .collect(),
+                };
+                (k, trials)
+            })
+            .collect()
+    }
+}
+
+struct JustSmallest(OriginTree<Math>);
+
+impl JustSmallest {
+    fn new(last_eg: &EGraph<Math, ConstantFold>, root: Id) -> Self {
+        let best = Extractor::new(last_eg, AstSize).find_best(root).1;
+        Self(OriginTree::from_recexpr(last_eg, &best))
+    }
+}
+
+impl Strategy for JustSmallest {
+    fn run_trial(&self, args: &Args, goal_recexpr: &RecExpr<Math>) -> TrialsPerK {
+        let r = verify_reachability(
+            std::slice::from_ref(&self.0),
+            goal_recexpr,
+            &RULES,
+            Duration::from_secs_f64(args.time_limit),
+            args.node_limit,
+            args.full_union,
+            args.backoff_scheduler,
+        )
+        .map_err(Into::into);
+        HashMap::from([(1, vec![r])])
+    }
 }
 
 fn progress_bars() -> Vec<(usize, ProgressBar)> {

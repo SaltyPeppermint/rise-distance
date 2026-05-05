@@ -141,6 +141,12 @@ impl From<NatId> for AnyId {
     }
 }
 
+impl From<egg::Id> for AnyId {
+    fn from(id: egg::Id) -> Self {
+        Self::EClass(EClassId(usize::from(id)))
+    }
+}
+
 /// Serde helpers for `Vec<EClassId>` (e.g., `[0, 1, 2]` -> `Vec<EClassId>`)
 pub mod eclass_id_vec {
     use super::EClassId;

@@ -1,6 +1,7 @@
 use std::fmt::{self, Display};
 use std::hash::Hash;
 
+use egg::{Analysis, EGraph, Language, RecExpr};
 // use hashbrown::DefaultHashBuilder;
 use serde::Serialize;
 
@@ -18,46 +19,7 @@ pub struct OriginTree<L: Label> {
     ty: Option<Box<OriginTree<L>>>,
     children: Vec<OriginTree<L>>,
     origin: AnyId,
-    // /// Precomputed structural hash for O(1) hashing.
-    // #[serde(skip)]
-    // cached_hash: u64,
 }
-
-// impl<L: Label> PartialEq for OriginTree<L> {
-//     fn eq(&self, other: &Self) -> bool {
-//         if self.cached_hash != other.cached_hash {
-//             return false;
-//         }
-//         self.origin == other.origin
-//             && self.label == other.label
-//             && self.ty == other.ty
-//             && self.children == other.children
-//     }
-// }
-
-// impl<L: Label> Hash for OriginTree<L> {
-//     fn hash<H: Hasher>(&self, state: &mut H) {
-//         self.cached_hash.hash(state);
-//     }
-// }
-
-// fn compute_hash<L: Label>(
-//     label: &L,
-//     ty: Option<&OriginTree<L>>,
-//     children: &[OriginTree<L>],
-//     origin: AnyId,
-// ) -> u64 {
-//     let mut hasher = DefaultHashBuilder::default().build_hasher();
-//     label.hash(&mut hasher);
-//     origin.hash(&mut hasher);
-//     if let Some(t) = ty {
-//         t.cached_hash.hash(&mut hasher);
-//     }
-//     for child in children {
-//         child.cached_hash.hash(&mut hasher);
-//     }
-//     hasher.finish()
-// }
 
 impl<L: Label> OriginTree<L> {
     /// Create a leaf node with no children.
@@ -168,6 +130,26 @@ impl<L: Label> OriginTree<L> {
 
     pub fn origin(&self) -> AnyId {
         self.origin
+    }
+
+    #[expect(clippy::missing_panics_doc)]
+    pub fn from_recexpr<LL: Language + Into<L>, N: Analysis<LL>>(
+        eg: &EGraph<LL, N>,
+        rec_expr: &RecExpr<LL>,
+    ) -> Self {
+        let root = rec_expr.root();
+        let label = rec_expr[root].clone().into();
+        let origin = eg.find(eg.lookup_expr(rec_expr).unwrap()).into();
+        let children = rec_expr[root]
+            .children()
+            .iter()
+            .map(|c_id| {
+                let child_rec_expr =
+                    RecExpr::from(rec_expr.as_ref()[0..usize::from(*c_id)].to_owned());
+                Self::from_recexpr(eg, &child_rec_expr)
+            })
+            .collect();
+        Self::new_typed(label, children, None, origin)
     }
 }
 
