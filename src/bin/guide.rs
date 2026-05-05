@@ -98,6 +98,10 @@ struct Args {
     /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
     #[arg(long, default_value_t = false)]
     backoff_scheduler: bool,
+
+    /// Only process the first N seeds (useful for quick experiments)
+    #[arg(long)]
+    take_first: Option<usize>,
 }
 
 const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
@@ -125,14 +129,15 @@ fn main() {
         _ => panic!("clap group enforces exactly one of --seed / --seed-json"),
     };
     let seeds = parse_seeds(seed_input);
+    let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
 
     tee_println!("Distribution: {}", args.size_distribution);
-    tee_println!("Seeds to process: {}", seeds.len());
+    tee_println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
 
     let mut all: HashMap<String, Vec<GoalResults>> = HashMap::new();
     let mut all_stats = Vec::new();
 
-    for (i, (seed_str, seed_expr, max_size)) in seeds.iter().enumerate() {
+    for (i, (seed_str, seed_expr, max_size)) in seeds.iter().take(take_n).enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
         if let Some((r, stats)) = process_seed(&args, seed_str, seed_expr, *max_size) {
             all_stats.push(stats);
