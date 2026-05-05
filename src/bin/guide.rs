@@ -35,7 +35,7 @@ Examples:
   guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 --goals 5
 
   # Loop over many seeds from a JSON file (objects with size and term fields; size drives max-size)
-  guide --seed-json seeds.json -g 100
+  guide --seed-json data/seed_terms/dusky-cramp/terms.json -g 1000 --goals 10 --time-limit 0.2 --full-union --guide-sample-strategy count-based --backoff-scheduler
 
   # Write JSON output to a folder
   guide --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100 -o results/
