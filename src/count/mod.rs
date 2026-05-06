@@ -371,10 +371,12 @@ where
         }
     }
 
+    #[must_use]
     pub fn data(&self) -> &HashMap<Id, HashMap<usize, C>> {
         &self.data
     }
 
+    #[must_use]
     pub fn suffix_cache(&self) -> &HashMap<Id, Vec<Vec<HashMap<usize, C>>>> {
         &self.suffix_cache
     }
