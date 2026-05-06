@@ -2,11 +2,9 @@ use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashSet;
 use rayon::prelude::*;
 
-use crate::count::{Counter, TermCount};
-use crate::utils::combined_rng;
-use crate::{MyAnalysis, MyLanguage, OriginLang};
-
 use crate::sampling::Sampler;
+use crate::utils::combined_rng;
+use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, TermCount};
 
 pub(super) fn possible_size<C, L, N>(
     term_count: &TermCount<C>,

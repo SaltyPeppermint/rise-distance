@@ -122,6 +122,7 @@ pub fn structural_diff<L: MyLanguage, C: EditCosts<L>>(
     rec(reference, candidate, costs)
 }
 
+// TODO: re-enable tests!!
 // #[cfg(test)]
 // mod tests {
 //     use super::*;

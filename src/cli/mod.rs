@@ -170,7 +170,8 @@ where
                         SampleStrategy::CountBased => {
                             CountSampler::new(&self.tc, self.graph, self.root)
                                 .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
-                        } // SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
+                        } // TODO: READD
+                          // SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
                           //     NaiveSampler::new(&self.tc, &self.graph),
                           //     UnitCost,
                           //     0.5,

@@ -123,6 +123,7 @@ impl<'a, L: MyLanguage> EulerString<'a, L> {
     }
 }
 
+// TODO: re-enable tests!!
 // #[cfg(test)]
 // mod tests {
 //     use super::*;

@@ -7,7 +7,7 @@ use rand::Rng;
 
 use crate::egg::{id0, stack_children};
 
-use super::Math; // ::MathLabel;
+use super::Math;
 
 /// Boltzmann sampler for random math terms of a target size.
 ///

@@ -137,6 +137,7 @@ where
                             .iter()
                             .all(|child_id| data.contains_key(&graph.find(*child_id)));
                         all_ready.then(|| {
+                            // TODO: Re-add types
                             // let type_overhead = if with_types && let Some(t) = eclass.data {
                             //     1 + type_sizes.get_type_size(*t)
                             // } else {
@@ -279,6 +280,7 @@ where
         acc
     }
 
+    // TODO: Reenable when types become a concern
     // pub(crate) fn type_overhead(&self, eclass: &Id) -> usize {
     //     if self.with_types
     //         && let Some(t) = eclass.ty()
@@ -365,6 +367,7 @@ where
         //         None => Cow::Owned(HashMap::default()),
         //     },
         // }
+        // TODO: Cleanup the cow, dont think we actually need it
         match self.data.get(&graph.find(child_id)) {
             Some(h) => Cow::Borrowed(h),
             None => Cow::Owned(HashMap::default()),

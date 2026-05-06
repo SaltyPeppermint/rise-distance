@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 pub use generate::BoltzmannSampler;
 
 use crate::{MyAnalysis, MyLanguage, OriginLang};
-// pub use label::MathLabel;
 
 pub type Constant = NotNan<f64>;
 

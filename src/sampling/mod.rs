@@ -9,6 +9,7 @@ use hashbrown::HashSet;
 pub use count::CountSampler;
 pub use naive::NaiveSampler;
 use rand_chacha::ChaCha12Rng;
+// TODO: reenable zs_min_distance sampler
 // pub use zs_min_distance::ZSDistanceSampler;
 
 use crate::{MyLanguage, egg::OriginLang};

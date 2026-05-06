@@ -1,7 +1,3 @@
-// mod label;
-
-// pub use label::Lambda;
-
 use egg::{
     Analysis, Applier, ConditionEqual, DidMerge, EGraph, Id, Language, Pattern, PatternAst,
     Rewrite, Subst, Symbol, Var, define_language, merge_option, rewrite,

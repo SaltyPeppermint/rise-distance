@@ -260,6 +260,7 @@ pub fn tree_distance_unit<L: MyLanguage>(tree1: &FlatTree<L>, tree2: &FlatTree<L
     tree_distance(tree1, tree2, &UnitCost)
 }
 
+// TODO: re-enable tests!!
 // #[cfg(test)]
 // mod tests {
 //     use super::*;

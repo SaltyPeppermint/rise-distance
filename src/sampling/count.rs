@@ -106,6 +106,7 @@ where
                 let chosen_size = candidates[dist.sample(rng)].0;
                 remaining -= chosen_size;
                 self.sample(c_id, chosen_size, rng)
+                // TODO: re-add types or clean up
                 // match c_id {
                 //     ExprChildId::Nat(nat_id) => OriginTree::from_nat(self.graph, nat_id),
                 //     ExprChildId::Data(data_id) => OriginTree::from_data(self.graph, data_id),
@@ -114,6 +115,7 @@ where
             })
             .collect::<Vec<_>>();
 
+        // TODO: re-add types or clean up
         // OriginTree::new_typed(
         //     pick.clone(),
         //     children,
