@@ -1,10 +1,11 @@
 use std::fs::File;
 use std::path::Path;
 
+use egg::RecExpr;
 use polars::prelude::*;
 
 use super::{GoalSummary, GuideError, GuideEval};
-use crate::{Label, OriginTree, cli::ExperimentError, tee_println};
+use crate::{MyLanguage, cli::ExperimentError, egg::OriginLang, tee_println};
 
 /// Dump eval results to a new Parquet file inside `run_folder/out/`.
 ///
@@ -13,10 +14,10 @@ use crate::{Label, OriginTree, cli::ExperimentError, tee_println};
 /// # Panics
 ///
 /// Panics if it cannot create/open the file or write the data.
-pub fn dump_full_eval_parquet<L: Label>(
+pub fn dump_full_eval_parquet<L: MyLanguage>(
     run_folder: &Path,
     seed: &str,
-    goal: &OriginTree<L>,
+    goal: &RecExpr<OriginLang<L>>,
     results: &[GuideEval<L>],
 ) {
     let out_dir = run_folder.join("out");
@@ -70,9 +71,7 @@ pub fn dump_full_eval_parquet<L: Label>(
         "seed"                => vec![seed; n],
         "goal"                => vec![goal_str.as_str(); n],
         "guide"               => results.iter().map(|r| r.guide.to_string()).collect::<Vec<_>>(),
-        "zs_distance"         => results.iter().map(|r| r.measurements.zs_distance as u64).collect::<Vec<_>>(),
-        "structural_overlap"  => results.iter().map(|r| r.measurements.structural_distance.overlap() as u64).collect::<Vec<_>>(),
-        "structural_zs_sum"   => results.iter().map(|r| r.measurements.structural_distance.zs_sum() as u64).collect::<Vec<_>>(),
+        "zs_distance"         => results.iter().map(|r| r.zs_distance as u64).collect::<Vec<_>>(),
         "iterations_to_reach" => results.iter().map(|r| r.iterations.as_ref().map(|i| i.len() as u64).ok()).collect::<Vec<Option<u64>>>(),
         "ms_to_reach"         => results.iter().map(|r| r.iterations.as_ref().map(|i| i.iter().map(|x| x.total_time).sum::<f64>()).ok()).collect::<Vec<Option<f64>>>(),
     }

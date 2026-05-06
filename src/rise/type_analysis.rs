@@ -1,7 +1,7 @@
 use hashbrown::HashMap;
 
-use crate::graph::Graph;
-use crate::ids::{DataChildId, DataId, FunId, NatId, TypeChildId};
+// use crate::graph::Graph;
+// use crate::ids::{DataChildId, DataId, FunId, NatId, TypeChildId};
 use crate::nodes::Label;
 
 /// Cache for type node sizes to avoid repeated computation.

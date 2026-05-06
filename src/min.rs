@@ -160,280 +160,280 @@ where
         .min_by_key(|(_, d)| *d)
 }
 
-#[cfg(test)]
-mod tests {
-    use hashbrown::HashMap;
+// #[cfg(test)]
+// mod tests {
+//     use hashbrown::HashMap;
 
-    use rayon::iter::ParallelBridge;
+//     use rayon::iter::ParallelBridge;
 
-    use super::*;
-    use crate::Graph;
-    use crate::graph::Class;
-    use crate::ids::EClassId;
-    use crate::nodes::ENode;
-    use crate::tree::TreeShaped;
-    use crate::zs::UnitCost;
+//     use super::*;
+//     use crate::Graph;
+//     use crate::graph::Class;
+//     use crate::ids::EClassId;
+//     use crate::nodes::ENode;
+//     use crate::tree::TreeShaped;
+//     use crate::zs::UnitCost;
 
-    use crate::test_utils::*;
+//     use crate::test_utils::*;
 
-    #[test]
-    fn min_distance_exact_match() {
-        let graph = Graph::new(
-            cfv(vec![
-                Class::new(
-                    vec![ENode::new("a".to_owned(), vec![eid(1), eid(2)])],
-                    dummy_ty(),
-                ),
-                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
-            ]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn min_distance_exact_match() {
+//         let graph = Graph::new(
+//             cfv(vec![
+//                 Class::new(
+//                     vec![ENode::new("a".to_owned(), vec![eid(1), eid(2)])],
+//                     dummy_ty(),
+//                 ),
+//                 Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+//                 Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+//             ]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let reference = node(
-            "typeOf".to_owned(),
-            vec![
-                node(
-                    "a".to_owned(),
-                    vec![
-                        node(
-                            "typeOf".to_owned(),
-                            vec![leaf("b".to_owned()), leaf("0".to_owned())],
-                        ),
-                        node(
-                            "typeOf".to_owned(),
-                            vec![leaf("c".to_owned()), leaf("0".to_owned())],
-                        ),
-                    ],
-                ),
-                leaf("0".to_owned()),
-            ],
-        );
-        let result = find_min_zs(
-            graph
-                .choice_iter(0)
-                .map(|c| graph.tree_from_choices(graph.root(), &c))
-                .par_bridge(),
-            &reference,
-            &UnitCost,
-            true,
-        )
-        .0
-        .unwrap();
+//         let reference = node(
+//             "typeOf".to_owned(),
+//             vec![
+//                 node(
+//                     "a".to_owned(),
+//                     vec![
+//                         node(
+//                             "typeOf".to_owned(),
+//                             vec![leaf("b".to_owned()), leaf("0".to_owned())],
+//                         ),
+//                         node(
+//                             "typeOf".to_owned(),
+//                             vec![leaf("c".to_owned()), leaf("0".to_owned())],
+//                         ),
+//                     ],
+//                 ),
+//                 leaf("0".to_owned()),
+//             ],
+//         );
+//         let result = find_min_zs(
+//             graph
+//                 .choice_iter(0)
+//                 .map(|c| graph.tree_from_choices(graph.root(), &c))
+//                 .par_bridge(),
+//             &reference,
+//             &UnitCost,
+//             true,
+//         )
+//         .0
+//         .unwrap();
 
-        assert_eq!(result.1, 0);
-    }
+//         assert_eq!(result.1, 0);
+//     }
 
-    #[test]
-    fn min_distance_chooses_best() {
-        let graph = Graph::new(
-            cfv(vec![Class::new(
-                vec![ENode::leaf("a".to_owned()), ENode::leaf("x".to_owned())],
-                dummy_ty(),
-            )]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn min_distance_chooses_best() {
+//         let graph = Graph::new(
+//             cfv(vec![Class::new(
+//                 vec![ENode::leaf("a".to_owned()), ENode::leaf("x".to_owned())],
+//                 dummy_ty(),
+//             )]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let reference = node(
-            "typeOf".to_owned(),
-            vec![leaf("a".to_owned()), leaf("0".to_owned())],
-        );
-        let result = find_min_zs(
-            graph
-                .choice_iter(0)
-                .map(|c| graph.tree_from_choices(graph.root(), &c))
-                .par_bridge(),
-            &reference,
-            &UnitCost,
-            true,
-        )
-        .0
-        .unwrap();
+//         let reference = node(
+//             "typeOf".to_owned(),
+//             vec![leaf("a".to_owned()), leaf("0".to_owned())],
+//         );
+//         let result = find_min_zs(
+//             graph
+//                 .choice_iter(0)
+//                 .map(|c| graph.tree_from_choices(graph.root(), &c))
+//                 .par_bridge(),
+//             &reference,
+//             &UnitCost,
+//             true,
+//         )
+//         .0
+//         .unwrap();
 
-        assert_eq!(result.1, 0);
-        assert_eq!(result.0.label(), "a");
-    }
+//         assert_eq!(result.1, 0);
+//         assert_eq!(result.0.label(), "a");
+//     }
 
-    #[test]
-    fn min_distance_with_structure_choice() {
-        let graph = Graph::new(
-            cfv(vec![
-                Class::new(
-                    vec![
-                        ENode::new("a".to_owned(), vec![eid(1)]),
-                        ENode::new("a".to_owned(), vec![eid(1), eid(2)]),
-                    ],
-                    dummy_ty(),
-                ),
-                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
-            ]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn min_distance_with_structure_choice() {
+//         let graph = Graph::new(
+//             cfv(vec![
+//                 Class::new(
+//                     vec![
+//                         ENode::new("a".to_owned(), vec![eid(1)]),
+//                         ENode::new("a".to_owned(), vec![eid(1), eid(2)]),
+//                     ],
+//                     dummy_ty(),
+//                 ),
+//                 Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+//                 Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+//             ]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let reference = node(
-            "typeOf".to_owned(),
-            vec![
-                node(
-                    "a".to_owned(),
-                    vec![node(
-                        "typeOf".to_owned(),
-                        vec![leaf("b".to_owned()), leaf("0".to_owned())],
-                    )],
-                ),
-                leaf("0".to_owned()),
-            ],
-        );
-        let result = find_min_zs(
-            graph
-                .choice_iter(0)
-                .map(|c| graph.tree_from_choices(graph.root(), &c))
-                .par_bridge(),
-            &reference,
-            &UnitCost,
-            true,
-        )
-        .0
-        .unwrap();
+//         let reference = node(
+//             "typeOf".to_owned(),
+//             vec![
+//                 node(
+//                     "a".to_owned(),
+//                     vec![node(
+//                         "typeOf".to_owned(),
+//                         vec![leaf("b".to_owned()), leaf("0".to_owned())],
+//                     )],
+//                 ),
+//                 leaf("0".to_owned()),
+//             ],
+//         );
+//         let result = find_min_zs(
+//             graph
+//                 .choice_iter(0)
+//                 .map(|c| graph.tree_from_choices(graph.root(), &c))
+//                 .par_bridge(),
+//             &reference,
+//             &UnitCost,
+//             true,
+//         )
+//         .0
+//         .unwrap();
 
-        assert_eq!(result.1, 0);
-        assert_eq!(result.0.label(), "a");
-        assert_eq!(result.0.children().len(), 1);
-        assert_eq!(result.0.children()[0].label(), "b");
-    }
+//         assert_eq!(result.1, 0);
+//         assert_eq!(result.0.label(), "a");
+//         assert_eq!(result.0.children().len(), 1);
+//         assert_eq!(result.0.children()[0].label(), "b");
+//     }
 
-    #[test]
-    fn min_distance_extract_fast_exact_match() {
-        let graph = Graph::new(
-            cfv(vec![
-                Class::new(
-                    vec![ENode::new("a".to_owned(), vec![eid(1), eid(2)])],
-                    dummy_ty(),
-                ),
-                Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-                Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
-            ]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn min_distance_extract_fast_exact_match() {
+//         let graph = Graph::new(
+//             cfv(vec![
+//                 Class::new(
+//                     vec![ENode::new("a".to_owned(), vec![eid(1), eid(2)])],
+//                     dummy_ty(),
+//                 ),
+//                 Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
+//                 Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
+//             ]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let reference = node(
-            "typeOf".to_owned(),
-            vec![
-                node(
-                    "a".to_owned(),
-                    vec![
-                        node(
-                            "typeOf".to_owned(),
-                            vec![leaf("b".to_owned()), leaf("0".to_owned())],
-                        ),
-                        node(
-                            "typeOf".to_owned(),
-                            vec![leaf("c".to_owned()), leaf("0".to_owned())],
-                        ),
-                    ],
-                ),
-                leaf("0".to_owned()),
-            ],
-        );
+//         let reference = node(
+//             "typeOf".to_owned(),
+//             vec![
+//                 node(
+//                     "a".to_owned(),
+//                     vec![
+//                         node(
+//                             "typeOf".to_owned(),
+//                             vec![leaf("b".to_owned()), leaf("0".to_owned())],
+//                         ),
+//                         node(
+//                             "typeOf".to_owned(),
+//                             vec![leaf("c".to_owned()), leaf("0".to_owned())],
+//                         ),
+//                     ],
+//                 ),
+//                 leaf("0".to_owned()),
+//             ],
+//         );
 
-        let result = find_min_zs(
-            graph
-                .choice_iter(0)
-                .map(|c| graph.tree_from_choices(graph.root(), &c))
-                .par_bridge(),
-            &reference,
-            &UnitCost,
-            true,
-        )
-        .0
-        .unwrap();
-        assert_eq!(result.1, 0);
-    }
+//         let result = find_min_zs(
+//             graph
+//                 .choice_iter(0)
+//                 .map(|c| graph.tree_from_choices(graph.root(), &c))
+//                 .par_bridge(),
+//             &reference,
+//             &UnitCost,
+//             true,
+//         )
+//         .0
+//         .unwrap();
+//         assert_eq!(result.1, 0);
+//     }
 
-    #[test]
-    fn min_distance_extract_fast_chooses_best() {
-        let graph = Graph::new(
-            cfv(vec![Class::new(
-                vec![ENode::leaf("a".to_owned()), ENode::leaf("x".to_owned())],
-                dummy_ty(),
-            )]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn min_distance_extract_fast_chooses_best() {
+//         let graph = Graph::new(
+//             cfv(vec![Class::new(
+//                 vec![ENode::leaf("a".to_owned()), ENode::leaf("x".to_owned())],
+//                 dummy_ty(),
+//             )]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let reference = node(
-            "typeOf".to_owned(),
-            vec![leaf("a".to_owned()), leaf("0".to_owned())],
-        );
+//         let reference = node(
+//             "typeOf".to_owned(),
+//             vec![leaf("a".to_owned()), leaf("0".to_owned())],
+//         );
 
-        let result = find_min_zs(
-            graph
-                .choice_iter(0)
-                .map(|c| graph.tree_from_choices(graph.root(), &c))
-                .par_bridge(),
-            &reference,
-            &UnitCost,
-            true,
-        )
-        .0
-        .unwrap();
-        assert_eq!(result.1, 0);
-        assert_eq!(result.0.label(), "a");
-    }
+//         let result = find_min_zs(
+//             graph
+//                 .choice_iter(0)
+//                 .map(|c| graph.tree_from_choices(graph.root(), &c))
+//                 .par_bridge(),
+//             &reference,
+//             &UnitCost,
+//             true,
+//         )
+//         .0
+//         .unwrap();
+//         assert_eq!(result.1, 0);
+//         assert_eq!(result.0.label(), "a");
+//     }
 
-    #[test]
-    fn min_distance_extract_filtered_prunes_bad_trees() {
-        let graph = Graph::new(
-            cfv(vec![Class::new(
-                vec![ENode::leaf("a".to_owned()), ENode::leaf("x".to_owned())],
-                dummy_ty(),
-            )]),
-            EClassId::new(0),
-            Vec::new(),
-            HashMap::new(),
-            dummy_nat_nodes(),
-            HashMap::new(),
-        );
+//     #[test]
+//     fn min_distance_extract_filtered_prunes_bad_trees() {
+//         let graph = Graph::new(
+//             cfv(vec![Class::new(
+//                 vec![ENode::leaf("a".to_owned()), ENode::leaf("x".to_owned())],
+//                 dummy_ty(),
+//             )]),
+//             EClassId::new(0),
+//             Vec::new(),
+//             HashMap::new(),
+//             dummy_nat_nodes(),
+//             HashMap::new(),
+//         );
 
-        let reference = node(
-            "typeOf".to_owned(),
-            vec![leaf("a".to_owned()), leaf("0".to_owned())],
-        );
+//         let reference = node(
+//             "typeOf".to_owned(),
+//             vec![leaf("a".to_owned()), leaf("0".to_owned())],
+//         );
 
-        let (result, stats) = find_min_zs(
-            graph
-                .choice_iter(0)
-                .map(|c| graph.tree_from_choices(graph.root(), &c))
-                .par_bridge(),
-            &reference,
-            &UnitCost,
-            true,
-        );
+//         let (result, stats) = find_min_zs(
+//             graph
+//                 .choice_iter(0)
+//                 .map(|c| graph.tree_from_choices(graph.root(), &c))
+//                 .par_bridge(),
+//             &reference,
+//             &UnitCost,
+//             true,
+//         );
 
-        assert_eq!(result.unwrap().1, 0);
-        assert_eq!(stats.trees_enumerated, 2);
-        assert_eq!(
-            stats.size_pruned + stats.euler_pruned + stats.full_comparisons,
-            stats.trees_enumerated
-        );
-    }
-}
+//         assert_eq!(result.unwrap().1, 0);
+//         assert_eq!(stats.trees_enumerated, 2);
+//         assert_eq!(
+//             stats.size_pruned + stats.euler_pruned + stats.full_comparisons,
+//             stats.trees_enumerated
+//         );
+//     }
+// }

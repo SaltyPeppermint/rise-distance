@@ -1,4 +1,3 @@
-use std::fmt::Display;
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
@@ -7,19 +6,19 @@ use std::time::Duration;
 use std::time::Instant;
 
 use clap::Parser;
-use egg::{Analysis, BackoffScheduler, Language, Rewrite, Runner, SimpleScheduler, StopReason};
+use egg::RecExpr;
+use egg::{BackoffScheduler, Rewrite, Runner, SimpleScheduler, StopReason};
 use hashbrown::{HashMap, hash_map::Entry};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
+use rise_distance::MyAnalysis;
 use serde::Serialize;
 
-use rise_distance::Label;
-use rise_distance::egg::ToEgg;
-use rise_distance::egg::math::{BoltzmannSampler, RULES};
-
+use rise_distance::MyLanguage;
 use rise_distance::cli::argparse::Distribution;
+use rise_distance::egg::math::{BoltzmannSampler, RULES};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -203,12 +202,12 @@ impl From<&Args> for ValidityConfig {
     }
 }
 
-pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T: ToEgg<L>>(
-    tree: &T,
+#[must_use]
+pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
+    expr: &RecExpr<L>,
     config: &ValidityConfig,
     rules: &[Rewrite<L, N>],
 ) -> Option<ValidationResult> {
-    let expr = tree.to_rec_expr();
     // egg's Runner can panic on certain malformed inside its merge check.
     // Fixing this would require only constructing correct terms and that is too complicated
     // We use catch_unwind to treat such cases as "not passing the check" rather than crashing the process.
@@ -217,7 +216,7 @@ pub fn valididty_hook<L: Label + Language + Display, N: Analysis<L> + Default, T
     // The issue is that the binder check does not catch (i (/ 0 x) x) although (/ 0 x)
     // trivially simplifies to 0
     let runner = Runner::default()
-        .with_expr(&expr)
+        .with_expr(expr)
         .with_iter_limit(config.max_iters)
         .with_node_limit(config.max_nodes)
         .with_time_limit(Duration::from_secs_f64(config.max_time));

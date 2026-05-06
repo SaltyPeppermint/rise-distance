@@ -1,0 +1,68 @@
+use std::fmt::Display;
+
+use egg::{Id, Language, RecExpr};
+use serde::{Deserialize, Serialize};
+
+use crate::MyLanguage;
+use crate::egg::id0;
+
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(bound = "L: MyLanguage")]
+pub struct OriginLang<L: MyLanguage> {
+    inner: L,
+    origin: Id,
+}
+
+impl<L: MyLanguage> OriginLang<L> {
+    pub fn new(inner: L, origin: Id) -> Self {
+        Self { inner, origin }
+    }
+
+    pub fn inner(&self) -> &L {
+        &self.inner
+    }
+
+    pub fn origin(&self) -> Id {
+        self.origin
+    }
+}
+
+impl<L: MyLanguage> Language for OriginLang<L> {
+    type Discriminant = (L::Discriminant, Id);
+
+    fn discriminant(&self) -> Self::Discriminant {
+        (self.inner.discriminant(), self.origin)
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        self.inner.matches(&other.inner)
+    }
+
+    fn children(&self) -> &[Id] {
+        self.inner.children()
+    }
+
+    fn children_mut(&mut self) -> &mut [Id] {
+        self.inner.children_mut()
+    }
+}
+
+impl<L: MyLanguage> MyLanguage for OriginLang<L> {
+    fn type_of() -> Self {
+        OriginLang {
+            inner: L::type_of(),
+            origin: id0(),
+        }
+    }
+}
+
+impl<L: MyLanguage> Display for OriginLang<L> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.inner, f)
+    }
+}
+
+#[must_use]
+pub fn lower<L: MyLanguage>(higher: RecExpr<OriginLang<L>>) -> RecExpr<L> {
+    higher.into_iter().map(|n| n.inner).collect()
+}

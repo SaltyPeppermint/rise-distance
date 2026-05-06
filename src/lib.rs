@@ -1,35 +1,36 @@
 // mod boltzmann;
-mod choices;
+// mod choices;
 pub mod cli;
-pub mod count;
-mod diversity;
+mod count;
+// mod diversity;
 pub mod egg;
-mod euler_str;
-mod graph;
-mod ids;
-mod min;
-mod nodes;
-mod overlap;
-pub mod rise;
+// mod euler_str;
+// mod graph;
+// mod ids;
+// mod min;
+// mod nodes;
+// mod overlap;
+// pub mod rise;
 pub mod sampling;
-mod structural;
-#[cfg(test)]
-mod test_utils;
-mod tree;
+pub mod structural;
+// #[cfg(test)]
+// mod test_utils;
+// mod tree;
 mod utils;
-mod zs;
+pub mod zs;
 
-pub use choices::ChoiceIter;
-pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
-pub use euler_str::tree_distance_euler_bound;
-pub use graph::{Class, Graph};
-pub use ids::{EClassId, NumericId};
-pub use min::{ZSStats, find_min_struct, find_min_zs};
-pub use nodes::Label;
-pub use overlap::{match_ref_tree, prune_by_ref_tree};
-pub use rise::{Expr, Nat, RiseLabel, Type};
-pub use structural::{StructuralDistance, structural_diff};
-pub use tree::{
-    OriginTree, PartialChild, PartialTree, TreeShaped, TypedTree, tree_node_to_partial,
-};
-pub use zs::{EditCosts, UnitCost, tree_distance, tree_distance_unit};
+// pub use choices::ChoiceIter;
+// pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
+pub use count::Counter;
+pub use egg::{MyAnalysis, MyLanguage, OriginLang, lower, stack_children};
+// pub use euler_str::tree_distance_euler_bound;
+// pub use graph::{Class, Graph};
+// pub use ids::{EClassId, NumericId};
+// pub use min::{ZSStats, find_min_struct, find_min_zs};
+// pub use nodes::Label;
+// pub use overlap::{match_ref_tree, prune_by_ref_tree};
+// pub use rise::{Expr, Nat, RiseLabel, Type};
+// pub use structural::{StructuralDistance, structural_diff};
+// pub use tree::{
+//     OriginTree, PartialChild, PartialTree, TreeShaped, TypedTree, tree_node_to_partial,
+// };

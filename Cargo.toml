@@ -76,26 +76,26 @@ shadow_unrelated = "warn"
 debug = 1
 
 
-[[bin]]
-name = "compare"
-path = "src/bin/compare.rs"
+# [[bin]]
+# name = "compare"
+# path = "src/bin/compare.rs"
 
-[[bin]]
-name = "distance"
-path = "src/bin/distance.rs"
+# [[bin]]
+# name = "distance"
+# path = "src/bin/distance.rs"
 
 [[bin]]
 name = "guide"
 path = "src/bin/guide.rs"
 
-[[bin]]
-name = "generate"
-path = "src/bin/generate.rs"
+# [[bin]]
+# name = "generate"
+# path = "src/bin/generate.rs"
 
-[[bin]]
-name = "training-data"
-path = "src/bin/training_data.rs"
+# [[bin]]
+# name = "training-data"
+# path = "src/bin/training_data.rs"
 
-[[bin]]
-name = "measure-size"
-path = "src/bin/measure_size.rs"
+# [[bin]]
+# name = "measure-size"
+# path = "src/bin/measure_size.rs"

@@ -2,7 +2,7 @@ use std::fs;
 
 use clap::Parser;
 
-use rise_distance::{Expr, Label, TreeShaped, TypedTree, tree_distance_unit};
+use rise_distance::{MyLanguage, tree_distance_unit};
 
 #[derive(Parser)]
 #[command(about = "Compare trees using Zhang-Shasha edit distance")]
@@ -50,7 +50,7 @@ fn main() {
 
 fn run<L, F>(content: &str, parse_tree: F, with_types: bool)
 where
-    L: Label,
+    L: MyLanguage,
     F: Fn(&str) -> TypedTree<L>,
 {
     let trees = content
@@ -67,7 +67,7 @@ where
 
 fn print_distance_matrix<L>(trees: &[(String, TypedTree<L>)], with_types: bool)
 where
-    L: Label,
+    L: MyLanguage,
 {
     if trees.is_empty() {
         println!("No trees found in file.");

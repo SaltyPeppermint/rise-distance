@@ -1,11 +1,10 @@
-use egg::Iteration;
+use egg::{Iteration, RecExpr};
 use hashbrown::HashMap;
 use serde::Serialize;
 use strum::Display;
 use thiserror::Error;
 
-use crate::tree::OriginTree;
-use crate::{Label, StructuralDistance};
+use crate::{MyLanguage, egg::OriginLang};
 
 #[derive(Debug, Error, Display, Serialize, Clone, Copy)]
 pub enum ExperimentError {
@@ -20,17 +19,10 @@ pub enum GuideError {
 }
 
 #[derive(Serialize, Debug, Clone)]
-pub struct GuideEval<L: Label> {
-    pub guide: OriginTree<L>,
-    pub measurements: Measurements,
-    pub iterations: Result<Vec<Iteration<()>>, GuideError>,
-}
-
-#[derive(Serialize, Debug, PartialEq, Eq, Hash, Clone)]
-pub struct Measurements {
+pub struct GuideEval<L: MyLanguage> {
+    pub guide: RecExpr<OriginLang<L>>,
     pub zs_distance: usize,
-    #[serde(flatten)]
-    pub structural_distance: StructuralDistance,
+    pub iterations: Result<Vec<Iteration<()>>, GuideError>,
 }
 
 /// Type alias for the per-k trial data: maps each guide-set size `k` to its

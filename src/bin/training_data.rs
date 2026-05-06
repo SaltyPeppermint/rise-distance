@@ -7,21 +7,23 @@ use egg::RecExpr;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
+use rise_distance::egg::origin::lower;
+use rise_distance::zs::{FlatTree, tree_distance_unit};
 use serde::Serialize;
 use serde_json::json;
 
+use rise_distance::Counter;
 use rise_distance::cli::argparse::{
     EqsatConfig, SampleStrategy, SeedInput, TermSampleDist, parse_seeds,
 };
 use rise_distance::cli::parquet::dump_full_eval_parquet;
 use rise_distance::cli::{
-    ExperimentError, GuideEval, PrecomputePackage, get_run_folder, init_log, measure_guide,
+    ExperimentError, GuideEval, PrecomputePackage, get_run_folder, init_log, write_config,
+    write_stats,
 };
-use rise_distance::cli::{write_config, write_stats};
-use rise_distance::count::Counter;
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
-use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
-use rise_distance::{OriginTree, TreeShaped, tee_println};
+use rise_distance::egg::{big_eqsat, verify_reachability};
+use rise_distance::{OriginLang, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -187,7 +189,7 @@ fn process_seed(
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
     let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
         result.goal(),
-        result.prev_goal().to_owned(),
+        result.prev_goal(),
         result.root(),
         max_size,
     )?;
@@ -218,7 +220,7 @@ fn process_seed(
 
     let pc = PrecomputePackage::<BigUint, _, _>::precompute(
         result.guide(),
-        result.prev_guide().clone(),
+        result.prev_guide(),
         result.root(),
         max_size,
     )?;
@@ -238,10 +240,9 @@ fn process_seed(
 fn try_all<C: Counter + Display + Ord>(
     args: &Args,
     eqsat: &EqsatConfig,
-    goal: &OriginTree<Math>,
+    goal: &RecExpr<OriginLang<Math>>,
     pc: &PrecomputePackage<C, Math, ConstantFold>,
 ) -> Result<Vec<GuideEval<Math>>, ExperimentError> {
-    let goal_recexpr = goal.to_rec_expr();
     let samples = pc.sample_frontier_terms::<true>(
         args.guides,
         args.size_distribution,
@@ -249,7 +250,7 @@ fn try_all<C: Counter + Display + Ord>(
         [0, 0],
     )?;
 
-    let goal_flat = goal.flatten(false);
+    let goal_flat: FlatTree<Math> = goal.into();
 
     let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
         .unwrap()
@@ -259,15 +260,17 @@ fn try_all<C: Counter + Display + Ord>(
         .map(|guide| {
             let v = verify_reachability(
                 std::slice::from_ref(&guide),
-                &goal_recexpr,
+                &lower(goal.to_owned()),
                 &RULES,
                 eqsat,
                 args.full_union,
             );
-            let measurements = measure_guide(&guide, &goal_flat);
+
+            let guide_flat = (&guide).into();
+            let zs_distance = tree_distance_unit(&guide_flat, &goal_flat);
             Ok(GuideEval {
                 guide,
-                measurements,
+                zs_distance,
                 iterations: v,
             })
         })

@@ -57,8 +57,8 @@ pub enum DistanceMetric {
 pub enum SampleStrategy {
     Naive,
     CountBased,
-    ZSDiverseNaive,
-    ZSDiverseCountBased,
+    // ZSDiverseNaive,
+    // ZSDiverseCountBased,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

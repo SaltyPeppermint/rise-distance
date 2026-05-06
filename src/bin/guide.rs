@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use egg::{AstSize, EGraph, Extractor, Id, RecExpr};
+use egg::{AstSize, EGraph, Extractor, Id, Language, RecExpr};
 use hashbrown::HashMap;
 use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
+use rise_distance::egg::origin::lower;
 use serde::Serialize;
 use serde_json::json;
 
@@ -18,12 +19,10 @@ use rise_distance::cli::argparse::{
 };
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{GoalSummary, TrialsPerK};
-use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log};
-use rise_distance::cli::{write_config, write_stats};
-use rise_distance::count::Counter;
+use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log, write_config, write_stats};
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
-use rise_distance::egg::{ToEgg, big_eqsat, verify_reachability};
-use rise_distance::{OriginTree, tee_println};
+use rise_distance::egg::{big_eqsat, verify_reachability};
+use rise_distance::{Counter, OriginLang, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -230,7 +229,7 @@ fn process_seed(
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
     let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
         result.goal(),
-        result.prev_goal().to_owned(),
+        result.prev_goal(),
         result.root(),
         max_size,
     )?;
@@ -261,7 +260,7 @@ fn process_seed(
 
     let pc = PrecomputePackage::<BigUint, _, _>::precompute(
         result.guide(),
-        result.prev_guide().clone(),
+        result.prev_guide(),
         result.root(),
         max_size,
     )?;
@@ -315,7 +314,7 @@ trait Strategy {
         args: &Args,
         eqsat: &EqsatConfig,
         seed_str: &str,
-        goals: &[OriginTree<Math>],
+        goals: &[RecExpr<OriginLang<Math>>],
     ) -> Vec<GoalResults> {
         goals
             .iter()
@@ -324,7 +323,7 @@ trait Strategy {
                 GoalResults {
                     seed: seed_str.to_owned(),
                     goal: goal.to_string(),
-                    runs: self.run_trial(args, eqsat, &goal.to_rec_expr()),
+                    runs: self.run_trial(args, eqsat, &lower(goal.clone())),
                 }
             })
             .collect()
@@ -332,7 +331,7 @@ trait Strategy {
 }
 
 struct GuideSetWithReplacement<'a, C: Counter + Display + Ord>(
-    &'a PrecomputePackage<C, Math, ConstantFold>,
+    &'a PrecomputePackage<'a, C, Math, ConstantFold>,
 );
 
 impl<'a, C: Counter + Display + Ord> GuideSetWithReplacement<'a, C> {
@@ -374,7 +373,7 @@ impl<C: Counter + Display + Ord> Strategy for GuideSetWithReplacement<'_, C> {
 }
 
 struct GuideSetNoReplacement<'a, C: Counter + Display + Ord>(
-    &'a PrecomputePackage<C, Math, ConstantFold>,
+    &'a PrecomputePackage<'a, C, Math, ConstantFold>,
 );
 
 impl<'a, C: Counter + Display + Ord> GuideSetNoReplacement<'a, C> {
@@ -422,12 +421,20 @@ impl<C: Counter + Display + Ord> Strategy for GuideSetNoReplacement<'_, C> {
     }
 }
 
-struct JustSmallest(OriginTree<Math>);
+struct JustSmallest(RecExpr<OriginLang<Math>>);
 
 impl JustSmallest {
     fn new(last_eg: &EGraph<Math, ConstantFold>, root: Id) -> Self {
         let best = Extractor::new(last_eg, AstSize).find_best(root).1;
-        Self(OriginTree::from_recexpr(last_eg, &best))
+        let origin_expr = best
+            .iter()
+            .map(|n| {
+                let sub_expr = n.build_recexpr(|c_id| best[c_id].clone());
+                let id = last_eg.lookup_expr(&sub_expr).unwrap();
+                OriginLang::new(n.to_owned(), id)
+            })
+            .collect();
+        Self(origin_expr)
     }
 }
 

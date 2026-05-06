@@ -1,6 +1,8 @@
 pub mod lambda;
 pub mod math;
 
+pub mod origin;
+
 use std::fmt::Display;
 use std::time::Duration;
 
@@ -9,15 +11,74 @@ use egg::{
     Runner, SimpleScheduler, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
+use serde::{Deserialize, Serialize};
 
 use crate::cli::GuideError;
 use crate::cli::argparse::EqsatConfig;
-use crate::ids::AnyId;
-use crate::tree::TreeShaped;
-use crate::{Label, OriginTree, tee_println};
+use crate::tee_println;
 
 pub use lambda::{Lambda, LambdaAnalysis};
 pub use math::{ConstantFold, Math};
+pub use origin::{OriginLang, lower};
+
+/// Trait for node labels in e-graphs and trees.
+pub trait MyLanguage:
+    Serialize + for<'de> Deserialize<'de> + Send + Sync + Display + Language<Discriminant: Send + Sync>
+{
+    /// Returns the label used for type annotations (e.g., "typeOf").
+    fn type_of() -> Self;
+
+    /// Returns true if this label is the type annotation label.
+    fn is_type_of(&self) -> bool {
+        &Self::type_of() == self
+    }
+}
+
+/// Trait for node labels in e-graphs and trees.
+pub trait MyAnalysis<L: MyLanguage>:
+    Serialize
+    + for<'de> Deserialize<'de>
+    + Send
+    + Sync
+    + Analysis<L, Data: Send + Sync + Clone + Eq + Default>
+{
+    fn is_typed(id: Id) -> bool;
+
+    fn ty(id: Id) -> Option<RecExpr<OriginLang<L>>>;
+}
+
+impl<L: MyLanguage> MyAnalysis<L> for () {
+    fn is_typed(_id: Id) -> bool {
+        false
+    }
+
+    fn ty(_id: Id) -> Option<RecExpr<OriginLang<L>>> {
+        None
+    }
+}
+
+pub fn stack_children<L: MyLanguage>(children: &[RecExpr<L>], root: L) -> RecExpr<L> {
+    let mut i = 0;
+    root.map_children(|_c| {
+        let new_id = Id::from(i);
+        i += 1;
+        new_id
+    })
+    .join_recexprs(|c_id| children[usize::from(c_id)].clone())
+}
+
+pub fn typed_stack_children<L: MyLanguage>(
+    children: &[RecExpr<L>],
+    root: L,
+    ty: Option<RecExpr<L>>,
+) -> RecExpr<L> {
+    let untyped = stack_children(children, root);
+    if let Some(ty) = ty {
+        stack_children(&[untyped, ty], L::type_of())
+    } else {
+        untyped
+    }
+}
 
 /// Result of [`run_guide_goal`]: egraph snapshots at guide and goal iterations,
 /// plus the total node count of the final egraph.
@@ -186,16 +247,16 @@ where
     })
 }
 
-pub trait ToEgg<L: Label + Language>: TreeShaped<L> {
-    fn to_rec_expr(&self) -> RecExpr<L> {
-        let mut expr = RecExpr::default();
-        let mut adder = |_: &_, x| expr.add(x);
-        self.add_node(&mut adder);
-        expr
-    }
+// pub trait ToEgg<L: Label + Language>: TreeShaped<L> {
+//     fn to_rec_expr(&self) -> RecExpr<L> {
+//         let mut expr = RecExpr::default();
+//         let mut adder = |_: &_, x| expr.add(x);
+//         self.add_node(&mut adder);
+//         expr
+//     }
 
-    fn add_node<F: FnMut(&Self, L) -> Id>(&self, adder: &mut F) -> Id;
-}
+//     fn add_node<F: FnMut(&Self, L) -> Id>(&self, adder: &mut F) -> Id;
+// }
 
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
 /// Returns `Some((iterations, nodes))` if reached, `None` otherwise.
@@ -208,16 +269,15 @@ pub trait ToEgg<L: Label + Language>: TreeShaped<L> {
 ///
 /// Panics if not at least one guide is given
 pub fn verify_reachability<L, N>(
-    guides: &[OriginTree<L>],
+    guides: &[RecExpr<OriginLang<L>>],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     eqsat: &EqsatConfig,
     full_union: bool,
 ) -> Result<Vec<egg::Iteration<()>>, GuideError>
 where
-    L: Label + Language + Display + 'static,
-    N: Analysis<L> + Default,
-    OriginTree<L>: ToEgg<L>,
+    L: MyLanguage + Language + Display + 'static,
+    N: MyAnalysis<L> + Default,
 {
     assert!(!guides.is_empty(), "must have at least one guide");
     let goal_clone = goal.clone();
@@ -261,14 +321,13 @@ where
 
 fn add_with_root_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>
 where
-    L: Label + 'a + Language,
-    N: Analysis<L>,
+    L: MyLanguage + 'a + Language,
+    N: MyAnalysis<L>,
     D: IterationData<L, N>,
-    OriginTree<L>: ToEgg<L>,
-    I: IntoIterator<Item = &'a OriginTree<L>>,
+    I: IntoIterator<Item = &'a RecExpr<OriginLang<L>>>,
 {
     for guide in guides {
-        let expr = guide.to_rec_expr();
+        let expr = lower(guide.clone());
         runner = runner.with_expr(&expr);
     }
 
@@ -281,11 +340,10 @@ where
 
 fn add_with_full_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>
 where
-    L: Label + 'a + Language,
-    N: Analysis<L>,
+    L: MyLanguage + 'a,
+    N: MyAnalysis<L>,
     D: IterationData<L, N>,
-    OriginTree<L>: ToEgg<L>,
-    I: IntoIterator<Item = &'a OriginTree<L>>,
+    I: IntoIterator<Item = &'a RecExpr<OriginLang<L>>>,
 {
     let mut origin_to_new_ids = HashMap::new();
 
@@ -306,25 +364,28 @@ where
     runner
 }
 
-fn add_uncanon_remember<L, N>(
+fn add_uncanon_remember<L: MyLanguage, N: MyAnalysis<L>>(
     graph: &mut EGraph<L, N>,
-    guide: &OriginTree<L>,
-    origin_to_new_ids: &mut HashMap<AnyId, HashSet<Id>>,
-) -> Id
-where
-    L: Language + Label,
-    N: Analysis<L>,
-    OriginTree<L>: ToEgg<L>,
-{
-    let mut adder = |node: &OriginTree<L>, lang_node| {
-        let new_id = graph.add_uncanonical(lang_node);
+    guide: &RecExpr<OriginLang<L>>,
+    origin_to_new_ids: &mut HashMap<Id, HashSet<Id>>,
+) -> Id {
+    fn rec<LL: MyLanguage, NN: MyAnalysis<LL>>(
+        graph: &mut EGraph<LL, NN>,
+        guide: &RecExpr<OriginLang<LL>>,
+        origin_to_new_ids: &mut HashMap<Id, HashSet<Id>>,
+        id: Id,
+    ) -> Id {
+        let node = &guide[id]
+            .clone()
+            .map_children(|c_id| rec(graph, guide, origin_to_new_ids, c_id));
+        let new_id = graph.add_uncanonical(node.inner().clone());
         origin_to_new_ids
             .entry(node.origin())
             .or_default()
             .insert(new_id);
         new_id
-    };
-    guide.add_node(&mut adder)
+    }
+    rec(graph, guide, origin_to_new_ids, guide.root())
 }
 
 #[must_use]

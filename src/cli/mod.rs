@@ -12,28 +12,23 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use egg::{Analysis, Iteration, Language};
+use egg::{EGraph, Id, Iteration, RecExpr};
 use num::ToPrimitive;
 use serde::Serialize;
 
 use crate::cli::argparse::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, TermCount};
-use crate::egg::ToEgg;
-use crate::sampling::{CountSampler, NaiveSampler, Sampler, ZSDistanceSampler};
+use crate::sampling::{CountSampler, NaiveSampler, Sampler};
 use crate::tee_println;
-use crate::tree::{FlatTree, OriginTree, TreeShaped};
-use crate::{Graph, Label, UnitCost, structural_diff, tree_distance_unit};
+use crate::{MyAnalysis, MyLanguage, OriginLang, lower};
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
-fn is_frontier<L, N>(prev_raw_egg: &egg::EGraph<L, N>, t: &OriginTree<L>) -> bool
+fn is_frontier<L, N>(prev_raw_egg: &EGraph<L, N>, t: &RecExpr<OriginLang<L>>) -> bool
 where
-    L: Label + Language + Sync,
-    L::Discriminant: Sync,
-    N: Analysis<L> + Sync,
-    N::Data: Sync,
-    OriginTree<L>: ToEgg<L>,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
 {
-    prev_raw_egg.lookup_expr(&t.to_rec_expr()).is_none()
+    prev_raw_egg.lookup_expr(&lower(t.clone())).is_none()
 }
 
 pub fn trial_avg<
@@ -62,17 +57,6 @@ pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T
     (min, med, max)
 }
 
-/// Measure guides by distance to the goal.
-pub fn measure_guide<L: Label>(guide: &OriginTree<L>, goal_flat: &FlatTree<L>) -> Measurements {
-    let guide_flat = guide.flatten(false);
-    let zs_dist = tree_distance_unit(&guide_flat, goal_flat);
-    let structural_dist = structural_diff(goal_flat, &guide_flat, &UnitCost);
-    Measurements {
-        zs_distance: zs_dist,
-        structural_distance: structural_dist,
-    }
-}
-
 const OVERSAMPLE_START: usize = 20;
 
 const OVERSAMPLE_CUTOFF: usize = 1_000_000;
@@ -89,49 +73,44 @@ const OVERSAMPLE_SCHEDULE: [usize; 16] = {
     arr
 };
 
-pub struct PrecomputePackage<C, L, N>
+pub struct PrecomputePackage<'a, C, L, N>
 where
-    L: Label + Language + Sync,
-    L::Discriminant: Sync,
-    N: Analysis<L> + Sync,
-    N::Data: Sync,
-    OriginTree<L>: ToEgg<L>,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
     C: Counter + Display + Ord,
 {
     tc: TermCount<C>,
     min_size: usize,
     max_size: usize,
-    prev_raw_egg: egg::EGraph<L, N>,
-    graph: Graph<L>,
+    prev_graph: &'a EGraph<L, N>,
+    graph: &'a EGraph<L, N>,
+    root: Id,
 }
 
-impl<C, L, N> PrecomputePackage<C, L, N>
+impl<'a, C, L, N> PrecomputePackage<'a, C, L, N>
 where
-    L: Label + Language + Sync,
-    L::Discriminant: Sync,
-    N: Analysis<L> + Sync,
-    N::Data: Sync,
-    OriginTree<L>: ToEgg<L>,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
     C: Counter + Display + Ord,
 {
     /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg` for the sampling process later
     pub fn precompute(
-        graph: &egg::EGraph<L, N>,
-        prev_graph: egg::EGraph<L, N>,
-        root: egg::Id,
+        graph: &'a EGraph<L, N>,
+        prev_graph: &'a EGraph<L, N>,
+        root: Id,
         max_size: usize,
-    ) -> Option<PrecomputePackage<C, L, N>> {
-        let graph = Graph::from_egg(graph, root);
-        let tc = TermCount::<C>::new(max_size, false, &graph);
-        let histogram = tc.data.get(&graph.root())?;
+    ) -> Option<PrecomputePackage<'a, C, L, N>> {
+        let tc = TermCount::<C>::new(max_size, graph);
+        let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
         Some(PrecomputePackage {
             tc,
             min_size,
             max_size,
-            prev_raw_egg: prev_graph,
+            prev_graph,
             graph,
+            root,
         })
     }
 
@@ -143,8 +122,8 @@ where
     pub fn log_root(&self) {
         let histogram = self
             .tc
-            .data
-            .get(&self.graph.root())
+            .data()
+            .get(&self.root)
             .expect("Somehow the root does not contain any terms?");
         let mut sorted_hist = histogram
             .iter()
@@ -165,49 +144,48 @@ where
         distribution: TermSampleDist,
         sample_strategy: SampleStrategy,
         seed: [u64; 2],
-    ) -> Result<Vec<OriginTree<L>>, ExperimentError>
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError>
     where
-        L: Label + Language + Sync,
-        L::Discriminant: Sync,
-        N: Analysis<L> + Sync,
-        N::Data: Sync,
-        OriginTree<L>: ToEgg<L>,
+        L: MyLanguage,
+        N: MyAnalysis<L>,
     {
         let histogram = self
             .tc
-            .data
-            .get(&self.graph.root())
+            .data()
+            .get(&self.root)
             .ok_or(ExperimentError::InsufficientSamples)?;
         OVERSAMPLE_SCHEDULE
             .iter()
             .find_map(|oversample| {
-                let check = |t: &OriginTree<L>| is_frontier(&self.prev_raw_egg, t);
+                let check = |t: &RecExpr<OriginLang<L>>| is_frontier(self.prev_graph, t);
                 let samples_per_size = distribution.samples_per_size(
                     histogram,
                     self.min_size,
                     self.max_size,
                     count * oversample,
                 );
-                let batch = match sample_strategy {
-                    SampleStrategy::Naive => NaiveSampler::new(&self.tc, &self.graph)
-                        .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                    SampleStrategy::CountBased => CountSampler::new(&self.tc, &self.graph)
-                        .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                    SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
-                        NaiveSampler::new(&self.tc, &self.graph),
-                        UnitCost,
-                        0.5,
-                        false,
-                    )
-                    .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                    SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
-                        CountSampler::new(&self.tc, &self.graph),
-                        UnitCost,
-                        0.5,
-                        false,
-                    )
-                    .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                };
+                let batch =
+                    match sample_strategy {
+                        SampleStrategy::Naive => NaiveSampler::new(&self.tc, self.graph, self.root)
+                            .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
+                        SampleStrategy::CountBased => {
+                            CountSampler::new(&self.tc, self.graph, self.root)
+                                .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
+                        } // SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
+                          //     NaiveSampler::new(&self.tc, &self.graph),
+                          //     UnitCost,
+                          //     0.5,
+                          //     false,
+                          // )
+                          // .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
+                          // SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
+                          //     CountSampler::new(&self.tc, &self.graph),
+                          //     UnitCost,
+                          //     0.5,
+                          //     false,
+                          // )
+                          // .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
+                    };
 
                 // let results = if PARALLEL {
                 //     batch

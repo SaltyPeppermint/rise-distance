@@ -11,10 +11,7 @@ use rise_distance::cli::argparse::{DistanceMetric, TermSampleDist};
 use rise_distance::count::TermCount;
 use rise_distance::sampling::CountSampler;
 use rise_distance::sampling::Sampler;
-use rise_distance::{
-    EClassId, Expr, Graph, Label, NumericId, RiseLabel, StructuralDistance, TreeShaped, TypedTree,
-    UnitCost, ZSStats, find_min_struct, find_min_zs, prune_by_ref_tree, tree_distance_unit,
-};
+use rise_distance::tree_distance_unit;
 
 #[derive(Parser)]
 #[command(about = "Find the closest tree in an e-graph to a reference tree")]
@@ -256,7 +253,7 @@ struct CountSampleConfig {
     distance: DistanceMetric,
 }
 
-fn run_count_extraction<L: Label>(
+fn run_count_extraction<L: MyLanguage>(
     graph: &Graph<L>,
     term_count: &TermCount<BigUint>,
     ref_tree: &TypedTree<L>,
@@ -317,7 +314,7 @@ fn run_count_extraction<L: Label>(
 // --- Shared result printing ---
 
 #[expect(clippy::cast_precision_loss)]
-fn print_zs_result<L: Label>(
+fn print_zs_result<L: MyLanguage>(
     result: &(TypedTree<L>, usize),
     ref_tree: &TypedTree<L>,
     stats: &ZSStats,
@@ -351,7 +348,7 @@ fn print_zs_result<L: Label>(
     println!("{best}");
 }
 
-fn print_struct_result<L: Label>(
+fn print_struct_result<L: MyLanguage>(
     result: &(TypedTree<L>, StructuralDistance),
     ref_tree: &TypedTree<L>,
     elapsed: std::time::Duration,
@@ -368,7 +365,7 @@ fn print_struct_result<L: Label>(
     println!("{best}");
 }
 
-fn print_tree_sizes<L: Label>(best: &TypedTree<L>, ref_tree: &TypedTree<L>) {
+fn print_tree_sizes<L: MyLanguage>(best: &TypedTree<L>, ref_tree: &TypedTree<L>) {
     eprintln!(
         "Best tree size: {} with types, {} without",
         best.size_with_types(),

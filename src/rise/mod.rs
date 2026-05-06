@@ -8,6 +8,7 @@ mod expr;
 mod label;
 mod nat;
 mod primitive;
+mod type_analysis;
 mod types;
 
 use std::num::ParseIntError;

@@ -1,39 +1,47 @@
+use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashSet;
 use rayon::prelude::*;
 
-use crate::Graph;
+// use crate::Graph;
 use crate::count::{Counter, TermCount};
-use crate::ids::EClassId;
-use crate::nodes::Label;
-use crate::tree::OriginTree;
+// use crate::ids::EClassId;
+use crate::MyLanguage;
+use crate::{MyAnalysis, OriginLang};
+// use crate::tree::OriginTree;
 use crate::utils::combined_rng;
 
 use super::Sampler;
 
-pub(super) fn possible_size<C: Counter>(
+pub(super) fn possible_size<C, L, N>(
     term_count: &TermCount<C>,
-    graph: &Graph<impl Label>,
-    id: EClassId,
+    graph: &EGraph<L, N>,
+    id: Id,
     size: usize,
     samples: u64,
-) -> bool {
-    let canon_id = graph.canonicalize(id);
-    let Some(count) = term_count.data.get(&canon_id).and_then(|h| h.get(&size)) else {
+) -> bool
+where
+    L: MyLanguage,
+    C: Counter,
+    N: MyAnalysis<L>,
+{
+    let canon_id = graph.find(id);
+    let Some(count) = term_count.data().get(&canon_id).and_then(|h| h.get(&size)) else {
         return false;
     };
     samples.try_into().is_ok_and(|s: C| count > &s)
 }
 
-pub(super) fn sample_batch<const PARALLEL: bool, S, F>(
+pub(super) fn sample_batch<const PARALLEL: bool, L, S, F>(
     sampler: &S,
-    id: EClassId,
+    id: Id,
     samples_per_size: &[(usize, u64)],
     seed: [u64; 2],
     check: F,
-) -> HashSet<OriginTree<S::Label>>
+) -> HashSet<RecExpr<OriginLang<L>>>
 where
-    S: Sampler,
-    F: for<'a> Fn(&'a OriginTree<S::Label>) -> bool + Sync,
+    L: MyLanguage,
+    S: Sampler<L>,
+    F: for<'a> Fn(&'a RecExpr<OriginLang<L>>) -> bool + Sync,
 {
     if PARALLEL {
         samples_per_size
