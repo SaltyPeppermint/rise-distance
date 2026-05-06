@@ -554,99 +554,15 @@ mod tests {
         );
     }
 
-    // fn leaf(label: Math) -> TypedTree<Math> {
-    //     TypedTree::leaf_untyped(label)
-    // }
+    #[test]
+    fn nested() {
+        let expr: RecExpr<Math> = "(+ (* x 1) y)".parse().unwrap();
+        assert_eq!(expr.to_string(), "(+ (* x 1) y)");
+    }
 
-    // fn node(label: Math, children: Vec<TypedTree<Math>>) -> TypedTree<Math> {
-    //     TypedTree::new_untyped(label, children)
-    // }
-
-    // fn sym(s: &str) -> TypedTree<Math> {
-    //     leaf(Math::Symbol(s.into()))
-    // }
-
-    // /// Build tree, convert to `RecExpr`, check it matches the directly parsed `RecExpr`.
-    // fn assert_eq_recexpr(tree: &TypedTree<Math>, expected_str: &str) {
-    //     let from_tree: RecExpr<Math> = (tree).to_rec_expr();
-    //     let direct: RecExpr<Math> = expected_str.parse().unwrap();
-    //     assert_eq!(from_tree, direct, "mismatch for {expected_str}");
-    // }
-
-    // #[test]
-    // fn leaf_symbol() {
-    //     assert_eq_recexpr(&sym("x"), "x");
-    // }
-
-    // #[test]
-    // fn leaf_constant() {
-    //     assert_eq_recexpr(&leaf(Math::Constant("42".parse().unwrap())), "42");
-    // }
-
-    // #[test]
-    // fn binary_add() {
-    //     assert_eq_recexpr(
-    //         &node(Math::Add([id0(), id0()]), vec![sym("x"), sym("y")]),
-    //         "(+ x y)",
-    //     );
-    // }
-
-    // #[test]
-    // fn unary_ln() {
-    //     assert_eq_recexpr(&node(Math::Ln(id0()), vec![sym("x")]), "(ln x)");
-    // }
-
-    // #[test]
-    // fn unary_sqrt() {
-    //     assert_eq_recexpr(&node(Math::Sqrt(id0()), vec![sym("x")]), "(sqrt x)");
-    // }
-
-    // #[test]
-    // fn nested() {
-    //     // (+ (* x 1) y)
-    //     let one = leaf(Math::Constant("1".parse().unwrap()));
-    //     let mul = node(Math::Mul([id0(), id0()]), vec![sym("x"), one]);
-    //     let add = node(Math::Add([id0(), id0()]), vec![mul, sym("y")]);
-    //     assert_eq_recexpr(&add, "(+ (* x 1) y)");
-    // }
-
-    // #[test]
-    // fn deeply_nested() {
-    //     // (d (sin (+ x y)) x)
-    //     let sum = node(Math::Add([id0(), id0()]), vec![sym("x"), sym("y")]);
-    //     let sin = node(Math::Sin(id0()), vec![sum]);
-    //     let diff = node(Math::Diff([id0(), id0()]), vec![sin, sym("x")]);
-    //     assert_eq_recexpr(&diff, "(d (sin (+ x y)) x)");
-    // }
-
-    // #[test]
-    // fn all_binary_ops() {
-    //     let ops = [
-    //         (Math::Add([id0(), id0()]), "+"),
-    //         (Math::Sub([id0(), id0()]), "-"),
-    //         (Math::Mul([id0(), id0()]), "*"),
-    //         (Math::Div([id0(), id0()]), "/"),
-    //         (Math::Pow([id0(), id0()]), "pow"),
-    //         (Math::Diff([id0(), id0()]), "d"),
-    //         (Math::Integral([id0(), id0()]), "i"),
-    //     ];
-    //     for (label, op_str) in ops {
-    //         let tree = node(label, vec![sym("x"), sym("y")]);
-    //         assert_eq_recexpr(&tree, &format!("({op_str} x y)"));
-    //     }
-    // }
-
-    // #[test]
-    // fn all_unary_ops() {
-    //     let ops = [
-    //         (Math::Ln(id0()), "ln"),
-    //         (Math::Sqrt(id0()), "sqrt"),
-    //         (Math::Sin(id0()), "sin"),
-    //         (Math::Cos(id0()), "cos"),
-    //     ];
-    //     for (label, op_str) in ops {
-    //         let tree = node(label, vec![sym("x")]);
-    //         assert_eq_recexpr(&tree, &format!("({op_str} x)"));
-    //     }
-    // }
+    #[test]
+    fn deeply_nested() {
+        let expr: RecExpr<Math> = "(d (sin (+ x y)) x)".parse().unwrap();
+        assert_eq!(expr.to_string(), "(d (sin (+ x y)) x)");
+    }
 }

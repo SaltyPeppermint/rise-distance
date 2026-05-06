@@ -382,222 +382,144 @@ where
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     // use crate::graph::Class;
-//     use crate::nodes::ENode;
-//     use crate::test_utils::*;
-//     use num::BigUint;
+#[cfg(test)]
+mod tests {
+    use egg::EGraph;
+    use num::BigUint;
 
-//     #[test]
-//     fn single_leaf_no_types() {
-//         let graph = Graph::new(
-//             cfv(vec![Class::new(
-//                 vec![ENode::leaf("a".to_owned())],
-//                 dummy_ty(),
-//             )]),
-//             EClassId::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+    use super::*;
+    use crate::egg::Math;
 
-//         let term_count = TermCount::<BigUint>::new(10, false, &graph);
+    fn sym(name: &str) -> Math {
+        Math::Symbol(name.into())
+    }
 
-//         let root_data = &term_count.data[&EClassId::new(0)];
-//         assert_eq!(root_data.len(), 1);
-//         assert_eq!(root_data[&1], BigUint::from(1u32));
-//     }
+    #[test]
+    fn single_leaf() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let root = graph.add(sym("a"));
+        graph.rebuild();
 
-//     #[test]
-//     fn single_leaf_with_types() {
-//         let graph = Graph::new(
-//             cfv(vec![Class::new(
-//                 vec![ENode::leaf("a".to_owned())],
-//                 dummy_ty(),
-//             )]),
-//             EClassId::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+        let term_count = TermCount::<BigUint>::new(10, &graph);
 
-//         let term_count = TermCount::<BigUint>::new(10, true, &graph);
+        let root_data = &term_count.data[&graph.find(root)];
+        assert_eq!(root_data.len(), 1);
+        assert_eq!(root_data[&1], BigUint::from(1u32));
+    }
 
-//         let root_data = &term_count.data[&EClassId::new(0)];
-//         // Size = 1 (node) + 1 (typeOf) + 1 (type "0") = 3
-//         assert_eq!(root_data.len(), 1);
-//         assert_eq!(root_data[&3], BigUint::from(1u32));
-//     }
+    #[test]
+    fn two_choices() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        graph.union(a, b);
+        graph.rebuild();
 
-//     #[test]
-//     fn two_choices_no_types() {
-//         let graph = Graph::new(
-//             cfv(vec![Class::new(
-//                 vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
-//                 dummy_ty(),
-//             )]),
-//             EClassId::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
-//         let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, &graph);
 
-//         let root_data = &term_count.data[&EClassId::new(0)];
-//         // Two terms of size 1
-//         assert_eq!(root_data[&1], BigUint::from(2u32));
-//     }
+        let root_data = &term_count.data[&graph.find(a)];
+        assert_eq!(root_data[&1], BigUint::from(2u32));
+    }
 
-//     #[test]
-//     fn parent_child_no_types() {
-//         // Class 0: has node "f" pointing to class 1
-//         // Class 1: has leaf "a"
-//         let graph = Graph::new(
-//             cfv(vec![
-//                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-//                 Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
-//             ]),
-//             EClassId::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+    #[test]
+    fn parent_child() {
+        // Class 0: ln(class 1)
+        // Class 1: leaf "a"
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let root = graph.add(Math::Ln(a));
+        graph.rebuild();
 
-//         let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, &graph);
 
-//         // Class 1: one term of size 1
-//         assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(1u32));
+        // Class a: one term of size 1
+        assert_eq!(term_count.data[&graph.find(a)][&1], BigUint::from(1u32));
 
-//         // Class 0: one term of size 2 (f + a)
-//         assert_eq!(term_count.data[&EClassId::new(0)][&2], BigUint::from(1u32));
-//     }
+        // Class root: one term of size 2 (ln + a)
+        assert_eq!(term_count.data[&graph.find(root)][&2], BigUint::from(1u32));
+    }
 
-//     #[test]
-//     fn parent_with_multiple_child_choices() {
-//         // Class 0: has node "f" pointing to class 1
-//         // Class 1: has two leaves "a" and "b"
-//         let graph = Graph::new(
-//             cfv(vec![
-//                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-//                 Class::new(
-//                     vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
-//                     dummy_ty(),
-//                 ),
-//             ]),
-//             EClassId::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+    #[test]
+    fn parent_with_multiple_child_choices() {
+        // root: ln(child)
+        // child: two leaves "a" and "b"
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        graph.union(a, b);
+        let root = graph.add(Math::Ln(a));
+        graph.rebuild();
 
-//         let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, &graph);
 
-//         // Class 1: two terms of size 1
-//         assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(2u32));
+        // child: two terms of size 1
+        assert_eq!(term_count.data[&graph.find(a)][&1], BigUint::from(2u32));
 
-//         // Class 0: two terms of size 2 (f(a), f(b))
-//         assert_eq!(term_count.data[&EClassId::new(0)][&2], BigUint::from(2u32));
-//     }
+        // root: two terms of size 2 (ln(a), ln(b))
+        assert_eq!(term_count.data[&graph.find(root)][&2], BigUint::from(2u32));
+    }
 
-//     #[test]
-//     fn two_children() {
-//         // Class 0: has node "f" pointing to classes 1 and 2
-//         // Class 1: leaf "a"
-//         // Class 2: leaf "b"
-//         let graph = Graph::new(
-//             cfv(vec![
-//                 Class::new(
-//                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(2)])],
-//                     dummy_ty(),
-//                 ),
-//                 Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
-//                 Class::new(vec![ENode::leaf("b".to_owned())], dummy_ty()),
-//             ]),
-//             EClassId::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+    #[test]
+    fn two_children() {
+        // root: (+ a b)
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        let root = graph.add(Math::Add([a, b]));
+        graph.rebuild();
 
-//         let term_count = TermCount::<BigUint>::new(10, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, &graph);
 
-//         // Class 0: one term of size 3 (f + a + b)
-//         assert_eq!(term_count.data[&EClassId::new(0)][&3], BigUint::from(1u32));
-//     }
+        // root: one term of size 3 (+ + a + b)
+        assert_eq!(term_count.data[&graph.find(root)][&3], BigUint::from(1u32));
+    }
 
-//     #[test]
-//     fn combinatorial_explosion() {
-//         // Class 0: has node "f" pointing to classes 1 and 2
-//         // Class 1: two leaves "a1", "a2"
-//         // Class 2: three leaves "b1", "b2", "b3"
-//         let graph = Graph::new(
-//             cfv(vec![
-//                 Class::new(
-//                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(2)])],
-//                     dummy_ty(),
-//                 ),
-//                 Class::new(
-//                     vec![ENode::leaf("a1".to_owned()), ENode::leaf("a2".to_owned())],
-//                     dummy_ty(),
-//                 ),
-//                 Class::new(
-//                     vec![
-//                         ENode::leaf("b1".to_owned()),
-//                         ENode::leaf("b2".to_owned()),
-//                         ENode::leaf("b3".to_owned()),
-//                     ],
-//                     dummy_ty(),
-//                 ),
-//             ]),
-//             EClassId::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
-//         let term_count = TermCount::<BigUint>::new(10, false, &graph);
+    #[test]
+    fn combinatorial_explosion() {
+        // root: (+ left right)
+        // left:  two leaves "a1", "a2"
+        // right: three leaves "b1", "b2", "b3"
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a1 = graph.add(sym("a1"));
+        let a2 = graph.add(sym("a2"));
+        graph.union(a1, a2);
 
-//         // Class 0: 2 * 3 = 6 terms of size 3
-//         assert_eq!(term_count.data[&EClassId::new(0)][&3], BigUint::from(6u32));
-//     }
+        let b1 = graph.add(sym("b1"));
+        let b2 = graph.add(sym("b2"));
+        let b3 = graph.add(sym("b3"));
+        graph.union(b1, b2);
+        graph.union(b1, b3);
 
-//     #[test]
-//     fn max_size_filters() {
-//         // Class 0: has node "f" pointing to class 1
-//         // Class 1: leaf "a"
-//         let graph = Graph::new(
-//             cfv(vec![
-//                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-//                 Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
-//             ]),
-//             EClassId::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+        let root = graph.add(Math::Add([a1, b1]));
+        graph.rebuild();
 
-//         // max_size = 1, so f(a) with size 2 should be filtered out
-//         let term_count = TermCount::<BigUint>::new(1, false, &graph);
+        let term_count = TermCount::<BigUint>::new(10, &graph);
 
-//         // Class 1 should have data (size 1)
-//         assert!(term_count.data.contains_key(&EClassId::new(1)));
-//         assert_eq!(term_count.data[&EClassId::new(1)][&1], BigUint::from(1u32));
+        // root: 2 * 3 = 6 terms of size 3
+        assert_eq!(term_count.data[&graph.find(root)][&3], BigUint::from(6u32));
+    }
 
-//         // Class 0 should be empty (size 2 exceeds max_size)
-//         assert!(
-//             term_count
-//                 .data
-//                 .get(&EClassId::new(0))
-//                 .is_none_or(|d| d.is_empty())
-//         );
-//     }
-// }
+    #[test]
+    fn max_size_filters() {
+        // root: ln(a)
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let root = graph.add(Math::Ln(a));
+        graph.rebuild();
+
+        // max_size = 1, so ln(a) with size 2 should be filtered out
+        let term_count = TermCount::<BigUint>::new(1, &graph);
+
+        // a should have data (size 1)
+        assert!(term_count.data.contains_key(&graph.find(a)));
+        assert_eq!(term_count.data[&graph.find(a)][&1], BigUint::from(1u32));
+
+        // root should be empty (size 2 exceeds max_size)
+        assert!(
+            term_count
+                .data
+                .get(&graph.find(root))
+                .is_none_or(|d| d.is_empty())
+        );
+    }
+}

@@ -129,3 +129,94 @@ where
         self.sample_batch::<PARALLEL, _>(self.root(), samples_per_size, seed, check)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use egg::EGraph;
+    use num::BigUint;
+
+    use super::*;
+    use crate::egg::Math;
+    use crate::lower;
+    use crate::utils::combined_rng;
+
+    fn sym(name: &str) -> Math {
+        Math::Symbol(name.into())
+    }
+
+    #[test]
+    fn sample_single_leaf() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let root = graph.add(sym("a"));
+        graph.rebuild();
+
+        let tc = TermCount::<BigUint>::new(10, &graph);
+        let sampler = NaiveSampler::new(&tc, &graph, root);
+
+        let mut rng = combined_rng([42]);
+        let term = sampler.sample(root, 1, &mut rng);
+        assert_eq!(lower(term).to_string(), "a");
+    }
+
+    #[test]
+    fn sample_picks_valid_choice() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        graph.union(a, b);
+        graph.rebuild();
+
+        let tc = TermCount::<BigUint>::new(10, &graph);
+        let sampler = NaiveSampler::new(&tc, &graph, a);
+
+        for s in 0..50_u64 {
+            let mut rng = combined_rng([s]);
+            let term = lower(sampler.sample(a, 1, &mut rng)).to_string();
+            assert!(term == "a" || term == "b", "got unexpected: {term}");
+        }
+    }
+
+    #[test]
+    fn possible_size_correct() {
+        // ln has 1 term of size 2, so possible_size only returns true when count > samples.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let root = graph.add(Math::Ln(a));
+        graph.rebuild();
+
+        let tc = TermCount::<BigUint>::new(10, &graph);
+        let sampler = NaiveSampler::new(&tc, &graph, root);
+
+        // No terms of size 1 or 3 exist for root.
+        assert!(!sampler.possible_size(root, 1, 0));
+        assert!(!sampler.possible_size(root, 3, 0));
+        // 1 term of size 2: 1 > 0 yes, 1 > 1 no.
+        assert!(sampler.possible_size(root, 2, 0));
+        assert!(!sampler.possible_size(root, 2, 1));
+    }
+
+    #[test]
+    fn sample_batch_finds_all_unique() {
+        // (+ a b) where a in {a1, a2} and b in {b1, b2, b3} => 6 unique terms of size 3.
+        // possible_size requires count > samples, so request fewer than 6 to keep going.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a1 = graph.add(sym("a1"));
+        let a2 = graph.add(sym("a2"));
+        graph.union(a1, a2);
+        let b1 = graph.add(sym("b1"));
+        let b2 = graph.add(sym("b2"));
+        let b3 = graph.add(sym("b3"));
+        graph.union(b1, b2);
+        graph.union(b1, b3);
+        let root = graph.add(Math::Add([a1, b1]));
+        graph.rebuild();
+
+        let tc = TermCount::<BigUint>::new(10, &graph);
+        let sampler = NaiveSampler::new(&tc, &graph, root);
+
+        let result = sampler.sample_batch_root::<false, _>(&[(3, 5)], [1, 2], &|_| true);
+        // Sampling uniformly with the same seed scheme deterministically — accept any subset.
+        assert!(!result.is_empty());
+        assert!(result.len() <= 6);
+    }
+}

@@ -178,11 +178,11 @@ impl<C: Counter> TermCount<C> {
             if child_size > remaining {
                 continue;
             }
-            let child_trees =
+            let child_exprs =
                 self.enumerate_class_cached(graph, canonical_child, child_size, cache);
-            for tree in child_trees {
+            for expr in child_exprs {
                 let mut combo = partial.to_vec();
-                combo.push(tree.clone());
+                combo.push(expr.clone());
                 results.push((remaining - child_size, combo));
             }
         }
@@ -190,177 +190,130 @@ impl<C: Counter> TermCount<C> {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::graph::{Class, Graph};
-//     use crate::nodes::ENode;
-//     use crate::test_utils::*;
-//     use crate::tree::TreeShaped;
+#[cfg(test)]
+mod tests {
+    use egg::{EGraph, Language};
+    use hashbrown::HashSet;
+    use num::BigUint;
 
-//     use hashbrown::HashMap;
-//     use num::BigUint;
+    use super::*;
+    use crate::egg::Math;
 
-//     #[test]
-//     fn enumerate_single_leaf() {
-//         let graph = Graph::new(
-//             cfv(vec![Class::new(
-//                 vec![ENode::leaf("a".to_owned())],
-//                 dummy_ty(),
-//             )]),
-//             Id::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+    fn sym(name: &str) -> Math {
+        Math::Symbol(name.into())
+    }
 
-//         let tc = TermCount::<BigUint>::new(10, false, &graph);
-//         let terms = tc.enumerate_root(&graph, 10, None);
-//         assert_eq!(terms.len(), 1);
-//         assert_eq!(terms[0].label(), "a");
-//     }
+    #[test]
+    fn enumerate_single_leaf() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let root = graph.add(sym("a"));
+        graph.rebuild();
 
-//     #[test]
-//     fn enumerate_two_leaves() {
-//         let graph = Graph::new(
-//             cfv(vec![Class::new(
-//                 vec![ENode::leaf("a".to_owned()), ENode::leaf("b".to_owned())],
-//                 dummy_ty(),
-//             )]),
-//             Id::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+        let tc = TermCount::<BigUint>::new(10, &graph);
+        let terms = tc.enumerate(&graph, root, 10, None);
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0][terms[0].root()].inner(), &sym("a"));
+    }
 
-//         let tc = TermCount::<BigUint>::new(10, false, &graph);
-//         let terms = tc.enumerate_root(&graph, 10, None);
-//         assert_eq!(terms.len(), 2);
-//         let labels: Vec<_> = terms.iter().map(|t| t.label().as_str()).collect();
-//         assert!(labels.contains(&"a"));
-//         assert!(labels.contains(&"b"));
-//     }
+    #[test]
+    fn enumerate_two_leaves() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        graph.union(a, b);
+        graph.rebuild();
 
-//     #[test]
-//     fn enumerate_parent_child() {
-//         let graph = Graph::new(
-//             cfv(vec![
-//                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-//                 Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
-//             ]),
-//             Id::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+        let tc = TermCount::<BigUint>::new(10, &graph);
+        let terms = tc.enumerate(&graph, a, 10, None);
+        assert_eq!(terms.len(), 2);
+        let labels: HashSet<_> = terms.iter().map(|t| t[t.root()].inner().clone()).collect();
+        assert!(labels.contains(&sym("a")));
+        assert!(labels.contains(&sym("b")));
+    }
 
-//         let tc = TermCount::<BigUint>::new(10, false, &graph);
-//         let terms = tc.enumerate_root(&graph, 10, None);
-//         assert_eq!(terms.len(), 1);
-//         assert_eq!(terms[0].label(), "f");
-//         assert_eq!(terms[0].children()[0].label(), "a");
-//     }
+    #[test]
+    fn enumerate_parent_child() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let root = graph.add(Math::Ln(a));
+        graph.rebuild();
 
-//     #[test]
-//     fn enumerate_combinatorial() {
-//         // Class 0: f(class1, class2)
-//         // Class 1: "a1", "a2"
-//         // Class 2: "b1", "b2", "b3"
-//         let graph = Graph::new(
-//             cfv(vec![
-//                 Class::new(
-//                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(2)])],
-//                     dummy_ty(),
-//                 ),
-//                 Class::new(
-//                     vec![ENode::leaf("a1".to_owned()), ENode::leaf("a2".to_owned())],
-//                     dummy_ty(),
-//                 ),
-//                 Class::new(
-//                     vec![
-//                         ENode::leaf("b1".to_owned()),
-//                         ENode::leaf("b2".to_owned()),
-//                         ENode::leaf("b3".to_owned()),
-//                     ],
-//                     dummy_ty(),
-//                 ),
-//             ]),
-//             Id::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+        let tc = TermCount::<BigUint>::new(10, &graph);
+        let terms = tc.enumerate(&graph, root, 10, None);
+        assert_eq!(terms.len(), 1);
+        let term = &terms[0];
+        let root_node = &term[term.root()];
+        assert!(matches!(root_node.inner(), Math::Ln(_)));
+        let child_id = root_node.children()[0];
+        assert_eq!(term[child_id].inner(), &sym("a"));
+    }
 
-//         let tc = TermCount::<BigUint>::new(10, false, &graph);
-//         let terms = tc.enumerate_root(&graph, 10, None);
-//         // 2 * 3 = 6 combinations
-//         assert_eq!(terms.len(), 6);
-//     }
+    #[test]
+    fn enumerate_combinatorial() {
+        // root: (+ left right)
+        // left:  "a1", "a2"
+        // right: "b1", "b2", "b3"
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a1 = graph.add(sym("a1"));
+        let a2 = graph.add(sym("a2"));
+        graph.union(a1, a2);
 
-//     #[test]
-//     fn enumerate_respects_max_size() {
-//         let graph = Graph::new(
-//             cfv(vec![
-//                 Class::new(vec![ENode::new("f".to_owned(), vec![eid(1)])], dummy_ty()),
-//                 Class::new(vec![ENode::leaf("a".to_owned())], dummy_ty()),
-//             ]),
-//             Id::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+        let b1 = graph.add(sym("b1"));
+        let b2 = graph.add(sym("b2"));
+        let b3 = graph.add(sym("b3"));
+        graph.union(b1, b2);
+        graph.union(b1, b3);
 
-//         let tc = TermCount::<BigUint>::new(10, false, &graph);
-//         // max_size=1 should not include f(a) which is size 2
-//         let terms = tc.enumerate_root(&graph, 1, None);
-//         assert_eq!(terms.len(), 0);
-//     }
+        let root = graph.add(Math::Add([a1, b1]));
+        graph.rebuild();
 
-//     #[test]
-//     fn enumerate_count_matches_term_count() {
-//         // Class 0: f(class1, class1) -> same child twice
-//         // Class 1: "a", "b", g(class2)
-//         // Class 2: "c"
-//         let graph = Graph::new(
-//             cfv(vec![
-//                 Class::new(
-//                     vec![ENode::new("f".to_owned(), vec![eid(1), eid(1)])],
-//                     dummy_ty(),
-//                 ),
-//                 Class::new(
-//                     vec![
-//                         ENode::leaf("a".to_owned()),
-//                         ENode::leaf("b".to_owned()),
-//                         ENode::new("g".to_owned(), vec![eid(2)]),
-//                     ],
-//                     dummy_ty(),
-//                 ),
-//                 Class::new(vec![ENode::leaf("c".to_owned())], dummy_ty()),
-//             ]),
-//             Id::new(0),
-//             Vec::new(),
-//             HashMap::new(),
-//             dummy_nat_nodes(),
-//             HashMap::new(),
-//         );
+        let tc = TermCount::<BigUint>::new(10, &graph);
+        let terms = tc.enumerate(&graph, root, 10, None);
+        // 2 * 3 = 6 combinations
+        assert_eq!(terms.len(), 6);
+    }
 
-//         let max_size = 10;
-//         let tc = TermCount::<BigUint>::new(max_size, false, &graph);
+    #[test]
+    fn enumerate_respects_max_size() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let root = graph.add(Math::Ln(a));
+        graph.rebuild();
 
-//         let terms = tc.enumerate_root(&graph, max_size, None);
-//         let expected_total: BigUint = tc
-//             .data
-//             .get(&graph.root())
-//             .unwrap()
-//             .iter()
-//             .filter(|&(s, _)| *s <= max_size)
-//             .map(|(_, c)| c.clone())
-//             .sum();
-//         assert_eq!(BigUint::from(terms.len()), expected_total);
-//     }
-// }
+        let tc = TermCount::<BigUint>::new(10, &graph);
+        // max_size=1 should not include ln(a) which is size 2
+        let terms = tc.enumerate(&graph, root, 1, None);
+        assert_eq!(terms.len(), 0);
+    }
+
+    #[test]
+    fn enumerate_count_matches_term_count() {
+        // root: (+ child child)  -- same child twice
+        // child: "a", "b", ln(c)
+        // c: "c"
+        let mut graph = EGraph::<Math, ()>::new(());
+        let c = graph.add(sym("c"));
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        let ln_c = graph.add(Math::Ln(c));
+        graph.union(a, b);
+        graph.union(a, ln_c);
+
+        let root = graph.add(Math::Add([a, a]));
+        graph.rebuild();
+
+        let max_size = 10;
+        let tc = TermCount::<BigUint>::new(max_size, &graph);
+
+        let terms = tc.enumerate(&graph, root, max_size, None);
+        let expected_total: BigUint = tc
+            .data
+            .get(&graph.find(root))
+            .unwrap()
+            .iter()
+            .filter(|&(s, _)| *s <= max_size)
+            .map(|(_, count)| count.clone())
+            .sum();
+        assert_eq!(BigUint::from(terms.len()), expected_total);
+    }
+}

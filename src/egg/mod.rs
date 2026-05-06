@@ -21,7 +21,7 @@ pub use lambda::{Lambda, LambdaAnalysis};
 pub use math::{ConstantFold, Math};
 pub use origin::{OriginLang, lower};
 
-/// Trait for node labels in e-graphs and trees.
+/// Trait for node labels in e-graphs and exprs.
 pub trait MyLanguage:
     Serialize + for<'de> Deserialize<'de> + Send + Sync + Display + Language<Discriminant: Send + Sync>
 {
@@ -34,7 +34,7 @@ pub trait MyLanguage:
     }
 }
 
-/// Trait for node labels in e-graphs and trees.
+/// Trait for node labels in e-graphs and exprs.
 pub trait MyAnalysis<L: MyLanguage>:
     Serialize
     + for<'de> Deserialize<'de>
@@ -246,17 +246,6 @@ where
         stop_reason,
     })
 }
-
-// pub trait ToEgg<L: Label + Language>: TreeShaped<L> {
-//     fn to_rec_expr(&self) -> RecExpr<L> {
-//         let mut expr = RecExpr::default();
-//         let mut adder = |_: &_, x| expr.add(x);
-//         self.add_node(&mut adder);
-//         expr
-//     }
-
-//     fn add_node<F: FnMut(&Self, L) -> Id>(&self, adder: &mut F) -> Id;
-// }
 
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
 /// Returns `Some((iterations, nodes))` if reached, `None` otherwise.

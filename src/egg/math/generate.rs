@@ -27,7 +27,7 @@ use super::Math; // ::MathLabel;
 /// The singularity `rho` is found numerically (`discriminant = 0`).
 /// We binary-search for `x < rho` giving the target expected size, then use rejection sampling.
 ///
-/// Additionally, generated trees are filtered so that the bound variable in each Diff/Integral
+/// Additionally, generated expressions are filtered so that the bound variable in each Diff/Integral
 /// node actually appears free in child[0].
 pub struct BoltzmannSampler {
     /// Probability of generating a leaf node at each step.
@@ -47,7 +47,7 @@ pub struct BoltzmannSampler {
     normal_binary_ops: Vec<Math>,
     /// Binder operators (child[0] = expr, child[1] = variable).
     binder_ops: Vec<Math>,
-    /// Target tree size for rejection sampling.
+    /// Target expression size for rejection sampling.
     target: usize,
     /// Accepted size range is `[target - tolerance, target + tolerance]`.
     tolerance: usize,
@@ -162,7 +162,7 @@ impl BoltzmannSampler {
 
     /// Generate a random term whose size is in `[target - tolerance, target + tolerance]`
     /// and where every Diff/Integral node's bound variable appears free in its expression child.
-    /// Returns None if no valid tree is found within `100_000` attempts.
+    /// Returns None if no valid expression is found within `100_000` attempts.
     pub fn sample<R: Rng, T, F: Fn(&RecExpr<Math>) -> Option<T>>(
         &self,
         rng: &mut R,
@@ -189,26 +189,26 @@ impl BoltzmannSampler {
         count: usize,
         filter_hook: &F,
     ) -> Vec<(RecExpr<Math>, T)> {
-        let (trees, total_attempts, failed) =
+        let (exprs, total_attempts, failed) =
             (0..count).map(|_| self.sample(rng, filter_hook)).fold(
                 (Vec::with_capacity(count), 0, 0),
-                |(mut trees, attempts, failed), result| match result {
-                    Some((tree, reason, a)) => {
-                        trees.push((tree, reason));
-                        (trees, attempts + a, failed)
+                |(mut exprs, attempts, failed), result| match result {
+                    Some((expr, reason, a)) => {
+                        exprs.push((expr, reason));
+                        (exprs, attempts + a, failed)
                     }
-                    None => (trees, attempts, failed + 1),
+                    None => (exprs, attempts, failed + 1),
                 },
             );
         println!(
             "Took a total of {total_attempts} attempts for {} terms. {failed} failed!",
-            trees.len()
+            exprs.len()
         );
-        trees
+        exprs
     }
 }
 
-/// Returns true if every Diff/Integral node in the tree has its bound variable
+/// Returns true if every Diff/Integral node in the expression has its bound variable
 /// appearing free somewhere in its expression child (child[0]).
 fn binders_valid(expr: &RecExpr<Math>) -> bool {
     fn rec(expr: &RecExpr<Math>, id: Id) -> bool {
@@ -226,7 +226,7 @@ fn binders_valid(expr: &RecExpr<Math>) -> bool {
     rec(expr, expr.root())
 }
 
-/// Collect all variable symbols that appear free in the tree.
+/// Collect all variable symbols that appear free in the expression.
 /// Variables bound by an enclosing Diff/Integral are excluded from the free
 /// set of that binder's expression child.
 fn free_vars(expr: &RecExpr<Math>, id: Id) -> HashSet<Symbol> {
@@ -292,7 +292,7 @@ fn find_singularity(n_l: f64, n_u: f64, n_bn: f64, n_bb: f64, n_v: f64) -> f64 {
     f64::midpoint(lo, hi)
 }
 
-/// Expected size of a Boltzmann-sampled tree at parameter `x`, computed via numerical differentiation:
+/// Expected size of a Boltzmann-sampled expression at parameter `x`, computed via numerical differentiation:
 ///   `E[size] = x * T'(x) / T(x)`
 fn expected_size(x: f64, n_l: f64, n_u: f64, n_bn: f64, n_bb: f64, n_v: f64) -> f64 {
     let eps = x * 1e-8;
@@ -343,21 +343,21 @@ mod tests {
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 
-    // #[test]
-    // fn sampler_produces_trees_near_target() {
-    //     let sampler = BoltzmannSampler::new(15, 5, None);
-    //     let mut rng = ChaCha8Rng::seed_from_u64(42);
+    #[test]
+    fn sampler_produces_exprs_near_target() {
+        let sampler = BoltzmannSampler::new(15, 5, None);
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
 
-    //     let trees = sampler.sample_many(&mut rng, 50, &|_| Some(StopReason::Other(String::new())));
-    //     assert_eq!(trees.len(), 50);
-    //     for tree in &trees {
-    //         let size = tree.0.size_without_types();
-    //         assert!(
-    //             (10..=20).contains(&size),
-    //             "size {size} out of range [10, 20]"
-    //         );
-    //     }
-    // }
+        let exprs = sampler.sample_many(&mut rng, 50, &|_| Some(StopReason::Other(String::new())));
+        assert_eq!(exprs.len(), 50);
+        for expr in &exprs {
+            let size = AstSize.cost_rec(&expr.0);
+            assert!(
+                (10..=20).contains(&size),
+                "size {size} out of range [10, 20]"
+            );
+        }
+    }
 
     #[test]
     fn expected_size_increases_with_x() {
@@ -375,151 +375,133 @@ mod tests {
         assert!(e2 < e3, "e2={e2} should be < e3={e3}");
     }
 
-    // #[test]
-    // fn small_target_size() {
-    //     let sampler = BoltzmannSampler::new(5, 2, None);
-    //     let mut rng = ChaCha8Rng::seed_from_u64(123);
+    #[test]
+    fn small_target_size() {
+        let sampler = BoltzmannSampler::new(5, 2, None);
+        let mut rng = ChaCha8Rng::seed_from_u64(123);
 
-    //     let trees = sampler.sample_many(&mut rng, 30, &|_| Some(StopReason::Other(String::new())));
-    //     for tree in &trees {
-    //         let size = tree.0.size_without_types();
-    //         assert!((3..=7).contains(&size), "size {size} out of range [3, 7]");
-    //     }
-    // }
+        let exprs = sampler.sample_many(&mut rng, 30, &|_| Some(StopReason::Other(String::new())));
+        for expr in &exprs {
+            let size = AstSize.cost_rec(&expr.0);
+            assert!((3..=7).contains(&size), "size {size} out of range [3, 7]");
+        }
+    }
 
     #[test]
     fn binders_have_valid_bound_variables() {
         let sampler = BoltzmannSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(99);
 
-        let trees = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
-        for tree in &trees {
+        let exprs = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
+        for expr in &exprs {
             assert!(
-                binders_valid(&tree.0),
-                "tree has binder with non-free bound variable: {tree:?}"
+                binders_valid(&expr.0),
+                "expression has binder with non-free bound variable: {expr:?}"
             );
         }
     }
 
-    // #[test]
-    // fn binder_child1_is_always_a_variable() {
-    //     let sampler = BoltzmannSampler::new(15, 5, None);
-    //     let mut rng = ChaCha8Rng::seed_from_u64(7);
+    #[test]
+    fn binder_child1_is_always_a_variable() {
+        let sampler = BoltzmannSampler::new(15, 5, None);
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
 
-    //     let trees = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
-    //     for tree in &trees {
-    //         assert_no_constant_binder(&tree.0);
-    //     }
-    // }
+        let exprs = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
+        for expr in &exprs {
+            assert_no_constant_binder(&expr.0);
+        }
+    }
 
-    // fn assert_no_constant_binder(tree: &RecExpr<Math>) {
-    //     if matches!(tree.label(), Math::Diff(_) | Math::Integral(_)) {
-    //         let children = tree.children();
-    //         assert!(
-    //             matches!(children[1].label(), Math::Symbol(_)),
-    //             "binder child[1] is not a Symbol: {:?}",
-    //             children[1].label()
-    //         );
-    //     }
-    //     for child in tree.children() {
-    //         assert_no_constant_binder(child);
-    //     }
-    // }
+    fn assert_no_constant_binder(expr: &RecExpr<Math>) {
+        for id in expr.ids() {
+            if let Math::Diff(_) | Math::Integral(_) = expr[id] {
+                let children = expr[id].children();
+                assert!(
+                    matches!(expr[children[1]], Math::Symbol(_)),
+                    "binder child[1] is not a Symbol: {:?}",
+                    expr[children[1]]
+                );
+            }
+        }
+    }
 
-    // // --- helpers for hand-crafted trees ---
+    fn parse(s: &str) -> RecExpr<Math> {
+        s.parse().unwrap()
+    }
 
-    // fn sym(name: &str) -> TypedTree<Math> {
-    //     TypedTree::leaf_untyped(Math::Symbol(name.into()))
-    // }
+    // --- free_vars ---
 
-    // fn diff(expr: TypedTree<Math>, var: TypedTree<Math>) -> TypedTree<Math> {
-    //     TypedTree::new_untyped(Math::Diff([id0(), id0()]), vec![expr, var])
-    // }
+    #[test]
+    fn free_vars_single_symbol() {
+        let expr = parse("x");
+        let fv = free_vars(&expr, expr.root());
+        assert_eq!(fv, ["x".into()].into_iter().collect());
+    }
 
-    // fn add(l: TypedTree<Math>, r: TypedTree<Math>) -> TypedTree<Math> {
-    //     TypedTree::new_untyped(Math::Add([id0(), id0()]), vec![l, r])
-    // }
+    #[test]
+    fn free_vars_binder_removes_bound_var() {
+        // (d x x) => x is bound, free vars = {}
+        let expr = parse("(d x x)");
+        assert!(free_vars(&expr, expr.root()).is_empty());
+    }
 
-    // // --- free_vars ---
+    #[test]
+    fn free_vars_binder_keeps_other_vars() {
+        // (d (+ x y) x) => x bound, y free
+        let expr = parse("(d (+ x y) x)");
+        let fv = free_vars(&expr, expr.root());
+        assert!(!fv.contains(&"x".into()), "x should be bound");
+        assert!(fv.contains(&"y".into()), "y should be free");
+    }
 
-    // #[test]
-    // fn free_vars_single_symbol() {
-    //     let tree = sym("x");
-    //     let fv = free_vars(&tree);
-    //     assert_eq!(fv, ["x".into()].into());
-    // }
+    #[test]
+    fn free_vars_nested_binders() {
+        // (d (d (+ x y) x) y)
+        //   inner d: free in (+ x y) minus x => {y}
+        //   outer d: free in inner minus y => {}
+        let expr = parse("(d (d (+ x y) x) y)");
+        assert!(free_vars(&expr, expr.root()).is_empty());
+    }
 
-    // #[test]
-    // fn free_vars_binder_removes_bound_var() {
-    //     // diff(x, x)  =>  x is bound, so free vars = {}
-    //     let tree = diff(sym("x"), sym("x"));
-    //     assert!(free_vars(&tree).is_empty());
-    // }
-
-    // #[test]
-    // fn free_vars_binder_keeps_other_vars() {
-    //     // diff(add(x, y), x)  =>  x bound, y free
-    //     let tree = diff(add(sym("x"), sym("y")), sym("x"));
-    //     let fv = free_vars(&tree);
-    //     assert!(!fv.contains(&"x".into()), "x should be bound");
-    //     assert!(fv.contains(&"y".into()), "y should be free");
-    // }
-
-    // #[test]
-    // fn free_vars_nested_binders() {
-    //     // diff(diff(add(x,y), x), y)
-    //     //   inner diff: free in add(x,y) minus x  => {y}
-    //     //   outer diff: free in inner minus y     => {}
-    //     let inner = diff(add(sym("x"), sym("y")), sym("x"));
-    //     let tree = diff(inner, sym("y"));
-    //     assert!(free_vars(&tree).is_empty());
-    // }
-
-    // #[test]
-    // fn free_vars_no_binders_collects_all_symbols() {
-    //     // add(x, y) => {x, y}
-    //     let tree = add(sym("x"), sym("y"));
-    //     let fv = free_vars(&tree);
-    //     assert_eq!(fv, ["x".into(), "y".into()].into());
-    // }
+    #[test]
+    fn free_vars_no_binders_collects_all_symbols() {
+        let expr = parse("(+ x y)");
+        let fv = free_vars(&expr, expr.root());
+        assert_eq!(fv, ["x".into(), "y".into()].into_iter().collect());
+    }
 
     // --- binders_valid ---
 
-    // #[test]
-    // fn binders_valid_simple_valid() {
-    //     // diff(x, x): x appears free in expr => valid
-    //     assert!(binders_valid(&diff(sym("x"), sym("x"))));
-    // }
+    #[test]
+    fn binders_valid_simple_valid() {
+        // (d x x): x appears free in expr => valid
+        assert!(binders_valid(&parse("(d x x)")));
+    }
 
-    // #[test]
-    // fn binders_valid_simple_invalid() {
-    //     // diff(x, y): y does NOT appear free in expr `x` => invalid
-    //     assert!(!binders_valid(&diff(sym("x"), sym("y"))));
-    // }
+    #[test]
+    fn binders_valid_simple_invalid() {
+        // (d x y): y does NOT appear free in expr `x` => invalid
+        assert!(!binders_valid(&parse("(d x y)")));
+    }
 
-    // #[test]
-    // fn binders_valid_no_binders() {
-    //     // Pure arithmetic tree is always valid
-    //     assert!(binders_valid(&add(sym("x"), sym("y"))));
-    // }
+    #[test]
+    fn binders_valid_no_binders() {
+        assert!(binders_valid(&parse("(+ x y)")));
+    }
 
-    // #[test]
-    // fn binders_valid_nested_valid() {
-    //     // diff(diff(add(x,y), x), y): inner valid (x free in add(x,y)),
-    //     // outer valid (y is free in diff(add(x,y), x) after x is removed => {y})
-    //     let inner = diff(add(sym("x"), sym("y")), sym("x"));
-    //     let tree = diff(inner, sym("y"));
-    //     assert!(binders_valid(&tree));
-    // }
+    #[test]
+    fn binders_valid_nested_valid() {
+        // (d (d (+ x y) x) y): inner valid (x free in (+ x y)),
+        // outer valid (y is free in (d (+ x y) x) after x is removed => {y})
+        assert!(binders_valid(&parse("(d (d (+ x y) x) y)")));
+    }
 
-    // #[test]
-    // fn binders_valid_nested_outer_invalid() {
-    //     // diff(diff(x, x), y): inner valid (x free in x),
-    //     // but outer bound var y is NOT free in diff(x,x) (free vars = {})
-    //     let inner = diff(sym("x"), sym("x"));
-    //     let tree = diff(inner, sym("y"));
-    //     assert!(!binders_valid(&tree));
-    // }
+    #[test]
+    fn binders_valid_nested_outer_invalid() {
+        // (d (d x x) y): inner valid (x free in x),
+        // but outer bound var y is NOT free in (d x x) (free vars = {})
+        assert!(!binders_valid(&parse("(d (d x x) y)")));
+    }
 
     // --- numerical routines ---
 
@@ -553,8 +535,8 @@ mod tests {
     fn sample_many_count_zero() {
         let sampler = BoltzmannSampler::new(10, 3, None);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
-        let trees = sampler.sample_many(&mut rng, 0, &|_| Some(StopReason::Other(String::new())));
-        assert!(trees.is_empty());
+        let exprs = sampler.sample_many(&mut rng, 0, &|_| Some(StopReason::Other(String::new())));
+        assert!(exprs.is_empty());
     }
 
     #[test]
