@@ -225,6 +225,7 @@ fn process_seed(
         "Guide egraph had {guide_nodes} nodes, {guide_classes} classes in {guide_secs:.2}s"
     );
     tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
+    tee_println!("Stop Reason: {:?}", result.stop_reason());
 
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
     let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
