@@ -4,7 +4,7 @@ use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
 use crate::count::{Counter, TermCount};
-use crate::sampling::Sampler;
+use crate::sampling::{Sampler, common};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 // use crate::tree::OriginTree;
 
@@ -46,7 +46,7 @@ where
     }
 
     fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool {
-        super::common::possible_size(self.term_count, self.graph, id, size, samples)
+        common::possible_size(self.term_count, self.graph, id, size, samples)
     }
 
     fn sample_batch<const PARALLEL: bool, F>(
@@ -59,7 +59,7 @@ where
     where
         F: Fn(&RecExpr<OriginLang<L>>) -> bool + Sync,
     {
-        super::common::sample_batch::<PARALLEL, _, _, _>(self, id, samples_per_size, seed, check)
+        common::sample_batch::<PARALLEL, _, _, _>(self, id, samples_per_size, seed, check)
     }
 
     /// Sample uniformly: each feasible choice gets equal weight.

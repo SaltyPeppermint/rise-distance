@@ -6,7 +6,7 @@ use crate::count::{Counter, TermCount};
 use crate::utils::combined_rng;
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
-use super::Sampler;
+use crate::sampling::Sampler;
 
 pub(super) fn possible_size<C, L, N>(
     term_count: &TermCount<C>,

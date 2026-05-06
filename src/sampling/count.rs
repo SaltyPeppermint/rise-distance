@@ -6,7 +6,7 @@ use rand_chacha::ChaCha12Rng;
 
 use crate::MyLanguage;
 use crate::count::{Counter, TermCount};
-use crate::sampling::Sampler;
+use crate::sampling::{Sampler, common};
 use crate::{MyAnalysis, OriginLang, stack_children};
 
 pub struct CountSampler<'a, 'b, C, L, N>
@@ -47,7 +47,7 @@ where
     }
 
     fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool {
-        super::common::possible_size(self.term_count, self.graph, id, size, samples)
+        common::possible_size(self.term_count, self.graph, id, size, samples)
     }
 
     fn sample_batch<const PARALLEL: bool, F>(
@@ -60,7 +60,7 @@ where
     where
         F: Fn(&RecExpr<OriginLang<L>>) -> bool + Sync,
     {
-        super::common::sample_batch::<PARALLEL, _, _, _>(self, id, samples_per_size, seed, check)
+        common::sample_batch::<PARALLEL, _, _, _>(self, id, samples_per_size, seed, check)
     }
 
     fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
