@@ -2,13 +2,9 @@ use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashSet;
 use rayon::prelude::*;
 
-// use crate::Graph;
 use crate::count::{Counter, TermCount};
-// use crate::ids::EClassId;
-use crate::MyLanguage;
-use crate::{MyAnalysis, OriginLang};
-// use crate::tree::OriginTree;
 use crate::utils::combined_rng;
+use crate::{MyAnalysis, MyLanguage, OriginLang};
 
 use super::Sampler;
 

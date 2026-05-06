@@ -9,6 +9,7 @@ use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 impl<C: Counter> TermCount<C> {
     /// Enumerate all terms from an e-class with sizes in `1..=max_size`.
     #[must_use]
+    #[expect(clippy::missing_panics_doc)]
     pub fn enumerate<L: MyLanguage, N: MyAnalysis<L>>(
         &self,
         graph: &EGraph<L, N>,
@@ -28,7 +29,7 @@ impl<C: Counter> TermCount<C> {
 
         // Build (size, node_index) pairs so rayon can distribute work
         // across both sizes and nodes, not just sizes.
-        let Some(histogram) = self.get(canon_id) else {
+        let Some(histogram) = self.data.get(&canon_id) else {
             return Vec::new();
         };
         let eclass = &graph[canon_id];
@@ -92,7 +93,7 @@ impl<C: Counter> TermCount<C> {
         cache: &DashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
     ) -> Vec<RecExpr<OriginLang<L>>> {
         // Check if this class has any terms at this size
-        let Some(histogram) = self.get(canon_id) else {
+        let Some(histogram) = self.data.get(&canon_id) else {
             return Vec::new();
         };
         if !histogram.contains_key(&size) {
@@ -168,7 +169,7 @@ impl<C: Counter> TermCount<C> {
         cache: &DashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
     ) -> Vec<(usize, Vec<RecExpr<OriginLang<L>>>)> {
         let canonical_child = graph.find(child_id);
-        let Some(child_histogram) = self.get(canonical_child) else {
+        let Some(child_histogram) = self.data.get(&canonical_child) else {
             return Vec::new();
         };
 

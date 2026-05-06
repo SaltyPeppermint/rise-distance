@@ -19,8 +19,7 @@ use serde::Serialize;
 use crate::cli::argparse::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, TermCount};
 use crate::sampling::{CountSampler, NaiveSampler, Sampler};
-use crate::tee_println;
-use crate::{MyAnalysis, MyLanguage, OriginLang, lower};
+use crate::{MyAnalysis, MyLanguage, OriginLang, lower, tee_println};
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
 fn is_frontier<L, N>(prev_raw_egg: &EGraph<L, N>, t: &RecExpr<OriginLang<L>>) -> bool

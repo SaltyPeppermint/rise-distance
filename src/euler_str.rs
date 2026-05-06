@@ -74,18 +74,6 @@ fn euler_string_edit_distance<L: MyLanguage, C: EditCosts<L>>(
     prev[m]
 }
 
-/// Compute a lower bound on tree edit distance using Euler string edit distance.
-///
-/// Returns `ceil(EDS(euler(t1), euler(t2)) / 2)` which is a valid lower bound
-/// on the tree edit distance between t1 and t2.
-pub fn tree_distance_euler_bound<L: MyLanguage, C: EditCosts<L>>(
-    t1: &FlatTree<L>,
-    t2: &FlatTree<L>,
-    costs: &C,
-) -> usize {
-    EulerString::new(t1).lower_bound(t2, costs)
-}
-
 // Cost for relabeling Euler symbols
 fn relabel_cost<L: MyLanguage, C: EditCosts<L>>(
     a: &EulerSymbol<L>,

@@ -4,7 +4,7 @@ pub mod cli;
 mod count;
 // mod diversity;
 pub mod egg;
-pub mod euler_str;
+mod euler_str;
 // mod graph;
 // mod ids;
 pub mod min;
@@ -12,17 +12,17 @@ pub mod min;
 // mod overlap;
 // pub mod rise;
 mod flat_tree;
-pub mod sampling;
-pub mod structural;
+mod sampling;
+mod structural;
 // #[cfg(test)]
 // mod test_utils;
 // mod tree;
 mod utils;
-pub mod zs;
+mod zs;
 
 // pub use choices::ChoiceIter;
 // pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
-pub use count::Counter;
+pub use count::{Counter, TermCount};
 pub use egg::{MyAnalysis, MyLanguage, OriginLang, lower, stack_children};
 // pub use euler_str::tree_distance_euler_bound;
 // pub use graph::{Class, Graph};
@@ -36,3 +36,4 @@ pub use egg::{MyAnalysis, MyLanguage, OriginLang, lower, stack_children};
 //     OriginTree, PartialChild, PartialTree, TreeShaped, TypedTree, tree_node_to_partial,
 // };
 pub use flat_tree::FlatTree;
+pub use zs::tree_distance_unit;

@@ -100,6 +100,7 @@ where
     /// # Arguments
     /// * `max_size` - Maximum term size to count
     #[must_use]
+    #[expect(clippy::missing_panics_doc)]
     pub fn new<L: MyLanguage, N: MyAnalysis<L>>(
         max_size: usize,
         graph: &EGraph<L, N>,
@@ -173,11 +174,6 @@ where
 
         let suffix_cache = Self::build_suffix_cache_from_map(max_size, graph, &data);
         TermCount { data, suffix_cache }
-    }
-
-    #[must_use]
-    pub fn get(&self, id: Id) -> Option<&HashMap<usize, C>> {
-        self.data.get(&id)
     }
 
     /// Merge two term count data maps.
