@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use clap::Parser;
 use egg::{BackoffScheduler, RecExpr, Runner, SimpleScheduler};
-use rise_distance::egg::math::{Math, RULES};
 use rlimit::{Resource, setrlimit};
+
+use rise_distance::egg::math::{Math, RULES};
 
 #[derive(Parser)]
 #[command(about = "Run eqsat on a single term and print peak RSS in bytes.")]

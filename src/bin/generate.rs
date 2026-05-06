@@ -1,24 +1,20 @@
 use std::fs::File;
-use std::io::BufWriter;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
-use egg::RecExpr;
-use egg::{BackoffScheduler, Rewrite, Runner, SimpleScheduler, StopReason};
+use egg::{BackoffScheduler, RecExpr, Rewrite, Runner, SimpleScheduler, StopReason};
 use hashbrown::{HashMap, hash_map::Entry};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
-use rise_distance::MyAnalysis;
 use serde::Serialize;
 
-use rise_distance::MyLanguage;
 use rise_distance::cli::argparse::Distribution;
 use rise_distance::egg::math::{BoltzmannSampler, RULES};
+use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser, Serialize)]
 #[command(

@@ -7,12 +7,9 @@ use egg::RecExpr;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
-use rise_distance::egg::origin::lower;
-use rise_distance::zs::{FlatTree, tree_distance_unit};
 use serde::Serialize;
 use serde_json::json;
 
-use rise_distance::Counter;
 use rise_distance::cli::argparse::{
     EqsatConfig, SampleStrategy, SeedInput, TermSampleDist, parse_seeds,
 };
@@ -23,7 +20,8 @@ use rise_distance::cli::{
 };
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
 use rise_distance::egg::{big_eqsat, verify_reachability};
-use rise_distance::{OriginLang, tee_println};
+use rise_distance::zs::tree_distance_unit;
+use rise_distance::{Counter, FlatTree, OriginLang, lower, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(

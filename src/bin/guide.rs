@@ -10,7 +10,6 @@ use hashbrown::HashMap;
 use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
-use rise_distance::egg::origin::lower;
 use serde::Serialize;
 use serde_json::json;
 
@@ -22,7 +21,7 @@ use rise_distance::cli::types::{GoalSummary, TrialsPerK};
 use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log, write_config, write_stats};
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
 use rise_distance::egg::{big_eqsat, verify_reachability};
-use rise_distance::{Counter, OriginLang, tee_println};
+use rise_distance::{Counter, OriginLang, lower, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(

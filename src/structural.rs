@@ -3,9 +3,8 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::zs::{EditCosts, FlatTree, tree_distance};
-
-use super::MyLanguage;
+use crate::zs::{EditCosts, tree_distance};
+use crate::{FlatTree, MyLanguage};
 
 /// Structural Distance: More `overlap` is better, otherwise fall back on `zs_sum` as a tiebreaker
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

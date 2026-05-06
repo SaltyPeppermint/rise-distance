@@ -4,16 +4,15 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use egg::RecExpr;
 use rayon::prelude::*;
 
 use crate::structural::StructuralDistance;
-use crate::tree::TreeShaped;
 
-use super::euler_str::EulerString;
-use super::nodes::Label;
-use super::structural::structural_diff;
-use super::tree::TypedTree;
-use super::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
+use crate::euler_str::EulerString;
+use crate::structural::structural_diff;
+use crate::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
+use crate::{FlatTree, MyLanguage};
 
 /// Core Zhang-Shasha minimum distance search over a parallel iterator of candidate trees.
 ///
@@ -21,16 +20,15 @@ use super::zs::{EditCosts, PreprocessedTree, tree_distance_with_ref};
 /// the full edit distance.
 pub fn find_min_zs<L, CF, I>(
     candidates: I,
-    reference: &TypedTree<L>,
+    reference: &RecExpr<L>,
     costs: &CF,
-    with_types: bool,
-) -> (Option<(TypedTree<L>, usize)>, ZSStats)
+) -> (Option<(RecExpr<L>, usize)>, ZSStats)
 where
-    L: Label,
+    L: MyLanguage,
     CF: EditCosts<L>,
-    I: ParallelIterator<Item = TypedTree<L>>,
+    I: ParallelIterator<Item = RecExpr<L>>,
 {
-    let ref_flat = reference.flatten(with_types);
+    let ref_flat: FlatTree<L> = reference.into();
 
     let ref_size = ref_flat.size();
     let ref_euler = EulerString::new(&ref_flat);
@@ -39,7 +37,7 @@ where
 
     candidates
         .map(|candidate| {
-            let candidate_flat = candidate.flatten(with_types);
+            let candidate_flat: FlatTree<L> = (&candidate).into();
             let best = running_best.load(Ordering::Relaxed);
 
             if candidate_flat.size().abs_diff(ref_size) > best {
@@ -132,21 +130,20 @@ impl std::ops::Add for ZSStats {
 #[must_use]
 pub fn find_min_struct<L, CF, I>(
     candidates: I,
-    reference: &TypedTree<L>,
+    reference: &RecExpr<L>,
     costs: &CF,
-    with_types: bool,
-) -> Option<(TypedTree<L>, StructuralDistance)>
+) -> Option<(RecExpr<L>, StructuralDistance)>
 where
-    L: Label,
+    L: MyLanguage,
     CF: EditCosts<L>,
-    I: ParallelIterator<Item = TypedTree<L>>,
+    I: ParallelIterator<Item = RecExpr<L>>,
 {
     let running_best_overlap = AtomicUsize::new(0);
     let running_best_zs = AtomicUsize::new(usize::MAX);
-    let ref_tree = reference.flatten(with_types);
+    let ref_tree = reference.into();
     candidates
         .filter_map(|candidate| {
-            let flat_candidate = candidate.flatten(with_types);
+            let flat_candidate = (&candidate).into();
             let distance = structural_diff(&ref_tree, &flat_candidate, costs);
             let best_overlap =
                 running_best_overlap.fetch_max(distance.overlap(), Ordering::Relaxed);

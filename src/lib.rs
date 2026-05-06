@@ -4,13 +4,14 @@ pub mod cli;
 mod count;
 // mod diversity;
 pub mod egg;
-// mod euler_str;
+pub mod euler_str;
 // mod graph;
 // mod ids;
-// mod min;
+pub mod min;
 // mod nodes;
 // mod overlap;
 // pub mod rise;
+mod flat_tree;
 pub mod sampling;
 pub mod structural;
 // #[cfg(test)]
@@ -34,3 +35,4 @@ pub use egg::{MyAnalysis, MyLanguage, OriginLang, lower, stack_children};
 // pub use tree::{
 //     OriginTree, PartialChild, PartialTree, TreeShaped, TypedTree, tree_node_to_partial,
 // };
+pub use flat_tree::FlatTree;
