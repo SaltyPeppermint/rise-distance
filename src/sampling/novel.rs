@@ -6,10 +6,9 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-use super::{Sampler, Weigher};
-use crate::count::novel::NodeMatch;
-use crate::count::{Counter, NovelTermCount, PlainTermCount};
-use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
+use crate::count::{NodeMatch, NovelTermCount, PlainTermCount};
+use crate::sampling::Weigher;
+use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, Sampler, stack_children};
 
 /// Sampler that draws size-targeted terms which are *not* extractable from
 /// any e-class in `prev` — i.e., terms that carry information learned in
