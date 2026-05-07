@@ -17,6 +17,7 @@ mod structural;
 // #[cfg(test)]
 // mod test_utils;
 // mod tree;
+mod novel;
 mod utils;
 mod zs;
 
