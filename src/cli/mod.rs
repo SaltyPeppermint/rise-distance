@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::cli::argparse::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, TermCount};
-use crate::sampling::{CountSampler, NaiveSampler, Sampler};
+use crate::sampling::{CountWeigher, NaiveWeigher, Sampler};
 use crate::{MyAnalysis, MyLanguage, OriginLang, lower, tee_println};
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
@@ -165,10 +165,10 @@ where
                 );
                 let batch =
                     match sample_strategy {
-                        SampleStrategy::Naive => NaiveSampler::new(&self.tc, self.graph, self.root)
+                        SampleStrategy::Naive => Sampler::new(&self.tc, self.graph, self.root, NaiveWeigher)
                             .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
                         SampleStrategy::CountBased => {
-                            CountSampler::new(&self.tc, self.graph, self.root)
+                            Sampler::new(&self.tc, self.graph, self.root, CountWeigher)
                                 .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
                         } // TODO: READD
                           // SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
