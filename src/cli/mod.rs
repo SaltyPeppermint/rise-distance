@@ -21,13 +21,15 @@ use crate::count::{Counter, PlainTermCount};
 use crate::sampling::{CountWeigher, NaiveWeigher, Sampler};
 use crate::{MyAnalysis, MyLanguage, NovelSampler, NovelTermCount, OriginLang, lower, tee_println};
 
-/// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
-fn is_frontier<L, N>(prev_raw_egg: &EGraph<L, N>, t: &RecExpr<OriginLang<L>>) -> bool
+/// Check if a term is in the frontier (i.e. NOT present in `prev`).
+fn is_frontier<L, N>(prev: &EGraph<L, N>, t: &RecExpr<OriginLang<L>>) -> bool
 where
     L: MyLanguage,
     N: MyAnalysis<L>,
 {
-    prev_raw_egg.lookup_expr(&lower(t.clone())).is_none()
+    let check = prev.lookup_expr(&lower(t.clone())).is_none();
+    assert!(check, "SOMEHOW THE NOVEL SAMPLER PRODUCES GARBAGE");
+    check
 }
 
 pub fn trial_avg<
@@ -81,7 +83,6 @@ where
     tc: NovelTermCount<'a, C, L, N>,
     min_size: usize,
     max_size: usize,
-    prev_graph: &'a EGraph<L, N>,
     root: Id,
 }
 
@@ -93,16 +94,16 @@ where
 {
     /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg` for the sampling process later
     pub fn precompute(
-        graph: &'a EGraph<L, N>,
-        prev_graph: &'a EGraph<L, N>,
+        curr: &'a EGraph<L, N>,
+        prev: &'a EGraph<L, N>,
         root: Id,
         max_size: usize,
     ) -> Option<PrecomputePackage<'a, C, L, N>> {
         let tc = NovelTermCount::new(
             max_size,
-            graph,
-            prev_graph,
-            PlainTermCount::<C>::new(max_size, graph),
+            curr,
+            prev,
+            PlainTermCount::<C>::new(max_size, curr),
         );
 
         let histogram = tc.data().get(&root)?;
@@ -112,7 +113,6 @@ where
             tc,
             min_size,
             max_size,
-            prev_graph,
             root,
         })
     }
@@ -160,7 +160,7 @@ where
         OVERSAMPLE_SCHEDULE
             .iter()
             .find_map(|oversample| {
-                let check = |t: &RecExpr<OriginLang<L>>| is_frontier(self.prev_graph, t);
+                let check = |t: &RecExpr<OriginLang<L>>| is_frontier(self.tc.prev(), t);
                 let samples_per_size = distribution.samples_per_size(
                     histogram,
                     self.min_size,

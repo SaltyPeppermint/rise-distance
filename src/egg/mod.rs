@@ -112,7 +112,7 @@ where
     }
 
     #[must_use]
-    pub fn guide(&self) -> &EGraph<L, N> {
+    pub fn curr_guide(&self) -> &EGraph<L, N> {
         &self.iter_data[self.guide_iters].data.0
     }
 
@@ -127,7 +127,7 @@ where
     }
 
     #[must_use]
-    pub fn goal(&self) -> &EGraph<L, N> {
+    pub fn curr_goal(&self) -> &EGraph<L, N> {
         &self.iter_data[self.goal_iters].data.0
     }
 

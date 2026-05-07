@@ -174,10 +174,10 @@ fn process_seed(
         .sum::<f64>();
     let goal_secs = result.goal_data().iter().map(|i| i.total_time).sum::<f64>();
 
-    let guide_nodes = result.guide().total_number_of_nodes();
-    let guide_classes = result.guide().classes().len();
-    let goal_nodes = result.goal().total_number_of_nodes();
-    let goal_classes = result.goal().classes().len();
+    let guide_nodes = result.curr_guide().total_number_of_nodes();
+    let guide_classes = result.curr_guide().classes().len();
+    let goal_nodes = result.curr_goal().total_number_of_nodes();
+    let goal_classes = result.curr_goal().classes().len();
     let goal_iters = result.goal_iters();
     tee_println!(
         "Guide egraph had {guide_nodes} nodes, {guide_classes} classes in {guide_secs:.2}s"
@@ -186,7 +186,7 @@ fn process_seed(
 
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
     let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
-        result.goal(),
+        result.curr_goal(),
         result.prev_goal(),
         result.root(),
         max_size,
@@ -217,7 +217,7 @@ fn process_seed(
     });
 
     let pc = PrecomputePackage::<BigUint, _, _>::precompute(
-        result.guide(),
+        result.curr_guide(),
         result.prev_guide(),
         result.root(),
         max_size,

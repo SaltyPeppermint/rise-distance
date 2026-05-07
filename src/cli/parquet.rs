@@ -4,8 +4,8 @@ use std::path::Path;
 use egg::RecExpr;
 use polars::prelude::*;
 
-use crate::cli::{GoalSummary, GuideError, GuideEval};
-use crate::{MyLanguage, cli::ExperimentError, egg::OriginLang, tee_println};
+use crate::cli::{ExperimentError, GoalSummary, GuideError, GuideEval};
+use crate::{MyLanguage, OriginLang, tee_println};
 
 /// Dump eval results to a new Parquet file inside `run_folder/out/`.
 ///

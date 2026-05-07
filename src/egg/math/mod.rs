@@ -3,8 +3,8 @@ mod generate;
 use std::sync::LazyLock;
 
 use egg::{
-    Analysis, DidMerge, Id, Language, PatternAst, RecExpr, Rewrite, Subst, Symbol, define_language,
-    merge_option, rewrite,
+    Analysis, DidMerge, EGraph, Id, Language, PatternAst, RecExpr, Rewrite, Subst, Symbol,
+    define_language, merge_option, rewrite,
 };
 use ordered_float::NotNan;
 use serde::{Deserialize, Serialize};
@@ -42,7 +42,7 @@ pub struct ConstantFold;
 impl Analysis<Math> for ConstantFold {
     type Data = Option<(Constant, PatternAst<Math>)>;
 
-    fn make(egraph: &mut egg::EGraph<Math, ConstantFold>, enode: &Math, _id: Id) -> Self::Data {
+    fn make(egraph: &mut EGraph<Math, ConstantFold>, enode: &Math, _id: Id) -> Self::Data {
         let x = |i: &Id| egraph[*i].data.as_ref().map(|d| d.0);
         Some(match enode {
             Math::Constant(c) => (*c, format!("{c}").parse().unwrap()),
@@ -73,7 +73,7 @@ impl Analysis<Math> for ConstantFold {
         })
     }
 
-    fn modify(egraph: &mut egg::EGraph<Math, ConstantFold>, id: Id) {
+    fn modify(egraph: &mut EGraph<Math, ConstantFold>, id: Id) {
         let data = egraph[id].data.clone();
         if let Some((c, pat)) = data {
             if egraph.are_explanations_enabled() {
@@ -99,7 +99,7 @@ impl Analysis<Math> for ConstantFold {
 fn is_const_or_distinct_var(
     v: &str,
     w: &str,
-) -> impl Fn(&mut egg::EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
+) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
     let v = v.parse().unwrap();
     let w = w.parse().unwrap();
     move |egraph, _, subst| {
@@ -112,12 +112,12 @@ fn is_const_or_distinct_var(
     }
 }
 
-fn is_const(var: &str) -> impl Fn(&mut egg::EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
+fn is_const(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
     let var = var.parse().unwrap();
     move |egraph, _, subst| egraph[subst[var]].data.is_some()
 }
 
-fn is_sym(var: &str) -> impl Fn(&mut egg::EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
+fn is_sym(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
     let var = var.parse().unwrap();
     move |egraph, _, subst| {
         egraph[subst[var]]
@@ -127,7 +127,7 @@ fn is_sym(var: &str) -> impl Fn(&mut egg::EGraph<Math, ConstantFold>, Id, &Subst
     }
 }
 
-fn is_not_zero(var: &str) -> impl Fn(&mut egg::EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
+fn is_not_zero(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
     let var = var.parse().unwrap();
     move |egraph, _, subst| {
         if let Some(n) = &egraph[subst[var]].data {
