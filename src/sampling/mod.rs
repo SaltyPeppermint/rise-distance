@@ -1,3 +1,4 @@
+pub mod novel;
 pub mod weigher;
 // mod zs_min_distance;
 
@@ -8,80 +9,34 @@ use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
+pub use novel::NovelSampler;
 pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
 // TODO: reenable zs_min_distance sampler
 // pub use zs_min_distance::ZSDistanceSampler;
 
-use crate::count::{Counter, TermCount};
+use crate::count::{Counter, PlainTermCount};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
-pub struct Sampler<'a, 'b, C, L, N, W>
+/// Common interface for samplers that draw size-targeted terms from an e-graph.
+///
+/// `sample_batch` and `sample_batch_root` are provided as default implementations
+/// in terms of [`Sampler::sample`] and [`Sampler::possible_size`].
+pub trait Sampler<C, L, N>
 where
     C: Counter,
     L: MyLanguage,
     N: MyAnalysis<L>,
-    W: Weigher<C>,
 {
-    term_count: &'a TermCount<C>,
-    graph: &'b EGraph<L, N>,
-    root: Id,
-    weigher: W,
-}
+    fn root(&self) -> Id;
 
-impl<'a, 'b, C, L, N, W> Sampler<'a, 'b, C, L, N, W>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    W: Weigher<C>,
-{
-    #[must_use]
-    pub fn new(
-        term_count: &'a TermCount<C>,
-        graph: &'b EGraph<L, N>,
-        root: Id,
-        weigher: W,
-    ) -> Self {
-        Self {
-            term_count,
-            graph,
-            root,
-            weigher,
-        }
-    }
+    /// True iff at least `samples + 1` distinct terms of `size` are reachable
+    /// from `id` under this sampler's constraints.
+    fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool;
 
-    #[must_use]
-    pub fn root(&self) -> Id {
-        self.root
-    }
+    /// Precondition: `possible_size(id, size, 0)`.
+    fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>>;
 
-    #[must_use]
-    pub fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool {
-        let canon_id = self.graph.find(id);
-        let Some(count) = self
-            .term_count
-            .data()
-            .get(&canon_id)
-            .and_then(|h| h.get(&size))
-        else {
-            return false;
-        };
-        samples.try_into().is_ok_and(|s: C| count > &s)
-    }
-
-    pub fn sample_batch_root<const PARALLEL: bool, F>(
-        &self,
-        samples_per_size: &[(usize, u64)],
-        seed: [u64; 2],
-        check: &F,
-    ) -> HashSet<RecExpr<OriginLang<L>>>
-    where
-        F: Fn(&RecExpr<OriginLang<L>>) -> bool + Sync,
-    {
-        self.sample_batch::<PARALLEL, _>(self.root, samples_per_size, seed, check)
-    }
-
-    pub fn sample_batch<const PARALLEL: bool, F>(
+    fn sample_batch<const PARALLEL: bool, F>(
         &self,
         id: Id,
         samples_per_size: &[(usize, u64)],
@@ -90,6 +45,7 @@ where
     ) -> HashSet<RecExpr<OriginLang<L>>>
     where
         F: Fn(&RecExpr<OriginLang<L>>) -> bool + Sync,
+        Self: Sync,
     {
         if PARALLEL {
             samples_per_size
@@ -124,8 +80,81 @@ where
         }
     }
 
+    fn sample_batch_root<const PARALLEL: bool, F>(
+        &self,
+        samples_per_size: &[(usize, u64)],
+        seed: [u64; 2],
+        check: &F,
+    ) -> HashSet<RecExpr<OriginLang<L>>>
+    where
+        F: Fn(&RecExpr<OriginLang<L>>) -> bool + Sync,
+        Self: Sync,
+    {
+        self.sample_batch::<PARALLEL, _>(self.root(), samples_per_size, seed, check)
+    }
+}
+
+pub struct PlainSampler<'a, 'b, C, L, N, W>
+where
+    C: Counter,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+    W: Weigher<C>,
+{
+    term_count: &'a PlainTermCount<C>,
+    graph: &'b EGraph<L, N>,
+    root: Id,
+    weigher: W,
+}
+
+impl<'a, 'b, C, L, N, W> PlainSampler<'a, 'b, C, L, N, W>
+where
+    C: Counter,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+    W: Weigher<C>,
+{
     #[must_use]
-    pub fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
+    pub fn new(
+        term_count: &'a PlainTermCount<C>,
+        graph: &'b EGraph<L, N>,
+        root: Id,
+        weigher: W,
+    ) -> Self {
+        Self {
+            term_count,
+            graph,
+            root,
+            weigher,
+        }
+    }
+}
+
+impl<C, L, N, W> Sampler<C, L, N> for PlainSampler<'_, '_, C, L, N, W>
+where
+    C: Counter,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+    W: Weigher<C>,
+{
+    fn root(&self) -> Id {
+        self.root
+    }
+
+    fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool {
+        let canon_id = self.graph.find(id);
+        let Some(count) = self
+            .term_count
+            .data()
+            .get(&canon_id)
+            .and_then(|h| h.get(&size))
+        else {
+            return false;
+        };
+        samples.try_into().is_ok_and(|s: C| count > &s)
+    }
+
+    fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
         let canon_id = self.graph.find(id);
         let eclass = &self.graph[canon_id];
         let child_budget = size - 1;
@@ -192,8 +221,8 @@ mod tests {
         let root = graph.add(sym("a"));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
-        let sampler = Sampler::new(&tc, &graph, root, NaiveWeigher);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
 
         let mut rng = combined_rng([42]);
         let term = sampler.sample(root, 1, &mut rng);
@@ -208,8 +237,8 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
-        let sampler = Sampler::new(&tc, &graph, a, NaiveWeigher);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -225,8 +254,8 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
-        let sampler = Sampler::new(&tc, &graph, root, NaiveWeigher);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
 
         assert!(!sampler.possible_size(root, 1, 0));
         assert!(!sampler.possible_size(root, 3, 0));
@@ -248,8 +277,8 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
-        let sampler = Sampler::new(&tc, &graph, root, NaiveWeigher);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
 
         let result = sampler.sample_batch_root::<false, _>(&[(3, 5)], [1, 2], &|_| true);
         assert!(!result.is_empty());
@@ -262,8 +291,8 @@ mod tests {
         let root = graph.add(sym("a"));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
-        let sampler = Sampler::new(&tc, &graph, root, CountWeigher);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
 
         let mut rng = combined_rng([42]);
         let term = sampler.sample(root, 1, &mut rng);
@@ -278,8 +307,8 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
-        let sampler = Sampler::new(&tc, &graph, a, CountWeigher);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, a, CountWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -302,8 +331,8 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
-        let sampler = Sampler::new(&tc, &graph, root, CountWeigher);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
 
         let result = sampler.sample_batch_root::<false, _>(&[(3, 5)], [1, 2], &|_| true);
         assert!(!result.is_empty());
@@ -324,8 +353,8 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
-        let sampler = Sampler::new(&tc, &graph, root, CountWeigher);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
 
         let result = sampler.sample_batch_root::<false, _>(&[(3, 5)], [1, 2], &|t| {
             !lower(t.clone()).to_string().contains("a1")

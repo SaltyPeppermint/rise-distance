@@ -42,13 +42,13 @@ impl<T: Eq + Hash + Clone> UniqueQueue<T> {
         }
     }
 
-    // pub fn pop(&mut self) -> Option<T> {
-    //     let res = self.queue.pop_front();
-    //     if let Some(t) = &res {
-    //         self.set.remove(t);
-    //     }
-    //     res
-    // }
+    pub fn pop(&mut self) -> Option<T> {
+        let res = self.queue.pop_front();
+        if let Some(t) = &res {
+            self.set.remove(t);
+        }
+        res
+    }
 
     pub fn is_empty(&self) -> bool {
         let r = self.queue.is_empty();

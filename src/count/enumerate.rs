@@ -3,10 +3,10 @@ use egg::{EGraph, Id, RecExpr};
 use indicatif::{ParallelProgressIterator, ProgressBar};
 use rayon::prelude::*;
 
-use super::{Counter, TermCount};
+use super::{Counter, PlainTermCount};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
-impl<C: Counter> TermCount<C> {
+impl<C: Counter> PlainTermCount<C> {
     /// Enumerate all terms from an e-class with sizes in `1..=max_size`.
     #[must_use]
     #[expect(clippy::missing_panics_doc)]
@@ -209,7 +209,7 @@ mod tests {
         let root = graph.add(sym("a"));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let terms = tc.enumerate(&graph, root, 10, None);
         assert_eq!(terms.len(), 1);
         assert_eq!(terms[0][terms[0].root()].inner(), &sym("a"));
@@ -223,7 +223,7 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let terms = tc.enumerate(&graph, a, 10, None);
         assert_eq!(terms.len(), 2);
         let labels: HashSet<_> = terms.iter().map(|t| t[t.root()].inner().clone()).collect();
@@ -238,7 +238,7 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let terms = tc.enumerate(&graph, root, 10, None);
         assert_eq!(terms.len(), 1);
         let term = &terms[0];
@@ -267,7 +267,7 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let terms = tc.enumerate(&graph, root, 10, None);
         // 2 * 3 = 6 combinations
         assert_eq!(terms.len(), 6);
@@ -280,7 +280,7 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let tc = TermCount::<BigUint>::new(10, &graph);
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
         // max_size=1 should not include ln(a) which is size 2
         let terms = tc.enumerate(&graph, root, 1, None);
         assert_eq!(terms.len(), 0);
@@ -303,7 +303,7 @@ mod tests {
         graph.rebuild();
 
         let max_size = 10;
-        let tc = TermCount::<BigUint>::new(max_size, &graph);
+        let tc = PlainTermCount::<BigUint>::new(max_size, &graph);
 
         let terms = tc.enumerate(&graph, root, max_size, None);
         let expected_total: BigUint = tc

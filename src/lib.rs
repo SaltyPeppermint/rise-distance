@@ -17,14 +17,14 @@ mod structural;
 // #[cfg(test)]
 // mod test_utils;
 // mod tree;
-mod novel;
 mod utils;
 mod zs;
 
 // pub use choices::ChoiceIter;
 // pub use diversity::{DiverseSampler, DiverseSamplerConfig, structural_hash};
-pub use count::{Counter, TermCount};
+pub use count::{Counter, NovelTermCount, PlainTermCount};
 pub use egg::{MyAnalysis, MyLanguage, OriginLang, lower, stack_children};
+pub use sampling::{NovelSampler, PlainSampler, Sampler};
 // pub use euler_str::tree_distance_euler_bound;
 // pub use graph::{Class, Graph};
 // pub use ids::{EClassId, NumericId};

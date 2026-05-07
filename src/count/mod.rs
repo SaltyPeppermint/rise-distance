@@ -17,6 +17,9 @@ use crate::utils::UniqueQueue;
 use crate::{MyAnalysis, MyLanguage};
 
 mod enumerate;
+pub mod novel;
+
+pub use novel::NovelTermCount;
 
 // use crate::graph::Graph;
 // use crate::ids::{DataChildId, DataId, FunId, NatId, TypeChildId};
@@ -73,7 +76,7 @@ impl<
 
 /// Map from e-class ID to a map of (size -> count) (histogram).
 #[derive(Debug, Clone)]
-pub struct TermCount<C>
+pub struct PlainTermCount<C>
 where
     // L: Label,
     // N: TypeAnalysis<L, T>,
@@ -88,7 +91,7 @@ where
     // pub(crate) type_sizes: TC,
 }
 
-impl<C> TermCount<C>
+impl<C> PlainTermCount<C>
 where
     // L: Label,
     // N: TypeAnalysis<L, T>,
@@ -104,7 +107,7 @@ where
     pub fn new<L: MyLanguage, N: MyAnalysis<L>>(
         max_size: usize,
         graph: &EGraph<L, N>,
-    ) -> TermCount<C> {
+    ) -> PlainTermCount<C> {
         // Build parent map and type size cache
         let parents = Self::build_parent_map(graph);
         // let type_sizes = TypeSizeCache::build(graph);
@@ -174,7 +177,7 @@ where
         }
 
         let suffix_cache = Self::build_suffix_cache_from_map(max_size, graph, &data);
-        TermCount { data, suffix_cache }
+        PlainTermCount { data, suffix_cache }
     }
 
     /// Merge two term count data maps.
@@ -223,7 +226,7 @@ where
     }
 
     /// Build a map from child e-class to parent e-classes.
-    fn build_parent_map<L: MyLanguage, N: MyAnalysis<L>>(
+    pub(super) fn build_parent_map<L: MyLanguage, N: MyAnalysis<L>>(
         graph: &EGraph<L, N>,
     ) -> HashMap<Id, HashSet<Id>> {
         let mut parents = HashMap::<Id, HashSet<Id>>::new();
@@ -253,7 +256,7 @@ where
     }
 
     /// Convolve all child histograms into a single result (left-to-right).
-    fn convolve<H: Borrow<HashMap<usize, C>>>(
+    pub(super) fn convolve<H: Borrow<HashMap<usize, C>>>(
         histograms: &[H],
         budget: usize,
     ) -> HashMap<usize, C> {
@@ -403,7 +406,7 @@ mod tests {
         let root = graph.add(sym("a"));
         graph.rebuild();
 
-        let term_count = TermCount::<BigUint>::new(10, &graph);
+        let term_count = PlainTermCount::<BigUint>::new(10, &graph);
 
         let root_data = &term_count.data[&graph.find(root)];
         assert_eq!(root_data.len(), 1);
@@ -418,7 +421,7 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let term_count = TermCount::<BigUint>::new(10, &graph);
+        let term_count = PlainTermCount::<BigUint>::new(10, &graph);
 
         let root_data = &term_count.data[&graph.find(a)];
         assert_eq!(root_data[&1], BigUint::from(2u32));
@@ -433,7 +436,7 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let term_count = TermCount::<BigUint>::new(10, &graph);
+        let term_count = PlainTermCount::<BigUint>::new(10, &graph);
 
         // Class a: one term of size 1
         assert_eq!(term_count.data[&graph.find(a)][&1], BigUint::from(1u32));
@@ -453,7 +456,7 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let term_count = TermCount::<BigUint>::new(10, &graph);
+        let term_count = PlainTermCount::<BigUint>::new(10, &graph);
 
         // child: two terms of size 1
         assert_eq!(term_count.data[&graph.find(a)][&1], BigUint::from(2u32));
@@ -471,7 +474,7 @@ mod tests {
         let root = graph.add(Math::Add([a, b]));
         graph.rebuild();
 
-        let term_count = TermCount::<BigUint>::new(10, &graph);
+        let term_count = PlainTermCount::<BigUint>::new(10, &graph);
 
         // root: one term of size 3 (+ + a + b)
         assert_eq!(term_count.data[&graph.find(root)][&3], BigUint::from(1u32));
@@ -496,7 +499,7 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let term_count = TermCount::<BigUint>::new(10, &graph);
+        let term_count = PlainTermCount::<BigUint>::new(10, &graph);
 
         // root: 2 * 3 = 6 terms of size 3
         assert_eq!(term_count.data[&graph.find(root)][&3], BigUint::from(6u32));
@@ -511,7 +514,7 @@ mod tests {
         graph.rebuild();
 
         // max_size = 1, so ln(a) with size 2 should be filtered out
-        let term_count = TermCount::<BigUint>::new(1, &graph);
+        let term_count = PlainTermCount::<BigUint>::new(1, &graph);
 
         // a should have data (size 1)
         assert!(term_count.data.contains_key(&graph.find(a)));

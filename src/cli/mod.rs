@@ -17,8 +17,8 @@ use num::ToPrimitive;
 use serde::Serialize;
 
 use crate::cli::argparse::{SampleStrategy, TermSampleDist};
-use crate::count::{Counter, TermCount};
-use crate::sampling::{CountWeigher, NaiveWeigher, Sampler};
+use crate::count::{Counter, PlainTermCount};
+use crate::sampling::{CountWeigher, NaiveWeigher, PlainSampler, Sampler};
 use crate::{MyAnalysis, MyLanguage, OriginLang, lower, tee_println};
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
@@ -78,7 +78,7 @@ where
     N: MyAnalysis<L>,
     C: Counter + Display + Ord,
 {
-    tc: TermCount<C>,
+    tc: PlainTermCount<C>,
     min_size: usize,
     max_size: usize,
     prev_graph: &'a EGraph<L, N>,
@@ -99,7 +99,7 @@ where
         root: Id,
         max_size: usize,
     ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let tc = TermCount::<C>::new(max_size, graph);
+        let tc = PlainTermCount::<C>::new(max_size, graph);
         let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
@@ -163,29 +163,30 @@ where
                     self.max_size,
                     count * oversample,
                 );
-                let batch =
-                    match sample_strategy {
-                        SampleStrategy::Naive => Sampler::new(&self.tc, self.graph, self.root, NaiveWeigher)
-                            .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                        SampleStrategy::CountBased => {
-                            Sampler::new(&self.tc, self.graph, self.root, CountWeigher)
-                                .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
-                        } // TODO: READD
-                          // SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
-                          //     NaiveSampler::new(&self.tc, &self.graph),
-                          //     UnitCost,
-                          //     0.5,
-                          //     false,
-                          // )
-                          // .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                          // SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
-                          //     CountSampler::new(&self.tc, &self.graph),
-                          //     UnitCost,
-                          //     0.5,
-                          //     false,
-                          // )
-                          // .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                    };
+                let batch = match sample_strategy {
+                    SampleStrategy::Naive => {
+                        PlainSampler::new(&self.tc, self.graph, self.root, NaiveWeigher)
+                            .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
+                    }
+                    SampleStrategy::CountBased => {
+                        PlainSampler::new(&self.tc, self.graph, self.root, CountWeigher)
+                            .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
+                    } // TODO: READD
+                      // SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
+                      //     NaiveSampler::new(&self.tc, &self.graph),
+                      //     UnitCost,
+                      //     0.5,
+                      //     false,
+                      // )
+                      // .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
+                      // SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
+                      //     CountSampler::new(&self.tc, &self.graph),
+                      //     UnitCost,
+                      //     0.5,
+                      //     false,
+                      // )
+                      // .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
+                };
 
                 // let results = if PARALLEL {
                 //     batch
