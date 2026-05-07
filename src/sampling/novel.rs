@@ -27,14 +27,14 @@ use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, Sampler, stack_children
 /// matches. We sample `(n, profile)` weighted by the count of size-`s`
 /// extractions consistent with that profile, then recurse children
 /// accordingly.
-pub struct NovelSampler<'a, 'p, 'g, C, L, N, W>
+pub struct NovelSampler<'a, 'g, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
     N: MyAnalysis<L>,
     W: Weigher<C>,
 {
-    novel: &'a NovelTermCount<'p, 'g, C, L, N>,
+    novel: &'a NovelTermCount<'g, C, L, N>,
     root: Id,
     weigher: W,
 }
@@ -55,7 +55,7 @@ type AgreeCandidate<'m, C> = (usize, &'m NodeMatch, C, Vec<HashMap<usize, C>>);
 /// histograms.
 type NovelCandidate<C> = (usize, Vec<Option<Id>>, C, Vec<HashMap<usize, C>>);
 
-impl<'a, 'p, 'g, C, L, N, W> NovelSampler<'a, 'p, 'g, C, L, N, W>
+impl<'a, 'g, C, L, N, W> NovelSampler<'a, 'g, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -63,7 +63,7 @@ where
     W: Weigher<C>,
 {
     #[must_use]
-    pub fn new(novel: &'a NovelTermCount<'p, 'g, C, L, N>, root: Id, weigher: W) -> Self {
+    pub fn new(novel: &'a NovelTermCount<'g, C, L, N>, root: Id, weigher: W) -> Self {
         Self {
             novel,
             root,
@@ -275,7 +275,7 @@ where
     }
 }
 
-impl<C, L, N, W> Sampler<C, L, N> for NovelSampler<'_, '_, '_, C, L, N, W>
+impl<C, L, N, W> Sampler<C, L, N> for NovelSampler<'_, '_, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -381,7 +381,7 @@ mod tests {
         curr.rebuild();
 
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let novel = NovelTermCount::new(5, &curr, &prev, &plain);
+        let novel = NovelTermCount::new(5, &curr, &prev, plain);
 
         let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
 
@@ -408,7 +408,7 @@ mod tests {
         curr.rebuild();
 
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let novel = NovelTermCount::new(5, &curr, &prev, &plain);
+        let novel = NovelTermCount::new(5, &curr, &prev, plain);
 
         let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
 
@@ -430,7 +430,7 @@ mod tests {
         graph.rebuild();
 
         let plain = PlainTermCount::<BigUint>::new(5, &graph);
-        let novel = NovelTermCount::new(5, &graph, &graph, &plain);
+        let novel = NovelTermCount::new(5, &graph, &graph, plain);
 
         let sampler = NovelSampler::new(&novel, a, super::super::CountWeigher);
         // Nothing is novel, so possible_size should be false everywhere.

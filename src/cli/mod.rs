@@ -18,8 +18,8 @@ use serde::Serialize;
 
 use crate::cli::argparse::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, PlainTermCount};
-use crate::sampling::{CountWeigher, NaiveWeigher, PlainSampler, Sampler};
-use crate::{MyAnalysis, MyLanguage, OriginLang, lower, tee_println};
+use crate::sampling::{CountWeigher, NaiveWeigher, Sampler};
+use crate::{MyAnalysis, MyLanguage, NovelSampler, NovelTermCount, OriginLang, lower, tee_println};
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev_raw_egg`).
 fn is_frontier<L, N>(prev_raw_egg: &EGraph<L, N>, t: &RecExpr<OriginLang<L>>) -> bool
@@ -78,11 +78,10 @@ where
     N: MyAnalysis<L>,
     C: Counter + Display + Ord,
 {
-    tc: PlainTermCount<C>,
+    tc: NovelTermCount<'a, C, L, N>,
     min_size: usize,
     max_size: usize,
     prev_graph: &'a EGraph<L, N>,
-    graph: &'a EGraph<L, N>,
     root: Id,
 }
 
@@ -99,7 +98,13 @@ where
         root: Id,
         max_size: usize,
     ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let tc = PlainTermCount::<C>::new(max_size, graph);
+        let tc = NovelTermCount::new(
+            max_size,
+            graph,
+            prev_graph,
+            PlainTermCount::<C>::new(max_size, graph),
+        );
+
         let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
@@ -108,7 +113,6 @@ where
             min_size,
             max_size,
             prev_graph,
-            graph,
             root,
         })
     }
@@ -164,12 +168,20 @@ where
                     count * oversample,
                 );
                 let batch = match sample_strategy {
+                    // SampleStrategy::Naive => {
+                    //     PlainSampler::new(self.tc.plain(), self.graph, self.root, NaiveWeigher)
+                    //         .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
+                    // }
+                    // SampleStrategy::CountBased => {
+                    //     PlainSampler::new(self.tc.plain(), self.graph, self.root, CountWeigher)
+                    //         .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
+                    // } // TODO: READD
                     SampleStrategy::Naive => {
-                        PlainSampler::new(&self.tc, self.graph, self.root, NaiveWeigher)
+                        NovelSampler::new(&self.tc, self.root, NaiveWeigher)
                             .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
                     }
                     SampleStrategy::CountBased => {
-                        PlainSampler::new(&self.tc, self.graph, self.root, CountWeigher)
+                        NovelSampler::new(&self.tc, self.root, CountWeigher)
                             .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
                     } // TODO: READD
                       // SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(

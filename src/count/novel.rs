@@ -35,7 +35,7 @@ pub struct NodeMatch {
 
 /// Joint extractability table + per-node prev matches + derived novel
 /// histograms.
-pub struct NovelTermCount<'p, 'g, C, L, N>
+pub struct NovelTermCount<'g, C, L, N>
 where
     C: Counter,
     L: MyLanguage,
@@ -43,7 +43,7 @@ where
 {
     curr: &'g EGraph<L, N>,
     prev: &'g EGraph<L, N>,
-    plain: &'p PlainTermCount<C>,
+    plain: PlainTermCount<C>,
 
     /// Per `(curr_class, prev_class)` pair: histogram of size -> count of
     /// extractions rooted at curr's class that are also extractable from
@@ -62,7 +62,7 @@ where
     data: HashMap<Id, HashMap<usize, C>>,
 }
 
-impl<'p, 'g, C, L, N> NovelTermCount<'p, 'g, C, L, N>
+impl<'g, C, L, N> NovelTermCount<'g, C, L, N>
 where
     C: Counter,
     L: MyLanguage,
@@ -73,7 +73,7 @@ where
         max_size: usize,
         curr: &'g EGraph<L, N>,
         prev: &'g EGraph<L, N>,
-        plain: &'p PlainTermCount<C>,
+        plain: PlainTermCount<C>,
     ) -> Self {
         let matches = enumerate_matches(curr, prev);
         let joint = compute_joint(max_size, curr, &matches);
@@ -97,8 +97,8 @@ where
     }
 
     #[must_use]
-    pub fn plain(&self) -> &'p PlainTermCount<C> {
-        self.plain
+    pub fn plain(&self) -> &PlainTermCount<C> {
+        &self.plain
     }
 
     #[must_use]
@@ -483,7 +483,7 @@ mod tests {
         graph.rebuild();
 
         let plain = PlainTermCount::<BigUint>::new(5, &graph);
-        let novel = NovelTermCount::new(5, &graph, &graph, &plain);
+        let novel = NovelTermCount::new(5, &graph, &graph, plain);
 
         assert!(novel.data().is_empty(), "expected empty novel data");
     }
@@ -504,7 +504,7 @@ mod tests {
         curr.rebuild();
 
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let novel = NovelTermCount::new(5, &curr, &prev, &plain);
+        let novel = NovelTermCount::new(5, &curr, &prev, plain);
 
         // The merged a/b class at size 1 has 2 extractions in curr; only "a"
         // is extractable from prev's a-class and only "b" from prev's b-class
@@ -537,7 +537,7 @@ mod tests {
         curr.rebuild();
 
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let novel = NovelTermCount::new(5, &curr, &prev, &plain);
+        let novel = NovelTermCount::new(5, &curr, &prev, plain);
 
         let root_canon = curr.find(root);
         // Plain at size 3 = 4 (aa, ab, ba, bb). Only Add(a, b) was in prev.
