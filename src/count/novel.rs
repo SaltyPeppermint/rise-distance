@@ -90,6 +90,8 @@ where
         }
     }
 
+    /// Per-class novel histograms. Keyed by **canonical** curr ids — callers
+    /// looking up by an `Id` that hasn't been through `curr.find` may miss.
     #[must_use]
     pub fn data(&self) -> &HashMap<Id, HashMap<usize, C>> {
         &self.data

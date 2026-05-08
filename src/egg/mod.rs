@@ -91,7 +91,10 @@ where
 {
     // /// Iteration Data at `n_guide - 1` (rebuilt), for frontier membership checks.
     iter_data: Vec<Iteration<EGraphHolder<L, N>>>,
-    /// Root (valid for all egraphs)
+    /// Root (valid for all egraphs). Note: this is the Id returned by the
+    /// initial `add`, so it may not be canonical in later iterations'
+    /// egraphs — canonicalize with `egraph.find(root)` before using as a
+    /// HashMap key.
     root: Id,
     /// Guide Iteration
     guide_iters: usize,

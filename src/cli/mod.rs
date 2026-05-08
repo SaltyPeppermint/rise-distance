@@ -106,6 +106,9 @@ where
             PlainTermCount::<C>::new(max_size, curr),
         );
 
+        // `data()` is keyed by canonical curr ids; the caller's `root` may not
+        // be canonical (see `GuideGoalResult::root`).
+        let root = curr.find(root);
         let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
