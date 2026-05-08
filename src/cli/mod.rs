@@ -22,6 +22,7 @@ use crate::sampling::{CountWeigher, NaiveWeigher, Sampler};
 use crate::{MyAnalysis, MyLanguage, NovelSampler, NovelTermCount, OriginLang, lower, tee_println};
 
 /// Check if a term is in the frontier (i.e. NOT present in `prev`).
+/// TODO: GET RID OF THIS; WE NO LONGER NEED IT WITH THE NOVELSAMPLER
 fn is_frontier<L, N>(prev: &EGraph<L, N>, t: &RecExpr<OriginLang<L>>) -> bool
 where
     L: MyLanguage,
@@ -163,6 +164,7 @@ where
         OVERSAMPLE_SCHEDULE
             .iter()
             .find_map(|oversample| {
+                // TODO REMOVE CHECK, NOT NEEDED WITH NEW NOVEL SAMPLER
                 let check = |t: &RecExpr<OriginLang<L>>| is_frontier(self.tc.prev(), t);
                 let samples_per_size = distribution.samples_per_size(
                     histogram,
