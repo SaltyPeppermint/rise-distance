@@ -45,15 +45,15 @@ enum Mode {
     Novel,
 }
 
-/// One sampling candidate in [`Mode::AgreeWith`]: the chosen e-node index in
-/// the curr class, the matching prev node, the candidate's weighted count,
-/// and the per-child histograms used to draw child sizes.
-type AgreeCandidate<'h, C> = (usize, &'h NodeMatch, C, Vec<&'h HashMap<usize, C>>);
+// /// One sampling candidate in [`Mode::AgreeWith`]: the chosen e-node index in
+// /// the curr class, the matching prev node, the candidate's weighted count,
+// /// and the per-child histograms used to draw child sizes.
+// type AgreeCandidate<'h, C> = (usize, &'h NodeMatch, C, Vec<&'h HashMap<usize, C>>);
 
-/// One sampling candidate in [`Mode::Novel`]: the chosen e-node index, the
-/// agreement profile, the candidate's weighted count, and the per-child
-/// histograms.
-type NovelCandidate<'h, C> = (usize, Vec<Option<Id>>, C, Vec<&'h HashMap<usize, C>>);
+// /// One sampling candidate in [`Mode::Novel`]: the chosen e-node index, the
+// /// agreement profile, the candidate's weighted count, and the per-child
+// /// histograms.
+// type NovelCandidate<'h, C> = (usize, Vec<Option<Id>>, C, Vec<&'h HashMap<usize, C>>);
 
 impl<'a, 'g, C, L, N, W> NovelSampler<'a, 'g, C, L, N, W>
 where
@@ -102,7 +102,7 @@ where
 
         // Per (node_idx, match) where match.prev_class == pc, compute the
         // count of size-`size` extractions through that node-match pair.
-        let mut candidates: Vec<AgreeCandidate<'_, C>> = Vec::new();
+        let mut candidates = Vec::new();
         for (idx, node) in eclass.nodes.iter().enumerate() {
             for m in self
                 .novel
@@ -152,7 +152,7 @@ where
         // of slot agreements: `None` = NOVEL, `Some(pc)` = agree with prev
         // class pc. Profile is novel-via-n iff it doesn't equal any
         // match.prev_children.
-        let mut candidates: Vec<NovelCandidate<C>> = Vec::new();
+        let mut candidates = Vec::new();
 
         for (idx, node) in eclass.nodes.iter().enumerate() {
             let n_matches = self.novel.matches_of(canon_id, idx);
@@ -161,16 +161,16 @@ where
             // Per child slot, the prev classes that share at least one
             // extraction with that child class — these are the valid
             // "agree-with" options. NOVEL is also always an option.
-            let slot_options: Vec<Vec<Option<Id>>> = children
+            let slot_options = children
                 .iter()
                 .map(|child| {
-                    let mut opts: Vec<Option<Id>> = vec![None];
+                    let mut opts = vec![None];
                     for &pc in self.novel.cover_of(*child) {
                         opts.push(Some(pc));
                     }
                     opts
                 })
-                .collect();
+                .collect::<Vec<_>>();
 
             for profile in enumerate_profiles(&slot_options) {
                 if completes_some_match(&profile, n_matches) {
@@ -258,10 +258,10 @@ where
         let suffix = PlainTermCount::<C>::suffix_convolutions(child_hists, child_budget);
 
         let mut remaining = child_budget;
-        let mut sampled: Vec<RecExpr<OriginLang<L>>> = Vec::with_capacity(children_ids.len());
+        let mut sampled = Vec::with_capacity(children_ids.len());
 
         for (i, &c_id) in children_ids.iter().enumerate() {
-            let candidates: Vec<(usize, C)> = child_hists[i]
+            let candidates = child_hists[i]
                 .iter()
                 .filter_map(|(&s, count)| {
                     let r = remaining.checked_sub(s)?;
@@ -271,7 +271,7 @@ where
                     }
                     Some((s, self.weigher.child_weight(count, rest)))
                 })
-                .collect();
+                .collect::<Vec<_>>();
 
             let dist = WeightedIndex::new(candidates.iter().map(|(_, w)| w))
                 .expect("at least one valid child size for chosen profile");
@@ -323,7 +323,7 @@ where
 /// Cartesian product over `slot_options` returning every combination as a
 /// vector. `slot_options[i]` lists the choices available for slot `i`.
 fn enumerate_profiles<T: Clone>(slot_options: &[Vec<T>]) -> Vec<Vec<T>> {
-    let mut combos: Vec<Vec<T>> = vec![Vec::new()];
+    let mut combos = vec![Vec::new()];
     for slot in slot_options {
         let mut next = Vec::with_capacity(combos.len() * slot.len());
         for prefix in &combos {

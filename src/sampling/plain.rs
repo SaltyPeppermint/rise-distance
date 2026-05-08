@@ -76,14 +76,14 @@ where
         let child_budget = size - 1;
         let cached = &self.term_count.suffix_cache()[&canon_id];
 
-        let weights: Vec<C> = cached
+        let weights = cached
             .iter()
             .map(|suffix| {
                 suffix[0]
                     .get(&child_budget)
                     .map_or_else(C::zero, |count| self.weigher.node_weight(count))
             })
-            .collect();
+            .collect::<Vec<_>>();
         let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
 
         let pick = &eclass.nodes[pick_idx];
@@ -96,7 +96,7 @@ where
             .enumerate()
             .map(|(i, &c_id)| {
                 let histogram = self.term_count.child_histogram(c_id, self.graph);
-                let candidates: Vec<(usize, C)> = histogram
+                let candidates = histogram
                     .into_iter()
                     .flatten()
                     .filter_map(|(&s, count)| {
@@ -105,7 +105,7 @@ where
                             .and_then(|r| suffix[i + 1].get(&r))
                             .map(|rest_count| (s, self.weigher.child_weight(count, rest_count)))
                     })
-                    .collect();
+                    .collect::<Vec<_>>();
 
                 let dist = WeightedIndex::new(candidates.iter().map(|(_, w)| w)).unwrap();
                 let chosen_size = candidates[dist.sample(rng)].0;

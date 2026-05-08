@@ -196,7 +196,7 @@ where
             let c = curr.find(class.id);
             for (idx, node) in class.nodes.iter().enumerate() {
                 let children = node.children();
-                let child_canons: Vec<Id> = children.iter().map(|cc| curr.find(*cc)).collect();
+                let child_canons = children.iter().map(|cc| curr.find(*cc)).collect::<Vec<_>>();
 
                 let combos = child_combinations(&child_canons, &cover);
                 for combo in combos {
@@ -233,7 +233,7 @@ where
 /// Cartesian product of `cover[child_i]` over `i`. For zero-arity nodes,
 /// returns `[[]]` (a single empty combination).
 fn child_combinations(children: &[Id], cover: &HashMap<Id, HashSet<Id>>) -> Vec<Vec<Id>> {
-    let mut combos: Vec<Vec<Id>> = vec![Vec::new()];
+    let mut combos = vec![Vec::new()];
     for child in children {
         let Some(opts) = cover.get(child) else {
             return Vec::new();
@@ -383,14 +383,14 @@ where
 
         // Build histograms for each child, looking up
         // `joint[(curr.find(child_i), m.prev_children[i])]`.
-        let histograms: Vec<HashMap<usize, C>> = children
+        let histograms = children
             .iter()
             .zip(m.prev_children.iter())
             .map(|(child, prev_child)| {
                 let cc = curr.find(*child);
                 joint.get(&(cc, *prev_child)).cloned().unwrap_or_default()
             })
-            .collect();
+            .collect::<Vec<_>>();
 
         if histograms.iter().any(HashMap::is_empty) {
             continue;

@@ -28,10 +28,10 @@ pub fn trial_avg<
     trials: &[Option<Vec<Iteration<()>>>],
     f: F,
 ) -> Option<f64> {
-    let values: Vec<_> = trials
+    let values = trials
         .iter()
         .filter_map(|x| x.as_ref().and_then(&f))
-        .collect();
+        .collect::<Vec<_>>();
     if values.is_empty() {
         return None;
     }
