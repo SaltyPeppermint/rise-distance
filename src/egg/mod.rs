@@ -94,7 +94,7 @@ where
     /// Root (valid for all egraphs). Note: this is the Id returned by the
     /// initial `add`, so it may not be canonical in later iterations'
     /// egraphs — canonicalize with `egraph.find(root)` before using as a
-    /// HashMap key.
+    /// `HashMap` key.
     root: Id,
     /// Guide Iteration
     guide_iters: usize,
@@ -228,7 +228,18 @@ where
 
     let root = runner.roots[0];
     let mut iter_data = runner.iterations;
-    iter_data.pop();
+
+    // Drop trailing iterations that applied no rewrites — their egraph is
+    // identical to the predecessor, so `curr_goal` / `prev_goal` would not
+    // differ and novelty would be empty by definition. Partial-apply iterations
+    // (mid-apply stops) are kept: egg rebuilds unconditionally, so the egraph
+    // is sound.
+    while iter_data
+        .last()
+        .is_some_and(|it| it.applied.values().sum::<usize>() == 0)
+    {
+        iter_data.pop();
+    }
 
     if iter_data.len() < 3 {
         tee_println!("Not enough iterations!");

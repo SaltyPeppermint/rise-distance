@@ -232,10 +232,13 @@ fn process_seed(
         result.prev_goal(),
         result.root(),
         max_size,
-    )?;
-
+    )
+    .or_else(|| {
+        tee_println!("WARNING: goal precompute returned None for seed '{seed_str}'. Skipping.");
+        None
+    })?;
     tee_println!(
-        "PrecomputePackage built in {}s!...",
+        "PrecomputePackage built in {}s!",
         now.elapsed().as_secs_f64()
     );
     pp.log_root();
