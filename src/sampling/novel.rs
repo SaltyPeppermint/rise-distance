@@ -8,7 +8,7 @@ use rand_chacha::ChaCha12Rng;
 
 use crate::count::{NodeMatch, NovelTermCount, PlainTermCount};
 use crate::sampling::Weigher;
-use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, Sampler, stack_children};
+use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, Sampler, lower, stack_children};
 
 /// Sampler that draws size-targeted terms which are *not* extractable from
 /// any e-class in `prev` — i.e., terms that carry information learned in
@@ -194,13 +194,13 @@ where
         let (idx, profile, _, child_hists) = &candidates[pick];
         let node = &eclass.nodes[*idx];
 
-        let modes: Vec<Mode> = profile
+        let modes = profile
             .iter()
             .map(|a| match a {
                 None => Mode::Novel,
                 Some(pc) => Mode::AgreeWith(*pc),
             })
-            .collect();
+            .collect::<Vec<_>>();
 
         let children = self.sample_children_with_modes(
             node.children(),
@@ -304,7 +304,15 @@ where
     }
 
     fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
-        self.sample_with_mode(id, size, Mode::Novel, rng)
+        let sample = self.sample_with_mode(id, size, Mode::Novel, rng);
+        debug_assert!(
+            self.novel
+                .prev()
+                .lookup_expr(&lower(sample.clone()))
+                .is_none(),
+            "SOMEHOW THE NOVEL SAMPLER PRODUCED A NON-NOVEL TERM"
+        );
+        sample
     }
 }
 

@@ -8,19 +8,19 @@ use hashbrown::HashSet;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
+use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, utils};
+
+// TODO: reenable zs_min_distance sampler
+// pub use zs_min_distance::ZSDistanceSampler;
 pub use novel::NovelSampler;
 pub use plain::PlainSampler;
 pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
-// TODO: reenable zs_min_distance sampler
-// pub use zs_min_distance::ZSDistanceSampler;
-
-use crate::{Counter, MyAnalysis, MyLanguage, OriginLang};
 
 /// Common interface for samplers that draw size-targeted terms from an e-graph.
 ///
 /// `sample_batch` and `sample_batch_root` are provided as default implementations
 /// in terms of [`Sampler::sample`] and [`Sampler::possible_size`].
-pub trait Sampler<C, L, N>
+pub trait Sampler<C, L, N>: Sync
 where
     C: Counter,
     L: MyLanguage,
@@ -35,29 +35,23 @@ where
     /// Precondition: `possible_size(id, size, 0)`.
     fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>>;
 
-    fn sample_batch<const PARALLEL: bool, F>(
+    fn sample_batch<const PARALLEL: bool>(
         &self,
         id: Id,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
-        check: &F,
-    ) -> HashSet<RecExpr<OriginLang<L>>>
-    where
-        F: Fn(&RecExpr<OriginLang<L>>) -> bool + Sync,
-        Self: Sync,
-    {
+    ) -> HashSet<RecExpr<OriginLang<L>>> {
         if PARALLEL {
             samples_per_size
                 .par_iter()
                 .filter(|(size, samples)| self.possible_size(id, *size, *samples))
                 .flat_map(|(size, samples)| {
-                    (0..*samples).into_par_iter().filter_map(|s| {
-                        let candidate = self.sample(
+                    (0..*samples).into_par_iter().map(|s| {
+                        self.sample(
                             id,
                             *size,
-                            &mut crate::utils::combined_rng([*size as u64, s, seed[0], seed[1]]),
-                        );
-                        check(&candidate).then_some(candidate)
+                            &mut utils::combined_rng([*size as u64, s, seed[0], seed[1]]),
+                        )
                     })
                 })
                 .collect()
@@ -66,29 +60,23 @@ where
                 .iter()
                 .filter(|(size, samples)| self.possible_size(id, *size, *samples))
                 .flat_map(|(size, samples)| {
-                    (0..*samples).filter_map(|s| {
-                        let candidate = self.sample(
+                    (0..*samples).map(|s| {
+                        self.sample(
                             id,
                             *size,
-                            &mut crate::utils::combined_rng([*size as u64, s, seed[0], seed[1]]),
-                        );
-                        check(&candidate).then_some(candidate)
+                            &mut utils::combined_rng([*size as u64, s, seed[0], seed[1]]),
+                        )
                     })
                 })
                 .collect()
         }
     }
 
-    fn sample_batch_root<const PARALLEL: bool, F>(
+    fn sample_batch_root<const PARALLEL: bool>(
         &self,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
-        check: &F,
-    ) -> HashSet<RecExpr<OriginLang<L>>>
-    where
-        F: Fn(&RecExpr<OriginLang<L>>) -> bool + Sync,
-        Self: Sync,
-    {
-        self.sample_batch::<PARALLEL, _>(self.root(), samples_per_size, seed, check)
+    ) -> HashSet<RecExpr<OriginLang<L>>> {
+        self.sample_batch::<PARALLEL>(self.root(), samples_per_size, seed)
     }
 }

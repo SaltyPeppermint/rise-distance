@@ -198,7 +198,7 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
 
-        let result = sampler.sample_batch_root::<false, _>(&[(3, 5)], [1, 2], &|_| true);
+        let result = sampler.sample_batch_root::<false>(&[(3, 5)], [1, 2]);
         assert!(!result.is_empty());
         assert!(result.len() <= 6);
     }
@@ -252,7 +252,7 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
 
-        let result = sampler.sample_batch_root::<false, _>(&[(3, 5)], [1, 2], &|_| true);
+        let result = sampler.sample_batch_root::<false>(&[(3, 5)], [1, 2]);
         assert!(!result.is_empty());
         assert!(result.len() <= 6);
     }
@@ -274,9 +274,7 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
 
-        let result = sampler.sample_batch_root::<false, _>(&[(3, 5)], [1, 2], &|t| {
-            !lower(t.clone()).to_string().contains("a1")
-        });
+        let result = sampler.sample_batch_root::<false>(&[(3, 5)], [1, 2]);
         for s in &result {
             assert!(!lower(s.clone()).to_string().contains("a1"));
         }
