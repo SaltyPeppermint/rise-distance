@@ -466,6 +466,27 @@ impl<'p, C: Counter> Strategy<'p, C> for Smallest<'p, C> {
         Self { pp, novel }
     }
 
+    // impl to parallelise over the sample runs
+    fn run_trials(
+        &self,
+        args: &Args,
+        eqsat: &EqsatConfig,
+        seed_str: &str,
+        goals: &[RecExpr<OriginLang<Math>>],
+    ) -> Vec<GoalResults> {
+        goals
+            .into_par_iter()
+            .map(|goal| {
+                tee_println!("Current goal: {}", goal.to_string());
+                GoalResults {
+                    seed: seed_str.to_owned(),
+                    goal: goal.to_string(),
+                    runs: self.run_trial(args, eqsat, &lower(goal.clone())),
+                }
+            })
+            .collect()
+    }
+
     fn run_trial(
         &self,
         args: &Args,
