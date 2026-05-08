@@ -145,6 +145,12 @@ where
     }
 }
 
+// The exposed `cover` is built from the *joint* keys, not from match
+// enumeration's internal `cover`. The two can differ: a `(c, pc)` pair whose
+// matches all involve some child with empty `joint` within `max_size` ends up
+// dropped in `compute_joint`. That's fine for sampling: a missing `pc` had
+// joint count 0 anyway, so neither slot enumeration nor `completes_some_match`
+// can be fooled by its absence.
 fn build_cover<C: Counter>(joint: &HashMap<(Id, Id), HashMap<usize, C>>) -> HashMap<Id, Vec<Id>> {
     let mut out: HashMap<Id, Vec<Id>> = HashMap::new();
     for (c, pc) in joint.keys() {
@@ -179,8 +185,9 @@ where
     let mut matches: HashMap<(Id, usize), Vec<NodeMatch>> = HashMap::new();
     let mut seen: HashSet<(Id, usize, Id, Vec<Id>)> = HashSet::new();
 
-    loop {
-        let mut changed = false;
+    let mut changed = true;
+    while changed {
+        changed = false;
 
         for class in curr.classes() {
             let c = curr.find(class.id);
@@ -216,9 +223,6 @@ where
             }
         }
 
-        if !changed {
-            break;
-        }
     }
 
     matches
@@ -290,16 +294,9 @@ where
     // Reverse dependency: given (c, pc), which pairs depend on its histogram?
     // A pair (c', pc') depends on (c, pc) iff some match of c' (with
     // prev_class pc') has a child position whose curr class is c and prev
-    // class is pc.
+    // class is pc. We need the actual node to know each child's curr class,
+    // so we iterate (class, node, match) tuples.
     let mut deps: HashMap<(Id, Id), HashSet<(Id, Id)>> = HashMap::new();
-    for ((c_prime, _), ms) in matches {
-        for m in ms {
-            // For each child slot, we depend on (curr_child_class, m.prev_children[i]).
-            // But we don't know curr_child_class without looking at the node.
-            // So we need to iterate nodes too. Defer: iterate all nodes here.
-            let _ = (c_prime, m);
-        }
-    }
     for class in curr.classes() {
         let c_prime = curr.find(class.id);
         for (idx, node) in class.nodes.iter().enumerate() {
@@ -393,7 +390,7 @@ where
             })
             .collect();
 
-        if histograms.iter().any(HashMap::is_empty) && !children.is_empty() {
+        if histograms.iter().any(HashMap::is_empty) {
             continue;
         }
 
@@ -417,7 +414,11 @@ fn derive_novel<C: Counter>(
     plain: &HashMap<Id, HashMap<usize, C>>,
     joint: &HashMap<(Id, Id), HashMap<usize, C>>,
 ) -> HashMap<Id, HashMap<usize, C>> {
-    // Aggregate sum_pc joint[(c, pc)] per curr class.
+    // Aggregate sum_pc joint[(c, pc)] per curr class. No double-counting:
+    // `prev.lookup(t)` is unique once prev is rebuilt, so each non-novel term
+    // contributes to exactly one `(c, pc)` pair. Hence
+    // `non_novel[c][s] <= plain[c][s]` always (every non-novel term is also
+    // a plain term).
     let mut non_novel: HashMap<Id, HashMap<usize, C>> = HashMap::new();
     for ((c, _pc), hist) in joint {
         let entry = non_novel.entry(*c).or_default();
