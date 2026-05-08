@@ -5,6 +5,7 @@ mod weigher;
 
 use egg::{Id, RecExpr};
 use hashbrown::HashSet;
+use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
@@ -31,6 +32,20 @@ where
     /// True iff at least `samples + 1` distinct terms of `size` are reachable
     /// from `id` under this sampler's constraints.
     fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool;
+
+    fn min_size(&self, id: Id) -> usize {
+        (0..)
+            .into_iter()
+            .find(|size| self.possible_size(id, *size, 1))
+            .unwrap()
+    }
+
+    /// Returns a random (but stable) smallest term
+    fn smallest(&self, id: Id) -> RecExpr<OriginLang<L>> {
+        let size = self.min_size(id);
+        let mut rng = ChaCha12Rng::seed_from_u64(0);
+        self.sample(id, size, &mut rng)
+    }
 
     /// Precondition: `possible_size(id, size, 0)`.
     fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>>;

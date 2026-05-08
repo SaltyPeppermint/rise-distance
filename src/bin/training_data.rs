@@ -197,6 +197,7 @@ fn process_seed(
         args.size_distribution,
         args.goal_sample_strategy,
         [0, 0],
+        true,
     ) else {
         tee_println!("WARNING: Not enough goals in the frontier for seed '{seed_str}'. Skipping.");
         return None;
@@ -246,6 +247,7 @@ fn try_all<C: Counter + Display + Ord>(
         args.size_distribution,
         args.guide_sample_strategy,
         [0, 0],
+        true,
     )?;
 
     let goal_flat: FlatTree<Math> = goal.into();

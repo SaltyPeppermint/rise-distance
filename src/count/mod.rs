@@ -1,4 +1,7 @@
-use std::iter::{Product, Sum};
+use std::{
+    fmt::Display,
+    iter::{Product, Sum},
+};
 
 use num_traits::{NumAssignRef, NumRef};
 use rand::distributions::uniform::SampleUniform;
@@ -17,6 +20,7 @@ pub trait Counter:
     + NumAssignRef
     + Default
     + std::fmt::Debug
+    + Display
     + SampleUniform
     + PartialEq
     + Ord
@@ -36,6 +40,7 @@ impl<
         + NumAssignRef
         + Default
         + std::fmt::Debug
+        + Display
         + SampleUniform
         + PartialEq
         + Ord

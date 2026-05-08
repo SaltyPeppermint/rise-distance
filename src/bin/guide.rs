@@ -1,11 +1,10 @@
-use std::fmt::Display;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
-use egg::{AstSize, EGraph, Extractor, Id, Language, RecExpr};
+use egg::RecExpr;
 use hashbrown::HashMap;
 use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::BigUint;
@@ -247,6 +246,7 @@ fn process_seed(
         args.size_distribution,
         args.goal_sample_strategy,
         [0, 0],
+        true,
     ) else {
         tee_println!("WARNING: Not enough goals in the frontier for seed '{seed_str}'. Skipping.");
         return None;
@@ -274,16 +274,19 @@ fn process_seed(
     )?;
 
     tee_println!("\nRunning top_k experiments NO REPLACEMENT...");
-    let no_repl = GuideSetNoReplacement::new(&pc).run_trials(args, eqsat, seed_str, &goals);
+    let no_repl = GuideSetNoReplacement::new(&pc, true).run_trials(args, eqsat, seed_str, &goals);
     tee_println!("\nRunning top_k experiments WITH REPLACEMENT...");
-    let with_repl = GuideSetWithReplacement::new(&pc).run_trials(args, eqsat, seed_str, &goals);
+    let with_repl =
+        GuideSetWithReplacement::new(&pc, true).run_trials(args, eqsat, seed_str, &goals);
     tee_println!("\nRunning single experiments ONLY SMALLEST...");
-    let just_smallest = JustSmallest::new(result.curr_goal(), result.root())
-        .run_trials(args, eqsat, seed_str, &goals);
+    let smallest_overall = Smallest::new(&pc, false).run_trials(args, eqsat, seed_str, &goals);
+    tee_println!("\nRunning single experiments ONLY SMALLEST NOVEL...");
+    let smallest_novel = Smallest::new(&pc, true).run_trials(args, eqsat, seed_str, &goals);
     let r = HashMap::from([
         ("no_replacement".to_owned(), no_repl),
         ("with_replacement".to_owned(), with_repl),
-        ("just_smallest".to_owned(), just_smallest),
+        ("smallest_overall".to_owned(), smallest_overall),
+        ("smallest_novel".to_owned(), smallest_novel),
     ]);
     Some((r, stats))
 }
@@ -309,7 +312,32 @@ fn write_top_k_outputs(run_folder: &Path, all: HashMap<String, Vec<GoalResults>>
     }
 }
 
-trait Strategy {
+fn progress_bars() -> Vec<(usize, ProgressBar)> {
+    let mp = MultiProgress::new();
+    let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
+        .unwrap()
+        .progress_chars("=> ");
+
+    TRIAL_SIZE
+        .iter()
+        .map(|&k| {
+            let pb = mp.add(ProgressBar::new(NUM_TRIALS as u64).with_style(style.clone()));
+            pb.set_message(format!("k={k}"));
+            (k, pb)
+        })
+        .collect::<Vec<_>>()
+}
+
+#[derive(Serialize)]
+struct GoalResults {
+    seed: String,
+    goal: String,
+    runs: TrialsPerK,
+}
+
+trait Strategy<'p, C: Counter> {
+    fn new(pp: &'p PrecomputePackage<C, Math, ConstantFold>, novel: bool) -> Self;
+
     fn run_trial(
         &self,
         args: &Args,
@@ -338,17 +366,16 @@ trait Strategy {
     }
 }
 
-struct GuideSetWithReplacement<'a, C: Counter + Display + Ord>(
-    &'a PrecomputePackage<'a, C, Math, ConstantFold>,
-);
-
-impl<'a, C: Counter + Display + Ord> GuideSetWithReplacement<'a, C> {
-    fn new(precompute_package: &'a PrecomputePackage<C, Math, ConstantFold>) -> Self {
-        Self(precompute_package)
-    }
+struct GuideSetWithReplacement<'p, C: Counter> {
+    pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
+    novel: bool,
 }
 
-impl<C: Counter + Display + Ord> Strategy for GuideSetWithReplacement<'_, C> {
+impl<'p, C: Counter> Strategy<'p, C> for GuideSetWithReplacement<'p, C> {
+    fn new(pp: &'p PrecomputePackage<C, Math, ConstantFold>, novel: bool) -> Self {
+        Self { pp, novel }
+    }
+
     fn run_trial(
         &self,
         args: &Args,
@@ -361,11 +388,12 @@ impl<C: Counter + Display + Ord> Strategy for GuideSetWithReplacement<'_, C> {
                 let trials = (0..NUM_TRIALS)
                     .into_par_iter()
                     .map(|s| {
-                        let subset = self.0.sample_frontier_terms::<false>(
+                        let subset = self.pp.sample_frontier_terms::<false>(
                             k,
                             args.size_distribution,
                             args.guide_sample_strategy,
                             [k as u64, s as u64],
+                            self.novel,
                         )?;
                         verify_reachability(&subset, goal_recexpr, &RULES, eqsat, args.full_union)
                             .map_err(|e| e.into())
@@ -380,17 +408,15 @@ impl<C: Counter + Display + Ord> Strategy for GuideSetWithReplacement<'_, C> {
     }
 }
 
-struct GuideSetNoReplacement<'a, C: Counter + Display + Ord>(
-    &'a PrecomputePackage<'a, C, Math, ConstantFold>,
-);
-
-impl<'a, C: Counter + Display + Ord> GuideSetNoReplacement<'a, C> {
-    fn new(precompute_package: &'a PrecomputePackage<C, Math, ConstantFold>) -> Self {
-        Self(precompute_package)
-    }
+struct GuideSetNoReplacement<'p, C: Counter> {
+    pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
+    novel: bool,
 }
 
-impl<C: Counter + Display + Ord> Strategy for GuideSetNoReplacement<'_, C> {
+impl<'p, C: Counter> Strategy<'p, C> for GuideSetNoReplacement<'p, C> {
+    fn new(pp: &'p PrecomputePackage<C, Math, ConstantFold>, novel: bool) -> Self {
+        Self { pp, novel }
+    }
     fn run_trial(
         &self,
         args: &Args,
@@ -400,11 +426,12 @@ impl<C: Counter + Display + Ord> Strategy for GuideSetNoReplacement<'_, C> {
         let bars = progress_bars();
         bars.into_par_iter()
             .map(|(k, pb)| {
-                let samples = self.0.sample_frontier_terms::<true>(
+                let samples = self.pp.sample_frontier_terms::<true>(
                     k * NUM_TRIALS,
                     args.size_distribution,
                     args.guide_sample_strategy,
                     [k as u64, 0],
+                    self.novel,
                 );
                 let trials = match samples {
                     Err(e) => vec![Err(e); NUM_TRIALS],
@@ -429,24 +456,16 @@ impl<C: Counter + Display + Ord> Strategy for GuideSetNoReplacement<'_, C> {
     }
 }
 
-struct JustSmallest(RecExpr<OriginLang<Math>>);
-
-impl JustSmallest {
-    fn new(last_eg: &EGraph<Math, ConstantFold>, root: Id) -> Self {
-        let best = Extractor::new(last_eg, AstSize).find_best(root).1;
-        let origin_expr = best
-            .iter()
-            .map(|n| {
-                let sub_expr = n.build_recexpr(|c_id| best[c_id].clone());
-                let id = last_eg.lookup_expr(&sub_expr).unwrap();
-                OriginLang::new(n.to_owned(), id)
-            })
-            .collect();
-        Self(origin_expr)
-    }
+struct Smallest<'p, C: Counter> {
+    pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
+    novel: bool,
 }
 
-impl Strategy for JustSmallest {
+impl<'p, C: Counter> Strategy<'p, C> for Smallest<'p, C> {
+    fn new(pp: &'p PrecomputePackage<C, Math, ConstantFold>, novel: bool) -> Self {
+        Self { pp, novel }
+    }
+
     fn run_trial(
         &self,
         args: &Args,
@@ -454,7 +473,7 @@ impl Strategy for JustSmallest {
         goal_recexpr: &RecExpr<Math>,
     ) -> TrialsPerK {
         let r = verify_reachability(
-            std::slice::from_ref(&self.0),
+            std::slice::from_ref(&self.pp.smallest(self.pp.root(), self.novel)),
             goal_recexpr,
             &RULES,
             eqsat,
@@ -463,27 +482,4 @@ impl Strategy for JustSmallest {
         .map_err(Into::into);
         HashMap::from([(1, vec![r])])
     }
-}
-
-fn progress_bars() -> Vec<(usize, ProgressBar)> {
-    let mp = MultiProgress::new();
-    let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
-        .unwrap()
-        .progress_chars("=> ");
-
-    TRIAL_SIZE
-        .iter()
-        .map(|&k| {
-            let pb = mp.add(ProgressBar::new(NUM_TRIALS as u64).with_style(style.clone()));
-            pb.set_message(format!("k={k}"));
-            (k, pb)
-        })
-        .collect::<Vec<_>>()
-}
-
-#[derive(Serialize)]
-struct GoalResults {
-    seed: String,
-    goal: String,
-    runs: TrialsPerK,
 }

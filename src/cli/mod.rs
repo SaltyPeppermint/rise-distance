@@ -7,7 +7,6 @@ pub use logging::{_tee_print, init_log};
 pub use types::*;
 
 use std::env::current_dir;
-use std::fmt::Display;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -19,7 +18,9 @@ use serde::Serialize;
 use crate::cli::argparse::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, PlainTermCount};
 use crate::sampling::{CountWeigher, NaiveWeigher, Sampler};
-use crate::{MyAnalysis, MyLanguage, NovelSampler, NovelTermCount, OriginLang, tee_println};
+use crate::{
+    MyAnalysis, MyLanguage, NovelSampler, NovelTermCount, OriginLang, PlainSampler, tee_println,
+};
 
 pub fn trial_avg<
     F: Fn(&Vec<Iteration<()>>) -> Option<T>,
@@ -67,7 +68,7 @@ pub struct PrecomputePackage<'a, C, L, N>
 where
     L: MyLanguage,
     N: MyAnalysis<L>,
-    C: Counter + Display + Ord,
+    C: Counter,
 {
     tc: NovelTermCount<'a, C, L, N>,
     min_size: usize,
@@ -79,7 +80,7 @@ impl<'a, C, L, N> PrecomputePackage<'a, C, L, N>
 where
     L: MyLanguage,
     N: MyAnalysis<L>,
-    C: Counter + Display + Ord,
+    C: Counter,
 {
     /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg` for the sampling process later
     pub fn precompute(
@@ -139,6 +140,7 @@ where
         distribution: TermSampleDist,
         sample_strategy: SampleStrategy,
         seed: [u64; 2],
+        novel: bool,
     ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError>
     where
         L: MyLanguage,
@@ -158,53 +160,41 @@ where
                     self.max_size,
                     count * oversample,
                 );
-                let batch = match sample_strategy {
-                    // SampleStrategy::Naive => {
-                    //     PlainSampler::new(self.tc.plain(), self.graph, self.root, NaiveWeigher)
-                    //         .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
-                    // }
-                    // SampleStrategy::CountBased => {
-                    //     PlainSampler::new(self.tc.plain(), self.graph, self.root, CountWeigher)
-                    //         .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check)
-                    // } // TODO: READD
-                    SampleStrategy::Naive => {
+                let batch = match (sample_strategy, novel) {
+                    (SampleStrategy::Naive, true) => {
                         NovelSampler::new(&self.tc, self.root, NaiveWeigher)
                             .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
                     }
-                    SampleStrategy::CountBased => {
+                    (SampleStrategy::CountBased, true) => {
                         NovelSampler::new(&self.tc, self.root, CountWeigher)
                             .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
-                    } // TODO: READD
-                      // SampleStrategy::ZSDiverseNaive => ZSDistanceSampler::new(
-                      //     NaiveSampler::new(&self.tc, &self.graph),
-                      //     UnitCost,
-                      //     0.5,
-                      //     false,
-                      // )
-                      // .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
-                      // SampleStrategy::ZSDiverseCountBased => ZSDistanceSampler::new(
-                      //     CountSampler::new(&self.tc, &self.graph),
-                      //     UnitCost,
-                      //     0.5,
-                      //     false,
-                      // )
-                      // .sample_batch_root::<PARALLEL, _>(&samples_per_size, seed, &check),
+                    }
+                    (SampleStrategy::Naive, false) => {
+                        PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
+                            .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
+                    }
+                    (SampleStrategy::CountBased, false) => {
+                        PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, CountWeigher)
+                            .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
+                    }
                 };
-
-                // let results = if PARALLEL {
-                //     batch
-                //         .into_par_iter()
-                //         .filter(|t| is_frontier(t, &self.prev_raw_egg))
-                //         .collect::<HashSet<_>>()
-                // } else {
-                //     batch
-                //         .into_iter()
-                //         .filter(|t| is_frontier(t, &self.prev_raw_egg))
-                //         .collect::<HashSet<_>>()
-                // };
                 (batch.len() >= count).then(|| batch.into_iter().take(count).collect())
             })
             .ok_or(ExperimentError::InsufficientSamples)
+    }
+
+    #[must_use]
+    pub fn smallest(&self, id: Id, novel: bool) -> RecExpr<OriginLang<L>> {
+        if novel {
+            NovelSampler::new(&self.tc, self.root, NaiveWeigher).smallest(id)
+        } else {
+            PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher).smallest(id)
+        }
+    }
+
+    #[must_use]
+    pub fn root(&self) -> Id {
+        self.root
     }
 }
 
