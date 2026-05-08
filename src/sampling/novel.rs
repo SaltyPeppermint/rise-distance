@@ -48,12 +48,12 @@ enum Mode {
 /// One sampling candidate in [`Mode::AgreeWith`]: the chosen e-node index in
 /// the curr class, the matching prev node, the candidate's weighted count,
 /// and the per-child histograms used to draw child sizes.
-type AgreeCandidate<'m, C> = (usize, &'m NodeMatch, C, Vec<HashMap<usize, C>>);
+type AgreeCandidate<'h, C> = (usize, &'h NodeMatch, C, Vec<&'h HashMap<usize, C>>);
 
 /// One sampling candidate in [`Mode::Novel`]: the chosen e-node index, the
 /// agreement profile, the candidate's weighted count, and the per-child
 /// histograms.
-type NovelCandidate<C> = (usize, Vec<Option<Id>>, C, Vec<HashMap<usize, C>>);
+type NovelCandidate<'h, C> = (usize, Vec<Option<Id>>, C, Vec<&'h HashMap<usize, C>>);
 
 impl<'a, 'g, C, L, N, W> NovelSampler<'a, 'g, C, L, N, W>
 where
@@ -110,7 +110,11 @@ where
                 .iter()
                 .filter(|m| m.prev_class == pc)
             {
-                let child_hists = self.agree_child_histograms(node.children(), &m.prev_children);
+                let Some(child_hists) =
+                    self.agree_child_histograms(node.children(), &m.prev_children)
+                else {
+                    continue;
+                };
                 let count = convolve_at::<C>(&child_hists, child_budget).unwrap_or_else(C::zero);
                 if count != C::zero() {
                     candidates.push((idx, m, self.weigher.node_weight(&count), child_hists));
@@ -173,7 +177,9 @@ where
                     continue;
                 }
 
-                let child_hists = self.novel_child_histograms(children, &profile);
+                let Some(child_hists) = self.novel_child_histograms(children, &profile) else {
+                    continue;
+                };
                 let count = convolve_at::<C>(&child_hists, child_budget).unwrap_or_else(C::zero);
                 if count != C::zero() {
                     candidates.push((idx, profile, self.weigher.node_weight(&count), child_hists));
@@ -207,31 +213,34 @@ where
         stack_children(&children, OriginLang::new(node.clone(), canon_id))
     }
 
-    /// Per-child histograms when sampling under [`Mode::AgreeWith`].
+    /// Per-child histograms when sampling under [`Mode::AgreeWith`]. `None`
+    /// if any slot has no shared extraction — that candidate's count would
+    /// be zero anyway.
     fn agree_child_histograms(
         &self,
         children: &[Id],
         prev_children: &[Id],
-    ) -> Vec<HashMap<usize, C>> {
+    ) -> Option<Vec<&'a HashMap<usize, C>>> {
         children
             .iter()
             .zip(prev_children.iter())
-            .map(|(child, &pc)| self.novel.joint_histogram(*child, pc).into_owned())
+            .map(|(child, &pc)| self.novel.joint_histogram(*child, pc))
             .collect()
     }
 
     /// Per-child histograms for an agreement profile in [`Mode::Novel`].
+    /// `None` if any slot is unsatisfiable.
     fn novel_child_histograms(
         &self,
         children: &[Id],
         profile: &[Option<Id>],
-    ) -> Vec<HashMap<usize, C>> {
+    ) -> Option<Vec<&'a HashMap<usize, C>>> {
         children
             .iter()
             .zip(profile.iter())
             .map(|(child, slot)| match slot {
-                None => self.novel.novel_histogram(*child).into_owned(),
-                Some(pc) => self.novel.joint_histogram(*child, *pc).into_owned(),
+                None => self.novel.novel_histogram(*child),
+                Some(pc) => self.novel.joint_histogram(*child, *pc),
             })
             .collect()
     }
@@ -241,7 +250,7 @@ where
     fn sample_children_with_modes(
         &self,
         children_ids: &[Id],
-        child_hists: &[HashMap<usize, C>],
+        child_hists: &[&HashMap<usize, C>],
         modes: &[Mode],
         child_budget: usize,
         rng: &mut ChaCha12Rng,
@@ -337,8 +346,8 @@ fn completes_some_match(profile: &[Option<Id>], matches: &[NodeMatch]) -> bool {
 /// Convolve histograms and read out the count at exactly `budget`. Returns
 /// `None` if any histogram is empty (the convolution is then empty too) or
 /// if the budget has no entry.
-fn convolve_at<C: Counter>(histograms: &[HashMap<usize, C>], budget: usize) -> Option<C> {
-    if histograms.iter().any(HashMap::is_empty) {
+fn convolve_at<C: Counter>(histograms: &[&HashMap<usize, C>], budget: usize) -> Option<C> {
+    if histograms.iter().any(|h| h.is_empty()) {
         return None;
     }
     let conv = PlainTermCount::<C>::convolve(histograms, budget);

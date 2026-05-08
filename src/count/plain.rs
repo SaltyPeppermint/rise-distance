@@ -2,7 +2,7 @@
 //!
 //! Counts the number of terms up to a given size that can be extracted from each e-class.
 
-use std::borrow::{Borrow, Cow};
+use std::borrow::Borrow;
 
 use dashmap::DashMap;
 use egg::RecExpr;
@@ -262,31 +262,14 @@ impl<C: Counter> PlainTermCount<C> {
         suffix
     }
 
-    /// Get the histogram for a child (size -> count).
+    /// Get the histogram for a child (size -> count). `None` means the child
+    /// has no extractions — callers should treat it as an empty histogram.
     pub(crate) fn child_histogram<L: MyLanguage, N: MyAnalysis<L>>(
         &self,
         child_id: Id,
         graph: &EGraph<L, N>,
-    ) -> Cow<'_, HashMap<usize, C>> {
-        // match child_id {
-        //     ExprChildId::Nat(nat_id) => Cow::Owned(HashMap::from([(
-        //         self.type_sizes.get_nat_size(nat_id),
-        //         C::one(),
-        //     )])),
-        //     ExprChildId::Data(data_id) => Cow::Owned(HashMap::from([(
-        //         self.type_sizes.get_data_size(data_id),
-        //         C::one(),
-        //     )])),
-        //     ExprChildId::EClass(eclass_id) => match self.get(&graph.find(eclass_id)) {
-        //         Some(h) => Cow::Borrowed(h),
-        //         None => Cow::Owned(HashMap::default()),
-        //     },
-        // }
-        // TODO: Cleanup the cow, dont think we actually need it
-        match self.data.get(&graph.find(child_id)) {
-            Some(h) => Cow::Borrowed(h),
-            None => Cow::Owned(HashMap::default()),
-        }
+    ) -> Option<&HashMap<usize, C>> {
+        self.data.get(&graph.find(child_id))
     }
 
     #[must_use]

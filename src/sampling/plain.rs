@@ -97,7 +97,8 @@ where
             .map(|(i, &c_id)| {
                 let histogram = self.term_count.child_histogram(c_id, self.graph);
                 let candidates: Vec<(usize, C)> = histogram
-                    .iter()
+                    .into_iter()
+                    .flatten()
                     .filter_map(|(&s, count)| {
                         remaining
                             .checked_sub(s)

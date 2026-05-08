@@ -15,8 +15,6 @@
 //! Two prev classes cannot share a term (`prev.lookup(t)` is unique once
 //! prev has been rebuilt), so the sum over `pc` does not double-count.
 
-use std::borrow::Cow;
-
 use egg::{EGraph, Id};
 use hashbrown::{HashMap, HashSet};
 
@@ -116,25 +114,19 @@ where
         &self.joint
     }
 
-    /// Joint histogram for a `(curr_class, prev_class)` pair. Empty if the
+    /// Joint histogram for a `(curr_class, prev_class)` pair. `None` if the
     /// two classes share no extraction.
-    pub(crate) fn joint_histogram(&self, curr_id: Id, prev_id: Id) -> Cow<'_, HashMap<usize, C>> {
+    pub(crate) fn joint_histogram(&self, curr_id: Id, prev_id: Id) -> Option<&HashMap<usize, C>> {
         let curr_canon = self.curr.find(curr_id);
         let prev_canon = self.prev.find(prev_id);
-        match self.joint.get(&(curr_canon, prev_canon)) {
-            Some(h) => Cow::Borrowed(h),
-            None => Cow::Owned(HashMap::default()),
-        }
+        self.joint.get(&(curr_canon, prev_canon))
     }
 
-    /// Novel histogram for a curr class. Empty if every extraction is
+    /// Novel histogram for a curr class. `None` if every extraction is
     /// representable in some prev class.
-    pub(crate) fn novel_histogram(&self, curr_id: Id) -> Cow<'_, HashMap<usize, C>> {
+    pub(crate) fn novel_histogram(&self, curr_id: Id) -> Option<&HashMap<usize, C>> {
         let canon = self.curr.find(curr_id);
-        match self.data.get(&canon) {
-            Some(h) => Cow::Borrowed(h),
-            None => Cow::Owned(HashMap::default()),
-        }
+        self.data.get(&canon)
     }
 
     pub(crate) fn matches_of(&self, curr_class: Id, node_idx: usize) -> &[NodeMatch] {
@@ -335,7 +327,11 @@ where
             &joint,
         );
 
-        if joint.get(&(c, pc)).is_none_or(|v| *v != new_hist) {
+        let changed = match joint.get(&(c, pc)) {
+            None => !new_hist.is_empty(),
+            Some(v) => v != &new_hist,
+        };
+        if changed {
             if new_hist.is_empty() {
                 joint.remove(&(c, pc));
             } else {

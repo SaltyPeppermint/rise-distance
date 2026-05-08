@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use egg::{AstSize, EGraph, Extractor, Id, Language, RecExpr};
@@ -226,12 +226,18 @@ fn process_seed(
     tee_println!("Stop Reason: {:?}", result.stop_reason());
 
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
+    let now = Instant::now();
     let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
         result.curr_goal(),
         result.prev_goal(),
         result.root(),
         max_size,
     )?;
+
+    tee_println!(
+        "PrecomputePackage built in {}s!...",
+        now.elapsed().as_secs_f64()
+    );
     pp.log_root();
     let Ok(goals) = pp.sample_frontier_terms::<true>(
         args.goals,
