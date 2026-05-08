@@ -33,6 +33,7 @@ pub struct NodeMatch {
 
 /// Joint extractability table + per-node prev matches + derived novel
 /// histograms.
+#[derive(Debug)]
 pub struct NovelTermCount<'g, C, L, N>
 where
     C: Counter,
@@ -222,7 +223,6 @@ where
                 }
             }
         }
-
     }
 
     matches

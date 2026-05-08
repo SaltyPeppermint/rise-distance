@@ -37,7 +37,7 @@ define_language! {
     }
 }
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct ConstantFold;
 impl Analysis<Math> for ConstantFold {
     type Data = Option<(Constant, PatternAst<Math>)>;

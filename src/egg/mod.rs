@@ -40,6 +40,7 @@ pub trait MyAnalysis<L: MyLanguage>:
     + for<'de> Deserialize<'de>
     + Send
     + Sync
+    + std::fmt::Debug
     + Analysis<L, Data: Send + Sync + Clone + Eq + Default>
 {
     fn is_typed(id: Id) -> bool;
