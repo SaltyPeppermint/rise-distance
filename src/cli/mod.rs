@@ -168,6 +168,16 @@ where
     }
 
     #[must_use]
+    pub fn smallest_n(&self, id: Id, novel: bool, n: u64) -> Vec<RecExpr<OriginLang<L>>> {
+        if novel {
+            NovelSampler::new(&self.tc, self.root, NaiveWeigher).n_smallest(id, n)
+        } else {
+            PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
+                .n_smallest(id, n)
+        }
+    }
+
+    #[must_use]
     pub fn root(&self) -> Id {
         self.root
     }

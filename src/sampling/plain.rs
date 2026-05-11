@@ -283,13 +283,14 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
 
-        let got = sampler.n_smallest(a, 2).unwrap();
+        let got = sampler.n_smallest(a, 2);
         let strs: HashSet<String> = got.into_iter().map(|t| lower(t).to_string()).collect();
         assert_eq!(strs, HashSet::from_iter(["a".to_owned(), "b".to_owned()]));
     }
 
     #[test]
-    fn n_smallest_none_when_not_enough() {
+    #[should_panic = "Length check"]
+    fn n_smallest_panic_when_not_enough() {
         // Only one term reachable.
         let mut graph = EGraph::<Math, ()>::new(());
         let a = graph.add(sym("a"));
@@ -298,8 +299,20 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
 
-        assert!(sampler.n_smallest(a, 2).is_none());
-        assert_eq!(sampler.n_smallest(a, 1).unwrap().len(), 1);
+        sampler.n_smallest(a, 2);
+    }
+
+    #[test]
+    fn n_smallest_when_enough() {
+        // Only one term reachable.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        graph.rebuild();
+
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
+
+        assert_eq!(sampler.n_smallest(a, 1).len(), 1);
     }
 
     #[test]
@@ -316,7 +329,7 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, x, NaiveWeigher);
 
-        let got = sampler.n_smallest(x, 2).unwrap();
+        let got = sampler.n_smallest(x, 2);
         let two: HashSet<String> = got.into_iter().map(|t| lower(t).to_string()).collect();
         assert_eq!(
             two,
@@ -324,7 +337,7 @@ mod tests {
         );
 
         // Asking for just 1 should give the smallest (size 1).
-        let got_one = sampler.n_smallest(x, 1).unwrap();
+        let got_one = sampler.n_smallest(x, 1);
         let one: HashSet<String> = got_one.into_iter().map(|t| lower(t).to_string()).collect();
         assert_eq!(one, HashSet::from_iter(["x".to_owned()]));
     }
@@ -340,8 +353,8 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
 
-        let first = sampler.n_smallest(a, 2).unwrap();
-        let second = sampler.n_smallest(a, 2).unwrap();
+        let first = sampler.n_smallest(a, 2);
+        let second = sampler.n_smallest(a, 2);
         assert_eq!(first, second);
     }
 
@@ -364,17 +377,17 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
 
-        let six = sampler.n_smallest(a, 6).unwrap();
-        let three = sampler.n_smallest(a, 3).unwrap();
-        let two = sampler.n_smallest(a, 2).unwrap();
+        let six = sampler.n_smallest(a, 6);
+        let three = sampler.n_smallest(a, 3);
+        let two = sampler.n_smallest(a, 2);
         assert_eq!(six.len(), 6);
         assert_eq!(three.len(), 3);
         assert_eq!(two.len(), 2);
-        assert!(two.is_subset(&three));
-        assert!(three.is_subset(&six));
+        assert!(two.iter().all(|e| three.contains(e)));
+        assert!(three.iter().all(|e| six.contains(e)));
 
         // Repeated calls return the exact same set.
-        assert_eq!(sampler.n_smallest(a, 3).unwrap(), three);
-        assert_eq!(sampler.n_smallest(a, 2).unwrap(), two);
+        assert_eq!(sampler.n_smallest(a, 3), three);
+        assert_eq!(sampler.n_smallest(a, 2), two);
     }
 }

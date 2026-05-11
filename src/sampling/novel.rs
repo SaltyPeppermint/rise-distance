@@ -599,7 +599,7 @@ mod tests {
         let novel = NovelTermCount::new(5, &curr, &prev, plain);
         let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
 
-        let got = sampler.n_smallest(root, 3).unwrap();
+        let got = sampler.n_smallest(root, 3);
         let strs: hashbrown::HashSet<String> =
             got.into_iter().map(|t| lower(t).to_string()).collect();
         assert_eq!(
@@ -628,21 +628,22 @@ mod tests {
         let novel = NovelTermCount::new(5, &curr, &prev, plain);
         let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
 
-        let three = sampler.n_smallest(root, 3).unwrap();
-        let two = sampler.n_smallest(root, 2).unwrap();
-        let one = sampler.n_smallest(root, 1).unwrap();
+        let three = sampler.n_smallest(root, 3);
+        let two = sampler.n_smallest(root, 2);
+        let one = sampler.n_smallest(root, 1);
         assert_eq!(three.len(), 3);
         assert_eq!(two.len(), 2);
         assert_eq!(one.len(), 1);
-        assert!(one.is_subset(&two));
-        assert!(two.is_subset(&three));
+        assert!(one.iter().all(|e| two.contains(e)));
+        assert!(two.iter().all(|e| three.contains(e)));
 
-        assert_eq!(sampler.n_smallest(root, 2).unwrap(), two);
-        assert_eq!(sampler.n_smallest(root, 1).unwrap(), one);
+        assert_eq!(sampler.n_smallest(root, 2), two);
+        assert_eq!(sampler.n_smallest(root, 1), one);
     }
 
     #[test]
-    fn novel_n_smallest_none_when_not_enough() {
+    #[should_panic = "Length check"]
+    fn novel_n_smallest_panic_when_not_enough() {
         let mut curr = EGraph::<Math, ()>::new(());
         let a = curr.add(sym("a"));
         let b = curr.add(sym("b"));
@@ -657,6 +658,6 @@ mod tests {
         let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
 
         // Only 3 novel terms exist (a+a, b+a, b+b).
-        assert!(sampler.n_smallest(root, 4).is_none());
+        sampler.n_smallest(root, 4);
     }
 }

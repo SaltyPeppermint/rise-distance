@@ -57,17 +57,17 @@ where
     }
 
     /// Returns the `n` distinct terms of smallest total size reachable from
-    /// `id`, or `None` if fewer than `n` distinct terms exist.
+    /// `id`, or panics if fewer than `n` distinct terms exist.
     ///
     /// The result is monotone: for `k <= n`, `n_smallest(id, k)` is a subset
     /// of `n_smallest(id, n)`. Within a single size, terms are ordered by
     /// their structural `Ord` impl (i.e., lex order on the underlying node
     /// sequence), so repeated calls return the same set.
-    fn n_smallest(&self, id: Id, n: u64) -> Option<HashSet<RecExpr<OriginLang<L>>>> {
+    fn n_smallest(&self, id: Id, n: u64) -> Vec<RecExpr<OriginLang<L>>> {
         let mut sizes = self.term_sizes(id);
         sizes.sort_unstable();
 
-        let mut result = HashSet::new();
+        let mut result = Vec::new();
 
         for size in sizes {
             if (result.len() as u64) >= n {
@@ -79,12 +79,10 @@ where
             // any prefix of `n` always yields a subset of taking `n+k`.
             terms.sort_unstable();
             terms.truncate(need);
-            for t in terms {
-                result.insert(t);
-            }
+            result.extend(terms);
         }
 
-        ((result.len() as u64) >= n).then_some(result)
+        ((result.len() as u64) >= n).then_some(result).unwrap()
     }
 
     /// Precondition: `possible_size(id, size, 0)`.
