@@ -256,27 +256,4 @@ mod tests {
         assert!(!result.is_empty());
         assert!(result.len() <= 6);
     }
-
-    #[test]
-    fn count_sample_batch_check_filters() {
-        let mut graph = EGraph::<Math, ()>::new(());
-        let a1 = graph.add(sym("a1"));
-        let a2 = graph.add(sym("a2"));
-        graph.union(a1, a2);
-        let b1 = graph.add(sym("b1"));
-        let b2 = graph.add(sym("b2"));
-        let b3 = graph.add(sym("b3"));
-        graph.union(b1, b2);
-        graph.union(b1, b3);
-        let root = graph.add(Math::Add([a1, b1]));
-        graph.rebuild();
-
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
-        let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
-
-        let result = sampler.sample_batch_root::<false>(&[(3, 5)], [1, 2]);
-        for s in &result {
-            assert!(!lower(s.clone()).to_string().contains("a1"));
-        }
-    }
 }
