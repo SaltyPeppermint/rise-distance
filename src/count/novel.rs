@@ -176,14 +176,10 @@ fn build_cover<C: Counter>(joint: &HashMap<(Id, Id), HashMap<usize, C>>) -> Hash
 /// that share a term with `c_i`). For each combo, look up the translated node
 /// in `prev`; if found, record the match and add the discovered prev class to
 /// `cover[curr_class_of_n]`. Iterate until no new matches/cover entries.
-fn enumerate_matches<L, N>(
+fn enumerate_matches<L: MyLanguage, N: MyAnalysis<L>>(
     curr: &EGraph<L, N>,
     prev: &EGraph<L, N>,
-) -> HashMap<(Id, usize), Vec<NodeMatch>>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
+) -> HashMap<(Id, usize), Vec<NodeMatch>> {
     let mut cover: HashMap<Id, HashSet<Id>> = HashMap::new();
     let mut matches: HashMap<(Id, usize), Vec<NodeMatch>> = HashMap::new();
     let mut seen: HashSet<(Id, usize, Id, Vec<Id>)> = HashSet::new();
@@ -241,15 +237,16 @@ fn child_combinations(children: &[Id], cover: &HashMap<Id, HashSet<Id>>) -> Vec<
         if opts.is_empty() {
             return Vec::new();
         }
-        let mut next = Vec::with_capacity(combos.len() * opts.len());
-        for prefix in &combos {
-            for opt in opts {
-                let mut p = prefix.clone();
-                p.push(*opt);
-                next.push(p);
-            }
-        }
-        combos = next;
+        combos = combos
+            .iter()
+            .flat_map(|prefix| {
+                opts.iter().map(|opt| {
+                    let mut p = prefix.clone();
+                    p.push(*opt);
+                    p
+                })
+            })
+            .collect();
     }
     combos
 }
@@ -260,23 +257,16 @@ fn child_combinations(children: &[Id], cover: &HashMap<Id, HashSet<Id>>) -> Vec<
 
 /// Compute `joint[(c, pc)]` for every pair appearing in matches, via a
 /// bottom-up fixpoint similar to `PlainTermCount::new`.
-fn compute_joint<C, L, N>(
+fn compute_joint<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,
     matches: &HashMap<(Id, usize), Vec<NodeMatch>>,
-) -> HashMap<(Id, Id), HashMap<usize, C>>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
+) -> HashMap<(Id, Id), HashMap<usize, C>> {
     // Collect all (c, pc) pairs we need to compute.
-    let mut pairs: HashSet<(Id, Id)> = HashSet::new();
-    for ((c, _), ms) in matches {
-        for m in ms {
-            pairs.insert((*c, m.prev_class));
-        }
-    }
+    let pairs = matches
+        .iter()
+        .flat_map(|((c, _), ms)| ms.iter().map(move |m| (*c, m.prev_class)))
+        .collect::<HashSet<_>>();
 
     // Group matches by (curr_class, prev_class) for efficient per-pair update.
     let mut by_pair: HashMap<(Id, Id), Vec<(usize, &NodeMatch)>> = HashMap::new();
@@ -291,7 +281,7 @@ where
 
     let mut joint: HashMap<(Id, Id), HashMap<usize, C>> = HashMap::new();
 
-    let mut pending: UniqueQueue<(Id, Id)> = pairs.iter().copied().collect();
+    let mut pending = pairs.iter().copied().collect::<UniqueQueue<_>>();
 
     // Reverse dependency: given (c, pc), which pairs depend on its histogram?
     // A pair (c', pc') depends on (c, pc) iff some match of c' (with
@@ -321,7 +311,6 @@ where
             max_size,
             curr,
             c,
-            pc,
             by_pair.get(&(c, pc)).map_or(&[][..], Vec::as_slice),
             &joint,
         );
@@ -346,20 +335,14 @@ where
 }
 
 /// Compute the histogram for a single `(c, pc)` pair from its matches.
-fn compute_pair_histogram<C, L, N>(
+fn compute_pair_histogram<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,
     c: Id,
-    _pc: Id,
     pair_matches: &[(usize, &NodeMatch)],
     joint: &HashMap<(Id, Id), HashMap<usize, C>>,
-) -> HashMap<usize, C>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
-    let mut acc: HashMap<usize, C> = HashMap::new();
+) -> HashMap<usize, C> {
+    let mut acc = HashMap::new();
 
     let eclass = &curr[c];
 
@@ -432,7 +415,7 @@ fn derive_novel<C: Counter>(
         }
     }
 
-    let mut out: HashMap<Id, HashMap<usize, C>> = HashMap::with_capacity(plain.len());
+    let mut out = HashMap::with_capacity(plain.len());
     for (c, plain_hist) in plain {
         let nn = non_novel.get(c);
         let mut hist = HashMap::with_capacity(plain_hist.len());

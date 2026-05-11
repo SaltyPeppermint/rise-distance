@@ -102,25 +102,23 @@ where
 
         // Per (node_idx, match) where match.prev_class == pc, compute the
         // count of size-`size` extractions through that node-match pair.
-        let mut candidates = Vec::new();
-        for (idx, node) in eclass.nodes.iter().enumerate() {
-            for m in self
-                .novel
-                .matches_of(canon_id, idx)
-                .iter()
-                .filter(|m| m.prev_class == pc)
-            {
-                let Some(child_hists) =
-                    self.agree_child_histograms(node.children(), &m.prev_children)
-                else {
-                    continue;
-                };
-                let count = convolve_at::<C>(&child_hists, child_budget).unwrap_or_else(C::zero);
-                if count != C::zero() {
-                    candidates.push((idx, m, self.weigher.node_weight(&count), child_hists));
-                }
-            }
-        }
+        let candidates = eclass
+            .nodes
+            .iter()
+            .enumerate()
+            .flat_map(|(idx, node)| {
+                self.novel
+                    .matches_of(canon_id, idx)
+                    .iter()
+                    .filter(|m| m.prev_class == pc)
+                    .filter_map(move |m| {
+                        let child_hists =
+                            self.agree_child_histograms(node.children(), &m.prev_children)?;
+                        let count = convolve_at::<C>(&child_hists, child_budget)?;
+                        Some((idx, m, self.weigher.node_weight(&count), child_hists))
+                    })
+            })
+            .collect::<Vec<_>>();
 
         let dist = WeightedIndex::new(candidates.iter().map(|(_, _, w, _)| w))
             .expect("AgreeWith: at least one candidate match (precondition)");
@@ -152,40 +150,36 @@ where
         // of slot agreements: `None` = NOVEL, `Some(pc)` = agree with prev
         // class pc. Profile is novel-via-n iff it doesn't equal any
         // match.prev_children.
-        let mut candidates = Vec::new();
+        let candidates = eclass
+            .nodes
+            .iter()
+            .enumerate()
+            .flat_map(|(idx, node)| {
+                let n_matches = self.novel.matches_of(canon_id, idx);
+                let children = node.children();
 
-        for (idx, node) in eclass.nodes.iter().enumerate() {
-            let n_matches = self.novel.matches_of(canon_id, idx);
-            let children = node.children();
+                // Per child slot, the prev classes that share at least one
+                // extraction with that child class — these are the valid
+                // "agree-with" options. NOVEL is also always an option.
+                let slot_options = children
+                    .iter()
+                    .map(|child| {
+                        let mut opts = vec![None];
+                        opts.extend(self.novel.cover_of(*child).iter().copied().map(Some));
+                        opts
+                    })
+                    .collect::<Vec<_>>();
 
-            // Per child slot, the prev classes that share at least one
-            // extraction with that child class — these are the valid
-            // "agree-with" options. NOVEL is also always an option.
-            let slot_options = children
-                .iter()
-                .map(|child| {
-                    let mut opts = vec![None];
-                    for &pc in self.novel.cover_of(*child) {
-                        opts.push(Some(pc));
-                    }
-                    opts
-                })
-                .collect::<Vec<_>>();
-
-            for profile in enumerate_profiles(&slot_options) {
-                if completes_some_match(&profile, n_matches) {
-                    continue;
-                }
-
-                let Some(child_hists) = self.novel_child_histograms(children, &profile) else {
-                    continue;
-                };
-                let count = convolve_at::<C>(&child_hists, child_budget).unwrap_or_else(C::zero);
-                if count != C::zero() {
-                    candidates.push((idx, profile, self.weigher.node_weight(&count), child_hists));
-                }
-            }
-        }
+                enumerate_profiles(&slot_options)
+                    .into_iter()
+                    .filter(|profile| !completes_some_match(profile, n_matches))
+                    .filter_map(move |profile| {
+                        let child_hists = self.novel_child_histograms(children, &profile)?;
+                        let count = convolve_at(&child_hists, child_budget)?;
+                        Some((idx, profile, self.weigher.node_weight(&count), child_hists))
+                    })
+            })
+            .collect::<Vec<_>>();
 
         let dist = WeightedIndex::new(candidates.iter().map(|(_, _, w, _)| w)).expect(
             "Novel: at least one non-completing profile (precondition: novel data nonempty)",
@@ -266,10 +260,7 @@ where
                 .filter_map(|(&s, count)| {
                     let r = remaining.checked_sub(s)?;
                     let rest = suffix[i + 1].get(&r)?;
-                    if *rest == C::zero() {
-                        return None;
-                    }
-                    Some((s, self.weigher.child_weight(count, rest)))
+                    (*rest != C::zero()).then(|| (s, self.weigher.child_weight(count, rest)))
                 })
                 .collect::<Vec<_>>();
 
