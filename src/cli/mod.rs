@@ -48,22 +48,6 @@ pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T
     (min, med, max)
 }
 
-const OVERSAMPLE_START: usize = 20;
-
-const OVERSAMPLE_CUTOFF: usize = 1_000_000;
-
-const OVERSAMPLE_SCHEDULE: [usize; 16] = {
-    let mut arr = [0usize; 16];
-    let mut v = OVERSAMPLE_START;
-    let mut i = 0;
-    while v < OVERSAMPLE_CUTOFF {
-        arr[i] = v;
-        i += 1;
-        v *= 2;
-    }
-    arr
-};
-
 pub struct PrecomputePackage<'a, C, L, N>
 where
     L: MyLanguage,
@@ -141,46 +125,37 @@ where
         sample_strategy: SampleStrategy,
         seed: [u64; 2],
         novel: bool,
-    ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError>
-    where
-        L: MyLanguage,
-        N: MyAnalysis<L>,
-    {
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError> {
         let histogram = self
             .tc
             .data()
             .get(&self.root)
             .ok_or(ExperimentError::InsufficientSamples)?;
-        OVERSAMPLE_SCHEDULE
-            .iter()
-            .find_map(|oversample| {
-                let samples_per_size = distribution.samples_per_size(
-                    histogram,
-                    self.min_size,
-                    self.max_size,
-                    count * oversample,
-                );
-                let batch = match (sample_strategy, novel) {
-                    (SampleStrategy::Naive, true) => {
-                        NovelSampler::new(&self.tc, self.root, NaiveWeigher)
-                            .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
-                    }
-                    (SampleStrategy::CountBased, true) => {
-                        NovelSampler::new(&self.tc, self.root, CountWeigher)
-                            .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
-                    }
-                    (SampleStrategy::Naive, false) => {
-                        PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
-                            .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
-                    }
-                    (SampleStrategy::CountBased, false) => {
-                        PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, CountWeigher)
-                            .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
-                    }
-                };
-                (batch.len() >= count).then(|| batch.into_iter().take(count).collect())
-            })
-            .ok_or(ExperimentError::InsufficientSamples)
+
+        let samples_per_size =
+            distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
+        let samples = match (sample_strategy, novel) {
+            (SampleStrategy::Naive, true) => {
+                NovelSampler::new(&self.tc, self.root, NaiveWeigher)
+                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
+            }
+            (SampleStrategy::CountBased, true) => {
+                NovelSampler::new(&self.tc, self.root, CountWeigher)
+                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
+            }
+            (SampleStrategy::Naive, false) => {
+                PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
+                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
+            }
+            (SampleStrategy::CountBased, false) => {
+                PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, CountWeigher)
+                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
+            }
+        };
+        if samples.len() == count {
+            return Ok(samples.into_iter().collect());
+        }
+        Err(ExperimentError::InsufficientSamples)
     }
 
     #[must_use]

@@ -142,6 +142,7 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
                         classes.push(None);
                         total_applied.push(None);
                         total_time.push(None);
+                        not_enough_samples.push(matches!(e, ExperimentError::InsufficientSamples));
                         unreached.push(matches!(e, ExperimentError::Guide(GuideError::Unreached)));
                         panic_while_sample.push(matches!(
                             e,
