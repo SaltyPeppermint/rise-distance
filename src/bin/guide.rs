@@ -284,18 +284,19 @@ fn process_seed(
     tee_println!("\nRunning single experiments ONLY SMALLEST NOVEL...");
     let smallest_novel = Smallest::new(&pc, true).run_trials(args, eqsat, seed_str, &goals);
 
-    let smallest_100_overall =
-        SmallestN::new(&pc, false, 100).run_trials(args, eqsat, seed_str, &goals);
-    tee_println!("\nRunning single experiments ONLY SMALLEST NOVEL...");
-    let smallest_100_novel =
-        SmallestN::new(&pc, true, 100).run_trials(args, eqsat, seed_str, &goals);
+    // tee_println!("\nRunning single experiments ONLY 100 SMALLEST...");
+    // let smallest_100_overall =
+    //     SmallestN::new(&pc, false, 10).run_trials(args, eqsat, seed_str, &goals);
+    // tee_println!("\nRunning single experiments ONLY 100 SMALLEST NOVEL...");
+    // let smallest_100_novel =
+    //     SmallestN::new(&pc, true, 10).run_trials(args, eqsat, seed_str, &goals);
     let r = HashMap::from([
         ("no_replacement".to_owned(), no_repl),
         ("with_replacement".to_owned(), with_repl),
         ("smallest_overall".to_owned(), smallest_overall),
         ("smallest_novel".to_owned(), smallest_novel),
-        ("smallest_100_overall".to_owned(), smallest_100_overall),
-        ("smallest_100_novel".to_owned(), smallest_100_novel),
+        // ("smallest_10_overall".to_owned(), smallest_100_overall),
+        // ("smallest_10_novel".to_owned(), smallest_100_novel),
     ]);
     Some((r, stats))
 }
