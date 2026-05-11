@@ -234,11 +234,8 @@ def parse_replacement_summary(raw: list[dict], strategy_name: str) -> list[dict]
     return rows
 
 
-def load_top_k(run_dir: Path, strategy_name: str, with_replacement: bool = False) -> pl.DataFrame:
+def load_top_k(run_dir: Path, strategy_name: str, file_prefix: str) -> pl.DataFrame:
     """Load trial rows from a run directory, preferring parquet over JSON summary.
-
-    Pass ``with_replacement=True`` to load the with-replacement top-k data
-    instead of the default no-replacement variant.
 
     Adjusts `nodes` and `total_time` to account for the guide egraph overhead:
       - nodes = max(trial_nodes, guide_egraph_nodes)
@@ -249,7 +246,7 @@ def load_top_k(run_dir: Path, strategy_name: str, with_replacement: bool = False
     guide_nodes = run_stats["guide_egraph_nodes"]
     guide_time = run_stats["guide_eqsat_time"]
 
-    prefix = "with_replacement" if with_replacement else "no_replacement"
+    prefix = file_prefix
     parquet_path = run_dir / f"{prefix}_top_k_summary.parquet"
     if parquet_path.exists():
         df = pl.read_parquet(parquet_path).with_columns(pl.lit(strategy_name).alias("strategy"))

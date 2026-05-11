@@ -1,3 +1,4 @@
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -31,9 +32,11 @@ def plot_metric_boxplots(
     palette: Sequence[Any],
 ) -> None:
     n_k = len(k_values)
-    fig, axes = plt.subplots(1, n_k, figsize=(4 * n_k, 5), squeeze=False, sharey=True)
+    n_cols = min(3, n_k)
+    n_rows = math.ceil(n_k / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 5 * n_rows), squeeze=False, sharey=True)
     for ki, k in enumerate(k_values):
-        ax = axes[0][ki]
+        ax = axes[ki // n_cols][ki % n_cols]
         box_data, tick_labels, colors = [], [], []
         for i, strat in enumerate(strat_names):
             vals = df.filter((pl.col("k") == k) & (pl.col("strategy") == strat))[
@@ -52,5 +55,7 @@ def plot_metric_boxplots(
                 mean.set_color("red")
         ax.set_title(f"k = {k}")
         ax.set_xticklabels(tick_labels, rotation=45, ha="right")
-        ax.set_ylabel(ylabel if ki == 0 else "")
+        ax.set_ylabel(ylabel if ki % n_cols == 0 else "")
+    for ki in range(n_k, n_rows * n_cols):
+        axes[ki // n_cols][ki % n_cols].set_visible(False)
     finish_fig(fig, f"{ylabel} by strategy at each k [{label}]", fontsize=13)
