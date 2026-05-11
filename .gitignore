@@ -15,3 +15,5 @@ profile.json.gz
 # Nix
 result
 result-*
+
+**/plots/*

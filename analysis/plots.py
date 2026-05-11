@@ -1,5 +1,6 @@
 import math
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -7,6 +8,8 @@ import matplotlib.ticker as ticker
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 import polars as pl
+
+_PLOTS_DIR = Path(__file__).parent / "plots"
 
 
 def configure_k_axis(ax: Axes, k_values: list[int]) -> None:
@@ -16,14 +19,23 @@ def configure_k_axis(ax: Axes, k_values: list[int]) -> None:
 
 
 def finish_fig(
-    fig: Figure, title: str, ds_name: str, fontsize: float = 14, n: int | None = None
+    fig: Figure,
+    title: str,
+    ds_name: str,
+    fontsize: float = 14,
+    n: int | None = None,
+    tight_layout: bool = True,
 ) -> None:
     if title is not None:
         full_title = (
             f"{title} [{ds_name}] (n={n} per k)" if n is not None else f"{title} [{ds_name}]"
         )
         fig.suptitle(full_title, fontsize=fontsize)
-    fig.tight_layout()
+    if tight_layout:
+        fig.tight_layout()
+    _PLOTS_DIR.mkdir(exist_ok=True)
+    slug = f"{title}-{ds_name}".replace(" ", "_").replace("/", "-")
+    fig.savefig(_PLOTS_DIR / f"{slug}.png", bbox_inches="tight")
     plt.show()
 
 
