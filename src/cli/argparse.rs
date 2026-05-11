@@ -102,7 +102,11 @@ impl FromStr for Distribution {
 }
 
 impl Distribution {
-    /// Distribute `total_samples` across `[min_size, max_size]`, returning a size => count map.
+    /// Distribute `total_samples` across the given `sizes`, returning a size => count list.
+    ///
+    /// `sizes` must be sorted ascending. For `Normal`, the bell curve is centered between
+    /// `sizes.first()` and `sizes.last()`, so callers that want to skip empty histogram
+    /// buckets should pre-filter accordingly.
     #[expect(
         clippy::missing_panics_doc,
         clippy::cast_precision_loss,
@@ -110,47 +114,54 @@ impl Distribution {
         clippy::cast_sign_loss
     )]
     #[must_use]
-    pub fn samples_per_size(
-        self,
-        min_size: usize,
-        max_size: usize,
-        total_samples: usize,
-    ) -> Vec<(usize, u64)> {
+    pub fn samples_per_size(self, sizes: &[usize], total_samples: usize) -> Vec<(usize, u64)> {
+        if sizes.is_empty() {
+            return vec![];
+        }
         match self {
             Self::Uniform => {
-                let num_sizes = (max_size - min_size + 1).max(1);
-                let base = (total_samples / num_sizes).max(1) as u64;
+                let num_sizes = sizes.len();
+                let base = (total_samples / num_sizes) as u64;
                 let remainder = total_samples % num_sizes;
-                (min_size..=max_size)
+                sizes
+                    .iter()
                     .enumerate()
-                    .map(|(i, size)| (size, base + u64::from(i < remainder)))
+                    .map(|(i, &size)| (size, base + u64::from(i < remainder)))
                     .collect()
             }
             Self::Normal(sigma) => {
-                let normal_center = (min_size + max_size) as f64 / 2.0;
-                let weights = (min_size..=max_size).map(|s| {
-                    let z = (s as f64 - normal_center) / sigma;
-                    (-0.5 * z * z).exp()
-                });
-                let total_weight = weights.clone().sum::<f64>();
+                let first = *sizes.first().unwrap() as f64;
+                let last = *sizes.last().unwrap() as f64;
+                let normal_center = f64::midpoint(first, last);
+                let weights = sizes
+                    .iter()
+                    .map(|&s| {
+                        let z = (s as f64 - normal_center) / sigma;
+                        (-0.5 * z * z).exp()
+                    })
+                    .collect::<Vec<_>>();
+                let total_weight = weights.iter().sum::<f64>();
                 // Largest remainder method: compute exact quotas, floor them, then
                 // distribute the remaining counts to the sizes with the largest remainders.
-                let quotas = weights.map(|w| w / total_weight * total_samples as f64);
-                let floors = quotas.clone().map(|q| q as u64).collect::<Vec<_>>();
+                let quotas = weights
+                    .iter()
+                    .map(|w| w / total_weight * total_samples as f64)
+                    .collect::<Vec<_>>();
+                let floors = quotas.iter().map(|&q| q as u64).collect::<Vec<_>>();
                 let allocated = floors.iter().sum::<u64>();
                 let remainder = (total_samples as u64) - allocated;
                 let mut remainders = quotas
+                    .iter()
                     .enumerate()
-                    .map(|(i, q)| (i, q - floors[i] as f64))
+                    .map(|(i, &q)| (i, q - floors[i] as f64))
                     .collect::<Vec<_>>();
                 remainders
                     .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
                 let mut counts = floors;
-                #[expect(clippy::cast_possible_truncation)]
                 for (i, _) in remainders.iter().take(remainder as usize) {
                     counts[*i] += 1;
                 }
-                (min_size..=max_size).zip(counts).collect()
+                sizes.iter().copied().zip(counts).collect()
             }
         }
     }
@@ -212,7 +223,12 @@ impl TermSampleDist {
         total_samples: usize,
     ) -> Vec<(usize, u64)> {
         match self {
-            Self::Statistical(d) => d.samples_per_size(min_size, max_size, total_samples),
+            Self::Statistical(d) => {
+                let sizes = (min_size..=max_size)
+                    .filter(|s| histogram.contains_key(s))
+                    .collect::<Vec<_>>();
+                d.samples_per_size(&sizes, total_samples)
+            }
             Self::Proportional(min_per_size) => {
                 let total_terms = (min_size..=max_size)
                     .filter_map(|s| histogram.get(&s))
@@ -293,56 +309,78 @@ mod tests {
         v.iter().map(|(s, _)| *s).collect()
     }
 
+    fn range(min: usize, max: usize) -> Vec<usize> {
+        (min..=max).collect()
+    }
+
     // --- Uniform ---
 
     #[test]
     fn uniform_exact_total() {
-        let result = Distribution::Uniform.samples_per_size(5, 50, 1000);
+        let result = Distribution::Uniform.samples_per_size(&range(5, 50), 1000);
         assert_eq!(total(&result), 1000);
     }
 
     #[test]
     fn uniform_divisible_total() {
         // 46 sizes, 460 samples => exactly 10 each
-        let result = Distribution::Uniform.samples_per_size(5, 50, 460);
+        let result = Distribution::Uniform.samples_per_size(&range(5, 50), 460);
         assert_eq!(total(&result), 460);
         assert!(result.iter().all(|(_, n)| *n == 10));
     }
 
     #[test]
     fn uniform_covers_all_sizes() {
-        let result = Distribution::Uniform.samples_per_size(5, 50, 1000);
+        let result = Distribution::Uniform.samples_per_size(&range(5, 50), 1000);
         assert_eq!(sizes(&result), (5..=50).collect::<Vec<_>>());
     }
 
     #[test]
     fn uniform_single_size() {
-        let result = Distribution::Uniform.samples_per_size(7, 7, 100);
+        let result = Distribution::Uniform.samples_per_size(&[7], 100);
         assert_eq!(result, vec![(7, 100)]);
     }
 
     #[test]
     fn uniform_remainder_distributed_to_first_sizes() {
         // 3 sizes (1,2,3), 10 samples => base=3, remainder=1 => sizes get [4,3,3]
-        let result = Distribution::Uniform.samples_per_size(1, 3, 10);
+        let result = Distribution::Uniform.samples_per_size(&range(1, 3), 10);
         assert_eq!(total(&result), 10);
         assert_eq!(result[0].1, 4);
         assert_eq!(result[1].1, 3);
         assert_eq!(result[2].1, 3);
     }
 
+    #[test]
+    fn uniform_fewer_samples_than_sizes() {
+        // 6 sizes, 2 samples => base=0, remainder=2 => first two get 1, rest get 0
+        let result = Distribution::Uniform.samples_per_size(&range(15, 20), 2);
+        assert_eq!(total(&result), 2);
+        assert_eq!(result[0].1, 1);
+        assert_eq!(result[1].1, 1);
+        assert!(result[2..].iter().all(|(_, n)| *n == 0));
+    }
+
+    #[test]
+    fn uniform_non_contiguous_sizes() {
+        // Sparse populated sizes get exactly the requested total
+        let result = Distribution::Uniform.samples_per_size(&[15, 17, 19], 2);
+        assert_eq!(total(&result), 2);
+        assert_eq!(sizes(&result), vec![15, 17, 19]);
+    }
+
     // --- Normal ---
 
     #[test]
     fn normal_exact_total() {
-        let result = Distribution::Normal(2.6).samples_per_size(5, 50, 1000);
+        let result = Distribution::Normal(2.6).samples_per_size(&range(5, 50), 1000);
         assert_eq!(total(&result), 1000);
     }
 
     #[test]
     fn normal_exact_total_various_sizes() {
         for total_samples in [1, 7, 100, 999, 1000, 1001] {
-            let result = Distribution::Normal(2.6).samples_per_size(5, 50, total_samples);
+            let result = Distribution::Normal(2.6).samples_per_size(&range(5, 50), total_samples);
             assert_eq!(
                 total(&result),
                 total_samples as u64,
@@ -353,14 +391,14 @@ mod tests {
 
     #[test]
     fn normal_covers_all_sizes() {
-        let result = Distribution::Normal(2.6).samples_per_size(5, 50, 1000);
+        let result = Distribution::Normal(2.6).samples_per_size(&range(5, 50), 1000);
         assert_eq!(sizes(&result), (5..=50).collect::<Vec<_>>());
     }
 
     #[test]
     fn normal_center_has_most_samples() {
         // Center is (5+50)/2 = 27 or 28; those should have the highest counts
-        let result = Distribution::Normal(2.6).samples_per_size(5, 50, 1000);
+        let result = Distribution::Normal(2.6).samples_per_size(&range(5, 50), 1000);
         let max_count = result.iter().map(|(_, n)| *n).max().unwrap();
         let center = 27usize;
         let center_count = result.iter().find(|(s, _)| *s == center).unwrap().1;
@@ -369,7 +407,7 @@ mod tests {
 
     #[test]
     fn normal_single_size() {
-        let result = Distribution::Normal(2.6).samples_per_size(10, 10, 50);
+        let result = Distribution::Normal(2.6).samples_per_size(&[10], 50);
         assert_eq!(result, vec![(10, 50)]);
     }
 }

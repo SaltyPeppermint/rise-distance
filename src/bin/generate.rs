@@ -101,9 +101,10 @@ fn main() {
             .unwrap();
     }
 
-    let samples_per_size =
-        args.distribution
-            .samples_per_size(args.min_size, args.max_size, args.total_samples);
+    let sizes = (args.min_size..=args.max_size).collect::<Vec<_>>();
+    let samples_per_size = args
+        .distribution
+        .samples_per_size(&sizes, args.total_samples);
 
     let validity_config = (&args).into();
 
