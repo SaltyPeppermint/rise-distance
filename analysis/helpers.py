@@ -287,6 +287,62 @@ def compute_goal_reach(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def compute_goal_reach_matrix(
+    df: pl.DataFrame, k_values: list[int]
+) -> tuple[list, np.ndarray]:
+    """Build a (goals × k) reachability matrix sorted by avg reachability (hardest first).
+
+    Returns (goal_order, matrix) where matrix[i, j] is the reach_rate for
+    goal_order[i] at k_values[j], or NaN if missing.
+    """
+    goal_reach = compute_goal_reach(df)
+    goal_order = (
+        goal_reach.group_by("goal")
+        .agg(pl.col("reach_rate").mean().alias("avg_reach"))
+        .sort("avg_reach")["goal"]
+        .to_list()
+    )
+    goal_idx = {g: i for i, g in enumerate(goal_order)}
+    matrix = np.full((len(goal_order), len(k_values)), np.nan)
+    for row in goal_reach.iter_rows(named=True):
+        gi = goal_idx[row["goal"]]
+        ki = k_values.index(row["k"])
+        matrix[gi, ki] = row["reach_rate"]
+    return goal_order, matrix
+
+
+def compute_war_agg(
+    df: pl.DataFrame, baseline: dict[str, float], metrics: list[str]
+) -> list[dict]:
+    """Compute WAR (baseline - guided) rows per k for each metric.
+
+    Returns a list of dicts with keys: k, plus for each metric
+    '{metric}_war' (mean) and 'best_{metric}_war' (per-seed best, then averaged).
+    """
+    agg = (
+        df.group_by("k")
+        .agg([pl.col(m).mean().alias(f"mean_{m}") for m in metrics])
+        .sort("k")
+        .drop_nulls([f"mean_{m}" for m in metrics])
+    )
+    best_agg = (
+        df.group_by("k", "seed")
+        .agg([pl.col(m).min().alias(f"seed_best_{m}") for m in metrics])
+        .group_by("k")
+        .agg([pl.col(f"seed_best_{m}").mean().alias(f"best_{m}") for m in metrics])
+        .sort("k")
+        .drop_nulls([f"best_{m}" for m in metrics])
+    )
+    rows = []
+    for row, best_row in zip(agg.iter_rows(named=True), best_agg.iter_rows(named=True)):
+        entry: dict = {"k": row["k"]}
+        for m in metrics:
+            entry[f"{m}_war"] = baseline[m] - row[f"mean_{m}"]
+            entry[f"best_{m}_war"] = baseline[m] - best_row[f"best_{m}"]
+        rows.append(entry)
+    return rows
+
+
 def load_guide_eval(path: Path) -> pl.DataFrame:
     """Load a guide-eval CSV file into a DataFrame.
 
