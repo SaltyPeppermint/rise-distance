@@ -284,19 +284,11 @@ fn process_seed(
     tee_println!("\nRunning single experiments ONLY SMALLEST NOVEL...");
     let smallest_novel = Smallest::new(&pc, true).run_trials(args, eqsat, seed_str, &goals);
 
-    // tee_println!("\nRunning single experiments ONLY 100 SMALLEST...");
-    // let smallest_100_overall =
-    //     SmallestN::new(&pc, false, 10).run_trials(args, eqsat, seed_str, &goals);
-    // tee_println!("\nRunning single experiments ONLY 100 SMALLEST NOVEL...");
-    // let smallest_100_novel =
-    //     SmallestN::new(&pc, true, 10).run_trials(args, eqsat, seed_str, &goals);
     let r = HashMap::from([
         ("no_replacement".to_owned(), no_repl),
         ("with_replacement".to_owned(), with_repl),
         ("smallest_overall".to_owned(), smallest_overall),
         ("smallest_novel".to_owned(), smallest_novel),
-        // ("smallest_10_overall".to_owned(), smallest_100_overall),
-        // ("smallest_10_novel".to_owned(), smallest_100_novel),
     ]);
     Some((r, stats))
 }
@@ -510,58 +502,6 @@ impl<'p, C: Counter> Strategy<'p, C> for Smallest<'p, C> {
     ) -> TrialsPerK {
         let r = verify_reachability(
             std::slice::from_ref(&self.pp.smallest(self.pp.root(), self.novel)),
-            goal_recexpr,
-            &RULES,
-            eqsat,
-            args.full_union,
-        )
-        .map_err(Into::into);
-        HashMap::from([(1, vec![r])])
-    }
-}
-
-struct SmallestN<'p, C: Counter> {
-    pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
-    novel: bool,
-    n: u64,
-}
-
-impl<'p, C: Counter> SmallestN<'p, C> {
-    fn new(pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>, novel: bool, n: u64) -> Self {
-        Self { pp, novel, n }
-    }
-}
-
-impl<'p, C: Counter> Strategy<'p, C> for SmallestN<'p, C> {
-    // impl to parallelise over the sample runs
-    fn run_trials(
-        &self,
-        args: &Args,
-        eqsat: &EqsatConfig,
-        seed_str: &str,
-        goals: &[RecExpr<OriginLang<Math>>],
-    ) -> Vec<GoalResults> {
-        goals
-            .into_par_iter()
-            .map(|goal| {
-                tee_println!("Current goal: {}", goal.to_string());
-                GoalResults {
-                    seed: seed_str.to_owned(),
-                    goal: goal.to_string(),
-                    runs: self.run_trial(args, eqsat, &lower(goal.clone())),
-                }
-            })
-            .collect()
-    }
-
-    fn run_trial(
-        &self,
-        args: &Args,
-        eqsat: &EqsatConfig,
-        goal_recexpr: &RecExpr<Math>,
-    ) -> TrialsPerK {
-        let r = verify_reachability(
-            &self.pp.smallest_n(self.pp.root(), self.novel, self.n),
             goal_recexpr,
             &RULES,
             eqsat,

@@ -5,7 +5,6 @@ mod weigher;
 
 use egg::{Id, RecExpr};
 use hashbrown::HashSet;
-use num::ToPrimitive;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
@@ -54,35 +53,6 @@ where
         let size = self.min_size(id);
         let mut rng = ChaCha12Rng::seed_from_u64(0);
         self.sample(id, size, &mut rng)
-    }
-
-    /// Returns the `n` distinct terms of smallest total size reachable from
-    /// `id`, or panics if fewer than `n` distinct terms exist.
-    ///
-    /// The result is monotone: for `k <= n`, `n_smallest(id, k)` is a subset
-    /// of `n_smallest(id, n)`. Within a single size, terms are ordered by
-    /// their structural `Ord` impl (i.e., lex order on the underlying node
-    /// sequence), so repeated calls return the same set.
-    fn n_smallest(&self, id: Id, n: u64) -> Vec<RecExpr<OriginLang<L>>> {
-        let mut sizes = self.term_sizes(id);
-        sizes.sort_unstable();
-
-        let mut result = Vec::new();
-
-        for size in sizes {
-            if (result.len() as u64) >= n {
-                break;
-            }
-            let need = n.to_usize().unwrap() - result.len();
-            let mut terms = self.enumerate_size(id, size);
-            // Total order on terms gives a stable, monotone selection: taking
-            // any prefix of `n` always yields a subset of taking `n+k`.
-            terms.sort_unstable();
-            terms.truncate(need);
-            result.extend(terms);
-        }
-
-        ((result.len() as u64) >= n).then_some(result).unwrap()
     }
 
     /// Precondition: `possible_size(id, size, 0)`.

@@ -73,16 +73,12 @@ where
         root: Id,
         max_size: usize,
     ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let tc = NovelTermCount::new(
-            max_size,
-            curr,
-            prev,
-            PlainTermCount::<C>::new(max_size, curr),
-        );
+        let tc = NovelTermCount::new(max_size, curr, prev, PlainTermCount::new(max_size, curr));
 
         // `data()` is keyed by canonical curr ids; the caller's `root` may not
         // be canonical (see `GuideGoalResult::root`).
         let root = curr.find(root);
+        // If this errors nothing has been added in the last iteration, that's weird
         let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
@@ -164,16 +160,6 @@ where
             NovelSampler::new(&self.tc, self.root, NaiveWeigher).smallest(id)
         } else {
             PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher).smallest(id)
-        }
-    }
-
-    #[must_use]
-    pub fn smallest_n(&self, id: Id, novel: bool, n: u64) -> Vec<RecExpr<OriginLang<L>>> {
-        if novel {
-            NovelSampler::new(&self.tc, self.root, NaiveWeigher).n_smallest(id, n)
-        } else {
-            PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
-                .n_smallest(id, n)
         }
     }
 
