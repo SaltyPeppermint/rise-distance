@@ -299,7 +299,7 @@ fn compute_joint<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
     // Collect all (c, pc) pairs we need to compute.
     let pairs = matches
         .iter()
-        .flat_map(|((c, _), ms)| ms.iter().map(move |m| (*c, m.prev_class)))
+        .flat_map(|((c, _), ms)| ms.iter().map(|m| (*c, m.prev_class)))
         .collect::<HashSet<_>>();
 
     // Group matches by (curr_class, prev_class) for efficient per-pair update.
