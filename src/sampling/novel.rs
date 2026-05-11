@@ -239,6 +239,130 @@ where
             .collect()
     }
 
+    fn enumerate_with_mode(&self, id: Id, size: usize, mode: Mode) -> Vec<RecExpr<OriginLang<L>>> {
+        match mode {
+            Mode::AgreeWith(pc) => self.enumerate_agree(id, size, pc),
+            Mode::Novel => self.enumerate_novel(id, size),
+        }
+    }
+
+    /// Enumerate all distinct novel terms of exactly `size` rooted at `id`.
+    fn enumerate_novel(&self, id: Id, size: usize) -> Vec<RecExpr<OriginLang<L>>> {
+        let graph = self.graph();
+        let canon_id = graph.find(id);
+        let Some(child_budget) = size.checked_sub(1) else {
+            return Vec::new();
+        };
+        let eclass = &graph[canon_id];
+
+        let mut results = Vec::new();
+
+        for (idx, node) in eclass.nodes.iter().enumerate() {
+            let n_matches = self.novel.matches_of(canon_id, idx);
+            let children = node.children();
+
+            let slot_options = children
+                .iter()
+                .map(|child| {
+                    let mut opts = vec![None];
+                    opts.extend(self.novel.cover_of(*child).iter().copied().map(Some));
+                    opts
+                })
+                .collect::<Vec<_>>();
+
+            for profile in enumerate_profiles(&slot_options) {
+                if completes_some_match(&profile, n_matches) {
+                    continue;
+                }
+                let modes = profile
+                    .iter()
+                    .map(|a| match a {
+                        None => Mode::Novel,
+                        Some(pc) => Mode::AgreeWith(*pc),
+                    })
+                    .collect::<Vec<_>>();
+
+                for combo in self.enumerate_children_with_modes(children, &modes, child_budget) {
+                    results.push(stack_children(
+                        &combo,
+                        OriginLang::new(node.clone(), canon_id),
+                    ));
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Enumerate all distinct terms of exactly `size` rooted at `id` that
+    /// agree with prev class `pc`.
+    fn enumerate_agree(&self, id: Id, size: usize, pc: Id) -> Vec<RecExpr<OriginLang<L>>> {
+        let graph = self.graph();
+        let canon_id = graph.find(id);
+        let Some(child_budget) = size.checked_sub(1) else {
+            return Vec::new();
+        };
+        let eclass = &graph[canon_id];
+
+        let mut results = Vec::new();
+
+        for (idx, node) in eclass.nodes.iter().enumerate() {
+            let children = node.children();
+            for m in self
+                .novel
+                .matches_of(canon_id, idx)
+                .iter()
+                .filter(|m| m.prev_class == pc)
+            {
+                let modes = m
+                    .prev_children
+                    .iter()
+                    .map(|&p| Mode::AgreeWith(p))
+                    .collect::<Vec<_>>();
+                for combo in self.enumerate_children_with_modes(children, &modes, child_budget) {
+                    results.push(stack_children(
+                        &combo,
+                        OriginLang::new(node.clone(), canon_id),
+                    ));
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Cartesian product over every `(child_size_tuple, child_term_tuple)`
+    /// such that child sizes sum to `budget` and each child term has the
+    /// chosen mode at the chosen size.
+    fn enumerate_children_with_modes(
+        &self,
+        children_ids: &[Id],
+        modes: &[Mode],
+        budget: usize,
+    ) -> Vec<Vec<RecExpr<OriginLang<L>>>> {
+        let mut acc: Vec<(usize, Vec<RecExpr<OriginLang<L>>>)> = vec![(budget, Vec::new())];
+
+        for (i, &c_id) in children_ids.iter().enumerate() {
+            let mode = modes[i];
+            let mut next = Vec::new();
+            for (remaining, partial) in acc {
+                for s in 1..=remaining {
+                    for term in self.enumerate_with_mode(c_id, s, mode) {
+                        let mut combo = partial.clone();
+                        combo.push(term);
+                        next.push((remaining - s, combo));
+                    }
+                }
+            }
+            acc = next;
+        }
+
+        acc.into_iter()
+            .filter(|(remaining, _)| *remaining == 0)
+            .map(|(_, combo)| combo)
+            .collect()
+    }
+
     /// Sample child sizes via suffix convolution and recurse with the given
     /// per-child modes.
     fn sample_children_with_modes(
@@ -292,6 +416,19 @@ where
             return false;
         };
         samples.try_into().is_ok_and(|s: C| count > &s)
+    }
+
+    fn term_sizes(&self, id: Id) -> Vec<usize> {
+        let canon_id = self.graph().find(id);
+        self.novel
+            .data()
+            .get(&canon_id)
+            .map(|h| h.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    fn enumerate_size(&self, id: Id, size: usize) -> Vec<RecExpr<OriginLang<L>>> {
+        self.enumerate_with_mode(id, size, Mode::Novel)
     }
 
     fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
@@ -443,5 +580,83 @@ mod tests {
         let sampler = NovelSampler::new(&novel, a, super::super::CountWeigher);
         // Nothing is novel, so possible_size should be false everywhere.
         assert!(!sampler.possible_size(a, 1, 0));
+    }
+
+    #[test]
+    fn novel_n_smallest_returns_all_novel_terms() {
+        // Same setup as novel_sample_union_diagonal: 3 novel terms exist.
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let root = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        curr.union(a, b);
+        curr.rebuild();
+
+        let plain = PlainTermCount::<BigUint>::new(5, &curr);
+        let novel = NovelTermCount::new(5, &curr, &prev, plain);
+        let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
+
+        let got = sampler.n_smallest(root, 3).unwrap();
+        let strs: hashbrown::HashSet<String> =
+            got.into_iter().map(|t| lower(t).to_string()).collect();
+        assert_eq!(
+            strs,
+            hashbrown::HashSet::from_iter([
+                "(+ a a)".to_owned(),
+                "(+ b a)".to_owned(),
+                "(+ b b)".to_owned(),
+            ])
+        );
+        assert!(!strs.contains("(+ a b)"));
+    }
+
+    #[test]
+    fn novel_n_smallest_is_monotone() {
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let root = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev = curr.clone();
+        curr.union(a, b);
+        curr.rebuild();
+
+        let plain = PlainTermCount::<BigUint>::new(5, &curr);
+        let novel = NovelTermCount::new(5, &curr, &prev, plain);
+        let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
+
+        let three = sampler.n_smallest(root, 3).unwrap();
+        let two = sampler.n_smallest(root, 2).unwrap();
+        let one = sampler.n_smallest(root, 1).unwrap();
+        assert_eq!(three.len(), 3);
+        assert_eq!(two.len(), 2);
+        assert_eq!(one.len(), 1);
+        assert!(one.is_subset(&two));
+        assert!(two.is_subset(&three));
+
+        assert_eq!(sampler.n_smallest(root, 2).unwrap(), two);
+        assert_eq!(sampler.n_smallest(root, 1).unwrap(), one);
+    }
+
+    #[test]
+    fn novel_n_smallest_none_when_not_enough() {
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let root = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev = curr.clone();
+        curr.union(a, b);
+        curr.rebuild();
+
+        let plain = PlainTermCount::<BigUint>::new(5, &curr);
+        let novel = NovelTermCount::new(5, &curr, &prev, plain);
+        let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
+
+        // Only 3 novel terms exist (a+a, b+a, b+b).
+        assert!(sampler.n_smallest(root, 4).is_none());
     }
 }

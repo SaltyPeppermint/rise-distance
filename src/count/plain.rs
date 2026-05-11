@@ -338,6 +338,20 @@ impl<C: Counter> PlainTermCount<C> {
         }
     }
 
+    /// Enumerate all distinct terms of exactly `size` from an e-class.
+    /// The returned order is implementation-defined but stable for the same
+    /// `(self, graph, id, size)`.
+    #[must_use]
+    pub fn enumerate_size<L: MyLanguage, N: MyAnalysis<L>>(
+        &self,
+        graph: &EGraph<L, N>,
+        id: Id,
+        size: usize,
+    ) -> Vec<RecExpr<OriginLang<L>>> {
+        let cache = DashMap::new();
+        self.enumerate_class_cached(graph, id, size, &cache)
+    }
+
     /// Enumerate all terms of exactly `size` from an e-class, using a shared cache.
     fn enumerate_class_cached<L: MyLanguage, N: MyAnalysis<L>>(
         &self,

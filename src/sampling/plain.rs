@@ -70,6 +70,19 @@ where
         samples.try_into().is_ok_and(|s: C| count > &s)
     }
 
+    fn term_sizes(&self, id: Id) -> Vec<usize> {
+        let canon_id = self.graph.find(id);
+        self.term_count
+            .data()
+            .get(&canon_id)
+            .map(|h| h.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    fn enumerate_size(&self, id: Id, size: usize) -> Vec<RecExpr<OriginLang<L>>> {
+        self.term_count.enumerate_size(self.graph, id, size)
+    }
+
     fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
         let canon_id = self.graph.find(id);
         let eclass = &self.graph[canon_id];
@@ -121,6 +134,7 @@ where
 #[cfg(test)]
 mod tests {
     use egg::EGraph;
+    use hashbrown::HashSet;
     use num::BigUint;
 
     use super::*;
@@ -255,5 +269,112 @@ mod tests {
         let result = sampler.sample_batch_root::<false>(&[(3, 5)], [1, 2]);
         assert!(!result.is_empty());
         assert!(result.len() <= 6);
+    }
+
+    #[test]
+    fn n_smallest_returns_all_when_available() {
+        // E-class {a, b}: two distinct size-1 terms.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        graph.union(a, b);
+        graph.rebuild();
+
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
+
+        let got = sampler.n_smallest(a, 2).unwrap();
+        let strs: HashSet<String> = got.into_iter().map(|t| lower(t).to_string()).collect();
+        assert_eq!(strs, HashSet::from_iter(["a".to_owned(), "b".to_owned()]));
+    }
+
+    #[test]
+    fn n_smallest_none_when_not_enough() {
+        // Only one term reachable.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        graph.rebuild();
+
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
+
+        assert!(sampler.n_smallest(a, 2).is_none());
+        assert_eq!(sampler.n_smallest(a, 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn n_smallest_crosses_sizes() {
+        // x's e-class has `x` (size 1) and `(ln y)` (size 2) via union.
+        // Asking for 2 should yield both; smallest comes first.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let x = graph.add(sym("x"));
+        let y = graph.add(sym("y"));
+        let lny = graph.add(Math::Ln(y));
+        graph.union(x, lny);
+        graph.rebuild();
+
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, x, NaiveWeigher);
+
+        let got = sampler.n_smallest(x, 2).unwrap();
+        let two: HashSet<String> = got.into_iter().map(|t| lower(t).to_string()).collect();
+        assert_eq!(
+            two,
+            HashSet::from_iter(["x".to_owned(), "(ln y)".to_owned()])
+        );
+
+        // Asking for just 1 should give the smallest (size 1).
+        let got_one = sampler.n_smallest(x, 1).unwrap();
+        let one: HashSet<String> = got_one.into_iter().map(|t| lower(t).to_string()).collect();
+        assert_eq!(one, HashSet::from_iter(["x".to_owned()]));
+    }
+
+    #[test]
+    fn n_smallest_is_stable() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        graph.union(a, b);
+        graph.rebuild();
+
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
+
+        let first = sampler.n_smallest(a, 2).unwrap();
+        let second = sampler.n_smallest(a, 2).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn n_smallest_is_monotone() {
+        // Build an e-class with at least 6 distinct terms.
+        // a, b, c unioned -> 3 size-1 terms.
+        // ln(a) reachable via the unified class -> size-2 terms: (ln a), (ln b), (ln c).
+        // That's 6 distinct terms total.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        let c = graph.add(sym("c"));
+        graph.union(a, b);
+        graph.union(a, c);
+        let lna = graph.add(Math::Ln(a));
+        graph.union(a, lna);
+        graph.rebuild();
+
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
+
+        let six = sampler.n_smallest(a, 6).unwrap();
+        let three = sampler.n_smallest(a, 3).unwrap();
+        let two = sampler.n_smallest(a, 2).unwrap();
+        assert_eq!(six.len(), 6);
+        assert_eq!(three.len(), 3);
+        assert_eq!(two.len(), 2);
+        assert!(two.is_subset(&three));
+        assert!(three.is_subset(&six));
+
+        // Repeated calls return the exact same set.
+        assert_eq!(sampler.n_smallest(a, 3).unwrap(), three);
+        assert_eq!(sampler.n_smallest(a, 2).unwrap(), two);
     }
 }
