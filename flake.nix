@@ -59,6 +59,7 @@
             cargo-wizard
             cargo-udeps
             cargo-unused-features
+            cargo-sweep
             samply
             nixd
             nixfmt
