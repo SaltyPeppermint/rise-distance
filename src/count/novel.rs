@@ -17,10 +17,15 @@
 
 use egg::{EGraph, Id};
 use hashbrown::{HashMap, HashSet};
+use smallvec::SmallVec;
 
 use super::{Counter, PlainTermCount};
 use crate::utils::UniqueQueue;
 use crate::{MyAnalysis, MyLanguage};
+
+/// Inline-allocated list of child class ids. Sized for the typical e-node
+/// arity (0–2); higher-arity nodes spill to the heap transparently.
+pub type ChildIds = SmallVec<[Id; 2]>;
 
 /// One match of a curr e-node in prev. The `prev_children` are canonical prev
 /// class ids of the matching prev node's children, in the same order as the
@@ -28,8 +33,36 @@ use crate::{MyAnalysis, MyLanguage};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeMatch {
     pub prev_class: Id,
-    pub prev_children: Vec<Id>,
+    pub prev_children: ChildIds,
 }
+
+/// Per `(curr_class, node_idx)`: every match of that e-node in prev.
+pub(crate) type NodeMatches = HashMap<(Id, usize), Vec<NodeMatch>>;
+
+/// Per curr class: the set of prev classes that share at least one extraction
+/// with it. Used internally during match enumeration; the exposed `cover`
+/// field on [`NovelTermCount`] is a `Vec<Id>`-valued variant derived from the
+/// joint table.
+pub(crate) type MatchCover = HashMap<Id, HashSet<Id>>;
+
+/// Dedup key for match enumeration: `(curr_class, node_idx, prev_class,
+/// prev_children)`.
+pub(crate) type MatchKeys = HashSet<(Id, usize, Id, ChildIds)>;
+
+/// Reverse dependencies between `(curr_class, prev_class)` pairs during the
+/// joint-count fixpoint: a key `(c, pc)` maps to every pair whose histogram
+/// depends on `joint[(c, pc)]`.
+pub(crate) type PairDeps = HashMap<(Id, Id), HashSet<(Id, Id)>>;
+
+/// Matches grouped by `(curr_class, prev_class)` for the joint-count
+/// fixpoint. Each entry is the list of `(node_idx, match)` pairs whose
+/// `prev_class` equals the key's second component.
+pub(crate) type PairMatches<'a> = HashMap<(Id, Id), Vec<(usize, &'a NodeMatch)>>;
+
+/// Per `(curr_class, prev_class)` pair: histogram of size -> count of
+/// extractions rooted at curr's class that are also extractable from prev's
+/// class.
+pub type JointTable<C> = HashMap<(Id, Id), HashMap<usize, C>>;
 
 /// Joint extractability table + per-node prev matches + derived novel
 /// histograms.
@@ -47,14 +80,14 @@ where
     /// Per `(curr_class, prev_class)` pair: histogram of size -> count of
     /// extractions rooted at curr's class that are also extractable from
     /// prev's class.
-    joint: HashMap<(Id, Id), HashMap<usize, C>>,
+    joint: JointTable<C>,
 
     /// Per curr class: the set of prev classes that share at least one
     /// extraction with it (i.e., the second-coordinate keys of `joint`).
     cover: HashMap<Id, Vec<Id>>,
 
     /// Per `(curr_class, node_idx)`: every match of that e-node in prev.
-    matches: HashMap<(Id, usize), Vec<NodeMatch>>,
+    matches: NodeMatches,
 
     /// Per curr class: histogram of novel-reachable extraction sizes.
     /// `data[c][s] = plain[c][s] - sum_pc joint[(c, pc)][s]`.
@@ -113,7 +146,7 @@ where
     }
 
     #[must_use]
-    pub fn joint(&self) -> &HashMap<(Id, Id), HashMap<usize, C>> {
+    pub fn joint(&self) -> &JointTable<C> {
         &self.joint
     }
 
@@ -154,7 +187,7 @@ where
 // dropped in `compute_joint`. That's fine for sampling: a missing `pc` had
 // joint count 0 anyway, so neither slot enumeration nor `completes_some_match`
 // can be fooled by its absence.
-fn build_cover<C: Counter>(joint: &HashMap<(Id, Id), HashMap<usize, C>>) -> HashMap<Id, Vec<Id>> {
+fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
     let mut out: HashMap<Id, Vec<Id>> = HashMap::new();
     for (c, pc) in joint.keys() {
         let entry = out.entry(*c).or_default();
@@ -179,10 +212,10 @@ fn build_cover<C: Counter>(joint: &HashMap<(Id, Id), HashMap<usize, C>>) -> Hash
 fn enumerate_matches<L: MyLanguage, N: MyAnalysis<L>>(
     curr: &EGraph<L, N>,
     prev: &EGraph<L, N>,
-) -> HashMap<(Id, usize), Vec<NodeMatch>> {
-    let mut cover: HashMap<Id, HashSet<Id>> = HashMap::new();
-    let mut matches: HashMap<(Id, usize), Vec<NodeMatch>> = HashMap::new();
-    let mut seen: HashSet<(Id, usize, Id, Vec<Id>)> = HashSet::new();
+) -> NodeMatches {
+    let mut cover = MatchCover::new();
+    let mut matches = NodeMatches::new();
+    let mut seen = MatchKeys::new();
 
     let mut changed = true;
     while changed {
@@ -192,7 +225,10 @@ fn enumerate_matches<L: MyLanguage, N: MyAnalysis<L>>(
             let c = curr.find(class.id);
             for (idx, node) in class.nodes.iter().enumerate() {
                 let children = node.children();
-                let child_canons = children.iter().map(|cc| curr.find(*cc)).collect::<Vec<_>>();
+                let child_canons = children
+                    .iter()
+                    .map(|cc| curr.find(*cc))
+                    .collect::<ChildIds>();
 
                 let combos = child_combinations(&child_canons, &cover);
                 for combo in combos {
@@ -205,16 +241,14 @@ fn enumerate_matches<L: MyLanguage, N: MyAnalysis<L>>(
                     });
                     if let Some(pc_class) = prev.lookup(translated) {
                         let pc_canon = prev.find(pc_class);
-                        let key = (c, idx, pc_canon, combo.clone());
-                        if seen.insert(key) {
+                        if seen.insert((c, idx, pc_canon, combo.clone())) {
                             matches.entry((c, idx)).or_default().push(NodeMatch {
                                 prev_class: pc_canon,
                                 prev_children: combo,
                             });
-                            if cover.entry(c).or_default().insert(pc_canon) {
-                                // Newly discovered cover entry; another pass
-                                // might find more matches via this class.
-                            }
+                            // Newly discovered cover entry; another pass
+                            // might find more matches via this class.
+                            cover.entry(c).or_default().insert(pc_canon);
                             changed = true;
                         }
                     }
@@ -228,8 +262,8 @@ fn enumerate_matches<L: MyLanguage, N: MyAnalysis<L>>(
 
 /// Cartesian product of `cover[child_i]` over `i`. For zero-arity nodes,
 /// returns `[[]]` (a single empty combination).
-fn child_combinations(children: &[Id], cover: &HashMap<Id, HashSet<Id>>) -> Vec<Vec<Id>> {
-    let mut combos = vec![Vec::new()];
+fn child_combinations(children: &[Id], cover: &MatchCover) -> Vec<ChildIds> {
+    let mut combos = vec![ChildIds::new()];
     for child in children {
         let Some(opts) = cover.get(child) else {
             return Vec::new();
@@ -260,8 +294,8 @@ fn child_combinations(children: &[Id], cover: &HashMap<Id, HashSet<Id>>) -> Vec<
 fn compute_joint<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,
-    matches: &HashMap<(Id, usize), Vec<NodeMatch>>,
-) -> HashMap<(Id, Id), HashMap<usize, C>> {
+    matches: &NodeMatches,
+) -> JointTable<C> {
     // Collect all (c, pc) pairs we need to compute.
     let pairs = matches
         .iter()
@@ -269,7 +303,7 @@ fn compute_joint<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
         .collect::<HashSet<_>>();
 
     // Group matches by (curr_class, prev_class) for efficient per-pair update.
-    let mut by_pair: HashMap<(Id, Id), Vec<(usize, &NodeMatch)>> = HashMap::new();
+    let mut by_pair = PairMatches::new();
     for ((c, idx), ms) in matches {
         for m in ms {
             by_pair
@@ -279,7 +313,7 @@ fn compute_joint<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
         }
     }
 
-    let mut joint: HashMap<(Id, Id), HashMap<usize, C>> = HashMap::new();
+    let mut joint = JointTable::new();
 
     let mut pending = pairs.iter().copied().collect::<UniqueQueue<_>>();
 
@@ -288,7 +322,7 @@ fn compute_joint<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
     // prev_class pc') has a child position whose curr class is c and prev
     // class is pc. We need the actual node to know each child's curr class,
     // so we iterate (class, node, match) tuples.
-    let mut deps: HashMap<(Id, Id), HashSet<(Id, Id)>> = HashMap::new();
+    let mut deps = PairDeps::new();
     for class in curr.classes() {
         let c_prime = curr.find(class.id);
         for (idx, node) in class.nodes.iter().enumerate() {
@@ -340,7 +374,7 @@ fn compute_pair_histogram<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
     curr: &EGraph<L, N>,
     c: Id,
     pair_matches: &[(usize, &NodeMatch)],
-    joint: &HashMap<(Id, Id), HashMap<usize, C>>,
+    joint: &JointTable<C>,
 ) -> HashMap<usize, C> {
     let mut acc = HashMap::new();
 
@@ -397,7 +431,7 @@ fn compute_pair_histogram<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
 
 fn derive_novel<C: Counter>(
     plain: &HashMap<Id, HashMap<usize, C>>,
-    joint: &HashMap<(Id, Id), HashMap<usize, C>>,
+    joint: &JointTable<C>,
 ) -> HashMap<Id, HashMap<usize, C>> {
     // Aggregate sum_pc joint[(c, pc)] per curr class. No double-counting:
     // `prev.lookup(t)` is unique once prev is rebuilt, so each non-novel term
