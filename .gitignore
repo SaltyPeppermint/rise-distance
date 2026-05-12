@@ -7,6 +7,7 @@ profile.json.gz
 
 /data/guide_eval/
 /data/seed_terms/
+/data/goal_gen/
 
 # direnv
 .direnv/
