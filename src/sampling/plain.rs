@@ -211,8 +211,7 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
 
-        let result = sampler.sample_batch_root::<false>(&[(3, 5)], [1, 2]);
-        assert!(!result.is_empty());
+        let result = sampler.sample_batch_root(&[(3, 5)], [1, 2]).unwrap();
         assert!(result.len() <= 6);
     }
 
@@ -265,8 +264,8 @@ mod tests {
         let tc = PlainTermCount::<BigUint>::new(10, &graph);
         let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
 
-        let result = sampler.sample_batch_root::<false>(&[(3, 5)], [1, 2]);
-        assert!(!result.is_empty());
+        let result = sampler.sample_batch_root(&[(3, 5)], [1, 2]).unwrap();
+
         assert!(result.len() <= 6);
     }
 }

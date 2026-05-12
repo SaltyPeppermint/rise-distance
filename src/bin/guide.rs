@@ -237,7 +237,7 @@ fn process_seed(
         now.elapsed().as_secs_f64()
     );
     pp.log_root();
-    let Ok(goals) = pp.sample_frontier_terms::<true>(
+    let Ok(goals) = pp.sample_frontier_terms(
         args.goals,
         args.size_distribution,
         args.goal_sample_strategy,
@@ -405,7 +405,7 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetWithReplacement<'p, C> {
                 let trials = (0..NUM_TRIALS)
                     .into_par_iter()
                     .map(|s| {
-                        let subset = self.pp.sample_frontier_terms::<false>(
+                        let subset = self.pp.sample_frontier_terms(
                             k,
                             args.size_distribution,
                             self.strategy,
@@ -455,7 +455,7 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetNoReplacement<'p, C> {
         let bars = progress_bars();
         bars.into_par_iter()
             .map(|(k, pb)| {
-                let samples = self.pp.sample_frontier_terms::<true>(
+                let samples = self.pp.sample_frontier_terms(
                     k * NUM_TRIALS,
                     args.size_distribution,
                     self.strategy,

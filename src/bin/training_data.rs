@@ -192,7 +192,7 @@ fn process_seed(
         max_size,
     )?;
     pp.log_root();
-    let Ok(goals) = pp.sample_frontier_terms::<true>(
+    let Ok(goals) = pp.sample_frontier_terms(
         args.goals,
         args.size_distribution,
         args.goal_sample_strategy,
@@ -242,7 +242,7 @@ fn try_all<C: Counter + Display + Ord>(
     goal: &RecExpr<OriginLang<Math>>,
     pc: &PrecomputePackage<C, Math, ConstantFold>,
 ) -> Result<Vec<GuideEval<Math>>, ExperimentError> {
-    let samples = pc.sample_frontier_terms::<true>(
+    let samples = pc.sample_frontier_terms(
         args.guides,
         args.size_distribution,
         args.guide_sample_strategy,

@@ -113,8 +113,8 @@ where
     }
 
     /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
-    #[expect(clippy::missing_errors_doc)]
-    pub fn sample_frontier_terms<const PARALLEL: bool>(
+    #[expect(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+    pub fn sample_frontier_terms(
         &self,
         count: usize,
         distribution: TermSampleDist,
@@ -131,27 +131,22 @@ where
         let samples_per_size =
             distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
         let samples = match (sample_strategy, novel) {
-            (SampleStrategy::Naive, true) => {
-                NovelSampler::new(&self.tc, self.root, NaiveWeigher)
-                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
-            }
-            (SampleStrategy::Count, true) => {
-                NovelSampler::new(&self.tc, self.root, CountWeigher)
-                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
-            }
+            (SampleStrategy::Naive, true) => NovelSampler::new(&self.tc, self.root, NaiveWeigher)
+                .sample_batch_root(&samples_per_size, seed),
+            (SampleStrategy::Count, true) => NovelSampler::new(&self.tc, self.root, CountWeigher)
+                .sample_batch_root(&samples_per_size, seed),
             (SampleStrategy::Naive, false) => {
                 PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
-                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
+                    .sample_batch_root(&samples_per_size, seed)
             }
             (SampleStrategy::Count, false) => {
                 PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, CountWeigher)
-                    .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
+                    .sample_batch_root(&samples_per_size, seed)
             }
         };
-        if samples.len() == count {
-            return Ok(samples.into_iter().collect());
-        }
-        Err(ExperimentError::InsufficientSamples)
+        let samples = samples?;
+        assert!(samples.len() == count, "insufficient samples");
+        Ok(samples.into_iter().collect())
     }
 
     #[must_use]
