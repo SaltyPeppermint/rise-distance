@@ -68,6 +68,10 @@ struct Args {
     #[arg(long, global = true)]
     take_first: Option<usize>,
 
+    /// Only process the first N seeds (useful for quick experiments)
+    #[arg(long, global = true, default_value_t = 100)]
+    trials: usize,
+
     #[command(subcommand)]
     mode: Mode,
 }
@@ -110,7 +114,6 @@ enum Mode {
 }
 
 const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
-const NUM_TRIALS: usize = 100;
 
 fn main() {
     let args = Args::parse();
@@ -320,7 +323,7 @@ fn write_top_k_outputs(run_folder: &Path, all: HashMap<String, Vec<GoalResults>>
     }
 }
 
-fn progress_bars() -> Vec<(usize, ProgressBar)> {
+fn progress_bars(args: &Args) -> Vec<(usize, ProgressBar)> {
     let mp = MultiProgress::new();
     let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
         .unwrap()
@@ -329,7 +332,7 @@ fn progress_bars() -> Vec<(usize, ProgressBar)> {
     TRIAL_SIZE
         .iter()
         .map(|&k| {
-            let pb = mp.add(ProgressBar::new(NUM_TRIALS as u64).with_style(style.clone()));
+            let pb = mp.add(ProgressBar::new(args.trials as u64).with_style(style.clone()));
             pb.set_message(format!("k={k}"));
             (k, pb)
         })
@@ -399,10 +402,10 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetWithReplacement<'p, C> {
         eqsat: &EqsatConfig,
         goal_recexpr: &RecExpr<Math>,
     ) -> TrialsPerK {
-        let bars = progress_bars();
+        let bars = progress_bars(args);
         bars.into_par_iter()
             .map(|(k, pb)| {
-                let trials = (0..NUM_TRIALS)
+                let trials = (0..args.trials)
                     .into_par_iter()
                     .map(|s| {
                         let subset = self.pp.sample_frontier_terms(
@@ -452,18 +455,18 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetNoReplacement<'p, C> {
         eqsat: &EqsatConfig,
         goal_recexpr: &RecExpr<Math>,
     ) -> TrialsPerK {
-        let bars = progress_bars();
+        let bars = progress_bars(args);
         bars.into_par_iter()
             .map(|(k, pb)| {
                 let samples = self.pp.sample_frontier_terms(
-                    k * NUM_TRIALS,
+                    k * args.trials,
                     args.size_distribution,
                     self.strategy,
                     [k as u64, 0],
                     self.novel,
                 );
                 let trials = match samples {
-                    Err(e) => vec![Err(e); NUM_TRIALS],
+                    Err(e) => vec![Err(e); args.trials],
                     Ok(samples) => samples
                         .par_chunks(k)
                         .map(|subset| {
