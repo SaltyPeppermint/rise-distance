@@ -183,13 +183,27 @@ def find_latest_run(pattern: str) -> Path:
     return candidates[-1]
 
 
+STOP_REASON_CATEGORIES = ("Saturated", "IterationLimit", "NodeLimit", "TimeLimit", "Other")
+
+
+def stop_reason_category(s: str | None) -> str | None:
+    """Map a StopReason debug string (e.g. 'IterationLimit(30)', 'Saturated') to its variant name."""
+    if s is None:
+        return None
+    for cat in STOP_REASON_CATEGORIES:
+        if s.startswith(cat):
+            return cat
+    return "Other"
+
+
 def parse_replacement_summary(raw: list[dict], strategy_name: str) -> list[dict]:
     """Parse a no/with_replacement_top_k_summary.json into flat rows.
 
     Format: [{seed, goal, entries_per_k: {k: [{'Ok': {...}} | {'Err': ...}]}}]
 
     Each row has: goal, strategy, k, iters, nodes, classes, total_applied,
-    total_time, not_enough_samples, unreached, panic_while_sample.
+    total_time, not_enough_samples, nothing_in_hist, unreached (Optional[str]
+    StopReason debug repr), panic_while_sample.
     """
     rows = []
     for entry in raw:
@@ -210,12 +224,18 @@ def parse_replacement_summary(raw: list[dict], strategy_name: str) -> list[dict]
                             "total_applied": t["total_applied"],
                             "total_time": t["total_time"],
                             "not_enough_samples": False,
-                            "unreached": False,
+                            "nothing_in_hist": False,
+                            "unreached": None,
                             "panic_while_sample": False,
                         }
                     )
                 else:
                     err = trial.get("Err", "")
+                    unreached_reason: str | None = None
+                    if isinstance(err, dict) and "Guide" in err:
+                        guide_err = err["Guide"]
+                        if isinstance(guide_err, dict) and "Unreached" in guide_err:
+                            unreached_reason = repr(guide_err["Unreached"])
                     rows.append(
                         {
                             "goal": goal,
@@ -226,9 +246,12 @@ def parse_replacement_summary(raw: list[dict], strategy_name: str) -> list[dict]
                             "classes": None,
                             "total_applied": None,
                             "total_time": None,
-                            "not_enough_samples": err == "NotEnoughSamples",
-                            "unreached": err == "Unreached",
-                            "panic_while_sample": err == "PanicWhileSample",
+                            "not_enough_samples": err == "InsufficientSamples",
+                            "nothing_in_hist": err == "NothingInHistogram",
+                            "unreached": unreached_reason,
+                            "panic_while_sample": (
+                                isinstance(err, dict) and err.get("Guide") == "PanicWhileAttempt"
+                            ),
                         }
                     )
     return rows
@@ -271,25 +294,26 @@ def load_top_k(run_dir: Path, strategy_name: str, file_prefix: str) -> pl.DataFr
 def compute_goal_reach(df: pl.DataFrame) -> pl.DataFrame:
     """Per-goal×k reachability aggregation.
 
-    cond_reach_rate excludes sampling-failure trials from the denominator:
-    "given we could sample k guides, did we reach the goal?"
+    cond_reach_rate excludes sampling-failure trials (insufficient samples or
+    nothing-in-histogram) from the denominator: "given we could sample k
+    guides, did we reach the goal?"
     """
+    sampling_failure = pl.col("not_enough_samples") | pl.col("nothing_in_hist")
     return (
         df.group_by("goal", "k")
         .agg(
             pl.col("iters").is_not_null().mean().alias("reach_rate"),
-            (
-                pl.col("iters").is_not_null().sum() / (pl.col("not_enough_samples").not_()).sum()
-            ).alias("cond_reach_rate"),
+            (pl.col("iters").is_not_null().sum() / sampling_failure.not_().sum()).alias(
+                "cond_reach_rate"
+            ),
             pl.col("not_enough_samples").mean().alias("insuf_rate"),
+            pl.col("nothing_in_hist").mean().alias("nothing_in_hist_rate"),
         )
         .sort("goal", "k")
     )
 
 
-def compute_goal_reach_matrix(
-    df: pl.DataFrame, k_values: list[int]
-) -> tuple[list, np.ndarray]:
+def compute_goal_reach_matrix(df: pl.DataFrame, k_values: list[int]) -> tuple[list, np.ndarray]:
     """Build a (goals × k) reachability matrix sorted by avg reachability (hardest first).
 
     Returns (goal_order, matrix) where matrix[i, j] is the reach_rate for
@@ -311,9 +335,7 @@ def compute_goal_reach_matrix(
     return goal_order, matrix
 
 
-def compute_war_agg(
-    df: pl.DataFrame, baseline: dict[str, float], metrics: list[str]
-) -> list[dict]:
+def compute_war_agg(df: pl.DataFrame, baseline: dict[str, float], metrics: list[str]) -> list[dict]:
     """Compute WAR (baseline - guided) rows per k for each metric.
 
     Returns a list of dicts with keys: k, plus for each metric
