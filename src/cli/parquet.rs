@@ -146,9 +146,13 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
                         total_time.push(None);
                         not_enough_samples.push(matches!(e, ExperimentError::InsufficientSamples));
                         nothing_in_hist.push(matches!(e, ExperimentError::NothingInHistogram));
-                        if let ExperimentError::Guide(GuideError::Unreached(g)) = e {
-                            unreached.push(Some(format!("{g:?}")));
-                        }
+                        unreached.push(
+                            if let ExperimentError::Guide(GuideError::Unreached(g)) = e {
+                                Some(format!("{g:?}"))
+                            } else {
+                                None
+                            },
+                        );
                         panic_while_sample.push(matches!(
                             e,
                             ExperimentError::Guide(GuideError::PanicWhileAttempt)
