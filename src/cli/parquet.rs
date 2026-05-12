@@ -116,7 +116,8 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
     let mut total_applied: Vec<Option<u64>> = Vec::with_capacity(n);
     let mut total_time: Vec<Option<f64>> = Vec::with_capacity(n);
     let mut not_enough_samples: Vec<bool> = Vec::with_capacity(n);
-    let mut unreached: Vec<bool> = Vec::with_capacity(n);
+    let mut nothing_in_hist: Vec<bool> = Vec::with_capacity(n);
+    let mut unreached: Vec<Option<String>> = Vec::with_capacity(n);
     let mut panic_while_sample: Vec<bool> = Vec::with_capacity(n);
 
     for summary in summaries {
@@ -133,7 +134,8 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
                         total_applied.push(Some(t.total_applied as u64));
                         total_time.push(Some(t.total_time));
                         not_enough_samples.push(false);
-                        unreached.push(false);
+                        nothing_in_hist.push(false);
+                        unreached.push(None);
                         panic_while_sample.push(false);
                     }
                     Err(e) => {
@@ -143,7 +145,10 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
                         total_applied.push(None);
                         total_time.push(None);
                         not_enough_samples.push(matches!(e, ExperimentError::InsufficientSamples));
-                        unreached.push(matches!(e, ExperimentError::Guide(GuideError::Unreached)));
+                        nothing_in_hist.push(matches!(e, ExperimentError::NothingInHistogram));
+                        if let ExperimentError::Guide(GuideError::Unreached(g)) = e {
+                            unreached.push(Some(format!("{g:?}")));
+                        }
                         panic_while_sample.push(matches!(
                             e,
                             ExperimentError::Guide(GuideError::PanicWhileAttempt)
@@ -164,6 +169,7 @@ pub fn dump_summary_parquet(path: &Path, summaries: &[GoalSummary]) {
         "total_applied"       => total_applied,
         "total_time"          => total_time,
         "not_enough_samples"  => not_enough_samples,
+        "nothing_in_hist"     => nothing_in_hist,
         "unreached"           => unreached,
         "panic_while_sample"  => panic_while_sample,
     }

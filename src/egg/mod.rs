@@ -321,7 +321,7 @@ where
     r.egraph
         .lookup_expr(goal)
         .map(|_| r.iterations)
-        .ok_or(GuideError::Unreached)
+        .ok_or(GuideError::Unreached(r.stop_reason.clone().unwrap()))
 }
 
 fn add_with_root_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>

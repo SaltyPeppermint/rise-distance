@@ -1,4 +1,4 @@
-use egg::{Iteration, RecExpr};
+use egg::{Iteration, RecExpr, StopReason};
 use hashbrown::HashMap;
 use serde::Serialize;
 use strum::Display;
@@ -6,15 +6,16 @@ use thiserror::Error;
 
 use crate::{MyLanguage, egg::OriginLang};
 
-#[derive(Debug, Error, Display, Serialize, Clone, Copy)]
+#[derive(Debug, Error, Display, Serialize, Clone)]
 pub enum ExperimentError {
     Guide(#[from] GuideError),
     InsufficientSamples,
+    NothingInHistogram,
 }
 
-#[derive(Debug, Error, Display, Serialize, Clone, Copy)]
+#[derive(Debug, Error, Display, Serialize, Clone)]
 pub enum GuideError {
-    Unreached,
+    Unreached(StopReason),
     PanicWhileAttempt,
 }
 
@@ -88,7 +89,7 @@ impl GoalSummary {
                                             total_time: iters.iter().map(|i| i.total_time).sum(),
                                         }
                                     })
-                                    .map_err(|e| *e)
+                                    .map_err(|e| e.clone())
                             })
                             .collect(),
                     )
