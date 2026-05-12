@@ -80,16 +80,11 @@ where
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
     ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError> {
-        samples_per_size
+        let iters = samples_per_size
             .par_iter()
-            .map(|&(size, samples)| {
-                self.sample_size(id, size, samples, seed)
-                    .map(|iter| iter.collect::<Vec<_>>())
-            })
-            .try_reduce(Vec::new, |mut acc, v| {
-                acc.extend(v);
-                Ok(acc)
-            })
+            .map(|&(size, samples)| self.sample_size(id, size, samples, seed))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(iters.into_iter().flatten().collect())
     }
 
     /// Draw `samples` distinct terms of exactly `size` from `id`, doubling the
