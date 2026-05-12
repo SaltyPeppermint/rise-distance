@@ -135,7 +135,7 @@ where
                 NovelSampler::new(&self.tc, self.root, NaiveWeigher)
                     .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
             }
-            (SampleStrategy::CountBased, true) => {
+            (SampleStrategy::Count, true) => {
                 NovelSampler::new(&self.tc, self.root, CountWeigher)
                     .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
             }
@@ -143,7 +143,7 @@ where
                 PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
                     .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
             }
-            (SampleStrategy::CountBased, false) => {
+            (SampleStrategy::Count, false) => {
                 PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, CountWeigher)
                     .sample_batch_root::<PARALLEL>(&samples_per_size, seed)
             }

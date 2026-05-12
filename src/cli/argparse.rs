@@ -56,7 +56,7 @@ pub enum DistanceMetric {
 #[strum(serialize_all = "kebab-case")]
 pub enum SampleStrategy {
     Naive,
-    CountBased,
+    Count,
     // ZSDiverseNaive,
     // ZSDiverseCountBased,
 }

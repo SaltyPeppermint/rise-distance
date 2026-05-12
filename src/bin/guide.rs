@@ -31,7 +31,7 @@ Examples:
   guide single --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100
 
   # Folder with terms.json + args.json (eqsat limits read from args.json)
-  guide -g 1000 --goals 10 --full-union --guide-sample-strategy count-based --take-first 10 \\
+  guide -g 1000 --goals 10 --full-union --take-first 10 \\
     folder data/seed_terms/dusky-cramp
 
   # Use the experimental full-union egraph
@@ -52,12 +52,8 @@ struct Args {
     #[arg(long, global = true, default_value_t = TermSampleDist::UNIFORM)]
     size_distribution: TermSampleDist,
 
-    /// How to sample the individual terms.
-    #[arg(long, global = true, default_value_t = SampleStrategy::CountBased)]
-    guide_sample_strategy: SampleStrategy,
-
     /// How to sample the GOAL terms.
-    #[arg(long, global = true, default_value_t = SampleStrategy::CountBased)]
+    #[arg(long, global = true, default_value_t = SampleStrategy::Count)]
     goal_sample_strategy: SampleStrategy,
 
     /// Output folder (generated if omitted)
@@ -124,7 +120,7 @@ fn main() {
         "nodes-{}-timems-{}-strategy-{}-fullunion-{}",
         eqsat.max_nodes,
         Duration::from_secs_f64(eqsat.max_time).as_millis(),
-        args.guide_sample_strategy,
+        args.goal_sample_strategy,
         args.full_union
     );
     let run_folder = get_run_folder(args.output.as_deref(), "guide_eval", &prefix);
@@ -273,11 +269,19 @@ fn process_seed(
         max_size,
     )?;
 
-    tee_println!("\nRunning top_k experiments NO REPLACEMENT...");
-    let no_repl = GuideSetNoReplacement::new(&pc, true).run_trials(args, eqsat, seed_str, &goals);
-    tee_println!("\nRunning top_k experiments WITH REPLACEMENT...");
-    let with_repl =
-        GuideSetWithReplacement::new(&pc, true).run_trials(args, eqsat, seed_str, &goals);
+    tee_println!("\nRunning top_k experiments NO REPLACEMENT COUNTBASED...");
+    let no_repl_count = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Count)
+        .run_trials(args, eqsat, seed_str, &goals);
+    tee_println!("\nRunning top_k experiments WITH REPLACEMENT COUNTBASED...");
+    let with_repl_count = GuideSetWithReplacement::new(&pc, true, SampleStrategy::Count)
+        .run_trials(args, eqsat, seed_str, &goals);
+
+    tee_println!("\nRunning top_k experiments NO REPLACEMENT COUNTBASED...");
+    let no_repl_naive = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Count)
+        .run_trials(args, eqsat, seed_str, &goals);
+    tee_println!("\nRunning top_k experiments WITH REPLACEMENT COUNTBASED...");
+    let with_repl_naive = GuideSetWithReplacement::new(&pc, true, SampleStrategy::Count)
+        .run_trials(args, eqsat, seed_str, &goals);
 
     tee_println!("\nRunning single experiments ONLY SMALLEST...");
     let smallest_overall = Smallest::new(&pc, false).run_trials(args, eqsat, seed_str, &goals);
@@ -285,8 +289,10 @@ fn process_seed(
     let smallest_novel = Smallest::new(&pc, true).run_trials(args, eqsat, seed_str, &goals);
 
     let r = HashMap::from([
-        ("no_replacement".to_owned(), no_repl),
-        ("with_replacement".to_owned(), with_repl),
+        ("no_replacement_count".to_owned(), no_repl_count),
+        ("with_replacement_count".to_owned(), with_repl_count),
+        ("no_replacement_naive".to_owned(), no_repl_naive),
+        ("with_replacement_naive".to_owned(), with_repl_naive),
         ("smallest_overall".to_owned(), smallest_overall),
         ("smallest_novel".to_owned(), smallest_novel),
     ]);
@@ -369,11 +375,20 @@ trait Strategy<'p, C: Counter> {
 struct GuideSetWithReplacement<'p, C: Counter> {
     pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
     novel: bool,
+    strategy: SampleStrategy,
 }
 
 impl<'p, C: Counter> GuideSetWithReplacement<'p, C> {
-    fn new(pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>, novel: bool) -> Self {
-        Self { pp, novel }
+    fn new(
+        pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
+        novel: bool,
+        strategy: SampleStrategy,
+    ) -> Self {
+        Self {
+            pp,
+            novel,
+            strategy,
+        }
     }
 }
 
@@ -393,7 +408,7 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetWithReplacement<'p, C> {
                         let subset = self.pp.sample_frontier_terms::<false>(
                             k,
                             args.size_distribution,
-                            args.guide_sample_strategy,
+                            self.strategy,
                             [k as u64, s as u64],
                             self.novel,
                         )?;
@@ -413,11 +428,20 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetWithReplacement<'p, C> {
 struct GuideSetNoReplacement<'p, C: Counter> {
     pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
     novel: bool,
+    strategy: SampleStrategy,
 }
 
 impl<'p, C: Counter> GuideSetNoReplacement<'p, C> {
-    fn new(pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>, novel: bool) -> Self {
-        Self { pp, novel }
+    fn new(
+        pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
+        novel: bool,
+        strategy: SampleStrategy,
+    ) -> Self {
+        Self {
+            pp,
+            novel,
+            strategy,
+        }
     }
 }
 
@@ -434,7 +458,7 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetNoReplacement<'p, C> {
                 let samples = self.pp.sample_frontier_terms::<true>(
                     k * NUM_TRIALS,
                     args.size_distribution,
-                    args.guide_sample_strategy,
+                    self.strategy,
                     [k as u64, 0],
                     self.novel,
                 );

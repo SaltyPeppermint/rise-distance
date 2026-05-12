@@ -84,11 +84,11 @@ struct Args {
     size_distribution: TermSampleDist,
 
     /// How to sample the individual terms.
-    #[arg(long, default_value_t = SampleStrategy::CountBased)]
+    #[arg(long, default_value_t = SampleStrategy::Count)]
     guide_sample_strategy: SampleStrategy,
 
     /// How to sample the GOAL terms.
-    #[arg(long, default_value_t = SampleStrategy::CountBased)]
+    #[arg(long, default_value_t = SampleStrategy::Count)]
     goal_sample_strategy: SampleStrategy,
 
     /// Output folder (generated if omitted)
