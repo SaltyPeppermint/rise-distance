@@ -146,7 +146,7 @@ where
         };
         let samples = samples?;
         assert!(samples.len() == count, "insufficient samples");
-        Ok(samples.into_iter().collect())
+        Ok(samples)
     }
 
     #[must_use]
