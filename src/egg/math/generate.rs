@@ -2,7 +2,6 @@
 use std::{collections::HashSet, sync::LazyLock};
 
 use egg::{AstSize, CostFunction, Id, Language, RecExpr, Symbol};
-use ordered_float::NotNan;
 use rand::Rng;
 
 use crate::egg::{id0, stack_children};
@@ -330,9 +329,9 @@ fn default_symbols() -> Vec<Math> {
     vec![
         Math::Symbol("x".into()),
         Math::Symbol("y".into()),
-        Math::Constant(NotNan::new(0.0).unwrap()),
-        Math::Constant(NotNan::new(1.0).unwrap()),
-        Math::Constant(NotNan::new(2.0).unwrap()),
+        Math::Constant(0.into()),
+        Math::Constant(1.into()),
+        Math::Constant(2.into()),
     ]
 }
 
@@ -544,9 +543,9 @@ mod tests {
         let syms = default_symbols();
         assert!(syms.contains(&Math::Symbol("x".into())));
         assert!(syms.contains(&Math::Symbol("y".into())));
-        assert!(syms.contains(&Math::Constant(NotNan::new(0.0).unwrap())));
-        assert!(syms.contains(&Math::Constant(NotNan::new(1.0).unwrap())));
-        assert!(syms.contains(&Math::Constant(NotNan::new(2.0).unwrap())));
+        assert!(syms.contains(&Math::Constant(0.into())));
+        assert!(syms.contains(&Math::Constant(1.into())));
+        assert!(syms.contains(&Math::Constant(2.into())));
         assert_eq!(syms.len(), 5);
     }
 }

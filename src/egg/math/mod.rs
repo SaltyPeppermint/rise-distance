@@ -6,14 +6,15 @@ use egg::{
     Analysis, DidMerge, EGraph, Id, Language, PatternAst, RecExpr, Rewrite, Subst, Symbol,
     define_language, merge_option, rewrite,
 };
-use ordered_float::NotNan;
+use num::Zero;
+use num::rational::Ratio;
 use serde::{Deserialize, Serialize};
 
 pub use generate::BoltzmannSampler;
 
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
-pub type Constant = NotNan<f64>;
+pub type Constant = Ratio<i64>;
 
 define_language! {
     #[derive(Deserialize,Serialize)]
@@ -58,7 +59,7 @@ impl Analysis<Math> for ConstantFold {
                 x(a)? * x(b)?,
                 format!("(* {} {})", x(a)?, x(b)?).parse().unwrap(),
             ),
-            Math::Div([a, b]) if x(b) != Some(NotNan::new(0.0).unwrap()) => (
+            Math::Div([a, b]) if x(b) != Some(Ratio::zero()) => (
                 x(a)? / x(b)?,
                 format!("(/ {} {})", x(a)?, x(b)?).parse().unwrap(),
             ),
@@ -131,7 +132,7 @@ fn is_not_zero(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst
     let var = var.parse().unwrap();
     move |egraph, _, subst| {
         if let Some(n) = &egraph[subst[var]].data {
-            *(n.0) != 0.0
+            (n.0) != Ratio::zero()
         } else {
             true
         }
