@@ -276,11 +276,11 @@ fn process_seed(
     let with_repl_count = GuideSetWithReplacement::new(&pc, true, SampleStrategy::Count)
         .run_trials(args, eqsat, seed_str, &goals);
 
-    tee_println!("\nRunning top_k experiments NO REPLACEMENT COUNTBASED...");
-    let no_repl_naive = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Count)
+    tee_println!("\nRunning top_k experiments NO REPLACEMENT NAIVE...");
+    let no_repl_naive = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Naive)
         .run_trials(args, eqsat, seed_str, &goals);
-    tee_println!("\nRunning top_k experiments WITH REPLACEMENT COUNTBASED...");
-    let with_repl_naive = GuideSetWithReplacement::new(&pc, true, SampleStrategy::Count)
+    tee_println!("\nRunning top_k experiments WITH REPLACEMENT NAIVE...");
+    let with_repl_naive = GuideSetWithReplacement::new(&pc, true, SampleStrategy::Naive)
         .run_trials(args, eqsat, seed_str, &goals);
 
     tee_println!("\nRunning single experiments ONLY SMALLEST...");
