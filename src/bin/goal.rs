@@ -164,7 +164,11 @@ fn process_seed(
         .map(|g| lower(g.clone()).to_string())
         .collect::<Vec<_>>();
 
-    let frontier_histogram = pp.root_histogram().clone();
+    let frontier_histogram = pp
+        .root_histogram()
+        .iter()
+        .map(|(s, c)| (s.to_string(), c.clone()))
+        .collect();
 
     let ok = EnrichedSeedOk {
         max_size,

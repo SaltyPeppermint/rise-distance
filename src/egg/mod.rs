@@ -248,6 +248,7 @@ where
 pub fn guide_only_eqsat<'a, L, N, R>(
     start: &RecExpr<L>,
     rules: R,
+    eqsat: &EqsatConfig,
     target_iters: usize,
     backoff_scheduler: bool,
 ) -> Option<EqsatResult<L, N>>
@@ -260,8 +261,8 @@ where
     assert!(target_iters >= 1, "target_iters must be at least 1");
 
     let mut runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
-        .with_time_limit(Duration::from_secs(u64::MAX))
-        .with_node_limit(usize::MAX)
+        .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
+        .with_node_limit(eqsat.max_nodes)
         .with_iter_limit(target_iters)
         .with_expr(start);
 

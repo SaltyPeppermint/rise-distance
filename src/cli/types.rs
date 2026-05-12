@@ -66,7 +66,10 @@ pub struct EnrichedSeedOk {
     pub goal_iters: usize,
     pub guide_iters: usize,
     pub goals: Vec<String>,
-    pub frontier_histogram: HashMap<usize, BigUint>,
+    /// Histogram of novel root extractions by size. Keys are size-as-string
+    /// because JSON object keys must be strings and `serde_json` doesn't
+    /// auto-convert numeric strings back to `usize` on read.
+    pub frontier_histogram: HashMap<String, BigUint>,
     pub stop_reason: String,
     pub guide_egraph_nodes: usize,
     pub guide_egraph_classes: usize,

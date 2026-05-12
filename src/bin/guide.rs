@@ -116,30 +116,26 @@ fn read_enriched_terms(folder: &Path) -> Vec<(String, SeedEntry)> {
     let path = folder.join("terms.json");
     let file =
         File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
-    let value: serde_json::Value = serde_json::from_reader(file)
-        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()));
 
-    let groups = value
-        .as_array()
-        .unwrap_or_else(|| panic!("Expected top-level array in {}", path.display()));
+    // Read directly into a typed schema. Going via `serde_json::Value` first
+    // would force HashMap<usize, _> keys through string → usize conversion
+    // that `from_value` doesn't do.
+    let groups: Vec<(usize, HashMap<String, EnrichedSeed>)> = serde_json::from_reader(file)
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to parse {}: {e}. Did you run `goal` on this folder first?",
+                path.display()
+            )
+        });
 
     let mut out = Vec::new();
-    for group in groups {
-        let pair = group
-            .as_array()
-            .expect("Expected [size, {terms}] pair in terms.json");
-        let inner = pair[1]
-            .as_object()
-            .expect("Expected term object as second element");
-
-        for (term, payload) in inner {
-            let enriched: EnrichedSeed = serde_json::from_value(payload.clone())
-                .unwrap_or_else(|e| panic!("Failed to parse enriched payload for '{term}': {e}. Did you run `goal` on this folder first?"));
+    for (_size, inner) in groups {
+        for (term, enriched) in inner {
             let entry = match enriched {
                 EnrichedSeed::Ok(ok) => SeedEntry::Ok(ok),
                 EnrichedSeed::Failed(_) => SeedEntry::Failed,
             };
-            out.push((term.clone(), entry));
+            out.push((term, entry));
         }
     }
     out
@@ -158,6 +154,7 @@ fn process_seed(
     let result = guide_only_eqsat(
         &seed_expr,
         RULES.iter(),
+        folder_args,
         payload.guide_iters,
         folder_args.backoff_scheduler,
     )?;
