@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Strip output/metadata from staged Jupyter notebooks so they commit clean.
+# Runs nbstripout via uvx so no project-level dependency is required.
+set -euo pipefail
+
+mapfile -t notebooks < <(git diff --cached --name-only --diff-filter=ACMR -z \
+    | tr '\0' '\n' \
+    | grep -E '\.ipynb$' || true)
+
+if [ ${#notebooks[@]} -eq 0 ]; then
+    exit 0
+fi
+
+if ! command -v uvx >/dev/null 2>&1; then
+    echo "pre-commit: uvx not found; install uv to clean notebooks before commit." >&2
+    exit 1
+fi
+
+dirty=()
+for nb in "${notebooks[@]}"; do
+    [ -f "$nb" ] || continue
+    if ! git diff --quiet -- "$nb"; then
+        dirty+=("$nb")
+    fi
+done
+
+if [ ${#dirty[@]} -gt 0 ]; then
+    echo "pre-commit: refusing to auto-clean notebooks with unstaged changes:" >&2
+    printf '  %s\n' "${dirty[@]}" >&2
+    echo "Stage or stash the unstaged changes, then retry." >&2
+    exit 1
+fi
+
+for nb in "${notebooks[@]}"; do
+    [ -f "$nb" ] || continue
+    uvx nbstripout "$nb"
+    git add -- "$nb"
+done
