@@ -229,14 +229,15 @@ where
     let root = runner.roots[0];
     let mut iter_data = runner.iterations;
 
-    // Drop trailing iterations that applied no rewrites — their egraph is
-    // identical to the predecessor, so `curr_goal` / `prev_goal` would not
-    // differ and novelty would be empty by definition. Partial-apply iterations
-    // (mid-apply stops) are kept: egg rebuilds unconditionally, so the egraph
-    // is sound.
-    while iter_data
-        .last()
-        .is_some_and(|it| it.applied.values().sum::<usize>() == 0)
+    // Drop trailing iterations whose egraph is identical to its predecessor:
+    // `curr_goal` / `prev_goal` would not differ and novelty would be empty by
+    // definition. Partial-apply iterations (mid-apply stops) typically produce
+    // a changed egraph and are kept.
+    while iter_data.len() >= 2
+        && same_egraph(
+            &iter_data[iter_data.len() - 2].data.0,
+            &iter_data[iter_data.len() - 1].data.0,
+        )
     {
         iter_data.pop();
     }
@@ -390,6 +391,27 @@ fn add_uncanon_remember<L: MyLanguage, N: MyAnalysis<L>>(
         new_id
     }
     rec(graph, guide, origin_to_new_ids, guide.root())
+}
+
+/// Check whether two egraphs from the same lineage (one cloned from the other,
+/// possibly with further `add` / `union` calls) are still identical.
+///
+/// Egg only ever grows an egraph: `add` increases the node count, `union`
+/// decreases the class count (never the other way around). So for a shared
+/// lineage, equal class count *and* equal node count implies no rewrite took
+/// effect — the canonical ids in `a` and `b` agree on every class, and the
+/// node sets coincide.
+///
+/// Not valid for comparing independent egraphs: those need a full e-class
+/// isomorphism check, since canonical ids depend on union-find history.
+#[must_use]
+pub fn same_egraph<L, N>(a: &EGraph<L, N>, b: &EGraph<L, N>) -> bool
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    a.number_of_classes() == b.number_of_classes()
+        && a.total_number_of_nodes() == b.total_number_of_nodes()
 }
 
 #[must_use]
