@@ -2,6 +2,8 @@
 use std::{collections::HashSet, sync::LazyLock};
 
 use egg::{AstSize, CostFunction, Id, Language, RecExpr, Symbol};
+use num::FromPrimitive;
+use num::rational::Ratio;
 use rand::Rng;
 
 use crate::egg::{id0, stack_children};
@@ -329,9 +331,9 @@ fn default_symbols() -> Vec<Math> {
     vec![
         Math::Symbol("x".into()),
         Math::Symbol("y".into()),
-        Math::Constant(0.into()),
-        Math::Constant(1.into()),
-        Math::Constant(2.into()),
+        Math::Constant(Ratio::from_i64(0).unwrap()),
+        Math::Constant(Ratio::from_i64(1).unwrap()),
+        Math::Constant(Ratio::from_i64(2).unwrap()),
     ]
 }
 
@@ -543,9 +545,9 @@ mod tests {
         let syms = default_symbols();
         assert!(syms.contains(&Math::Symbol("x".into())));
         assert!(syms.contains(&Math::Symbol("y".into())));
-        assert!(syms.contains(&Math::Constant(0.into())));
-        assert!(syms.contains(&Math::Constant(1.into())));
-        assert!(syms.contains(&Math::Constant(2.into())));
+        assert!(syms.contains(&Math::Constant(Ratio::from_i64(0).unwrap())));
+        assert!(syms.contains(&Math::Constant(Ratio::from_i64(1).unwrap())));
+        assert!(syms.contains(&Math::Constant(Ratio::from_i64(2).unwrap())));
         assert_eq!(syms.len(), 5);
     }
 }

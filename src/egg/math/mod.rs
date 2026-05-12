@@ -6,15 +6,15 @@ use egg::{
     Analysis, DidMerge, EGraph, Id, Language, PatternAst, RecExpr, Rewrite, Subst, Symbol,
     define_language, merge_option, rewrite,
 };
-use num::Zero;
 use num::rational::Ratio;
+use num::{BigInt, Zero};
 use serde::{Deserialize, Serialize};
 
 pub use generate::BoltzmannSampler;
 
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
-pub type Constant = Ratio<i64>;
+pub type Constant = Ratio<BigInt>;
 
 define_language! {
     #[derive(Deserialize,Serialize)]
@@ -44,9 +44,9 @@ impl Analysis<Math> for ConstantFold {
     type Data = Option<(Constant, PatternAst<Math>)>;
 
     fn make(egraph: &mut EGraph<Math, ConstantFold>, enode: &Math, _id: Id) -> Self::Data {
-        let x = |i: &Id| egraph[*i].data.as_ref().map(|d| d.0);
+        let x = |i: &Id| egraph[*i].data.as_ref().map(|d| &d.0);
         Some(match enode {
-            Math::Constant(c) => (*c, format!("{c}").parse().unwrap()),
+            Math::Constant(c) => (c.to_owned(), format!("{c}").parse().unwrap()),
             Math::Add([a, b]) => (
                 x(a)? + x(b)?,
                 format!("(+ {} {})", x(a)?, x(b)?).parse().unwrap(),
@@ -59,7 +59,7 @@ impl Analysis<Math> for ConstantFold {
                 x(a)? * x(b)?,
                 format!("(* {} {})", x(a)?, x(b)?).parse().unwrap(),
             ),
-            Math::Div([a, b]) if x(b) != Some(Ratio::zero()) => (
+            Math::Div([a, b]) if x(b) != Some(&Ratio::zero()) => (
                 x(a)? / x(b)?,
                 format!("(/ {} {})", x(a)?, x(b)?).parse().unwrap(),
             ),
