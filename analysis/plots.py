@@ -23,13 +23,15 @@ def finish_fig(
     title: str,
     ds_name: str,
     fontsize: float = 14,
-    n: int | None = None,
+    n_goals: int | None = None,
+    n_trials: int | None = None,
     tight_layout: bool = True,
 ) -> None:
     if title is not None:
-        full_title = (
-            f"{title} [{ds_name}] (n={n} per k)" if n is not None else f"{title} [{ds_name}]"
-        )
+        if n_goals is not None and n_trials is not None:
+            full_title = f"{title} [{ds_name}] ({n_goals} goals × {n_trials} trials per k)"
+        else:
+            full_title = f"{title} [{ds_name}]"
         fig.suptitle(full_title, fontsize=fontsize)
     if tight_layout:
         fig.tight_layout()
@@ -86,7 +88,8 @@ def plot_metric_boxplots(
     k_values: list[int],
     strat_names: list[str],
     palette: Sequence[Any],
-    n: int | None = None,
+    n_goals: int | None = None,
+    n_trials: int | None = None,
 ) -> None:
     n_k = len(k_values)
     n_cols = min(3, n_k)
@@ -117,4 +120,11 @@ def plot_metric_boxplots(
         ax.set_ylabel(ylabel if ki % n_cols == 0 else "")
     for ki in range(n_k, n_rows * n_cols):
         axes[ki // n_cols][ki % n_cols].set_visible(False)
-    finish_fig(fig, f"{ylabel} by strategy at each k", label, fontsize=13, n=n)
+    finish_fig(
+        fig,
+        f"{ylabel} by strategy at each k",
+        label,
+        fontsize=13,
+        n_goals=n_goals,
+        n_trials=n_trials,
+    )
