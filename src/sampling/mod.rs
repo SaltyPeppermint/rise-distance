@@ -79,35 +79,51 @@ where
         id: Id,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
-    ) -> Result<HashSet<RecExpr<OriginLang<L>>>, ExperimentError> {
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError> {
         samples_per_size
             .par_iter()
-            .map(|(size, samples)| {
-                powers_of_two::<6>()
-                    .iter()
-                    .find_map(|&oversample| {
-                        let s = (0..(*samples * oversample as u64))
-                            .into_par_iter()
-                            .map(|s| {
-                                self.sample(
-                                    id,
-                                    *size,
-                                    &mut utils::combined_rng([*size as u64, s, seed[0], seed[1]]),
-                                )
-                            })
-                            .collect::<HashSet<_>>();
-                        (s.len() as u64 >= *samples).then(|| {
-                            s.into_iter()
-                                .take((*samples).try_into().unwrap())
-                                .collect::<HashSet<_>>()
-                        })
+            .map(|&(size, samples)| {
+                self.sample_size(id, size, samples, seed)
+                    .map(|iter| iter.collect::<Vec<_>>())
+            })
+            .try_reduce(Vec::new, |mut acc, v| {
+                acc.extend(v);
+                Ok(acc)
+            })
+    }
+
+    /// Draw `samples` distinct terms of exactly `size` from `id`, doubling the
+    /// oversample factor up to 2^5 until enough unique terms are found.
+    ///
+    /// # Errors
+    ///
+    /// Errors if even the largest oversample factor does not yield `samples`
+    /// distinct terms.
+    fn sample_size(
+        &self,
+        id: Id,
+        size: usize,
+        samples: u64,
+        seed: [u64; 2],
+    ) -> Result<impl ExactSizeIterator<Item = RecExpr<OriginLang<L>>> + Sync + Send, ExperimentError>
+    {
+        let target = usize::try_from(samples).unwrap();
+        powers_of_two::<6>()
+            .into_iter()
+            .find_map(|oversample| {
+                let drawn = (0..samples * oversample as u64)
+                    .into_par_iter()
+                    .map(|s| {
+                        self.sample(
+                            id,
+                            size,
+                            &mut utils::combined_rng([size as u64, s, seed[0], seed[1]]),
+                        )
                     })
-                    .ok_or(ExperimentError::InsufficientSamples)
+                    .collect::<HashSet<_>>();
+                (drawn.len() >= target).then(|| drawn.into_iter().take(target))
             })
-            .try_reduce(HashSet::new, |mut a, b| {
-                a.extend(b);
-                Ok(a)
-            })
+            .ok_or(ExperimentError::InsufficientSamples)
     }
 
     /// Sample exactly n number of terms for each size from the root
@@ -119,7 +135,7 @@ where
         &self,
         samples_per_size: &[(usize, u64)],
         seed: [u64; 2],
-    ) -> Result<HashSet<RecExpr<OriginLang<L>>>, ExperimentError> {
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError> {
         self.sample_batch(self.root(), samples_per_size, seed)
     }
 }
