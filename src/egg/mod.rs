@@ -81,30 +81,23 @@ pub fn typed_stack_children<L: MyLanguage>(
     }
 }
 
-/// Result of [`run_guide_goal`]: egraph snapshots at guide and goal iterations,
-/// plus the total node count of the final egraph.
-pub struct GuideGoalResult<L, N>
+/// Result of running eqsat. `curr` / `prev` are the last two egraphs in
+/// `iter_data`; callers that need an intermediate iteration index into
+/// `data()` directly. `root` is the id returned by the initial `add`, so it
+/// may not be canonical in later iterations — canonicalize with
+/// `egraph.find(root)` before using it as a `HashMap` key.
+pub struct EqsatResult<L, N>
 where
     L: Language,
     N: Analysis<L> + Clone,
     N::Data: Clone,
 {
-    // /// Iteration Data at `n_guide - 1` (rebuilt), for frontier membership checks.
     iter_data: Vec<Iteration<EGraphHolder<L, N>>>,
-    /// Root (valid for all egraphs). Note: this is the Id returned by the
-    /// initial `add`, so it may not be canonical in later iterations'
-    /// egraphs — canonicalize with `egraph.find(root)` before using as a
-    /// `HashMap` key.
     root: Id,
-    /// Guide Iteration
-    guide_iters: usize,
-    /// Goal Iterations
-    goal_iters: usize,
-    /// Stop reason
     stop_reason: StopReason,
 }
 
-impl<L, N> GuideGoalResult<L, N>
+impl<L, N> EqsatResult<L, N>
 where
     L: Language,
     N: Analysis<L> + Clone,
@@ -116,43 +109,26 @@ where
     }
 
     #[must_use]
-    pub fn curr_guide(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.guide_iters].data.0
+    pub fn curr(&self) -> &EGraph<L, N> {
+        &self.iter_data[self.iter_data.len() - 1].data.0
     }
 
     #[must_use]
-    pub fn prev_guide(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.guide_iters - 1].data.0
+    pub fn prev(&self) -> &EGraph<L, N> {
+        &self.iter_data[self.iter_data.len() - 2].data.0
     }
 
+    /// All iterations, rebuilt. Index `0` is the initial state; `iters()` is
+    /// the last applied iteration index.
     #[must_use]
-    pub fn guide_data(&self) -> &[Iteration<EGraphHolder<L, N>>] {
-        &self.iter_data[..self.guide_iters]
-    }
-
-    #[must_use]
-    pub fn curr_goal(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.goal_iters].data.0
-    }
-
-    #[must_use]
-    pub fn prev_goal(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.goal_iters - 1].data.0
-    }
-
-    #[must_use]
-    pub fn goal_data(&self) -> &[Iteration<EGraphHolder<L, N>>] {
+    pub fn data(&self) -> &[Iteration<EGraphHolder<L, N>>] {
         &self.iter_data
     }
 
+    /// Index of the last applied iteration (`iter_data.len() - 1`).
     #[must_use]
-    pub fn guide_iters(&self) -> usize {
-        self.guide_iters
-    }
-
-    #[must_use]
-    pub fn goal_iters(&self) -> usize {
-        self.goal_iters
+    pub fn iters(&self) -> usize {
+        self.iter_data.len() - 1
     }
 
     #[must_use]
@@ -195,7 +171,7 @@ pub fn big_eqsat<'a, L, N, R>(
     start: &RecExpr<L>,
     rules: R,
     eqsat: &EqsatConfig,
-) -> Option<GuideGoalResult<L, N>>
+) -> Option<EqsatResult<L, N>>
 where
     L: Language + 'static,
     N: Analysis<L> + Default + Clone + 'static,
@@ -203,7 +179,7 @@ where
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
     let mut runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
-        .with_time_limit(Duration::from_secs_f64(eqsat.max_time))
+        .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
         .with_node_limit(eqsat.max_nodes)
         .with_iter_limit(eqsat.max_iters)
         .with_expr(start);
@@ -247,18 +223,74 @@ where
         return None;
     }
 
-    let goal_iters = iter_data.len() - 1;
-    let guide_iters = goal_iters / 2;
+    for i in &mut iter_data {
+        i.data.0.rebuild();
+    }
+
+    Some(EqsatResult {
+        iter_data,
+        root,
+        stop_reason,
+    })
+}
+
+/// Run equality saturation for exactly `target_iters` iterations. Time and
+/// node limits are forced to infinity so only the iteration limit determines
+/// stopping; no tail-trim is applied so `curr()` lands on iteration
+/// `target_iters` and `prev()` on `target_iters - 1`.
+///
+/// Returns `None` if the runner couldn't produce at least two iterations
+/// (e.g. saturated immediately).
+///
+/// # Panics
+///
+/// Panics if `target_iters == 0`.
+pub fn guide_only_eqsat<'a, L, N, R>(
+    start: &RecExpr<L>,
+    rules: R,
+    target_iters: usize,
+    backoff_scheduler: bool,
+) -> Option<EqsatResult<L, N>>
+where
+    L: Language + 'static,
+    N: Analysis<L> + Default + Clone + 'static,
+    N::Data: Clone,
+    R: IntoIterator<Item = &'a Rewrite<L, N>>,
+{
+    assert!(target_iters >= 1, "target_iters must be at least 1");
+
+    let mut runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
+        .with_time_limit(Duration::from_secs(u64::MAX))
+        .with_node_limit(usize::MAX)
+        .with_iter_limit(target_iters)
+        .with_expr(start);
+
+    runner = if backoff_scheduler {
+        runner.with_scheduler(BackoffScheduler::default())
+    } else {
+        runner.with_scheduler(SimpleScheduler)
+    }
+    .run(rules);
+
+    let stop_reason = runner.stop_reason.unwrap();
+    let root = runner.roots[0];
+    let mut iter_data = runner.iterations;
+
+    if iter_data.len() < 2 {
+        tee_println!(
+            "guide_only_eqsat: not enough iterations ({})",
+            iter_data.len()
+        );
+        return None;
+    }
 
     for i in &mut iter_data {
         i.data.0.rebuild();
     }
 
-    Some(GuideGoalResult {
+    Some(EqsatResult {
         iter_data,
         root,
-        guide_iters,
-        goal_iters,
         stop_reason,
     })
 }
@@ -288,7 +320,7 @@ where
     let goal_clone = goal.clone();
 
     let mut runner = Runner::default()
-        .with_time_limit(Duration::from_secs_f64(eqsat.max_time))
+        .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
         .with_node_limit(eqsat.max_nodes)
         .with_iter_limit(eqsat.max_iters)
         .with_hook(move |runner| {

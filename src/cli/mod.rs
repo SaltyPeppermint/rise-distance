@@ -12,6 +12,7 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use egg::{EGraph, Id, Iteration, RecExpr};
+use hashbrown::HashMap;
 use num::ToPrimitive;
 use serde::Serialize;
 
@@ -75,10 +76,7 @@ where
     ) -> Option<PrecomputePackage<'a, C, L, N>> {
         let tc = NovelTermCount::new(max_size, curr, prev, PlainTermCount::new(max_size, curr));
 
-        // `data()` is keyed by canonical curr ids; the caller's `root` may not
-        // be canonical (see `GuideGoalResult::root`).
         let root = curr.find(root);
-        // If this errors nothing has been added in the last iteration, that's weird
         let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
@@ -161,6 +159,21 @@ where
     #[must_use]
     pub fn root(&self) -> Id {
         self.root
+    }
+
+    /// Histogram of novel root extractions by size. Guaranteed non-empty
+    /// because [`Self::precompute`] returns `None` otherwise.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the root histogram is somehow missing (would indicate a bug
+    /// in `precompute`'s None check).
+    #[must_use]
+    pub fn root_histogram(&self) -> &HashMap<usize, C> {
+        self.tc
+            .data()
+            .get(&self.root)
+            .expect("root histogram present iff precompute returned Some")
     }
 }
 

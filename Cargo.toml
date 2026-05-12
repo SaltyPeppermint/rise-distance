@@ -89,6 +89,10 @@ debug = 1
 name = "guide"
 path = "src/bin/guide.rs"
 
+[[bin]]
+name = "goal"
+path = "src/bin/goal.rs"
+
 # [[bin]]
 # name = "generate"
 # path = "src/bin/generate.rs"

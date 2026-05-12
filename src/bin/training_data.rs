@@ -163,22 +163,24 @@ fn process_seed(
     run_folder: &Path,
 ) -> Option<serde_json::Value> {
     let result = big_eqsat(seed_expr, RULES.iter(), eqsat)?;
-    tee_println!("Goal Iterations: {}", result.goal_iters());
-    tee_println!("Guide Iterations: {}", result.guide_iters());
+    let goal_iters = result.iters();
+    let guide_iters = goal_iters / 2;
+    tee_println!("Goal Iterations: {goal_iters}");
+    tee_println!("Guide Iterations: {guide_iters}");
     tee_println!("Stop Reason: {:?}", result.stop_reason());
 
-    let guide_secs = result
-        .guide_data()
+    let guide_secs = result.data()[..=guide_iters]
         .iter()
         .map(|i| i.total_time)
         .sum::<f64>();
-    let goal_secs = result.goal_data().iter().map(|i| i.total_time).sum::<f64>();
+    let goal_secs = result.data().iter().map(|i| i.total_time).sum::<f64>();
 
-    let guide_nodes = result.curr_guide().total_number_of_nodes();
-    let guide_classes = result.curr_guide().classes().len();
-    let goal_nodes = result.curr_goal().total_number_of_nodes();
-    let goal_classes = result.curr_goal().classes().len();
-    let goal_iters = result.goal_iters();
+    let curr_guide = &result.data()[guide_iters].data.0;
+    let prev_guide = &result.data()[guide_iters - 1].data.0;
+    let guide_nodes = curr_guide.total_number_of_nodes();
+    let guide_classes = curr_guide.classes().len();
+    let goal_nodes = result.curr().total_number_of_nodes();
+    let goal_classes = result.curr().classes().len();
     tee_println!(
         "Guide egraph had {guide_nodes} nodes, {guide_classes} classes in {guide_secs:.2}s"
     );
@@ -186,8 +188,8 @@ fn process_seed(
 
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
     let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
-        result.curr_goal(),
-        result.prev_goal(),
+        result.curr(),
+        result.prev(),
         result.root(),
         max_size,
     )?;
@@ -207,19 +209,19 @@ fn process_seed(
     let stats = json!({
         "seed": seed_str,
         "max_size": max_size,
-        "guide_egraph_iters": result.guide_iters(),
+        "guide_egraph_iters": guide_iters,
         "guide_egraph_nodes": guide_nodes,
         "guide_egraph_classes": guide_classes,
         "guide_eqsat_time": guide_secs,
-        "goal_egraph_iters": result.goal_iters(),
+        "goal_egraph_iters": goal_iters,
         "goal_egraph_nodes": goal_nodes,
         "goal_egraph_classes": goal_classes,
         "goal_eqsat_time": goal_secs,
     });
 
     let pc = PrecomputePackage::<BigUint, _, _>::precompute(
-        result.curr_guide(),
-        result.prev_guide(),
+        curr_guide,
+        prev_guide,
         result.root(),
         max_size,
     )?;

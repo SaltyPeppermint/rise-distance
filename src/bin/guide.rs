@@ -1,9 +1,8 @@
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use egg::RecExpr;
 use hashbrown::HashMap;
 use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
@@ -12,136 +11,88 @@ use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 
-use rise_distance::cli::argparse::{
-    EqsatConfig, SampleStrategy, SeedInput, TermSampleDist, parse_seeds, read_folder_args,
-};
+use rise_distance::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist, read_folder_args};
 use rise_distance::cli::parquet::dump_summary_parquet;
-use rise_distance::cli::types::{GoalSummary, TrialsPerK};
+use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedOk, GoalSummary, TrialsPerK};
 use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log, write_config, write_stats};
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
-use rise_distance::egg::{big_eqsat, verify_reachability};
-use rise_distance::{Counter, OriginLang, lower, tee_println};
+use rise_distance::egg::{guide_only_eqsat, verify_reachability};
+use rise_distance::{Counter, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
     about = "Evaluate distance metrics as guide predictors for equality saturation",
     after_help = "\
-Examples:
-  # Single seed
-  guide single --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100
-
-  # Folder with terms.json + args.json (eqsat limits read from args.json)
-  guide -g 1000 --goals 10 --full-union --take-first 10 \\
-    folder data/seed_terms/dusky-cramp
-
-  # Use the experimental full-union egraph
-  guide --full-union single --seed '(d x (+ (* x x) 1))' --max-size 150 -g 100
+Example:
+  # Pre-generate goals first:
+  goal data/seed_terms/dusky-cramp --goals 10
+  # Then run guide experiments:
+  guide -g 1000 --full-union --take-first 10 data/seed_terms/dusky-cramp
 "
 )]
 struct Args {
+    /// Folder containing `terms.json` (enriched by `goal`) and `args.json`.
+    path: PathBuf,
+
     /// Number of guide candidates to sample from the n-1 frontier
-    #[arg(short, long, global = true, default_value_t = 0)]
+    #[arg(short, long, default_value_t = 0)]
     guides: usize,
 
-    /// Number of goal terms to sample from the n frontier
-    #[arg(long, global = true, default_value_t = 1)]
-    goals: usize,
-
-    /// How to distribute the sample budget across sizes.
-    /// Options: uniform, proportional:<`min_per_size`>, normal:<sigma>
-    #[arg(long, global = true, default_value_t = TermSampleDist::UNIFORM)]
+    /// How to distribute the guide sample budget across sizes.
+    #[arg(long, default_value_t = TermSampleDist::UNIFORM)]
     size_distribution: TermSampleDist,
 
-    /// How to sample the GOAL terms.
-    #[arg(long, global = true, default_value_t = SampleStrategy::Count)]
-    goal_sample_strategy: SampleStrategy,
-
     /// Output folder (generated if omitted)
-    #[arg(short, long, global = true)]
+    #[arg(short, long)]
     output: Option<String>,
 
     /// Use the experimental `add_with_full_union` for the new egraph
-    #[arg(long, global = true)]
+    #[arg(long)]
     full_union: bool,
 
     /// Only process the first N seeds (useful for quick experiments)
-    #[arg(long, global = true)]
+    #[arg(long)]
     take_first: Option<usize>,
 
-    /// Only process the first N seeds (useful for quick experiments)
-    #[arg(long, global = true, default_value_t = 100)]
+    /// Number of trials per (k, seed, goal) combination
+    #[arg(long, default_value_t = 100)]
     trials: usize,
-
-    #[command(subcommand)]
-    mode: Mode,
-}
-
-#[derive(Subcommand, Serialize)]
-enum Mode {
-    /// Single seed term passed on the CLI.
-    Single {
-        /// Seed term as an s-expression (Math language).
-        #[arg(long)]
-        seed: String,
-
-        /// Max term size for counting/sampling.
-        #[arg(long)]
-        max_size: usize,
-
-        /// Node limit for the baseline egraph
-        #[arg(long, default_value_t = 1_000_000_000)]
-        max_nodes: usize,
-
-        /// Time limit for the baseline egraph in seconds
-        #[arg(long, default_value_t = 0.2)]
-        max_time: f64,
-
-        /// Iteration limit for the baseline egraph
-        #[arg(long, default_value_t = usize::MAX)]
-        max_iters: usize,
-
-        /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
-        #[arg(long, default_value_t = false)]
-        backoff_scheduler: bool,
-    },
-    /// Folder containing `terms.json` and `args.json` (as written by
-    /// `scripts/generate_and_measure.py`). Eqsat limits and scheduler are
-    /// taken from `args.json`; max-size per seed remains `2 * size`.
-    Folder {
-        /// Path to a folder with `terms.json` and `args.json`.
-        path: PathBuf,
-    },
 }
 
 const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
 
 fn main() {
     let args = Args::parse();
-    let (seed_input, eqsat) = parse_eqsat_and_seed(&args);
+    let folder_args = read_folder_args(&args.path);
 
     let prefix = format!(
-        "nodes-{}-timems-{}-strategy-{}-fullunion-{}",
-        eqsat.max_nodes,
-        Duration::from_secs_f64(eqsat.max_time).as_millis(),
-        args.goal_sample_strategy,
-        args.full_union
+        "iters-{}-fullunion-{}",
+        folder_args.max_iters, args.full_union
     );
     let run_folder = get_run_folder(args.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
     tee_println!("Run Folder: {}", run_folder.to_string_lossy());
+    tee_println!("Input folder: {}", args.path.display());
 
-    let seeds = parse_seeds(seed_input);
+    let seeds = read_enriched_terms(&args.path);
     let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
-
     tee_println!("Distribution: {}", args.size_distribution);
     tee_println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
 
     let mut all: HashMap<String, Vec<GoalResults>> = HashMap::new();
     let mut all_stats = Vec::new();
 
-    for (i, (seed_str, seed_expr, max_size)) in seeds.iter().take(take_n).enumerate() {
-        tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        if let Some((r, stats)) = process_seed(&args, &eqsat, seed_str, seed_expr, *max_size) {
+    for (i, (seed_str, payload)) in seeds.iter().take(take_n).enumerate() {
+        let SeedEntry::Ok(ok) = payload else {
+            tee_println!("\n=== Seed {i}: {seed_str} SKIPPED (failed in goal stage) ===");
+            continue;
+        };
+        tee_println!(
+            "\n=== Seed {i}: {seed_str} (max_size={}, guide_iters={}) ===",
+            ok.max_size,
+            ok.guide_iters
+        );
+        if let Some((r, stats)) = process_seed(&args, &folder_args, seed_str, ok) {
             all_stats.push(stats);
             for (name, r_s) in r {
                 all.entry(name).or_default().extend(r_s);
@@ -154,142 +105,130 @@ fn main() {
     write_stats(&run_folder, &all_stats);
 }
 
-fn parse_eqsat_and_seed(args: &Args) -> (SeedInput, EqsatConfig) {
-    match &args.mode {
-        Mode::Single {
-            seed,
-            max_size,
-            max_nodes,
-            max_time,
-            max_iters,
-            backoff_scheduler,
-        } => (
-            SeedInput::Single {
-                term: seed.clone(),
-                max_size: *max_size,
-            },
-            EqsatConfig {
-                max_nodes: *max_nodes,
-                max_time: *max_time,
-                max_iters: *max_iters,
-                backoff_scheduler: *backoff_scheduler,
-            },
-        ),
-        Mode::Folder { path } => {
-            let folder_args = read_folder_args(path);
-            (
-                SeedInput::JSON(path.join("terms.json")),
-                EqsatConfig {
-                    max_nodes: folder_args.max_nodes,
-                    max_time: folder_args.max_time,
-                    max_iters: folder_args.max_iters,
-                    backoff_scheduler: folder_args.backoff_scheduler,
-                },
-            )
-        }
-    }
+enum SeedEntry {
+    Ok(Box<EnrichedSeedOk>),
+    Failed,
 }
 
-/// Run eqsat for one seed, sample goals, evaluate each goal, and return the
-/// collected results and per-goal stats. Returns `None` if the goal frontier
-/// is empty (seed is skipped with a warning).
+/// Read enriched `terms.json`. Returns a flat list preserving JSON order so
+/// `--take-first` is deterministic.
+fn read_enriched_terms(folder: &Path) -> Vec<(String, SeedEntry)> {
+    let path = folder.join("terms.json");
+    let file =
+        File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
+    let value: serde_json::Value = serde_json::from_reader(file)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()));
+
+    let groups = value
+        .as_array()
+        .unwrap_or_else(|| panic!("Expected top-level array in {}", path.display()));
+
+    let mut out = Vec::new();
+    for group in groups {
+        let pair = group
+            .as_array()
+            .expect("Expected [size, {terms}] pair in terms.json");
+        let inner = pair[1]
+            .as_object()
+            .expect("Expected term object as second element");
+
+        for (term, payload) in inner {
+            let enriched: EnrichedSeed = serde_json::from_value(payload.clone())
+                .unwrap_or_else(|e| panic!("Failed to parse enriched payload for '{term}': {e}. Did you run `goal` on this folder first?"));
+            let entry = match enriched {
+                EnrichedSeed::Ok(ok) => SeedEntry::Ok(ok),
+                EnrichedSeed::Failed(_) => SeedEntry::Failed,
+            };
+            out.push((term.clone(), entry));
+        }
+    }
+    out
+}
+
 fn process_seed(
     args: &Args,
-    eqsat: &EqsatConfig,
+    folder_args: &EqsatConfig,
     seed_str: &str,
-    seed_expr: &RecExpr<Math>,
-    max_size: usize,
+    payload: &EnrichedSeedOk,
 ) -> Option<(HashMap<String, Vec<GoalResults>>, serde_json::Value)> {
-    let result = big_eqsat(seed_expr, RULES.iter(), eqsat)?;
-    tee_println!("Goal Iterations: {}", result.goal_iters());
-    tee_println!("Guide Iterations: {}", result.guide_iters());
-    tee_println!("Stop Reason: {:?}", result.stop_reason());
+    let seed_expr = seed_str
+        .parse::<RecExpr<Math>>()
+        .unwrap_or_else(|e| panic!("Failed to parse seed '{seed_str}': {e}"));
 
-    let guide_secs = result
-        .guide_data()
-        .iter()
-        .map(|i| i.total_time)
-        .sum::<f64>();
-    let goal_secs = result.goal_data().iter().map(|i| i.total_time).sum::<f64>();
+    let result = guide_only_eqsat(
+        &seed_expr,
+        RULES.iter(),
+        payload.guide_iters,
+        folder_args.backoff_scheduler,
+    )?;
+    tee_println!("Guide replay stop reason: {:?}", result.stop_reason());
 
-    let guide_nodes = result.curr_guide().total_number_of_nodes();
-    let guide_classes = result.curr_guide().classes().len();
-    let goal_nodes = result.curr_goal().total_number_of_nodes();
-    let goal_classes = result.curr_goal().classes().len();
-    let goal_iters = result.goal_iters();
-    tee_println!(
-        "Guide egraph had {guide_nodes} nodes, {guide_classes} classes in {guide_secs:.2}s"
-    );
-    tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
-    tee_println!("Stop Reason: {:?}", result.stop_reason());
-
-    tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
-    let now = Instant::now();
-    let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
-        result.curr_goal(),
-        result.prev_goal(),
-        result.root(),
-        max_size,
-    )
-    .or_else(|| {
-        tee_println!("WARNING: goal precompute returned None for seed '{seed_str}'. Skipping.");
-        None
-    })?;
-    tee_println!(
-        "PrecomputePackage built in {}s!",
-        now.elapsed().as_secs_f64()
-    );
-    pp.log_root();
-    let Ok(goals) = pp.sample_frontier_terms(
-        args.goals,
-        args.size_distribution,
-        args.goal_sample_strategy,
-        [0, 0],
-        true,
-    ) else {
-        tee_println!("WARNING: Not enough goals in the frontier for seed '{seed_str}'. Skipping.");
-        return None;
-    };
-
-    tee_println!("Sampled {} goal(s)", goals.len());
-    let stats = json!({
-        "seed": seed_str,
-        "max_size": max_size,
-        "guide_egraph_iters": result.guide_iters(),
-        "guide_egraph_nodes": guide_nodes,
-        "guide_egraph_classes": guide_classes,
-        "guide_eqsat_time": guide_secs,
-        "goal_egraph_iters": result.goal_iters(),
-        "goal_egraph_nodes": goal_nodes,
-        "goal_egraph_classes": goal_classes,
-        "goal_eqsat_time": goal_secs,
-    });
+    let guide_nodes = result.curr().total_number_of_nodes();
+    let guide_classes = result.curr().classes().len();
+    tee_println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
+    if guide_nodes != payload.guide_egraph_nodes || guide_classes != payload.guide_egraph_classes {
+        tee_println!(
+            "WARNING: replay differs from stored stats ({} nodes, {} classes stored)",
+            payload.guide_egraph_nodes,
+            payload.guide_egraph_classes
+        );
+    }
 
     let pc = PrecomputePackage::<BigUint, _, _>::precompute(
-        result.curr_guide(),
-        result.prev_guide(),
+        result.curr(),
+        result.prev(),
         result.root(),
-        max_size,
+        payload.max_size,
     )?;
+    pc.log_root();
+
+    let goals = payload
+        .goals
+        .iter()
+        .map(|g| {
+            g.parse::<RecExpr<Math>>()
+                .unwrap_or_else(|e| panic!("Failed to parse stored goal '{g}': {e}"))
+        })
+        .collect::<Vec<_>>();
 
     tee_println!("\nRunning top_k experiments NO REPLACEMENT COUNTBASED...");
-    let no_repl_count = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Count)
-        .run_trials(args, eqsat, seed_str, &goals);
+    let no_repl_count = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Count).run_trials(
+        args,
+        folder_args,
+        seed_str,
+        &goals,
+    );
     tee_println!("\nRunning top_k experiments WITH REPLACEMENT COUNTBASED...");
     let with_repl_count = GuideSetWithReplacement::new(&pc, true, SampleStrategy::Count)
-        .run_trials(args, eqsat, seed_str, &goals);
+        .run_trials(args, folder_args, seed_str, &goals);
 
     tee_println!("\nRunning top_k experiments NO REPLACEMENT NAIVE...");
-    let no_repl_naive = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Naive)
-        .run_trials(args, eqsat, seed_str, &goals);
+    let no_repl_naive = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Naive).run_trials(
+        args,
+        folder_args,
+        seed_str,
+        &goals,
+    );
     tee_println!("\nRunning top_k experiments WITH REPLACEMENT NAIVE...");
     let with_repl_naive = GuideSetWithReplacement::new(&pc, true, SampleStrategy::Naive)
-        .run_trials(args, eqsat, seed_str, &goals);
+        .run_trials(args, folder_args, seed_str, &goals);
 
     tee_println!("\nRunning single experiments ONLY SMALLEST...");
-    let smallest_overall = Smallest::new(&pc, false).run_trials(args, eqsat, seed_str, &goals);
+    let smallest_overall =
+        Smallest::new(&pc, false).run_trials(args, folder_args, seed_str, &goals);
     tee_println!("\nRunning single experiments ONLY SMALLEST NOVEL...");
-    let smallest_novel = Smallest::new(&pc, true).run_trials(args, eqsat, seed_str, &goals);
+    let smallest_novel = Smallest::new(&pc, true).run_trials(args, folder_args, seed_str, &goals);
+
+    let stats = json!({
+        "seed": seed_str,
+        "max_size": payload.max_size,
+        "guide_iters": payload.guide_iters,
+        "goal_iters": payload.goal_iters,
+        "stored_guide_egraph_nodes": payload.guide_egraph_nodes,
+        "stored_guide_egraph_classes": payload.guide_egraph_classes,
+        "replay_guide_egraph_nodes": guide_nodes,
+        "replay_guide_egraph_classes": guide_classes,
+    });
 
     let r = HashMap::from([
         ("no_replacement_count".to_owned(), no_repl_count),
@@ -359,16 +298,16 @@ trait Strategy<'p, C: Counter> {
         args: &Args,
         eqsat: &EqsatConfig,
         seed_str: &str,
-        goals: &[RecExpr<OriginLang<Math>>],
+        goals: &[RecExpr<Math>],
     ) -> Vec<GoalResults> {
         goals
             .iter()
             .map(|goal| {
-                tee_println!("Current goal: {}", goal.to_string());
+                tee_println!("Current goal: {goal}");
                 GoalResults {
                     seed: seed_str.to_owned(),
                     goal: goal.to_string(),
-                    runs: self.run_trial(args, eqsat, &lower(goal.clone())),
+                    runs: self.run_trial(args, eqsat, goal),
                 }
             })
             .collect()
@@ -421,7 +360,6 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetWithReplacement<'p, C> {
                     .progress_with(pb)
                     .collect::<Vec<_>>();
 
-                // log_trials(k, &trials);
                 (k, trials)
             })
             .collect()
@@ -500,22 +438,21 @@ impl<'p, C: Counter> Smallest<'p, C> {
 }
 
 impl<'p, C: Counter> Strategy<'p, C> for Smallest<'p, C> {
-    // impl to parallelise over the sample runs
     fn run_trials(
         &self,
         args: &Args,
         eqsat: &EqsatConfig,
         seed_str: &str,
-        goals: &[RecExpr<OriginLang<Math>>],
+        goals: &[RecExpr<Math>],
     ) -> Vec<GoalResults> {
         goals
             .into_par_iter()
             .map(|goal| {
-                tee_println!("Current goal: {}", goal.to_string());
+                tee_println!("Current goal: {goal}");
                 GoalResults {
                     seed: seed_str.to_owned(),
                     goal: goal.to_string(),
-                    runs: self.run_trial(args, eqsat, &lower(goal.clone())),
+                    runs: self.run_trial(args, eqsat, goal),
                 }
             })
             .collect()

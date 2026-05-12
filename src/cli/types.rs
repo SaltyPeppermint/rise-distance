@@ -1,6 +1,7 @@
 use egg::{Iteration, RecExpr, StopReason};
 use hashbrown::HashMap;
-use serde::Serialize;
+use num::BigUint;
+use serde::{Deserialize, Serialize};
 use strum::Display;
 use thiserror::Error;
 
@@ -47,6 +48,38 @@ pub struct TrialSummary {
     pub total_applied: usize,
     /// Total wall-clock time (seconds) across all iterations.
     pub total_time: f64,
+}
+
+/// Per-seed payload written by `goal` and consumed by `guide`. Stored as the
+/// value slot in `terms.json` (one entry per seed s-expression). Tagged on
+/// `status` so the two variants share a flat JSON shape.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EnrichedSeed {
+    Ok(Box<EnrichedSeedOk>),
+    Failed(EnrichedSeedFailed),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EnrichedSeedOk {
+    pub max_size: usize,
+    pub goal_iters: usize,
+    pub guide_iters: usize,
+    pub goals: Vec<String>,
+    pub frontier_histogram: HashMap<usize, BigUint>,
+    pub stop_reason: String,
+    pub guide_egraph_nodes: usize,
+    pub guide_egraph_classes: usize,
+    pub goal_egraph_nodes: usize,
+    pub goal_egraph_classes: usize,
+    pub guide_eqsat_time: f64,
+    pub goal_eqsat_time: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EnrichedSeedFailed {
+    pub max_size: usize,
+    pub fail_reason: String,
 }
 
 #[derive(Serialize)]
