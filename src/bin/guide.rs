@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use egg::RecExpr;
 use hashbrown::HashMap;
-use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
 use serde::Serialize;
@@ -190,33 +190,25 @@ fn process_seed(
         })
         .collect::<Vec<_>>();
 
-    tee_println!("\nRunning top_k experiments NO REPLACEMENT COUNTBASED...");
-    let no_repl_count = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Count).run_trials(
-        args,
-        folder_args,
-        seed_str,
-        &goals,
-    );
-    tee_println!("\nRunning top_k experiments WITH REPLACEMENT COUNTBASED...");
-    let with_repl_count = GuideSetWithReplacement::new(&pc, true, SampleStrategy::Count)
-        .run_trials(args, folder_args, seed_str, &goals);
+    let mp = MultiProgress::new();
+    let strategies: Vec<Box<dyn Strategy<'_, BigUint> + Sync + '_>> = vec![
+        Box::new(SampleNoReplacement::new(&pc, true, SampleStrategy::Count)),
+        Box::new(SampleWithReplacement::new(&pc, true, SampleStrategy::Count)),
+        Box::new(SampleNoReplacement::new(&pc, true, SampleStrategy::Naive)),
+        Box::new(SampleWithReplacement::new(&pc, true, SampleStrategy::Naive)),
+        Box::new(Smallest::new(&pc, false)),
+        Box::new(Smallest::new(&pc, true)),
+    ];
 
-    tee_println!("\nRunning top_k experiments NO REPLACEMENT NAIVE...");
-    let no_repl_naive = GuideSetNoReplacement::new(&pc, true, SampleStrategy::Naive).run_trials(
-        args,
-        folder_args,
-        seed_str,
-        &goals,
-    );
-    tee_println!("\nRunning top_k experiments WITH REPLACEMENT NAIVE...");
-    let with_repl_naive = GuideSetWithReplacement::new(&pc, true, SampleStrategy::Naive)
-        .run_trials(args, folder_args, seed_str, &goals);
-
-    tee_println!("\nRunning single experiments ONLY SMALLEST...");
-    let smallest_overall =
-        Smallest::new(&pc, false).run_trials(args, folder_args, seed_str, &goals);
-    tee_println!("\nRunning single experiments ONLY SMALLEST NOVEL...");
-    let smallest_novel = Smallest::new(&pc, true).run_trials(args, folder_args, seed_str, &goals);
+    tee_println!("\nRunning {} strategies in parallel...", strategies.len());
+    let r = strategies
+        .into_par_iter()
+        .map(|strat| {
+            let name = strat.name().to_owned();
+            let res = strat.run_trials(args, folder_args, seed_str, &goals, &mp);
+            (name, res)
+        })
+        .collect();
 
     let stats = json!({
         "seed": seed_str,
@@ -233,14 +225,6 @@ fn process_seed(
         "replay_guide_egraph_iters": guide_iters,
     });
 
-    let r = HashMap::from([
-        ("no_replacement_count".to_owned(), no_repl_count),
-        ("with_replacement_count".to_owned(), with_repl_count),
-        ("no_replacement_naive".to_owned(), no_repl_naive),
-        ("with_replacement_naive".to_owned(), with_repl_naive),
-        ("smallest_overall".to_owned(), smallest_overall),
-        ("smallest_novel".to_owned(), smallest_novel),
-    ]);
     Some((r, stats))
 }
 
@@ -265,20 +249,13 @@ fn write_top_k_outputs(run_folder: &Path, all: HashMap<String, Vec<GoalResults>>
     }
 }
 
-fn progress_bars(args: &Args) -> Vec<(usize, ProgressBar)> {
-    let mp = MultiProgress::new();
-    let style = ProgressStyle::with_template("{msg:>6} [{bar:40}] {pos}/{len}")
+fn strategy_bar(mp: &MultiProgress, name: &str, total: u64) -> ProgressBar {
+    let style = ProgressStyle::with_template("{msg:>25} [{bar:40}] {pos}/{len}")
         .unwrap()
         .progress_chars("=> ");
-
-    TRIAL_SIZE
-        .iter()
-        .map(|&k| {
-            let pb = mp.add(ProgressBar::new(args.trials as u64).with_style(style.clone()));
-            pb.set_message(format!("k={k}"));
-            (k, pb)
-        })
-        .collect::<Vec<_>>()
+    let pb = mp.add(ProgressBar::new(total).with_style(style));
+    pb.set_message(name.to_owned());
+    pb
 }
 
 #[derive(Serialize)]
@@ -288,13 +265,19 @@ struct GoalResults {
     runs: TrialsPerK,
 }
 
-trait Strategy<'p, C: Counter> {
+trait Strategy<'p, C: Counter>: Sync {
+    fn name(&self) -> &'static str;
+
     fn run_trial(
         &self,
         args: &Args,
         eqsat: &EqsatConfig,
         goal_recexpr: &RecExpr<Math>,
+        pb: &ProgressBar,
     ) -> TrialsPerK;
+
+    /// Number of `pb.inc(1)` ticks `run_trial` issues for a single goal.
+    fn work_per_goal(&self, args: &Args) -> u64;
 
     fn run_trials(
         &self,
@@ -302,28 +285,33 @@ trait Strategy<'p, C: Counter> {
         eqsat: &EqsatConfig,
         seed_str: &str,
         goals: &[RecExpr<Math>],
+        mp: &MultiProgress,
     ) -> Vec<GoalResults> {
-        goals
+        let pb = strategy_bar(
+            mp,
+            self.name(),
+            self.work_per_goal(args) * goals.len() as u64,
+        );
+        let r = goals
             .iter()
-            .map(|goal| {
-                tee_println!("Current goal: {goal}");
-                GoalResults {
-                    seed: seed_str.to_owned(),
-                    goal: goal.to_string(),
-                    runs: self.run_trial(args, eqsat, goal),
-                }
+            .map(|goal| GoalResults {
+                seed: seed_str.to_owned(),
+                goal: goal.to_string(),
+                runs: self.run_trial(args, eqsat, goal, &pb),
             })
-            .collect()
+            .collect();
+        pb.finish();
+        r
     }
 }
 
-struct GuideSetWithReplacement<'p, C: Counter> {
+struct SampleWithReplacement<'p, C: Counter> {
     pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
     novel: bool,
     strategy: SampleStrategy,
 }
 
-impl<'p, C: Counter> GuideSetWithReplacement<'p, C> {
+impl<'p, C: Counter> SampleWithReplacement<'p, C> {
     fn new(
         pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
         novel: bool,
@@ -337,16 +325,28 @@ impl<'p, C: Counter> GuideSetWithReplacement<'p, C> {
     }
 }
 
-impl<'p, C: Counter> Strategy<'p, C> for GuideSetWithReplacement<'p, C> {
+impl<'p, C: Counter> Strategy<'p, C> for SampleWithReplacement<'p, C> {
+    fn name(&self) -> &'static str {
+        match self.strategy {
+            SampleStrategy::Count => "with_replacement_count",
+            SampleStrategy::Naive => "with_replacement_naive",
+        }
+    }
+
+    fn work_per_goal(&self, args: &Args) -> u64 {
+        (TRIAL_SIZE.len() * args.trials) as u64
+    }
+
     fn run_trial(
         &self,
         args: &Args,
         eqsat: &EqsatConfig,
         goal_recexpr: &RecExpr<Math>,
+        pb: &ProgressBar,
     ) -> TrialsPerK {
-        let bars = progress_bars(args);
-        bars.into_par_iter()
-            .map(|(k, pb)| {
+        TRIAL_SIZE
+            .par_iter()
+            .map(|&k| {
                 let trials = (0..args.trials)
                     .into_par_iter()
                     .map(|s| {
@@ -357,10 +357,17 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetWithReplacement<'p, C> {
                             [k as u64, s as u64],
                             self.novel,
                         )?;
-                        verify_reachability(&subset, goal_recexpr, &RULES, eqsat, args.full_union)
-                            .map_err(|e| e.into())
+                        let r = verify_reachability(
+                            &subset,
+                            goal_recexpr,
+                            &RULES,
+                            eqsat,
+                            args.full_union,
+                        )
+                        .map_err(|e| e.into());
+                        pb.inc(1);
+                        r
                     })
-                    .progress_with(pb)
                     .collect::<Vec<_>>();
 
                 (k, trials)
@@ -369,13 +376,13 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetWithReplacement<'p, C> {
     }
 }
 
-struct GuideSetNoReplacement<'p, C: Counter> {
+struct SampleNoReplacement<'p, C: Counter> {
     pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
     novel: bool,
     strategy: SampleStrategy,
 }
 
-impl<'p, C: Counter> GuideSetNoReplacement<'p, C> {
+impl<'p, C: Counter> SampleNoReplacement<'p, C> {
     fn new(
         pp: &'p PrecomputePackage<'p, C, Math, ConstantFold>,
         novel: bool,
@@ -389,16 +396,28 @@ impl<'p, C: Counter> GuideSetNoReplacement<'p, C> {
     }
 }
 
-impl<'p, C: Counter> Strategy<'p, C> for GuideSetNoReplacement<'p, C> {
+impl<'p, C: Counter> Strategy<'p, C> for SampleNoReplacement<'p, C> {
+    fn name(&self) -> &'static str {
+        match self.strategy {
+            SampleStrategy::Count => "no_replacement_count",
+            SampleStrategy::Naive => "no_replacement_naive",
+        }
+    }
+
+    fn work_per_goal(&self, args: &Args) -> u64 {
+        (TRIAL_SIZE.len() * args.trials) as u64
+    }
+
     fn run_trial(
         &self,
         args: &Args,
         eqsat: &EqsatConfig,
         goal_recexpr: &RecExpr<Math>,
+        pb: &ProgressBar,
     ) -> TrialsPerK {
-        let bars = progress_bars(args);
-        bars.into_par_iter()
-            .map(|(k, pb)| {
+        TRIAL_SIZE
+            .par_iter()
+            .map(|&k| {
                 let samples = self.pp.sample_frontier_terms(
                     k * args.trials,
                     args.size_distribution,
@@ -407,20 +426,24 @@ impl<'p, C: Counter> Strategy<'p, C> for GuideSetNoReplacement<'p, C> {
                     self.novel,
                 );
                 let trials = match samples {
-                    Err(e) => vec![Err(e); args.trials],
+                    Err(e) => {
+                        pb.inc(args.trials as u64);
+                        vec![Err(e); args.trials]
+                    }
                     Ok(samples) => samples
                         .par_chunks(k)
                         .map(|subset| {
-                            verify_reachability(
+                            let r = verify_reachability(
                                 subset,
                                 goal_recexpr,
                                 &RULES,
                                 eqsat,
                                 args.full_union,
                             )
-                            .map_err(Into::into)
+                            .map_err(Into::into);
+                            pb.inc(1);
+                            r
                         })
-                        .progress_with(pb)
                         .collect(),
                 };
                 (k, trials)
@@ -441,24 +464,37 @@ impl<'p, C: Counter> Smallest<'p, C> {
 }
 
 impl<'p, C: Counter> Strategy<'p, C> for Smallest<'p, C> {
+    fn name(&self) -> &'static str {
+        if self.novel {
+            "smallest_novel"
+        } else {
+            "smallest_overall"
+        }
+    }
+
+    fn work_per_goal(&self, _args: &Args) -> u64 {
+        1
+    }
+
     fn run_trials(
         &self,
         args: &Args,
         eqsat: &EqsatConfig,
         seed_str: &str,
         goals: &[RecExpr<Math>],
+        mp: &MultiProgress,
     ) -> Vec<GoalResults> {
-        goals
+        let pb = strategy_bar(mp, self.name(), goals.len() as u64);
+        let r = goals
             .into_par_iter()
-            .map(|goal| {
-                tee_println!("Current goal: {goal}");
-                GoalResults {
-                    seed: seed_str.to_owned(),
-                    goal: goal.to_string(),
-                    runs: self.run_trial(args, eqsat, goal),
-                }
+            .map(|goal| GoalResults {
+                seed: seed_str.to_owned(),
+                goal: goal.to_string(),
+                runs: self.run_trial(args, eqsat, goal, &pb),
             })
-            .collect()
+            .collect();
+        pb.finish();
+        r
     }
 
     fn run_trial(
@@ -466,6 +502,7 @@ impl<'p, C: Counter> Strategy<'p, C> for Smallest<'p, C> {
         args: &Args,
         eqsat: &EqsatConfig,
         goal_recexpr: &RecExpr<Math>,
+        pb: &ProgressBar,
     ) -> TrialsPerK {
         let r = verify_reachability(
             std::slice::from_ref(&self.pp.smallest(self.pp.root(), self.novel)),
@@ -475,6 +512,7 @@ impl<'p, C: Counter> Strategy<'p, C> for Smallest<'p, C> {
             args.full_union,
         )
         .map_err(Into::into);
+        pb.inc(1);
         HashMap::from([(1, vec![r])])
     }
 }
