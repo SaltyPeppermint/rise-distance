@@ -19,6 +19,7 @@ foldhash = "0.2"
 hashbrown = { version = "0.16", features = ["rayon", "serde"] }
 indexmap = { version = "2", features = ["serde"] }
 indicatif = { version = "0.18", features = ["rayon"] }
+tikv-jemallocator = "0.6"
 # log = "0.4"
 num = { version = "0.4", features = ["serde", "rand"] }
 num-traits = "0.2"
