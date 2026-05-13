@@ -1,3 +1,4 @@
+use std::env::current_dir;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -8,13 +9,12 @@ use egg::RecExpr;
 use hashbrown::HashMap;
 use num::BigUint;
 use serde::Serialize;
-use serde_json::json;
 
 use rise_distance::cli::argparse::{
     EqsatConfig, SampleStrategy, SeedInput, TermSampleDist, parse_seeds, read_folder_args,
 };
-use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, EnrichedSeedOk};
-use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log, write_config, write_stats};
+use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenStats};
+use rise_distance::cli::{EqsatStats, PrecomputePackage, init_log};
 use rise_distance::egg::math::{Math, RULES};
 use rise_distance::egg::{big_eqsat, lower};
 use rise_distance::tee_println;
@@ -54,16 +54,11 @@ struct Args {
 }
 
 fn main() {
+    let log_file = current_dir().unwrap();
+    init_log(&log_file);
     let args = Args::parse();
     let eqsat = read_folder_args(&args.path);
 
-    let prefix = format!(
-        "iters-{}-goals-{}-strategy-{}",
-        eqsat.max_iters, args.goals, args.goal_sample_strategy
-    );
-    let run_folder = get_run_folder(args.output.as_deref(), "goal_gen", &prefix);
-    init_log(&run_folder);
-    tee_println!("Run folder: {}", run_folder.to_string_lossy());
     tee_println!("Input folder: {}", args.path.display());
 
     let seeds = parse_seeds(SeedInput::JSON(args.path.join("terms.json")));
@@ -72,18 +67,14 @@ fn main() {
     tee_println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
 
     let mut enriched_map: HashMap<String, EnrichedSeed> = HashMap::new();
-    let mut all_stats = Vec::new();
 
-    for (i, (seed_str, seed_expr, max_size)) in seeds.iter().take(take_n).enumerate() {
+    for (i, (seed_str, seed_expr, max_size)) in seeds.into_iter().take(take_n).enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        let (enriched, stat) = process_seed(&args, &eqsat, seed_str, seed_expr, *max_size);
+        let enriched = process_seed(&args, &eqsat, &seed_expr, max_size);
         enriched_map.insert(seed_str.clone(), enriched);
-        all_stats.push(stat);
     }
 
     write_enriched_terms(&args.path, &enriched_map);
-    write_config(&run_folder, &args);
-    write_stats(&run_folder, &all_stats);
     tee_println!(
         "\nWrote {} enriched seed(s) to {}",
         enriched_map.len(),
@@ -94,16 +85,14 @@ fn main() {
 fn process_seed(
     args: &Args,
     eqsat: &EqsatConfig,
-    seed_str: &str,
     seed_expr: &RecExpr<Math>,
     max_size: usize,
-) -> (EnrichedSeed, serde_json::Value) {
+) -> EnrichedSeed {
     let Some(result) = big_eqsat(seed_expr, RULES.iter(), eqsat) else {
-        return failed(
-            seed_str,
+        return EnrichedSeed::Failed(EnrichedSeedFailed {
             max_size,
-            "big_eqsat returned None (saturated or invalid stop)",
-        );
+            fail_reason: "big eqsat failed".to_owned(),
+        });
     };
 
     let goal_iters = result.iters();
@@ -128,11 +117,10 @@ fn process_seed(
 
     let now = Instant::now();
     let Some(pp) = PrecomputePackage::<BigUint, Math, _>::precompute(&result, max_size) else {
-        return failed(
-            seed_str,
+        return EnrichedSeed::Failed(EnrichedSeedFailed {
             max_size,
-            &format!("goal precompute returned None (goal_iters={goal_iters})"),
-        );
+            fail_reason: format!("goal precompute returned None (goal_iters={goal_iters})"),
+        });
     };
     tee_println!("Precompute built in {:.2}s", now.elapsed().as_secs_f64());
     pp.log_root();
@@ -146,11 +134,10 @@ fn process_seed(
     ) {
         Ok(g) => g,
         Err(e) => {
-            return failed(
-                seed_str,
+            return EnrichedSeed::Failed(EnrichedSeedFailed {
                 max_size,
-                &format!("sample_frontier_terms failed: {e}"),
-            );
+                fail_reason: format!("sample_frontier failed (e={e})"),
+            });
         }
     };
 
@@ -165,56 +152,27 @@ fn process_seed(
         .map(|(s, c)| (s.to_string(), c.clone()))
         .collect();
 
-    let ok = EnrichedSeedOk {
+    let ok = GoalGenStats {
         eqsat_config: *eqsat,
         max_size,
-        goal_iters,
-        guide_iters,
+        goal_egraph: EqsatStats {
+            nodes: goal_nodes,
+            classes: goal_classes,
+            time: goal_secs,
+            iters: goal_iters,
+        },
+        guide_egraph: EqsatStats {
+            nodes: guide_nodes,
+            classes: guide_classes,
+            time: guide_secs,
+            iters: guide_iters,
+        },
         goals: goal_strings,
         frontier_histogram,
         stop_reason: stop_reason.clone(),
-        guide_egraph_nodes: guide_nodes,
-        guide_egraph_classes: guide_classes,
-        goal_egraph_nodes: goal_nodes,
-        goal_egraph_classes: goal_classes,
-        guide_eqsat_time: guide_secs,
-        goal_eqsat_time: goal_secs,
     };
 
-    let stats = json!({
-        "seed": seed_str,
-        "status": "ok",
-        "max_size": max_size,
-        "goal_iters": goal_iters,
-        "guide_iters": guide_iters,
-        "stop_reason": stop_reason,
-        "guide_egraph_nodes": guide_nodes,
-        "guide_egraph_classes": guide_classes,
-        "goal_egraph_nodes": goal_nodes,
-        "goal_egraph_classes": goal_classes,
-        "guide_eqsat_time": guide_secs,
-        "goal_eqsat_time": goal_secs,
-        "num_goals_sampled": ok.goals.len(),
-    });
-
-    (EnrichedSeed::Ok(ok), stats)
-}
-
-fn failed(seed_str: &str, max_size: usize, reason: &str) -> (EnrichedSeed, serde_json::Value) {
-    tee_println!("FAILED: {reason}");
-    let stats = json!({
-        "seed": seed_str,
-        "status": "failed",
-        "max_size": max_size,
-        "fail_reason": reason,
-    });
-    (
-        EnrichedSeed::Failed(EnrichedSeedFailed {
-            max_size,
-            fail_reason: reason.to_owned(),
-        }),
-        stats,
-    )
+    EnrichedSeed::Ok(ok)
 }
 
 /// Rewrite `<folder>/terms.json`, preserving the `[size, {term: payload}]`

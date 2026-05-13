@@ -14,7 +14,7 @@ use serde_json::json;
 
 use rise_distance::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist, read_folder_args};
 use rise_distance::cli::parquet::dump_summary_parquet;
-use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedOk, GoalSummary, TrialsPerK};
+use rise_distance::cli::types::{EnrichedSeed, GoalGenStats, GoalSummary, TrialsPerK};
 use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log, write_config, write_stats};
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
 use rise_distance::egg::{guide_only_eqsat, verify_reachability};
@@ -87,7 +87,7 @@ fn main() {
         tee_println!(
             "\n=== Seed {i}: {seed_str} (max_size={}, guide_iters={}) ===",
             ok.max_size,
-            ok.guide_iters
+            ok.guide_egraph.iters
         );
         if let Some((r, stats)) = process_seed(&args, &folder_args, seed_str, ok) {
             all_stats.push(stats);
@@ -103,7 +103,7 @@ fn main() {
 }
 
 enum SeedEntry {
-    Ok(EnrichedSeedOk),
+    Ok(GoalGenStats),
     Failed,
 }
 
@@ -145,7 +145,7 @@ fn process_seed(
     args: &Args,
     folder_args: &EqsatConfig,
     seed_str: &str,
-    payload: &EnrichedSeedOk,
+    payload: &GoalGenStats,
 ) -> Option<(HashMap<String, Vec<GoalResults>>, serde_json::Value)> {
     let seed_expr = seed_str
         .parse::<RecExpr<Math>>()
@@ -155,7 +155,7 @@ fn process_seed(
         &seed_expr,
         RULES.iter(),
         folder_args,
-        payload.guide_iters,
+        payload.guide_egraph.iters,
         folder_args.backoff_scheduler,
     )?;
     tee_println!("Guide replay stop reason: {:?}", result.stop_reason());
@@ -201,17 +201,14 @@ fn process_seed(
 
     let stats = json!({
         "seed": seed_str,
-        "max_size": payload.max_size,
-        "guide_iters": payload.guide_iters,
-        "goal_iters": payload.goal_iters,
-        "stored_guide_egraph_nodes": payload.guide_egraph_nodes,
-        "stored_guide_egraph_classes": payload.guide_egraph_classes,
-        "stored_guide_egraph_time": payload.guide_eqsat_time,
-        "stored_guide_egraph_iters": payload.guide_iters,
-        "replay_guide_egraph_nodes": guide_nodes,
-        "replay_guide_egraph_classes": guide_classes,
-        "replay_guide_egraph_time": guide_time,
-        "replay_guide_egraph_iters": guide_iters,
+        "goal_eqsat": payload,
+        "guide_eqsat" :json!({
+            "nodes": guide_nodes,
+            "classes": guide_classes,
+            "time": guide_time,
+            "iters": guide_iters,
+        })
+
     });
 
     Some((r, stats))
