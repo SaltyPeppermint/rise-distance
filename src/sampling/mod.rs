@@ -103,22 +103,20 @@ where
     ) -> Result<impl ExactSizeIterator<Item = RecExpr<OriginLang<L>>> + Sync + Send, ExperimentError>
     {
         let target = usize::try_from(samples).unwrap();
-        powers_of_two::<6>()
-            .into_iter()
-            .find_map(|oversample| {
-                let drawn = (0..samples * oversample as u64)
-                    .into_par_iter()
-                    .map(|s| {
-                        self.sample(
-                            id,
-                            size,
-                            &mut utils::combined_rng([size as u64, s, seed[0], seed[1]]),
-                        )
-                    })
-                    .collect::<HashSet<_>>();
-                (drawn.len() >= target).then(|| drawn.into_iter().take(target))
-            })
-            .ok_or(ExperimentError::InsufficientSamples)
+        let mut drawn = HashSet::new();
+        let mut prev_end = 0;
+        for oversample in powers_of_two::<6>() {
+            let end = samples * oversample as u64;
+            drawn.par_extend((prev_end..end).into_par_iter().map(|s| {
+                let mut rng = utils::combined_rng([size as u64, s, seed[0], seed[1]]);
+                self.sample(id, size, &mut rng)
+            }));
+            if drawn.len() >= target {
+                return Ok(drawn.into_iter().take(target));
+            }
+            prev_end = end;
+        }
+        Err(ExperimentError::InsufficientSamples)
     }
 
     /// Sample exactly n number of terms for each size from the root
