@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use strum::Display;
 use thiserror::Error;
 
+use crate::cli::argparse::EqsatConfig;
 use crate::{MyLanguage, egg::OriginLang};
 
 #[derive(Debug, Error, Display, Serialize, Clone)]
@@ -62,6 +63,9 @@ pub enum EnrichedSeed {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EnrichedSeedOk {
+    /// Snapshot of the `EqsatConfig` that `goal` ran under. `guide` compares
+    /// this against its current `args.json` to detect config drift.
+    pub eqsat_config: EqsatConfig,
     pub max_size: usize,
     pub goal_iters: usize,
     pub guide_iters: usize,

@@ -4,6 +4,7 @@ mod weigher;
 // mod zs_min_distance;
 
 use egg::{Id, RecExpr};
+use foldhash::fast::FixedState;
 use hashbrown::HashSet;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
@@ -100,10 +101,9 @@ where
         size: usize,
         samples: u64,
         seed: [u64; 2],
-    ) -> Result<impl ExactSizeIterator<Item = RecExpr<OriginLang<L>>> + Sync + Send, ExperimentError>
-    {
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError> {
         let target = usize::try_from(samples).unwrap();
-        let mut drawn = HashSet::new();
+        let mut drawn = HashSet::with_hasher(FixedState::default());
         let mut prev_end = 0;
         for oversample in powers_of_two::<6>() {
             let end = samples * oversample as u64;
@@ -112,7 +112,10 @@ where
                 self.sample(id, size, &mut rng)
             }));
             if drawn.len() >= target {
-                return Ok(drawn.into_iter().take(target));
+                let mut v = drawn.into_iter().collect::<Vec<_>>();
+                v.sort_unstable();
+                v.truncate(target);
+                return Ok(v);
             }
             prev_end = end;
         }

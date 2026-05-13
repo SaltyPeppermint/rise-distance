@@ -171,6 +171,7 @@ fn process_seed(
         .collect();
 
     let ok = EnrichedSeedOk {
+        eqsat_config: *eqsat,
         max_size,
         goal_iters,
         guide_iters,

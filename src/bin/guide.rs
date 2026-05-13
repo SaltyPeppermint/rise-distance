@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -110,8 +111,9 @@ enum SeedEntry {
     Failed,
 }
 
-/// Read enriched `terms.json`. Returns a flat list preserving JSON order so
-/// `--take-first` is deterministic.
+/// Read enriched `terms.json`. Returns a flat list in deterministic order
+/// (groups in JSON order, terms within each group sorted alphabetically) so
+/// `--take-first` is stable across runs.
 fn read_enriched_terms(folder: &Path) -> Vec<(String, SeedEntry)> {
     let path = folder.join("terms.json");
     let file =
@@ -119,8 +121,10 @@ fn read_enriched_terms(folder: &Path) -> Vec<(String, SeedEntry)> {
 
     // Read directly into a typed schema. Going via `serde_json::Value` first
     // would force HashMap<usize, _> keys through string → usize conversion
-    // that `from_value` doesn't do.
-    let groups: Vec<(usize, HashMap<String, EnrichedSeed>)> = serde_json::from_reader(file)
+    // that `from_value` doesn't do. The inner map is a BTreeMap so its
+    // iteration order is deterministic; a HashMap here would make
+    // `--take-first` pick a different subset each run.
+    let groups: Vec<(usize, BTreeMap<String, EnrichedSeed>)> = serde_json::from_reader(file)
         .unwrap_or_else(|e| {
             panic!(
                 "Failed to parse {}: {e}. Did you run `goal` on this folder first?",
@@ -165,13 +169,7 @@ fn process_seed(
     let guide_time = result.data().last().unwrap().total_time;
     let guide_iters = result.data().len();
     tee_println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
-    if guide_nodes != payload.guide_egraph_nodes || guide_classes != payload.guide_egraph_classes {
-        tee_println!(
-            "WARNING: replay differs from stored stats ({} nodes, {} classes stored)",
-            payload.guide_egraph_nodes,
-            payload.guide_egraph_classes
-        );
-    }
+    folder_args.warn_on_config_drift(&payload.eqsat_config);
 
     let pc = PrecomputePackage::<BigUint, _, _>::precompute(
         result.curr(),

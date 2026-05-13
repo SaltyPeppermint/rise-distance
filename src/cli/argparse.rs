@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::count::Counter;
 use crate::egg::math::Math;
+use crate::tee_println;
 
 /// Either a single seed s-expression or a path to a JSON file with objects containing `size` and `term` fields.
 #[derive(Debug, Clone)]
@@ -23,12 +24,56 @@ pub enum SeedInput {
 /// Used both as the CLI-derived config in the binaries and as the
 /// deserialization target for the `args.json` written by
 /// `scripts/generate_and_measure.py`.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub struct EqsatConfig {
     pub max_iters: usize,
     pub max_nodes: usize,
     pub max_time: f64,
     pub backoff_scheduler: bool,
+}
+
+impl EqsatConfig {
+    /// Warn if the `EqsatConfig` `guide` is running under differs from the one
+    /// `goal` recorded in the seed payload. Catches accidental drift in
+    /// `args.json` between the two stages — the replay egraph would no longer
+    /// match the assumptions baked into the stored `guide_iters`, goals, and
+    /// frontier histogram, so downstream results are not comparable to a fresh
+    /// `goal` run under the new config.
+    #[expect(clippy::float_cmp, reason = "configured values, not computed")]
+    pub fn warn_on_config_drift(&self, other: &EqsatConfig) {
+        if self == other {
+            return;
+        }
+        tee_println!("WARNING: args.json differs from the config goal recorded:");
+        if self.max_iters != other.max_iters {
+            tee_println!(
+                "  max_iters: this={} other={}",
+                self.max_iters,
+                other.max_iters
+            );
+        }
+        if self.max_nodes != other.max_nodes {
+            tee_println!(
+                "  max_nodes: this={} other={}",
+                self.max_nodes,
+                other.max_nodes
+            );
+        }
+        if self.max_time != other.max_time {
+            tee_println!(
+                "  max_time: this={} other={}",
+                self.max_time,
+                other.max_time
+            );
+        }
+        if self.backoff_scheduler != other.backoff_scheduler {
+            tee_println!(
+                "  backoff_scheduler: this={} other={}",
+                self.backoff_scheduler,
+                other.backoff_scheduler
+            );
+        }
+    }
 }
 
 /// Read `<folder>/args.json` into an `EqsatConfig`.
