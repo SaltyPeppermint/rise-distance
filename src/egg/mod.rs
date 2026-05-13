@@ -186,13 +186,13 @@ where
     N::Data: Clone,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
-    let slots: Rc<RefCell<DistinctSlots<L, N>>> = Rc::new(RefCell::new(DistinctSlots {
+    let slots = Rc::new(RefCell::new(DistinctSlots {
         distinct: None,
         prev_distinct: None,
     }));
     let hook_slots = Rc::clone(&slots);
 
-    let mut runner = Runner::<L, N, ()>::new(Default::default())
+    let mut runner = Runner::default()
         .with_time_limit(Duration::try_from_secs_f64(config.max_time).unwrap_or(Duration::MAX))
         .with_node_limit(config.max_nodes)
         .with_iter_limit(config.max_iters)
