@@ -192,21 +192,17 @@ def load_top_k(run_dir: Path, strategy_name: str, file_prefix: str) -> pl.DataFr
     Adjusts `nodes` and `total_time` to account for the guide egraph overhead:
       - nodes = max(trial_nodes, guide_egraph_nodes)
       - total_time += guide_eqsat_time
+      - classes = max(trial_classes, guide_egraph_nodes)
     """
-    with open(run_dir / "stats.json", encoding="utf-8") as f:
-        run_stats = json.load(f)[0]
-    guide_nodes = run_stats["replay_guide_egraph_nodes"]
-    guide_time = run_stats["replay_guide_eqsat_time"]
+    with open(run_dir / "metadata.json", encoding="utf-8") as f:
+        run_metadata = json.load(f)[0]["goal_eqsat"]
+    guide_nodes = run_metadata["guide_egraph"]["nodes"]
+    guide_time = run_metadata["guide_egraph"]["time"]
+    guide_classes = run_metadata["guide_egraph"]["classes"]
 
     prefix = file_prefix
     parquet_path = run_dir / f"{prefix}_top_k_summary.parquet"
-    if parquet_path.exists():
-        df = pl.read_parquet(parquet_path).with_columns(pl.lit(strategy_name).alias("strategy"))
-    else:
-        summary_path = run_dir / f"{prefix}_top_k_summary.json"
-        with open(summary_path, encoding="utf-8") as f:
-            raw = json.load(f)
-        df = pl.DataFrame(parse_replacement_summary(raw, strategy_name))
+    df = pl.read_parquet(parquet_path).with_columns(pl.lit(strategy_name).alias("strategy"))
 
     return df.with_columns(
         pl.when(pl.col("nodes").is_not_null())
@@ -217,6 +213,10 @@ def load_top_k(run_dir: Path, strategy_name: str, file_prefix: str) -> pl.DataFr
         .then(pl.col("total_time") + guide_time)
         .otherwise(None)
         .alias("total_time"),
+        pl.when(pl.col("classes").is_not_null())
+        .then(pl.max_horizontal(pl.col("nodes"), pl.lit(guide_classes)))
+        .otherwise(None)
+        .alias("classes"),
     )
 
 
