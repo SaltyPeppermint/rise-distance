@@ -28,16 +28,12 @@ Example:
   # Pre-generate goals first:
   goal data/seed_terms/dusky-cramp --goals 10
   # Then run guide experiments:
-  guide -g 1000 --full-union --take-first 10 data/seed_terms/dusky-cramp
+  guide --full-union --take-first 10 data/seed_terms/dusky-cramp
 "
 )]
 struct Args {
     /// Folder containing `terms.json` (enriched by `goal`) and `args.json`.
     path: PathBuf,
-
-    /// Number of guide candidates to sample from the n-1 frontier
-    #[arg(short, long, default_value_t = 0)]
-    guides: usize,
 
     /// How to distribute the guide sample budget across sizes.
     #[arg(long, default_value_t = TermSampleDist::UNIFORM)]
@@ -55,9 +51,9 @@ struct Args {
     #[arg(long)]
     take_first: Option<usize>,
 
-    /// Number of trials per (k, seed, goal) combination
+    /// Number of repetitions per (k, seed, goal) combination
     #[arg(long, default_value_t = 100)]
-    trials: usize,
+    repetitions: usize,
 }
 
 const TRIAL_SIZE: [usize; 6] = [1, 2, 5, 10, 50, 100];
@@ -327,7 +323,7 @@ impl<'p, C: Counter> Strategy<'p, C> for SampleWithReplacement<'p, C> {
     }
 
     fn work_per_goal(&self, args: &Args) -> u64 {
-        (TRIAL_SIZE.len() * args.trials) as u64
+        (TRIAL_SIZE.len() * args.repetitions) as u64
     }
 
     fn run_trial(
@@ -340,7 +336,7 @@ impl<'p, C: Counter> Strategy<'p, C> for SampleWithReplacement<'p, C> {
         TRIAL_SIZE
             .par_iter()
             .map(|&k| {
-                let trials = (0..args.trials)
+                let trials = (0..args.repetitions)
                     .into_par_iter()
                     .map(|s| {
                         let subset = self.pp.sample_frontier_terms(
@@ -398,7 +394,7 @@ impl<'p, C: Counter> Strategy<'p, C> for SampleNoReplacement<'p, C> {
     }
 
     fn work_per_goal(&self, args: &Args) -> u64 {
-        (TRIAL_SIZE.len() * args.trials) as u64
+        (TRIAL_SIZE.len() * args.repetitions) as u64
     }
 
     fn run_trial(
@@ -412,7 +408,7 @@ impl<'p, C: Counter> Strategy<'p, C> for SampleNoReplacement<'p, C> {
             .par_iter()
             .map(|&k| {
                 let samples = self.pp.sample_frontier_terms(
-                    k * args.trials,
+                    k * args.repetitions,
                     args.size_distribution,
                     self.strategy,
                     [k as u64, 0],
@@ -420,8 +416,8 @@ impl<'p, C: Counter> Strategy<'p, C> for SampleNoReplacement<'p, C> {
                 );
                 let trials = match samples {
                     Err(e) => {
-                        pb.inc(args.trials as u64);
-                        vec![Err(e); args.trials]
+                        pb.inc(args.repetitions as u64);
+                        vec![Err(e); args.repetitions]
                     }
                     Ok(samples) => samples
                         .par_chunks(k)
