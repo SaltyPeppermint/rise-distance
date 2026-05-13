@@ -11,13 +11,14 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use egg::{EGraph, Id, Iteration, RecExpr};
+use egg::{Id, Iteration, RecExpr};
 use hashbrown::HashMap;
 use num::ToPrimitive;
 use serde::Serialize;
 
 use crate::cli::argparse::{SampleStrategy, TermSampleDist};
 use crate::count::{Counter, PlainTermCount};
+use crate::egg::EqsatResult;
 use crate::sampling::{CountWeigher, NaiveWeigher, Sampler};
 use crate::{
     MyAnalysis, MyLanguage, NovelSampler, NovelTermCount, OriginLang, PlainSampler, tee_println,
@@ -64,19 +65,23 @@ where
 impl<'a, C, L, N> PrecomputePackage<'a, C, L, N>
 where
     L: MyLanguage,
-    N: MyAnalysis<L>,
+    N: MyAnalysis<L> + Clone,
     C: Counter,
 {
     /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg` for the sampling process later
+    #[must_use]
     pub fn precompute(
-        curr: &'a EGraph<L, N>,
-        prev: &'a EGraph<L, N>,
-        root: Id,
+        result: &'a EqsatResult<L, N>,
         max_size: usize,
     ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let tc = NovelTermCount::new(max_size, curr, prev, PlainTermCount::new(max_size, curr));
+        let tc = NovelTermCount::new(
+            max_size,
+            result.curr(),
+            result.prev(),
+            PlainTermCount::new(max_size, result.curr()),
+        );
 
-        let root = curr.find(root);
+        let root = result.curr().find(result.root());
         let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);

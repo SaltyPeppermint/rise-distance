@@ -176,7 +176,7 @@ fn process_seed(
     let goal_secs = result.data().iter().map(|i| i.total_time).sum::<f64>();
 
     let curr_guide = &result.data()[guide_iters].data.0;
-    let prev_guide = &result.data()[guide_iters - 1].data.0;
+    // let prev_guide = &result.data()[guide_iters - 1].data.0;
     let guide_nodes = curr_guide.total_number_of_nodes();
     let guide_classes = curr_guide.classes().len();
     let goal_nodes = result.curr().total_number_of_nodes();
@@ -187,12 +187,7 @@ fn process_seed(
     tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
 
     tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
-    let pp = PrecomputePackage::<BigUint, Math, _>::precompute(
-        result.curr(),
-        result.prev(),
-        result.root(),
-        max_size,
-    )?;
+    let pp = PrecomputePackage::<BigUint, Math, _>::precompute(&result, max_size)?;
     pp.log_root();
     let Ok(goals) = pp.sample_frontier_terms(
         args.goals,
@@ -219,12 +214,7 @@ fn process_seed(
         "goal_eqsat_time": goal_secs,
     });
 
-    let pc = PrecomputePackage::<BigUint, _, _>::precompute(
-        curr_guide,
-        prev_guide,
-        result.root(),
-        max_size,
-    )?;
+    let pc = PrecomputePackage::<BigUint, _, _>::precompute(&result, max_size)?;
 
     tee_println!("\nRunning top_k experiments NO REPLACEMENT...");
     for goal in goals {

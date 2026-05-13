@@ -127,12 +127,7 @@ fn process_seed(
     tee_println!("goal egraph:  {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
 
     let now = Instant::now();
-    let Some(pp) = PrecomputePackage::<BigUint, Math, _>::precompute(
-        result.curr(),
-        result.prev(),
-        result.root(),
-        max_size,
-    ) else {
+    let Some(pp) = PrecomputePackage::<BigUint, Math, _>::precompute(&result, max_size) else {
         return failed(
             seed_str,
             max_size,

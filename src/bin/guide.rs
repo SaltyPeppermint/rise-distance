@@ -171,12 +171,7 @@ fn process_seed(
     tee_println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
     folder_args.warn_on_config_drift(&payload.eqsat_config);
 
-    let pc = PrecomputePackage::<BigUint, _, _>::precompute(
-        result.curr(),
-        result.prev(),
-        result.root(),
-        payload.max_size,
-    )?;
+    let pc = PrecomputePackage::<BigUint, _, _>::precompute(&result, payload.max_size)?;
     pc.log_root();
 
     let goals = payload
