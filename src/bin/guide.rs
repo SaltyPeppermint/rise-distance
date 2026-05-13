@@ -280,7 +280,7 @@ trait Strategy<'p, C: Counter>: Sync {
             self.work_per_goal(args) * goals.len() as u64,
         );
         let r = goals
-            .iter()
+            .par_iter()
             .map(|goal| GoalResults {
                 seed: seed_str.to_owned(),
                 goal: goal.to_string(),
@@ -461,27 +461,6 @@ impl<'p, C: Counter> Strategy<'p, C> for Smallest<'p, C> {
 
     fn work_per_goal(&self, _args: &Args) -> u64 {
         1
-    }
-
-    fn run_trials(
-        &self,
-        args: &Args,
-        eqsat: &EqsatConfig,
-        seed_str: &str,
-        goals: &[RecExpr<Math>],
-        mp: &MultiProgress,
-    ) -> Vec<GoalResults> {
-        let pb = strategy_bar(mp, self.name(), goals.len() as u64);
-        let r = goals
-            .into_par_iter()
-            .map(|goal| GoalResults {
-                seed: seed_str.to_owned(),
-                goal: goal.to_string(),
-                runs: self.run_trial(args, eqsat, goal, &pb),
-            })
-            .collect();
-        pb.finish();
-        r
     }
 
     fn run_trial(
