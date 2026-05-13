@@ -266,8 +266,8 @@ def load_top_k(run_dir: Path, strategy_name: str, file_prefix: str) -> pl.DataFr
     """
     with open(run_dir / "stats.json", encoding="utf-8") as f:
         run_stats = json.load(f)[0]
-    guide_nodes = run_stats["guide_egraph_nodes"]
-    guide_time = run_stats["guide_eqsat_time"]
+    guide_nodes = run_stats["replay_guide_egraph_nodes"]
+    guide_time = run_stats["replay_guide_eqsat_time"]
 
     prefix = file_prefix
     parquet_path = run_dir / f"{prefix}_top_k_summary.parquet"

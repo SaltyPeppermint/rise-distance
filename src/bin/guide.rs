@@ -162,6 +162,8 @@ fn process_seed(
 
     let guide_nodes = result.curr().total_number_of_nodes();
     let guide_classes = result.curr().classes().len();
+    let guide_time = result.data().last().unwrap().total_time;
+    let guide_iters = result.data().len();
     tee_println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
     if guide_nodes != payload.guide_egraph_nodes || guide_classes != payload.guide_egraph_classes {
         tee_println!(
@@ -223,8 +225,12 @@ fn process_seed(
         "goal_iters": payload.goal_iters,
         "stored_guide_egraph_nodes": payload.guide_egraph_nodes,
         "stored_guide_egraph_classes": payload.guide_egraph_classes,
+        "stored_guide_egraph_time": payload.guide_eqsat_time,
+        "stored_guide_egraph_iters": payload.guide_iters,
         "replay_guide_egraph_nodes": guide_nodes,
         "replay_guide_egraph_classes": guide_classes,
+        "replay_guide_egraph_time": guide_time,
+        "replay_guide_egraph_iters": guide_iters,
     });
 
     let r = HashMap::from([
