@@ -197,7 +197,7 @@ fn process_seed(
         "num_goals_sampled": ok.goals.len(),
     });
 
-    (EnrichedSeed::Ok(Box::new(ok)), stats)
+    (EnrichedSeed::Ok(ok), stats)
 }
 
 fn failed(seed_str: &str, max_size: usize, reason: &str) -> (EnrichedSeed, serde_json::Value) {

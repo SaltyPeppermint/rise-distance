@@ -57,7 +57,7 @@ pub struct TrialSummary {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum EnrichedSeed {
-    Ok(Box<EnrichedSeedOk>),
+    Ok(EnrichedSeedOk),
     Failed(EnrichedSeedFailed),
 }
 

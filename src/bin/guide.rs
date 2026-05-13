@@ -107,7 +107,7 @@ fn main() {
 }
 
 enum SeedEntry {
-    Ok(Box<EnrichedSeedOk>),
+    Ok(EnrichedSeedOk),
     Failed,
 }
 
