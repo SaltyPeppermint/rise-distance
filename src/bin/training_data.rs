@@ -19,7 +19,7 @@ use rise_distance::cli::{
     write_metadata,
 };
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
-use rise_distance::egg::{big_eqsat, verify_reachability};
+use rise_distance::egg::{run_eqsat, verify_reachability};
 use rise_distance::tree_distance_unit;
 use rise_distance::{Counter, FlatTree, OriginLang, lower, tee_println};
 
@@ -162,7 +162,7 @@ fn process_seed(
     max_size: usize,
     run_folder: &Path,
 ) -> Option<serde_json::Value> {
-    let result = big_eqsat(seed_expr, RULES.iter(), eqsat)?;
+    let result = run_eqsat(seed_expr, RULES.iter(), eqsat)?;
     let goal_iters = result.iters();
     let guide_iters = goal_iters / 2;
     tee_println!("Goal Iterations: {goal_iters}");
@@ -175,10 +175,11 @@ fn process_seed(
         .sum::<f64>();
     let goal_secs = result.data().iter().map(|i| i.total_time).sum::<f64>();
 
-    let curr_guide = &result.data()[guide_iters].data.0;
-    // let prev_guide = &result.data()[guide_iters - 1].data.0;
-    let guide_nodes = curr_guide.total_number_of_nodes();
-    let guide_classes = curr_guide.classes().len();
+    // egg's `Iteration` records `egraph_nodes`/`egraph_classes` at the start
+    // of each iteration, so iter K+1's start equals iter K's end.
+    let guide_iter_end = &result.data()[guide_iters + 1];
+    let guide_nodes = guide_iter_end.egraph_nodes;
+    let guide_classes = guide_iter_end.egraph_classes;
     let goal_nodes = result.curr().total_number_of_nodes();
     let goal_classes = result.curr().classes().len();
     tee_println!(

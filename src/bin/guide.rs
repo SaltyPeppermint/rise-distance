@@ -19,7 +19,7 @@ use rise_distance::cli::{
     EqsatMetadata, PrecomputePackage, get_run_folder, init_log, write_config, write_metadata,
 };
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
-use rise_distance::egg::{guide_only_eqsat, verify_reachability};
+use rise_distance::egg::{run_eqsat, verify_reachability};
 use rise_distance::{Counter, tee_println};
 use time::OffsetDateTime;
 
@@ -161,13 +161,12 @@ fn process_seed(
         .parse::<RecExpr<Math>>()
         .unwrap_or_else(|e| panic!("Failed to parse seed '{seed_str}': {e}"));
 
-    let result = guide_only_eqsat(
-        &seed_expr,
-        RULES.iter(),
-        folder_args,
-        payload.guide_egraph.iters,
-        folder_args.backoff_scheduler,
-    )?;
+    // Replay the guide phase with the recorded iteration count.
+    let replay_config = EqsatConfig {
+        max_iters: payload.guide_egraph.iters,
+        ..*folder_args
+    };
+    let result = run_eqsat(&seed_expr, RULES.iter(), &replay_config)?;
     tee_println!("Guide replay stop reason: {:?}", result.stop_reason());
 
     let guide_nodes = result.curr().total_number_of_nodes();

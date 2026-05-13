@@ -3,7 +3,9 @@ pub mod math;
 
 pub mod origin;
 
+use std::cell::RefCell;
 use std::fmt::Display;
+use std::rc::Rc;
 use std::time::Duration;
 
 use egg::{
@@ -81,18 +83,20 @@ pub fn typed_stack_children<L: MyLanguage>(
     }
 }
 
-/// Result of running eqsat. `curr` / `prev` are the last two egraphs in
-/// `iter_data`; callers that need an intermediate iteration index into
-/// `data()` directly. `root` is the id returned by the initial `add`, so it
-/// may not be canonical in later iterations — canonicalize with
-/// `egraph.find(root)` before using it as a `HashMap` key.
+/// Result of running eqsat. Holds only the last two egraphs (`prev` and
+/// `curr`), plus per-iteration metadata in `iter_data` (timings,
+/// `egraph_nodes`, etc. — no egraphs). `root` is the id returned by the
+/// initial `add`, so it may not be canonical in later iterations —
+/// canonicalize with `egraph.find(root)` before using it as a `HashMap` key.
 pub struct EqsatResult<L, N>
 where
     L: Language,
     N: Analysis<L> + Clone,
     N::Data: Clone,
 {
-    iter_data: Vec<Iteration<EGraphHolder<L, N>>>,
+    iter_data: Vec<Iteration<()>>,
+    prev: EGraph<L, N>,
+    curr: EGraph<L, N>,
     root: Id,
     stop_reason: StopReason,
 }
@@ -110,18 +114,19 @@ where
 
     #[must_use]
     pub fn curr(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.iter_data.len() - 1].data.0
+        &self.curr
     }
 
     #[must_use]
     pub fn prev(&self) -> &EGraph<L, N> {
-        &self.iter_data[self.iter_data.len() - 2].data.0
+        &self.prev
     }
 
-    /// All iterations, rebuilt. Index `0` is the initial state; `iters()` is
-    /// the last applied iteration index.
+    /// Per-iteration metadata only (timings, `egraph_nodes`, `egraph_classes`,
+    /// `applied`, etc.). Index `0` is the iteration that started from the
+    /// initial egraph. `iters()` is the last applied iteration index.
     #[must_use]
-    pub fn data(&self) -> &[Iteration<EGraphHolder<L, N>>] {
+    pub fn data(&self) -> &[Iteration<()>] {
         &self.iter_data
     }
 
@@ -137,160 +142,124 @@ where
     }
 }
 
-pub struct EGraphHolder<L, N>(pub EGraph<L, N>)
+/// Holds the latest two *distinct* egraph snapshots seen by the hook. A
+/// snapshot is taken only when the egraph differs from the previous snapshot
+/// (`same_egraph` lineage check), so trailing no-op iterations don't shift
+/// the slots.
+#[derive(Debug)]
+struct DistinctSlots<L, N>
 where
     L: Language,
-    N: Analysis<L> + Clone,
-    N::Data: Clone;
-
-impl<L, N> IterationData<L, N> for EGraphHolder<L, N>
-where
-    L: Language,
-    N: Analysis<L> + Clone,
-    N::Data: Clone,
+    N: Analysis<L>,
 {
-    fn make(runner: &Runner<L, N, Self>) -> Self {
-        Self(runner.egraph.clone())
-    }
+    /// Latest distinct egraph snapshot.
+    distinct: Option<EGraph<L, N>>,
+    /// The one before that.
+    prev_distinct: Option<EGraph<L, N>>,
 }
 
-/// Run equality saturation for `n_goal` iterations, capturing egraphs at two
-/// points: `n_guide` and `n_goal`.
+/// Minimum number of iterations the runner must complete for `run_eqsat` to
+/// return `Some`. Lower than this means we don't have enough distinct egraph
+/// states for a meaningful guide/goal split.
+const MIN_ITERS: usize = 3;
+
+/// Run equality saturation up to `config.max_iters` iterations and return the
+/// final egraph (`curr`) together with the last meaningfully different
+/// earlier egraph (`prev`).
 ///
-/// Returns an array of two `(raw, converted)` pairs:
-/// - `[0]`: raw egraph at `n_guide - 1` (rebuilt) and converted egraph at `n_guide`
-/// - `[1]`: raw egraph at `n_goal - 1` (rebuilt) and converted egraph at `n_goal`
-///
-/// The raw egraphs are useful for `lookup_expr`-based frontier membership checks.
+/// Returns `None` if fewer than [`MIN_ITERS`] iterations completed or if the
+/// runner never produced a distinct earlier egraph (e.g. saturated with no
+/// effective changes).
 ///
 /// # Panics
 ///
-/// Panics if `n_guide == 0`, `n_goal <= n_guide`, or if the runner
-/// saturates before reaching `n_goal` iterations.
-pub fn big_eqsat<'a, L, N, R>(
+/// Panics if egg's `Runner` returns without a `stop_reason` set, which it
+/// documents as impossible.
+pub fn run_eqsat<'a, L, N, R>(
     start: &RecExpr<L>,
     rules: R,
-    eqsat: &EqsatConfig,
+    config: &EqsatConfig,
 ) -> Option<EqsatResult<L, N>>
 where
-    L: Language + 'static,
-    N: Analysis<L> + Default + Clone + 'static,
+    L: MyLanguage + 'static,
+    N: MyAnalysis<L> + Default + Clone + 'static,
     N::Data: Clone,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
-    let mut runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
-        .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
-        .with_node_limit(eqsat.max_nodes)
-        .with_iter_limit(eqsat.max_iters)
-        .with_expr(start);
+    let slots: Rc<RefCell<DistinctSlots<L, N>>> = Rc::new(RefCell::new(DistinctSlots {
+        distinct: None,
+        prev_distinct: None,
+    }));
+    let hook_slots = Rc::clone(&slots);
 
-    runner = if eqsat.backoff_scheduler {
+    let mut runner = Runner::<L, N, ()>::new(Default::default())
+        .with_time_limit(Duration::try_from_secs_f64(config.max_time).unwrap_or(Duration::MAX))
+        .with_node_limit(config.max_nodes)
+        .with_iter_limit(config.max_iters)
+        .with_expr(start)
+        .with_hook(move |runner| {
+            let mut s = hook_slots.borrow_mut();
+            let unchanged = s
+                .distinct
+                .as_ref()
+                .is_some_and(|d| same_egraph(d, &runner.egraph));
+            if !unchanged {
+                s.prev_distinct = s.distinct.take();
+                s.distinct = Some(runner.egraph.clone());
+            }
+            Ok(())
+        });
+
+    runner = if config.backoff_scheduler {
         runner.with_scheduler(BackoffScheduler::default())
     } else {
         runner.with_scheduler(SimpleScheduler)
     }
     .run(rules);
-
-    if !matches!(
-        runner.stop_reason.as_ref().unwrap(),
-        StopReason::TimeLimit(_) | StopReason::IterationLimit(_) | StopReason::NodeLimit(_)
-    ) {
-        tee_println!("Failed cause stopped with {:?}", runner.stop_reason);
-        return None;
-    }
 
     let stop_reason = runner.stop_reason.unwrap();
     tee_println!("Stopped with stop reason: {stop_reason:?}");
 
     let root = runner.roots[0];
-    let mut iter_data = runner.iterations;
+    // Drop hook closures so the slot's Rc has only our local clone left.
+    runner.hooks.clear();
+    let iter_data = runner.iterations;
+    let mut curr = runner.egraph;
 
-    // Drop trailing iterations whose egraph is identical to its predecessor:
-    // `curr_goal` / `prev_goal` would not differ and novelty would be empty by
-    // definition. Partial-apply iterations (mid-apply stops) typically produce
-    // a changed egraph and are kept.
-    while iter_data.len() >= 2
-        && same_egraph(
-            &iter_data[iter_data.len() - 2].data.0,
-            &iter_data[iter_data.len() - 1].data.0,
-        )
-    {
-        iter_data.pop();
-    }
-
-    if iter_data.len() < 3 {
-        tee_println!("Not enough iterations!");
+    if iter_data.len() < MIN_ITERS {
+        tee_println!("Not enough iterations ({} < {MIN_ITERS})", iter_data.len());
         return None;
     }
 
-    for i in &mut iter_data {
-        i.data.0.rebuild();
-    }
+    let DistinctSlots {
+        distinct,
+        prev_distinct,
+    } = Rc::try_unwrap(slots)
+        .expect("hooks cleared, slot Rc should be unique")
+        .into_inner();
 
-    Some(EqsatResult {
-        iter_data,
-        root,
-        stop_reason,
-    })
-}
+    let prev = match distinct {
+        Some(d) if same_egraph(&d, &curr) => prev_distinct,
+        d => d,
+    };
 
-/// Run equality saturation for exactly `target_iters` iterations. Time and
-/// node limits are forced to infinity so only the iteration limit determines
-/// stopping; no tail-trim is applied so `curr()` lands on iteration
-/// `target_iters` and `prev()` on `target_iters - 1`.
-///
-/// Returns `None` if the runner couldn't produce at least two iterations
-/// (e.g. saturated immediately).
-///
-/// # Panics
-///
-/// Panics if `target_iters == 0`.
-pub fn guide_only_eqsat<'a, L, N, R>(
-    start: &RecExpr<L>,
-    rules: R,
-    eqsat: &EqsatConfig,
-    target_iters: usize,
-    backoff_scheduler: bool,
-) -> Option<EqsatResult<L, N>>
-where
-    L: Language + 'static,
-    N: Analysis<L> + Default + Clone + 'static,
-    N::Data: Clone,
-    R: IntoIterator<Item = &'a Rewrite<L, N>>,
-{
-    assert!(target_iters >= 1, "target_iters must be at least 1");
-
-    let mut runner = Runner::<L, N, EGraphHolder<L, N>>::new(Default::default())
-        .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
-        .with_node_limit(eqsat.max_nodes)
-        .with_iter_limit(target_iters)
-        .with_expr(start);
-
-    runner = if backoff_scheduler {
-        runner.with_scheduler(BackoffScheduler::default())
-    } else {
-        runner.with_scheduler(SimpleScheduler)
-    }
-    .run(rules);
-
-    let stop_reason = runner.stop_reason.unwrap();
-    let root = runner.roots[0];
-    let mut iter_data = runner.iterations;
-
-    if iter_data.len() < 2 {
-        tee_println!(
-            "guide_only_eqsat: not enough iterations ({})",
-            iter_data.len()
-        );
+    let Some(mut prev) = prev else {
+        tee_println!("Egraph never produced a distinct earlier state");
         return None;
-    }
+    };
 
-    for i in &mut iter_data {
-        i.data.0.rebuild();
-    }
+    debug_assert!(
+        !same_egraph(&prev, &curr),
+        "prev/curr should be distinct after selection"
+    );
+
+    prev.rebuild();
+    curr.rebuild();
 
     Some(EqsatResult {
         iter_data,
+        prev,
+        curr,
         root,
         stop_reason,
     })
