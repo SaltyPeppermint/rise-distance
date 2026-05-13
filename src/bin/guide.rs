@@ -21,6 +21,7 @@ use rise_distance::cli::{
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
 use rise_distance::egg::{guide_only_eqsat, verify_reachability};
 use rise_distance::{Counter, tee_println};
+use time::OffsetDateTime;
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -70,6 +71,8 @@ fn main() {
     );
     let run_folder = get_run_folder(args.output.as_deref(), "guide_eval", &prefix);
     init_log(&run_folder);
+
+    tee_println!("Starting at {}", OffsetDateTime::now_local().unwrap());
     tee_println!("Run Folder: {}", run_folder.to_string_lossy());
     tee_println!("Input folder: {}", args.path.display());
 
@@ -97,11 +100,16 @@ fn main() {
                 all.entry(name).or_default().extend(r_s);
             }
         }
+        tee_println!(
+            "\nFinished seed at {}",
+            OffsetDateTime::now_local().unwrap()
+        );
     }
 
     write_top_k_outputs(&run_folder, all);
     write_config(&run_folder, &args);
     write_metadata(&run_folder, &all_metadata);
+    tee_println!("\nFinished at {}", OffsetDateTime::now_local().unwrap());
 }
 
 enum SeedEntry {
