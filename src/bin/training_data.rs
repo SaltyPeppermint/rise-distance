@@ -16,7 +16,7 @@ use rise_distance::cli::argparse::{
 use rise_distance::cli::parquet::dump_full_eval_parquet;
 use rise_distance::cli::{
     ExperimentError, GuideEval, PrecomputePackage, get_run_folder, init_log, write_config,
-    write_stats,
+    write_metadata,
 };
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
 use rise_distance::egg::{big_eqsat, verify_reachability};
@@ -136,23 +136,23 @@ fn main() {
     tee_println!("Distribution: {}", args.size_distribution);
     tee_println!("Seeds to process: {}", seeds.len());
 
-    let mut all_stats = Vec::new();
+    let mut all_metadata = Vec::new();
 
     for (i, (seed_str, seed_expr, max_size)) in seeds.iter().enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        if let Some(stats) =
+        if let Some(metadata) =
             process_seed(&args, &eqsat, seed_str, seed_expr, *max_size, &run_folder)
         {
-            all_stats.push(stats);
+            all_metadata.push(metadata);
         }
     }
 
     write_config(&run_folder, &args);
-    write_stats(&run_folder, &all_stats);
+    write_metadata(&run_folder, &all_metadata);
 }
 
 /// Run eqsat for one seed, sample goals, evaluate each goal, and return the
-/// collected results and per-goal stats. Returns `None` if the goal frontier
+/// collected results and per-goal metadata. Returns `None` if the goal frontier
 /// is empty (seed is skipped with a warning).
 fn process_seed(
     args: &Args,
@@ -201,7 +201,7 @@ fn process_seed(
     };
 
     tee_println!("Sampled {} goal(s)", goals.len());
-    let stats = json!({
+    let metadata = json!({
         "seed": seed_str,
         "max_size": max_size,
         "guide_egraph_iters": guide_iters,
@@ -225,7 +225,7 @@ fn process_seed(
         }
     }
 
-    Some(stats)
+    Some(metadata)
 }
 
 fn try_all<C: Counter + Display + Ord>(

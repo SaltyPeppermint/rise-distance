@@ -13,8 +13,8 @@ use serde::Serialize;
 use rise_distance::cli::argparse::{
     EqsatConfig, SampleStrategy, SeedInput, TermSampleDist, parse_seeds, read_folder_args,
 };
-use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenStats};
-use rise_distance::cli::{EqsatStats, PrecomputePackage, init_log};
+use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
+use rise_distance::cli::{EqsatMetadata, PrecomputePackage, init_log};
 use rise_distance::egg::math::{Math, RULES};
 use rise_distance::egg::{big_eqsat, lower};
 use rise_distance::tee_println;
@@ -48,7 +48,7 @@ struct Args {
     #[arg(long)]
     take_first: Option<usize>,
 
-    /// Output run folder for logs and stats (auto-generated if omitted).
+    /// Output run folder for logs and metadata (auto-generated if omitted).
     #[arg(short, long)]
     output: Option<String>,
 }
@@ -152,16 +152,16 @@ fn process_seed(
         .map(|(s, c)| (s.to_string(), c.clone()))
         .collect();
 
-    let ok = GoalGenStats {
+    let ok = GoalGenMetadata {
         eqsat_config: *eqsat,
         max_size,
-        goal_egraph: EqsatStats {
+        goal_egraph: EqsatMetadata {
             nodes: goal_nodes,
             classes: goal_classes,
             time: goal_secs,
             iters: goal_iters,
         },
-        guide_egraph: EqsatStats {
+        guide_egraph: EqsatMetadata {
             nodes: guide_nodes,
             classes: guide_classes,
             time: guide_secs,

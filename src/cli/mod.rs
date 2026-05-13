@@ -228,14 +228,14 @@ pub fn write_config(run_folder: &Path, cli: &impl Serialize) {
     serde_json::to_writer_pretty(config_writer, cli).unwrap();
 }
 
-/// Write per-seed stats to `stats.json` in the run folder.
+/// Write per-seed metadata to `metadata.json` in the run folder.
 ///
 /// # Panics
 ///
 /// Panics if the file cannot be created or serialization fails.
-pub fn write_stats(run_folder: &Path, stats: &[serde_json::Value]) {
-    let stats_path = run_folder.join("stats.json");
-    let stats_file = File::create(&stats_path).expect("Failed to create stats.json");
-    let stats_writer = BufWriter::new(stats_file);
-    serde_json::to_writer_pretty(stats_writer, stats).expect("write stats json");
+pub fn write_metadata(run_folder: &Path, metadata: &[serde_json::Value]) {
+    let path = run_folder.join("metadata.json");
+    let file = File::create(&path).expect("Failed to create metadata.json");
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, metadata).expect("write metadata json");
 }

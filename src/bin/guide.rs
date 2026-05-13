@@ -14,8 +14,10 @@ use serde_json::json;
 
 use rise_distance::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist, read_folder_args};
 use rise_distance::cli::parquet::dump_summary_parquet;
-use rise_distance::cli::types::{EnrichedSeed, GoalGenStats, GoalSummary, TrialsPerK};
-use rise_distance::cli::{PrecomputePackage, get_run_folder, init_log, write_config, write_stats};
+use rise_distance::cli::types::{EnrichedSeed, GoalGenMetadata, GoalSummary, TrialsPerK};
+use rise_distance::cli::{
+    EqsatMetadata, PrecomputePackage, get_run_folder, init_log, write_config, write_metadata,
+};
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
 use rise_distance::egg::{guide_only_eqsat, verify_reachability};
 use rise_distance::{Counter, tee_println};
@@ -77,7 +79,7 @@ fn main() {
     tee_println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
 
     let mut all: HashMap<String, Vec<GoalResults>> = HashMap::new();
-    let mut all_stats = Vec::new();
+    let mut all_metadata = Vec::new();
 
     for (i, (seed_str, payload)) in seeds.iter().take(take_n).enumerate() {
         let SeedEntry::Ok(ok) = payload else {
@@ -89,8 +91,8 @@ fn main() {
             ok.max_size,
             ok.guide_egraph.iters
         );
-        if let Some((r, stats)) = process_seed(&args, &folder_args, seed_str, ok) {
-            all_stats.push(stats);
+        if let Some((r, metadata)) = process_seed(&args, &folder_args, seed_str, ok) {
+            all_metadata.push(metadata);
             for (name, r_s) in r {
                 all.entry(name).or_default().extend(r_s);
             }
@@ -99,11 +101,11 @@ fn main() {
 
     write_top_k_outputs(&run_folder, all);
     write_config(&run_folder, &args);
-    write_stats(&run_folder, &all_stats);
+    write_metadata(&run_folder, &all_metadata);
 }
 
 enum SeedEntry {
-    Ok(GoalGenStats),
+    Ok(GoalGenMetadata),
     Failed,
 }
 
@@ -145,7 +147,7 @@ fn process_seed(
     args: &Args,
     folder_args: &EqsatConfig,
     seed_str: &str,
-    payload: &GoalGenStats,
+    payload: &GoalGenMetadata,
 ) -> Option<(HashMap<String, Vec<GoalResults>>, serde_json::Value)> {
     let seed_expr = seed_str
         .parse::<RecExpr<Math>>()
@@ -199,19 +201,18 @@ fn process_seed(
         })
         .collect();
 
-    let stats = json!({
+    let metadata = json!({
         "seed": seed_str,
         "goal_eqsat": payload,
-        "guide_eqsat" :json!({
-            "nodes": guide_nodes,
-            "classes": guide_classes,
-            "time": guide_time,
-            "iters": guide_iters,
-        })
-
+        "guide_eqsat" :EqsatMetadata{
+            nodes: guide_nodes,
+            classes: guide_classes,
+            time: guide_time,
+            iters: guide_iters
+        }
     });
 
-    Some((r, stats))
+    Some((r, metadata))
 }
 
 fn write_top_k_outputs(run_folder: &Path, all: HashMap<String, Vec<GoalResults>>) {

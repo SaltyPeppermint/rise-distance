@@ -57,12 +57,12 @@ pub struct TrialSummary {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum EnrichedSeed {
-    Ok(GoalGenStats),
+    Ok(GoalGenMetadata),
     Failed(EnrichedSeedFailed),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct GoalGenStats {
+pub struct GoalGenMetadata {
     /// Snapshot of the `EqsatConfig` that `goal` ran under. `guide` compares
     /// this against its current `args.json` to detect config drift.
     pub eqsat_config: EqsatConfig,
@@ -73,12 +73,12 @@ pub struct GoalGenStats {
     /// auto-convert numeric strings back to `usize` on read.
     pub frontier_histogram: HashMap<String, BigUint>,
     pub stop_reason: String,
-    pub guide_egraph: EqsatStats,
-    pub goal_egraph: EqsatStats,
+    pub guide_egraph: EqsatMetadata,
+    pub goal_egraph: EqsatMetadata,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct EqsatStats {
+pub struct EqsatMetadata {
     pub nodes: usize,
     pub classes: usize,
     pub time: f64,
