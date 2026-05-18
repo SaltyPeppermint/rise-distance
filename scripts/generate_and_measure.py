@@ -79,7 +79,7 @@ class Args:
     omitted, a fresh `data/seed_terms/<adjective>-<noun>/` is created."""
 
     generate_binary: Path = Path("target/release/generate")
-    measure_binary: Path = Path("target/release/measure-size")
+    measure_binary: Path = Path("target/release/measure_size")
 
     # generate-only
     total_samples: int = tyro.MISSING
