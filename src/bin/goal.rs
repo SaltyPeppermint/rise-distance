@@ -73,11 +73,11 @@ fn main() {
     }
 }
 
-fn main_inner<L, N>(args: &Args, eqsat: &EqsatConfig, rules: &[Rewrite<L, N>])
-where
-    L: MyLanguage,
-    N: MyAnalysis<L> + Default + Clone + 'static,
-{
+fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
+    args: &Args,
+    eqsat: &EqsatConfig,
+    rules: &[Rewrite<L, N>],
+) {
     let seeds = parse_seeds::<L>(SeedInput::JSON(args.path.join("terms.json")));
     let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
     tee_println!("Distribution: {}", args.size_distribution);
@@ -99,17 +99,13 @@ where
     );
 }
 
-fn process_seed<L, N>(
+fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     eqsat: &EqsatConfig,
     seed_expr: &RecExpr<L>,
     max_size: usize,
     rules: &[Rewrite<L, N>],
-) -> EnrichedSeed
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
+) -> EnrichedSeed {
     let Some(result) = run_eqsat(seed_expr, rules.iter(), eqsat) else {
         return EnrichedSeed::Failed(EnrichedSeedFailed {
             max_size,

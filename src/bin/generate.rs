@@ -202,8 +202,7 @@ fn collect_for_size<S, N>(
 ) -> HashMap<String, (usize, ValidationResult)>
 where
     S: BoltzmannSampler,
-    S::Lang: 'static,
-    N: MyAnalysis<S::Lang> + Default,
+    N: MyAnalysis<S::Lang>,
 {
     let sampler = S::new(size, tolerance, None);
     let mut collector = HashMap::new();
