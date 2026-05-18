@@ -1,12 +1,12 @@
 #![expect(clippy::similar_names)]
 use std::{collections::HashSet, sync::LazyLock};
 
-use egg::{AstSize, CostFunction, Id, Language, RecExpr, Symbol};
+use egg::{Id, Language, RecExpr, Symbol};
 use num::FromPrimitive;
 use num::rational::Ratio;
 use rand::Rng;
 
-use crate::egg::{id0, stack_children};
+use crate::egg::{id0, sampler, stack_children};
 
 use super::Math;
 
@@ -79,13 +79,15 @@ static BINDER_OPS: LazyLock<[Math; 2]> =
     LazyLock::new(|| [Math::Diff([id0(), id0()]), Math::Integral([id0(), id0()])]);
 
 #[expect(clippy::cast_precision_loss)]
-impl BoltzmannSampler {
+impl sampler::BoltzmannSampler for BoltzmannSampler {
+    type Lang = Math;
+
     /// Create a sampler targeting terms of the given expected size.
     ///
     /// `leaf_symbols` is the full pool of leaf labels (variables and constants).
     /// Variable symbols are those of the form `MathLabel::Symbol(_)`.
     /// If `None`, defaults to `[x, y, 0, 1, 2]`.
-    pub fn new(target: usize, tolerance: usize, leaf_symbols: Option<Vec<Math>>) -> Self {
+    fn new(target: usize, tolerance: usize, leaf_symbols: Option<Vec<Math>>) -> Self {
         let leaf_symbols = leaf_symbols.unwrap_or_else(default_symbols);
         let var_symbols = leaf_symbols
             .iter()
@@ -138,7 +140,15 @@ impl BoltzmannSampler {
         }
     }
 
-    fn gen_node(&self, rng: &mut impl Rng, depth: usize) -> RecExpr<Math> {
+    fn target(&self) -> usize {
+        self.target
+    }
+
+    fn tolerance(&self) -> usize {
+        self.tolerance
+    }
+
+    fn gen_node<R: Rng>(&self, rng: &mut R, depth: usize) -> RecExpr<Math> {
         let r = rng.r#gen::<f64>();
         if depth >= self.max_depth || r < self.p_leaf {
             let label = self.symbols[rng.gen_range(0..self.symbols.len())].clone();
@@ -161,51 +171,8 @@ impl BoltzmannSampler {
         }
     }
 
-    /// Generate a random term whose size is in `[target - tolerance, target + tolerance]`
-    /// and where every Diff/Integral node's bound variable appears free in its expression child.
-    /// Returns None if no valid expression is found within `100_000` attempts.
-    pub fn sample<R: Rng, T, F: Fn(&RecExpr<Math>) -> Option<T>>(
-        &self,
-        rng: &mut R,
-        filter_hook: &F,
-    ) -> Option<(RecExpr<Math>, T, usize)> {
-        let lo = self.target.saturating_sub(self.tolerance);
-        let hi = self.target + self.tolerance;
-        (0..100_000).find_map(|n| {
-            let candidate = self.gen_node(rng, 0);
-            if (lo..=hi).contains(&AstSize.cost_rec(&candidate))
-                && binders_valid(&candidate)
-                && let Some(reason) = filter_hook(&candidate)
-            {
-                return Some((candidate, reason, n));
-            }
-            None
-        })
-    }
-
-    /// Generate `count` random terms within the size window.
-    pub fn sample_many<R: Rng, T, F: Fn(&RecExpr<Math>) -> Option<T>>(
-        &self,
-        rng: &mut R,
-        count: usize,
-        filter_hook: &F,
-    ) -> Vec<(RecExpr<Math>, T)> {
-        let (exprs, total_attempts, failed) =
-            (0..count).map(|_| self.sample(rng, filter_hook)).fold(
-                (Vec::with_capacity(count), 0, 0),
-                |(mut exprs, attempts, failed), result| match result {
-                    Some((expr, reason, a)) => {
-                        exprs.push((expr, reason));
-                        (exprs, attempts + a, failed)
-                    }
-                    None => (exprs, attempts, failed + 1),
-                },
-            );
-        println!(
-            "Took a total of {total_attempts} attempts for {} terms. {failed} failed!",
-            exprs.len()
-        );
-        exprs
+    fn extra_valid(expr: &RecExpr<Math>) -> bool {
+        binders_valid(expr)
     }
 }
 
@@ -340,7 +307,8 @@ fn default_symbols() -> Vec<Math> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egg::StopReason;
+    use crate::egg::sampler::BoltzmannSampler as _;
+    use egg::{AstSize, CostFunction, StopReason};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 

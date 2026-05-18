@@ -1,5 +1,7 @@
 pub mod lambda;
 pub mod math;
+pub mod prop;
+pub mod sampler;
 
 pub mod origin;
 
