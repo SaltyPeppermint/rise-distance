@@ -11,8 +11,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use egg::{
-    Analysis, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language, RecExpr, Rewrite,
-    Runner, SimpleScheduler, StopReason,
+    Analysis, BackoffScheduler, EGraph, FromOp, Id, Iteration, IterationData, Language, RecExpr,
+    Rewrite, Runner, SimpleScheduler, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -21,13 +21,18 @@ use crate::cli::GuideError;
 use crate::cli::argparse::EqsatConfig;
 use crate::tee_println;
 
-pub use lambda::{Lambda, LambdaAnalysis};
-pub use math::{ConstantFold, Math};
 pub use origin::{OriginLang, lower};
 
 /// Trait for node labels in e-graphs and exprs.
 pub trait MyLanguage:
-    Serialize + for<'de> Deserialize<'de> + Send + Sync + Display + Language<Discriminant: Send + Sync>
+    Serialize
+    + for<'de> Deserialize<'de>
+    + Send
+    + Sync
+    + Display
+    + Language<Discriminant: Send + Sync>
+    + FromOp<Error: Display>
+    + 'static
 {
     /// Returns the label used for type annotations (e.g., "typeOf").
     fn type_of() -> Self;
@@ -46,6 +51,9 @@ pub trait MyAnalysis<L: MyLanguage>:
     + Sync
     + std::fmt::Debug
     + Analysis<L, Data: Send + Sync + Clone + Eq + Default>
+    + Default
+    + Clone
+    + 'static
 {
     fn is_typed(id: Id) -> bool;
 

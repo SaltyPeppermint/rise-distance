@@ -8,19 +8,20 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::Parser;
-use egg::RecExpr;
+use egg::{RecExpr, Rewrite};
 use hashbrown::HashMap;
 use num::BigUint;
 use serde::Serialize;
 
 use rise_distance::cli::argparse::{
-    EqsatConfig, SampleStrategy, SeedInput, TermSampleDist, parse_seeds, read_folder_args,
+    EqsatConfig, Language, SampleStrategy, SeedInput, TermSampleDist, parse_seeds,
+    read_folder_args, read_folder_language,
 };
 use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
 use rise_distance::cli::{EqsatMetadata, PrecomputePackage, init_log};
-use rise_distance::egg::math::{Math, RULES};
-use rise_distance::egg::{lower, run_eqsat};
+use rise_distance::egg::{lower, math, prop, run_eqsat};
 use rise_distance::tee_println;
+use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -61,10 +62,23 @@ fn main() {
     init_log(&log_file);
     let args = Args::parse();
     let eqsat = read_folder_args(&args.path);
+    let language = read_folder_language(&args.path);
 
     tee_println!("Input folder: {}", args.path.display());
+    tee_println!("Language: {language:?}");
 
-    let seeds = parse_seeds(SeedInput::JSON(args.path.join("terms.json")));
+    match language {
+        Language::Math => main_inner::<_, math::ConstantFold>(&args, &eqsat, &math::RULES),
+        Language::Prop => main_inner::<_, prop::ConstantFold>(&args, &eqsat, &prop::RULES),
+    }
+}
+
+fn main_inner<L, N>(args: &Args, eqsat: &EqsatConfig, rules: &[Rewrite<L, N>])
+where
+    L: MyLanguage,
+    N: MyAnalysis<L> + Default + Clone + 'static,
+{
+    let seeds = parse_seeds::<L>(SeedInput::JSON(args.path.join("terms.json")));
     let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
     tee_println!("Distribution: {}", args.size_distribution);
     tee_println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
@@ -73,7 +87,7 @@ fn main() {
 
     for (i, (seed_str, seed_expr, max_size)) in seeds.into_iter().take(take_n).enumerate() {
         tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        let enriched = process_seed(&args, &eqsat, &seed_expr, max_size);
+        let enriched = process_seed(args, eqsat, &seed_expr, max_size, rules);
         enriched_map.insert(seed_str.clone(), enriched);
     }
 
@@ -85,13 +99,18 @@ fn main() {
     );
 }
 
-fn process_seed(
+fn process_seed<L, N>(
     args: &Args,
     eqsat: &EqsatConfig,
-    seed_expr: &RecExpr<Math>,
+    seed_expr: &RecExpr<L>,
     max_size: usize,
-) -> EnrichedSeed {
-    let Some(result) = run_eqsat(seed_expr, RULES.iter(), eqsat) else {
+    rules: &[Rewrite<L, N>],
+) -> EnrichedSeed
+where
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+{
+    let Some(result) = run_eqsat(seed_expr, rules.iter(), eqsat) else {
         return EnrichedSeed::Failed(EnrichedSeedFailed {
             max_size,
             fail_reason: "big eqsat failed".to_owned(),
@@ -121,7 +140,7 @@ fn process_seed(
     tee_println!("goal egraph:  {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
 
     let now = Instant::now();
-    let Some(pp) = PrecomputePackage::<BigUint, Math, _>::precompute(&result, max_size) else {
+    let Some(pp) = PrecomputePackage::<BigUint, L, _>::precompute(&result, max_size) else {
         return EnrichedSeed::Failed(EnrichedSeedFailed {
             max_size,
             fail_reason: format!("goal precompute returned None (goal_iters={goal_iters})"),

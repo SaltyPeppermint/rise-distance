@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use egg::{Id, Language, RecExpr};
+use egg::{FromOp, Id, Language, RecExpr};
 use serde::{Deserialize, Serialize};
 
 use crate::MyLanguage;
@@ -44,6 +44,17 @@ impl<L: MyLanguage> Language for OriginLang<L> {
 
     fn children_mut(&mut self) -> &mut [Id] {
         self.inner.children_mut()
+    }
+}
+
+impl<L: MyLanguage> FromOp for OriginLang<L> {
+    type Error = L::Error;
+
+    fn from_op(op: &str, children: Vec<Id>) -> Result<Self, Self::Error> {
+        Ok(OriginLang {
+            inner: L::from_op(op, children)?,
+            origin: id0(),
+        })
     }
 }
 

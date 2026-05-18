@@ -9,8 +9,7 @@ use num::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
 use crate::count::Counter;
-use crate::egg::math::Math;
-use crate::tee_println;
+use crate::{MyLanguage, tee_println};
 
 /// Either a single seed s-expression or a path to a JSON file with objects containing `size` and `term` fields.
 #[derive(Debug, Clone)]
@@ -76,6 +75,21 @@ impl EqsatConfig {
     }
 }
 
+/// Which language the terms in a run folder are drawn from.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    Math,
+    Prop,
+}
+
+/// Only the `language` field of an `args.json`. Used by [`read_folder_language`]
+/// without pulling in the rest of the eqsat config.
+#[derive(Deserialize)]
+struct LanguageOnly {
+    language: Language,
+}
+
 /// Read `<folder>/args.json` into an `EqsatConfig`.
 ///
 /// # Panics
@@ -88,6 +102,22 @@ pub fn read_folder_args(folder: &Path) -> EqsatConfig {
         File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
     serde_json::from_reader(reader)
         .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()))
+}
+
+/// Read the `language` field from `<folder>/args.json`.
+///
+/// # Panics
+///
+/// Panics if `args.json` is missing, unreadable, malformed, or lacks a
+/// `language` field (older runs predating the field must be regenerated).
+#[must_use]
+pub fn read_folder_language(folder: &Path) -> Language {
+    let path = folder.join("args.json");
+    let reader =
+        File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
+    let parsed: LanguageOnly = serde_json::from_reader(reader)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()));
+    parsed.language
 }
 
 #[derive(Serialize, Debug, Clone, Copy, clap::ValueEnum, strum::Display)]
@@ -302,11 +332,11 @@ impl TermSampleDist {
 ///
 /// Panics on malformed seed expressions or unreadable JSON files.
 #[must_use]
-pub fn parse_seeds(input: SeedInput) -> Vec<(String, RecExpr<Math>, usize)> {
+pub fn parse_seeds<L: MyLanguage>(input: SeedInput) -> Vec<(String, RecExpr<L>, usize)> {
     match input {
         SeedInput::Single { term, max_size } => {
             let expr = term
-                .parse::<RecExpr<Math>>()
+                .parse::<RecExpr<L>>()
                 .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
             vec![(term, expr, max_size)]
         }
@@ -332,7 +362,7 @@ pub fn parse_seeds(input: SeedInput) -> Vec<(String, RecExpr<Math>, usize)> {
                         .keys()
                         .map(move |term| {
                             let expr = term
-                                .parse::<RecExpr<Math>>()
+                                .parse::<RecExpr<L>>()
                                 .unwrap_or_else(|e| panic!("Failed to parse seed '{term}': {e}"));
                             (term.clone(), expr, max_size)
                         })

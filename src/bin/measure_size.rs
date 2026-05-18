@@ -1,10 +1,13 @@
 use std::time::Duration;
 
 use clap::Parser;
-use egg::{BackoffScheduler, RecExpr, Runner, SimpleScheduler};
+use egg::{Analysis, BackoffScheduler, FromOp, RecExpr, Rewrite, Runner, SimpleScheduler};
 use rlimit::{Resource, setrlimit};
 
-use rise_distance::egg::math::{Math, RULES};
+use rise_distance::cli::argparse::Language;
+use rise_distance::egg::math::{self, Math};
+use rise_distance::egg::prop::{self, Prop};
+use rise_distance::MyLanguage;
 
 #[derive(Parser)]
 #[command(about = "Run eqsat on a single term and print peak RSS in bytes.")]
@@ -12,6 +15,10 @@ struct Args {
     /// Term to run eqsat on (s-expression).
     #[arg(long)]
     term: String,
+
+    /// Language the term is drawn from.
+    #[arg(long)]
+    language: Language,
 
     /// Iter limit for the runner
     #[arg(long, default_value_t = 11)]
@@ -43,7 +50,22 @@ fn main() {
         setrlimit(Resource::AS, cap, cap).expect("setrlimit RLIMIT_AS failed");
     }
 
-    let expr: RecExpr<Math> = args
+    match args.language {
+        Language::Math => run::<Math, math::ConstantFold>(&args, &math::RULES),
+        Language::Prop => run::<Prop, prop::ConstantFold>(&args, &prop::RULES),
+    }
+
+    println!("{}", peak_rss_bytes());
+}
+
+fn run<L, N>(args: &Args, rules: &[Rewrite<L, N>])
+where
+    L: MyLanguage + FromOp + 'static,
+    L::Error: std::fmt::Display,
+    N: Analysis<L> + Default + 'static,
+    N::Data: Clone,
+{
+    let expr: RecExpr<L> = args
         .term
         .parse()
         .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
@@ -58,11 +80,9 @@ fn main() {
     } else {
         runner.with_scheduler(SimpleScheduler)
     };
-    let runner = runner.run(&*RULES);
+    let runner = runner.run(rules);
 
     drop(runner);
-
-    println!("{}", peak_rss_bytes());
 }
 
 /// Peak resident set size of this process in bytes, read from

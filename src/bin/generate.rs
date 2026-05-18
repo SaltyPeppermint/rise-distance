@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use egg::{BackoffScheduler, RecExpr, Rewrite, Runner, SimpleScheduler, StopReason};
 use hashbrown::{HashMap, hash_map::Entry};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
@@ -12,17 +12,10 @@ use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use rise_distance::cli::argparse::Distribution;
+use rise_distance::cli::argparse::{Distribution, Language};
 use rise_distance::egg::sampler::BoltzmannSampler;
 use rise_distance::egg::{math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
-
-#[derive(ValueEnum, Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum Language {
-    Math,
-    Prop,
-}
 
 #[derive(Parser, Serialize)]
 #[command(
