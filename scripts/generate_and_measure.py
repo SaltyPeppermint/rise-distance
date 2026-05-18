@@ -86,6 +86,7 @@ class Args:
     min_size: int = tyro.MISSING
     max_size: int = tyro.MISSING
     distribution: str = tyro.MISSING
+    language: str = tyro.MISSING
     seed: int = tyro.MISSING
     tolerance: int = 1
     retry_limit: int = 10000
@@ -112,7 +113,7 @@ def main() -> int:
         "    cargo build --release --bin generate --bin measure-size\n"
         "    uv run scripts/generate_and_measure.py \\\n"
         "        --total-samples 1000 --min-size 10 --max-size 50 \\\n"
-        "        --distribution uniform --seed 42 --max-memory 8G \\\n"
+        "        --distribution uniform --language math --seed 42 --max-memory 8G \\\n"
         "        --max-iters 50 --max-nodes 100000 --max-time 10 \\\n"
         "        --backoff-scheduler --measure_parallelism 10"
     )
@@ -151,6 +152,8 @@ def main() -> int:
         str(args.max_size),
         "--distribution",
         args.distribution,
+        "--language",
+        args.language,
         "--seed",
         str(args.seed),
         "--tolerance",
@@ -183,6 +186,8 @@ def main() -> int:
     timeout = max(1, int(args.max_time * 4) + 5)
     measure_base = [
         str(args.measure_binary),
+        "--language",
+        args.language,
         "--max-iters",
         str(args.max_iters),
         "--max-nodes",
