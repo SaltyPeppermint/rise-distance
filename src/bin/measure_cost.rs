@@ -71,8 +71,9 @@ impl IterationData<Math, ConstantFold> for CostThisRound {
         costs.insert("AstSize", cheapest(runner, AstSize));
         costs.insert("AstDepth", cheapest(runner, AstDepth));
         costs.insert("DiffIntExpensive", cheapest(runner, DiffIntExpensive));
-        costs.insert("AddExpensive", cheapest(runner, AddExpensive));
         costs.insert("DiffIntCheap", cheapest(runner, DiffIntCheap));
+        costs.insert("AddExpensive", cheapest(runner, AddExpensive));
+        costs.insert("AddCheap", cheapest(runner, AddCheap));
         CostThisRound(costs)
     }
 }
@@ -101,6 +102,21 @@ impl CostFunction<Math> for DiffIntExpensive {
     }
 }
 
+pub struct DiffIntCheap;
+impl CostFunction<Math> for DiffIntCheap {
+    type Cost = usize;
+    fn cost<C>(&mut self, enode: &Math, mut costs: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost,
+    {
+        let op_cost = match enode {
+            Math::Diff(..) | Math::Integral(..) => 1,
+            _ => 100,
+        };
+        enode.fold(op_cost, |sum, i| sum + costs(i))
+    }
+}
+
 pub struct AddExpensive;
 impl CostFunction<Math> for AddExpensive {
     type Cost = usize;
@@ -115,16 +131,15 @@ impl CostFunction<Math> for AddExpensive {
         enode.fold(op_cost, |sum, i| sum + costs(i))
     }
 }
-
-pub struct DiffIntCheap;
-impl CostFunction<Math> for DiffIntCheap {
+pub struct AddCheap;
+impl CostFunction<Math> for AddCheap {
     type Cost = usize;
     fn cost<C>(&mut self, enode: &Math, mut costs: C) -> Self::Cost
     where
         C: FnMut(Id) -> Self::Cost,
     {
         let op_cost = match enode {
-            Math::Diff(..) | Math::Integral(..) => 1,
+            Math::Add(..) => 1,
             _ => 100,
         };
         enode.fold(op_cost, |sum, i| sum + costs(i))
