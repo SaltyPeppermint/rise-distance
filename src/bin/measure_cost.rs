@@ -2,13 +2,15 @@ use std::time::Duration;
 
 use clap::Parser;
 use egg::{
-    Analysis, AstDepth, AstSize, BackoffScheduler, CostFunction, Extractor, Id, IterationData,
-    Language, RecExpr, Runner, SimpleScheduler,
+    AstDepth, AstSize, BackoffScheduler, CostFunction, Extractor, Id, IterationData, Language as _,
+    RecExpr, Rewrite, Runner, SimpleScheduler,
 };
 use hashbrown::HashMap;
 use serde::Serialize;
 
-use rise_distance::egg::math::{ConstantFold, Math, RULES};
+use rise_distance::egg::math::{self, Math};
+use rise_distance::egg::prop::{self, Prop};
+use rise_distance::{MyAnalysis, MyLanguage, cli::argparse::Language};
 
 #[derive(Parser)]
 #[command(about = "Run eqsat on a single term see how the cost evolves.")]
@@ -32,18 +34,42 @@ struct Args {
     /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
     #[arg(long, default_value_t = false)]
     backoff_scheduler: bool,
+
+    /// Language to sample terms from
+    #[arg(long)]
+    language: Language,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let expr: RecExpr<Math> = args
-        .term
-        .parse()
-        .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
+    let costs = match args.language {
+        Language::Math => {
+            let expr: RecExpr<Math> = args
+                .term
+                .parse()
+                .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
+            run::<_, _, MathCostThisRound>(&args, &expr, &math::RULES)
+        }
+        Language::Prop => {
+            let expr: RecExpr<Prop> = args
+                .term
+                .parse()
+                .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
+            run::<_, _, PropCostThisRound>(&args, &expr, &prop::RULES)
+        }
+    };
 
-    let runner = Runner::<_, _, CostThisRound>::new(ConstantFold)
-        .with_expr(&expr)
+    println!("{}", serde_json::to_string(&costs).unwrap());
+}
+
+fn run<L: MyLanguage, N: MyAnalysis<L>, I: CostStat<L, N>>(
+    args: &Args,
+    expr: &RecExpr<L>,
+    rules: &[Rewrite<L, N>],
+) -> Vec<HashMap<&'static str, usize>> {
+    let runner = Runner::<_, _, I>::new(Default::default())
+        .with_expr(expr)
         .with_iter_limit(args.max_iters)
         .with_node_limit(args.max_nodes)
         .with_time_limit(Duration::from_secs_f64(args.max_time));
@@ -52,37 +78,60 @@ fn main() {
     } else {
         runner.with_scheduler(SimpleScheduler)
     };
-    let runner = runner.run(&*RULES);
+    let runner = runner.run(rules);
 
-    let costs = runner
+    runner
         .iterations
         .into_iter()
-        .map(|i| i.data.0)
-        .collect::<Vec<_>>();
+        .map(|i| i.data.get())
+        .collect::<Vec<_>>()
+}
 
-    println!("{}", serde_json::to_string(&costs).unwrap());
+trait CostStat<L: MyLanguage, N: MyAnalysis<L>>: IterationData<L, N> {
+    fn get(self) -> HashMap<&'static str, usize>;
 }
 
 #[derive(Debug, Serialize)]
-struct CostThisRound(HashMap<&'static str, usize>);
-impl IterationData<Math, ConstantFold> for CostThisRound {
-    fn make(runner: &Runner<Math, ConstantFold, Self>) -> Self {
+struct MathCostThisRound(HashMap<&'static str, usize>);
+impl IterationData<Math, math::ConstantFold> for MathCostThisRound {
+    fn make(runner: &Runner<Math, math::ConstantFold, Self>) -> Self {
         let mut costs = HashMap::new();
         costs.insert("AstSize", cheapest(runner, AstSize));
         costs.insert("AstDepth", cheapest(runner, AstDepth));
-        costs.insert("DiffIntExpensive", cheapest(runner, DiffIntExpensive));
-        costs.insert("DiffIntCheap", cheapest(runner, DiffIntCheap));
         costs.insert("AddExpensive", cheapest(runner, AddExpensive));
         costs.insert("AddCheap", cheapest(runner, AddCheap));
-        CostThisRound(costs)
+        MathCostThisRound(costs)
     }
 }
 
-fn cheapest<CF, L, N>(runner: &Runner<L, N, CostThisRound>, cf: CF) -> usize
+impl CostStat<Math, math::ConstantFold> for MathCostThisRound {
+    fn get(self) -> HashMap<&'static str, usize> {
+        self.0
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PropCostThisRound(HashMap<&'static str, usize>);
+impl IterationData<Prop, prop::ConstantFold> for PropCostThisRound {
+    fn make(runner: &egg::Runner<Prop, prop::ConstantFold, PropCostThisRound>) -> Self {
+        let mut costs = HashMap::new();
+        costs.insert("AstSize", cheapest(runner, AstSize));
+        costs.insert("AstDepth", cheapest(runner, AstDepth));
+        PropCostThisRound(costs)
+    }
+}
+
+impl CostStat<Prop, prop::ConstantFold> for PropCostThisRound {
+    fn get(self) -> HashMap<&'static str, usize> {
+        self.0
+    }
+}
+
+fn cheapest<CF, L, N, C: CostStat<L, N>>(runner: &Runner<L, N, C>, cf: CF) -> usize
 where
     CF: CostFunction<L, Cost = usize>,
-    L: Language,
-    N: Analysis<L>,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
 {
     Extractor::new(&runner.egraph, cf).find_best_cost(runner.roots[0])
 }
