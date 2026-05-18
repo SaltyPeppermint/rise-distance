@@ -77,6 +77,7 @@ def main() -> int:
     max_nodes = int(run_args["max_nodes"])
     max_time = float(run_args["max_time"])
     backoff = bool(run_args.get("backoff_scheduler", False))
+    language = str(run_args["language"])
 
     with args.path.open("r") as f:
         big_collector = json.load(f)
@@ -87,6 +88,8 @@ def main() -> int:
     timeout = max(1, int(max_time * 4) + 5)
     cmd_base = [
         str(args.binary),
+        "--language",
+        language,
         "--max-iters",
         str(max_iters),
         "--max-nodes",

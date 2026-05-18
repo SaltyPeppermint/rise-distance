@@ -1,32 +1,36 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["polars", "tqdm"]
+# dependencies = ["tqdm"]
 # ///
-"""Measure peak resident set size of running eqsat on each term in a JSON.
+"""Measure peak resident set size of running eqsat on each seed term.
 
-Spawns the `measure-size` Rust binary once per row. The binary reads its
-own peak RSS from `/proc/self/status` (VmHWM) at exit and prints the
-value (bytes) on stdout -> this matches what htop reports. A virtual-
-memory cap is enforced inside the binary via RLIMIT_AS as a safety net
-against runaways.
+Spawns the `measure-size` Rust binary once per term in a seed-terms
+`terms.json` (as produced by `scripts/generate_and_measure.py`). The
+binary reads its own peak RSS from `/proc/self/status` (VmHWM) at exit
+and prints the value (bytes) on stdout -> this matches what htop
+reports. A virtual-memory cap is enforced inside the binary via
+RLIMIT_AS as a safety net against runaways.
 
-Writes the result back to the JSON in a `peak_memory_bytes` column.
-On any failure (non-zero exit, RLIMIT kill, timeout, unparseable
-output), the value is -1.
+The seed-terms file has shape
+`[[size, {term: [attempts, validation, peak_memory_bytes?]}], ...]`.
+The measured peak is written back in place as the 3rd entry of each
+inner list, overwriting any existing value. On any failure (non-zero
+exit, RLIMIT kill, timeout, unparseable output), the value is -1.
 
 Example:
     cargo build --release --bin measure-size
-    uv run scripts/measure_size.py --path output.json --max-memory 8G --max-time 30
+    uv run scripts/measure_size.py --path data/seed_terms/foo-bar/terms.json \\
+        --language math --max-memory 8G --max-time 30
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
 
-import polars as pl
 from tqdm import tqdm
 
 
@@ -47,10 +51,16 @@ def main() -> int:
         "--path",
         type=Path,
         required=True,
-        help="JSON with a `term` column. Edited in place.",
+        help="Seed-terms JSON (e.g. data/seed_terms/foo-bar/terms.json). "
+        "Edited in place.",
     )
     parser.add_argument(
         "--binary", type=Path, default=Path("target/release/measure-size")
+    )
+    parser.add_argument(
+        "--language",
+        required=True,
+        help="Language the terms are drawn from (e.g. math, prop).",
     )
     parser.add_argument(
         "--max-memory",
@@ -75,14 +85,14 @@ def main() -> int:
         )
         return 2
 
-    df = pl.read_json(args.path)
-    if "term" not in df.columns:
-        print("JSON must contain a `term` column", file=sys.stderr)
-        return 2
+    with args.path.open("r") as f:
+        big_collector = json.load(f)
 
     timeout = max(1, int(args.max_time * 4) + 5)
     cmd_base = [
         str(args.binary),
+        "--language",
+        args.language,
         "--max-iters",
         str(args.max_iters),
         "--max-nodes",
@@ -95,8 +105,13 @@ def main() -> int:
     if args.backoff_scheduler:
         cmd_base.append("--backoff-scheduler")
 
-    measurements: list[int] = []
-    for term in tqdm(df["term"].to_list(), desc="terms"):
+    flat: list[tuple[int, str]] = [
+        (size_idx, term)
+        for size_idx, (_size, terms_map) in enumerate(big_collector)
+        for term in terms_map
+    ]
+
+    for size_idx, term in tqdm(flat, desc="terms"):
         try:
             proc = subprocess.run(
                 [*cmd_base, "--term", term],
@@ -111,9 +126,15 @@ def main() -> int:
             )
         except (subprocess.TimeoutExpired, ValueError, IndexError):
             peak = -1
-        measurements.append(peak)
 
-    df.with_columns(pl.Series("peak_memory_bytes", measurements)).write_json(args.path)
+        entry = big_collector[size_idx][1][term]
+        if len(entry) >= 3:
+            entry[2] = peak
+        else:
+            entry.append(peak)
+
+    with args.path.open("w") as f:
+        json.dump(big_collector, f)
     return 0
 
 
