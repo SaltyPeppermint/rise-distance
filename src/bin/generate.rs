@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use egg::{BackoffScheduler, RecExpr, Rewrite, Runner, SimpleScheduler, StopReason};
 use hashbrown::{HashMap, hash_map::Entry};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
@@ -13,8 +13,16 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use rise_distance::cli::argparse::Distribution;
-use rise_distance::egg::math::{BoltzmannSampler, RULES};
+use rise_distance::egg::sampler::BoltzmannSampler;
+use rise_distance::egg::{math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
+
+#[derive(ValueEnum, Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Language {
+    Math,
+    Prop,
+}
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -66,6 +74,10 @@ struct Args {
     #[arg(long)]
     distribution: Distribution,
 
+    /// Language to sample terms from
+    #[arg(long)]
+    language: Language,
+
     /// Output JSON path
     #[arg(long)]
     path: PathBuf,
@@ -114,46 +126,26 @@ fn main() {
         .iter()
         .map(|(size, n)| {
             let rng = ChaCha12Rng::from_rng(&mut root_rng).expect("RNG derivation failed");
-            (size, n, rng)
+            (*size, *n, rng)
         })
         .collect::<Vec<_>>();
     // Sort by size to make the whole thing deterministic
     sized_rngs.sort_by_key(|(size, _, _)| *size);
 
-    let style = ProgressStyle::with_template(
-        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} sizes ({eta})",
-    )
-    .expect("valid template")
-    .progress_chars("=>-");
-
-    // No parallelism, otherwise the memory hook wouldnt work correctly
-    let big_collector = sized_rngs
-        .into_par_iter()
-        .map(|(size, n, mut rng)| {
-            let sampler = BoltzmannSampler::new(*size, args.tolerance, None);
-            let mut collector = HashMap::new();
-            while (collector.len() as u64) < *n {
-                let mut total_attempts = 0;
-                let inserted = 'retry: {
-                    for _ in 0..args.retry_limit {
-                        let (candidate, validation_result, attempts) = sampler
-                            .sample(&mut rng, &|t| valididty_hook(t, &validity_config, &RULES))
-                            .expect("Too many failed sample attempts");
-                        let candidate_str = candidate.to_string();
-                        total_attempts += attempts;
-                        if let Entry::Vacant(e) = collector.entry(candidate_str) {
-                            e.insert((total_attempts, validation_result));
-                            break 'retry true;
-                        }
-                    }
-                    false
-                };
-                assert!(inserted, "Sampled previously seen term too often");
-            }
-            (size, collector)
-        })
-        .progress_with_style(style)
-        .collect::<Vec<_>>();
+    let big_collector = match args.language {
+        Language::Math => run_language::<math::BoltzmannSampler, math::ConstantFold>(
+            &args,
+            &validity_config,
+            sized_rngs,
+            &math::RULES,
+        ),
+        Language::Prop => run_language::<prop::BoltzmannSampler, prop::ConstantFold>(
+            &args,
+            &validity_config,
+            sized_rngs,
+            &prop::RULES,
+        ),
+    };
 
     println!(
         "Took a total of {} attempts for {} terms.",
@@ -167,6 +159,80 @@ fn main() {
 
     serde_json::to_writer(&mut writer, &big_collector).unwrap();
     writer.flush().unwrap();
+}
+
+type SizeBucket = (usize, HashMap<String, (usize, ValidationResult)>);
+
+fn run_language<S, N>(
+    args: &Args,
+    validity_config: &ValidityConfig,
+    sized_rngs: Vec<(usize, u64, ChaCha12Rng)>,
+    rules: &[Rewrite<S::Lang, N>],
+) -> Vec<SizeBucket>
+where
+    S: BoltzmannSampler + Send + Sync,
+    S::Lang: 'static,
+    N: MyAnalysis<S::Lang> + Default + Send + Sync,
+{
+    let style = ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} sizes ({eta})",
+    )
+    .expect("valid template")
+    .progress_chars("=>-");
+
+    sized_rngs
+        .into_par_iter()
+        .map(|(size, n, mut rng)| {
+            let collector = collect_for_size::<S, N>(
+                size,
+                n,
+                &mut rng,
+                args.tolerance,
+                args.retry_limit,
+                validity_config,
+                rules,
+            );
+            (size, collector)
+        })
+        .progress_with_style(style)
+        .collect()
+}
+
+fn collect_for_size<S, N>(
+    size: usize,
+    n: u64,
+    rng: &mut ChaCha12Rng,
+    tolerance: usize,
+    retry_limit: usize,
+    validity_config: &ValidityConfig,
+    rules: &[Rewrite<S::Lang, N>],
+) -> HashMap<String, (usize, ValidationResult)>
+where
+    S: BoltzmannSampler,
+    S::Lang: 'static,
+    N: MyAnalysis<S::Lang> + Default,
+{
+    let sampler = S::new(size, tolerance, None);
+    let mut collector = HashMap::new();
+    while (collector.len() as u64) < n {
+        let mut total_attempts = 0;
+        let inserted = 'retry: {
+            for _ in 0..retry_limit {
+                let (candidate, validation_result, attempts) = sampler
+                    .sample(rng, &|t| valididty_hook(t, validity_config, rules))
+                    .expect("Too many failed sample attempts");
+                let candidate_str = candidate.to_string();
+                total_attempts += attempts;
+                if let Entry::Vacant(e) = collector.entry(candidate_str) {
+                    e.insert((total_attempts, validation_result));
+                    break 'retry true;
+                }
+            }
+            false
+        };
+        assert!(inserted, "Sampled previously seen term too often");
+    }
+    collector
 }
 
 #[derive(Serialize)]
