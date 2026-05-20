@@ -131,8 +131,12 @@ def main() -> int:
     workers = max(1, args.parallelism)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(measure_one, t): t for t in all_terms}
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="terms"):
-            results[futures[fut]] = fut.result()
+        try:
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="terms"):
+                results[futures[fut]] = fut.result()
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
 
     out_path = args.path.parent / "cost_evolution.json"
     with out_path.open("w") as f:
