@@ -61,6 +61,7 @@
             cargo-unused-features
             cargo-sweep
             samply
+            nil
             nixd
             nixfmt
           ]);
