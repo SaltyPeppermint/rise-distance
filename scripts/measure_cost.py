@@ -104,20 +104,28 @@ def main() -> int:
         cmd_base.append("--backoff-scheduler")
 
     def measure_one(term: str) -> dict:
+        proc = subprocess.run(
+            [*cmd_base, "--term", term],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"measure-cost exited with {proc.returncode} for term {term!r}\n"
+                f"--- stderr ---\n{proc.stderr}\n"
+                f"--- stdout ---\n{proc.stdout}"
+            )
+        last_line = proc.stdout.strip().splitlines()[-1]
         try:
-            proc = subprocess.run(
-                [*cmd_base, "--term", term],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            return (
-                json.loads(proc.stdout.strip().splitlines()[-1])
-                if proc.returncode == 0
-                else {}
-            )
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, IndexError):
-            return {}
+            return json.loads(last_line)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Could not parse measure-cost output for term {term!r}: {e}\n"
+                f"--- last line ---\n{last_line}\n"
+                f"--- full stdout ---\n{proc.stdout}\n"
+                f"--- stderr ---\n{proc.stderr}"
+            ) from e
 
     results: dict[str, dict] = {}
     workers = max(1, args.parallelism)
