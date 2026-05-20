@@ -47,7 +47,6 @@
             toolchain
           ]
           ++ (with pkgs; [
-            pkg-config
             lldb
             clang
             lld
@@ -70,6 +69,10 @@
             fontconfig
             freetype
             expat
+            cbc
+            clang
+            lld
+            pkg-config
           ];
 
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
