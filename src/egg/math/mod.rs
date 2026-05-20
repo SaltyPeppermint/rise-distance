@@ -4,11 +4,13 @@ mod generate;
 use std::sync::LazyLock;
 
 use egg::{
-    Analysis, DidMerge, EGraph, Id, Language, MultiPattern, PatternAst, RecExpr, Rewrite, Subst,
-    Symbol, define_language, merge_option, rewrite,
+    Analysis, DidMerge, EGraph, Id, Language, PatternAst, RecExpr, Rewrite, Subst, Symbol,
+    define_language, merge_option, rewrite,
 };
+use hashbrown::HashSet;
 use num::rational::Ratio;
 use num::{BigInt, Zero};
+use num::{Signed, ToPrimitive};
 use serde::{Deserialize, Serialize};
 
 pub use cost_fn::{AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive, SillyCheap};
@@ -146,7 +148,7 @@ fn is_not_zero(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst
 pub static RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(rules);
 pub static SILLY_RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(|| {
     let mut r = rules();
-    r.push(silly_rule(Ratio::new(BigInt::from(1), BigInt::from(720))));
+    r.push(silly_rule(0.00001));
     r
 });
 
@@ -167,8 +169,7 @@ impl MyAnalysis<Math> for ConstantFold {
 }
 
 #[rustfmt::skip]
-#[must_use]
-pub fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
+fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
     rewrite!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
     rewrite!("comm-mul";  "(* ?a ?b)"        => "(* ?b ?a)"),
     rewrite!("assoc-add"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
@@ -236,16 +237,39 @@ pub fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
 
 ]}
 
-pub fn silly_rule(witness: Constant) -> Rewrite<Math, ConstantFold> {
-    // Fires only once `witness` has been folded into the egraph.
-    // The witness is loop-immune because constants live in unique e-classes that
-    // no self-referential rewrite can manufacture; it only appears once
-    // ConstantFold has combined enough of the input's constants to produce it.
-    let searcher: MultiPattern<Math> = format!("?root = (+ ?a ?b), ?w = {witness}")
-        .parse()
-        .unwrap();
-    let applier: MultiPattern<Math> = "?root = (sillyadd ?a ?b)".parse().unwrap();
-    Rewrite::new("sillyadd-when-huge", searcher, applier).unwrap()
+// Fires when the matched Add's subtree (transitively) reaches a ConstantFold
+// e-class whose magnitude is below `bound`. Walks the egraph from the Add's
+// root with cycle detection. Loop-immune because constants live in unique
+// e-classes that no self-referential rewrite can manufacture.
+fn silly_rule(bound: f64) -> Rewrite<Math, ConstantFold> {
+    rewrite!("sillyadd-when-huge"; "(+ ?a ?b)" => "(sillyadd ?a ?b)"
+        if has_small_constant_descendant(bound))
+}
+
+fn has_small_constant_descendant(
+    bound: f64,
+) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
+    move |egraph, root, _| {
+        let mut visited: HashSet<Id> = HashSet::new();
+        let mut stack = vec![egraph.find(root)];
+        while let Some(id) = stack.pop() {
+            let id = egraph.find(id);
+            if !visited.insert(id) {
+                continue;
+            }
+            if let Some((c, _)) = &egraph[id].data
+                && c.abs().to_f64().is_some_and(|v| v < bound)
+            {
+                return true;
+            }
+            for node in &egraph[id].nodes {
+                for &child in node.children() {
+                    stack.push(child);
+                }
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]

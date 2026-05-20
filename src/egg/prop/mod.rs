@@ -88,8 +88,7 @@ impl Analysis<Prop> for ConstantFold {
 }
 
 #[rustfmt::skip]
-#[must_use]
-pub fn rules() -> Vec<Rewrite<Prop, ConstantFold>> {
+fn rules() -> Vec<Rewrite<Prop, ConstantFold>> {
     let mut rs = vec![
         rewrite!("assoc_or";       "(| ?a (| ?b ?c))" => "(| (| ?a ?b) ?c)"),
         rewrite!("dist_and_or";    "(& ?a (| ?b ?c))" => "(| (& ?a ?b) (& ?a ?c))"),
