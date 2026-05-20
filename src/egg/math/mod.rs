@@ -1,3 +1,4 @@
+mod cost_fn;
 mod generate;
 
 use std::sync::LazyLock;
@@ -10,6 +11,7 @@ use num::rational::Ratio;
 use num::{BigInt, Zero};
 use serde::{Deserialize, Serialize};
 
+pub use cost_fn::{AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive};
 pub use generate::BoltzmannSampler;
 
 use crate::{MyAnalysis, MyLanguage, OriginLang};

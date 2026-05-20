@@ -3,15 +3,17 @@ use std::time::Duration;
 
 use clap::Parser;
 use egg::{
-    AstDepth, AstSize, BackoffScheduler, CostFunction, Extractor, Id, Iteration, IterationData,
-    Language as _, LpCostFunction, LpExtractor, RecExpr, Rewrite, Runner, SimpleScheduler,
+    AstDepth, AstSize, BackoffScheduler, Iteration, IterationData, RecExpr, Rewrite, Runner,
+    SimpleScheduler,
 };
 use hashbrown::HashMap;
 use serde::Serialize;
 
-use rise_distance::egg::math::{self, Math};
+use rise_distance::cli::argparse::Language;
+use rise_distance::egg::math::{self, AddCheap, AddExpensive, Math};
 use rise_distance::egg::prop::{self, Prop};
-use rise_distance::{MyAnalysis, MyLanguage, cli::argparse::Language};
+use rise_distance::egg::{cheapest, cheapest_ilp};
+use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]
 #[command(about = "Run eqsat on a single term see how the cost evolves.")]
@@ -120,6 +122,7 @@ where
     N: MyAnalysis<L>,
     CostThisRound<L>: IterationData<L, N>,
 {
+    println!("Now running {expr}");
     let runner = Runner::new(Default::default())
         .with_expr(expr)
         .with_iter_limit(args.max_iters)
@@ -156,82 +159,5 @@ impl<N: MyAnalysis<Math>> IterationData<Math, N> for CostThisRound<Math> {
             monotonic_costs,
             ilp_extracts,
         }
-    }
-}
-
-fn cheapest<CF, L, N, C>(runner: &Runner<L, N, C>, cf: CF) -> usize
-where
-    CF: CostFunction<L, Cost = usize>,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
-    Extractor::new(&runner.egraph, cf).find_best_cost(runner.roots[0])
-}
-
-fn cheapest_ilp<CF, L, N, C>(runner: &Runner<L, N, C>, cf: CF) -> RecExpr<L>
-where
-    CF: LpCostFunction<L, N>,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
-    LpExtractor::new(&runner.egraph, cf).solve(runner.roots[0])
-}
-
-pub struct DiffIntExpensive;
-impl CostFunction<Math> for DiffIntExpensive {
-    type Cost = usize;
-    fn cost<C>(&mut self, enode: &Math, mut costs: C) -> Self::Cost
-    where
-        C: FnMut(Id) -> Self::Cost,
-    {
-        let op_cost = match enode {
-            Math::Diff(..) | Math::Integral(..) => 100,
-            _ => 1,
-        };
-        enode.fold(op_cost, |sum, i| sum + costs(i))
-    }
-}
-
-pub struct DiffIntCheap;
-impl CostFunction<Math> for DiffIntCheap {
-    type Cost = usize;
-    fn cost<C>(&mut self, enode: &Math, mut costs: C) -> Self::Cost
-    where
-        C: FnMut(Id) -> Self::Cost,
-    {
-        let op_cost = match enode {
-            Math::Diff(..) | Math::Integral(..) => 1,
-            _ => 100,
-        };
-        enode.fold(op_cost, |sum, i| sum + costs(i))
-    }
-}
-
-pub struct AddExpensive;
-impl CostFunction<Math> for AddExpensive {
-    type Cost = usize;
-    fn cost<C>(&mut self, enode: &Math, mut costs: C) -> Self::Cost
-    where
-        C: FnMut(Id) -> Self::Cost,
-    {
-        let op_cost = match enode {
-            Math::Add(..) => 100,
-            _ => 1,
-        };
-        enode.fold(op_cost, |sum, i| sum + costs(i))
-    }
-}
-pub struct AddCheap;
-impl CostFunction<Math> for AddCheap {
-    type Cost = usize;
-    fn cost<C>(&mut self, enode: &Math, mut costs: C) -> Self::Cost
-    where
-        C: FnMut(Id) -> Self::Cost,
-    {
-        let op_cost = match enode {
-            Math::Add(..) => 1,
-            _ => 100,
-        };
-        enode.fold(op_cost, |sum, i| sum + costs(i))
     }
 }

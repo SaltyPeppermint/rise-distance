@@ -11,8 +11,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use egg::{
-    Analysis, BackoffScheduler, EGraph, FromOp, Id, Iteration, IterationData, Language, RecExpr,
-    Rewrite, Runner, SimpleScheduler, StopReason,
+    Analysis, BackoffScheduler, CostFunction, EGraph, Extractor, FromOp, Id, Iteration,
+    IterationData, Language, LpCostFunction, LpExtractor, RecExpr, Rewrite, Runner,
+    SimpleScheduler, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -429,4 +430,22 @@ where
 #[must_use]
 pub fn id0() -> Id {
     Id::from(0)
+}
+
+pub fn cheapest<CF, L, N, C>(runner: &Runner<L, N, C>, cf: CF) -> usize
+where
+    CF: CostFunction<L, Cost = usize>,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+{
+    Extractor::new(&runner.egraph, cf).find_best_cost(runner.roots[0])
+}
+
+pub fn cheapest_ilp<CF, L, N, C>(runner: &Runner<L, N, C>, cf: CF) -> RecExpr<L>
+where
+    CF: LpCostFunction<L, N>,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+{
+    LpExtractor::new(&runner.egraph, cf).solve(runner.roots[0])
 }
