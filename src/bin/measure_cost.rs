@@ -10,7 +10,7 @@ use hashbrown::HashMap;
 use serde::Serialize;
 
 use rise_distance::cli::argparse::Language;
-use rise_distance::egg::math::{self, AddCheap, AddExpensive, Math};
+use rise_distance::egg::math::{self, AddCheap, AddExpensive, Math, SillyCheap};
 use rise_distance::egg::prop::{self, Prop};
 use rise_distance::egg::{cheapest, cheapest_ilp};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -52,7 +52,7 @@ fn main() {
                 .term
                 .parse()
                 .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
-            run(&args, &expr, &math::RULES)
+            run(&args, &expr, &math::SILLY_RULES)
         }
         Language::Prop => {
             let expr = args
@@ -152,6 +152,7 @@ impl<N: MyAnalysis<Math>> IterationData<Math, N> for CostThisRound<Math> {
         monotonic_costs.insert("AstDepth", cheapest(runner, AstDepth));
         monotonic_costs.insert("AddExpensive", cheapest(runner, AddExpensive));
         monotonic_costs.insert("AddCheap", cheapest(runner, AddCheap));
+        monotonic_costs.insert("SillyCheap", cheapest(runner, SillyCheap));
 
         let mut ilp_extracts = HashMap::new();
         // ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));
@@ -169,8 +170,6 @@ impl<N: MyAnalysis<Prop>> IterationData<Prop, N> for CostThisRound<Prop> {
         let mut monotonic_costs = HashMap::new();
         monotonic_costs.insert("AstSize", cheapest(runner, AstSize));
         monotonic_costs.insert("AstDepth", cheapest(runner, AstDepth));
-        // monotonic_costs.insert("AddExpensive", cheapest(runner, AddExpensive));
-        // monotonic_costs.insert("AddCheap", cheapest(runner, AddCheap));
 
         let mut ilp_extracts = HashMap::new();
         // ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));

@@ -4,14 +4,14 @@ mod generate;
 use std::sync::LazyLock;
 
 use egg::{
-    Analysis, DidMerge, EGraph, Id, Language, PatternAst, RecExpr, Rewrite, Subst, Symbol,
-    define_language, merge_option, rewrite,
+    Analysis, DidMerge, EGraph, Id, Language, MultiPattern, PatternAst, RecExpr, Rewrite, Subst,
+    Symbol, define_language, merge_option, rewrite,
 };
 use num::rational::Ratio;
 use num::{BigInt, Zero};
 use serde::{Deserialize, Serialize};
 
-pub use cost_fn::{AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive};
+pub use cost_fn::{AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive, SillyCheap};
 pub use generate::BoltzmannSampler;
 
 use crate::{MyAnalysis, MyLanguage, OriginLang};
@@ -34,6 +34,8 @@ define_language! {
 
         "sin" = Sin(Id),
         "cos" = Cos(Id),
+
+        "sillyadd" = SillyAdd([Id; 2]),
 
         Constant(Constant),
         Symbol(Symbol),
@@ -142,6 +144,11 @@ fn is_not_zero(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst
 }
 
 pub static RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(rules);
+pub static SILLY_RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(|| {
+    let mut r = rules();
+    r.push(silly_rule(Ratio::new(BigInt::from(1), BigInt::from(720))));
+    r
+});
 
 impl MyLanguage for Math {
     fn type_of() -> Self {
@@ -225,7 +232,21 @@ pub fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
     rewrite!("i-dif"; "(i (- ?f ?g) ?x)" => "(- (i ?f ?x) (i ?g ?x))"),
     rewrite!("i-parts"; "(i (* ?a ?b) ?x)" =>
         "(- (* ?a (i ?b ?x)) (i (* (d ?x ?a) (i ?b ?x)) ?x))"),
+
+
 ]}
+
+pub fn silly_rule(witness: Constant) -> Rewrite<Math, ConstantFold> {
+    // Fires only once `witness` has been folded into the egraph.
+    // The witness is loop-immune because constants live in unique e-classes that
+    // no self-referential rewrite can manufacture; it only appears once
+    // ConstantFold has combined enough of the input's constants to produce it.
+    let searcher: MultiPattern<Math> = format!("?root = (+ ?a ?b), ?w = {witness}")
+        .parse()
+        .unwrap();
+    let applier: MultiPattern<Math> = "?root = (sillyadd ?a ?b)".parse().unwrap();
+    Rewrite::new("sillyadd-when-huge", searcher, applier).unwrap()
+}
 
 #[cfg(test)]
 mod tests {
