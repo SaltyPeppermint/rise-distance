@@ -75,3 +75,18 @@ impl CostFunction<Math> for SillyCheap {
         enode.fold(op_cost, |sum, i| sum + costs(i))
     }
 }
+
+pub struct TinyConstant;
+impl CostFunction<Math> for TinyConstant {
+    type Cost = usize;
+    fn cost<C>(&mut self, enode: &Math, mut costs: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost,
+    {
+        let op_cost = match enode {
+            Math::TinyConst(_) => 1,
+            _ => 100,
+        };
+        enode.fold(op_cost, |sum, i| sum + costs(i))
+    }
+}

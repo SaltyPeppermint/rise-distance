@@ -10,7 +10,7 @@ use hashbrown::HashMap;
 use serde::Serialize;
 
 use rise_distance::cli::argparse::Language;
-use rise_distance::egg::math::{self, AddCheap, AddExpensive, Math, SillyCheap};
+use rise_distance::egg::math::{self, AddCheap, AddExpensive, Math, SillyCheap, TinyConstant};
 use rise_distance::egg::prop::{self, Prop};
 use rise_distance::egg::{cheapest, cheapest_ilp};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -153,6 +153,7 @@ impl<N: MyAnalysis<Math>> IterationData<Math, N> for CostThisRound<Math> {
         monotonic_costs.insert("AddExpensive", cheapest(runner, AddExpensive));
         monotonic_costs.insert("AddCheap", cheapest(runner, AddCheap));
         monotonic_costs.insert("SillyCheap", cheapest(runner, SillyCheap));
+        monotonic_costs.insert("TinyConstant", cheapest(runner, TinyConstant));
 
         let mut ilp_extracts = HashMap::new();
         // ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));

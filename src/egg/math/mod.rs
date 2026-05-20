@@ -4,21 +4,43 @@ mod generate;
 use std::sync::LazyLock;
 
 use egg::{
-    Analysis, DidMerge, EGraph, Id, Language, PatternAst, RecExpr, Rewrite, Subst, Symbol,
-    define_language, merge_option, rewrite,
+    Analysis, Applier, DidMerge, EGraph, Id, Language, PatternAst, RecExpr, Rewrite, Subst, Symbol,
+    Var, define_language, merge_option, rewrite,
 };
 use hashbrown::HashSet;
 use num::rational::Ratio;
-use num::{BigInt, Zero};
+use num::{BigInt, FromPrimitive, Zero};
 use num::{Signed, ToPrimitive};
 use serde::{Deserialize, Serialize};
 
-pub use cost_fn::{AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive, SillyCheap};
+pub use cost_fn::{
+    AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive, SillyCheap, TinyConstant,
+};
 pub use generate::BoltzmannSampler;
 
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
 pub type Constant = Ratio<BigInt>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
+pub struct TinyConstVal(pub Constant);
+
+impl std::fmt::Display for TinyConstVal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "tinyconst_{}", self.0)
+    }
+}
+
+impl std::str::FromStr for TinyConstVal {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let rest = s
+            .strip_prefix("tinyconst_")
+            .ok_or_else(|| format!("not a tinyconst: {s}"))?;
+        let c: Constant = rest.parse().map_err(|e| format!("{e}"))?;
+        Ok(TinyConstVal(c))
+    }
+}
 
 define_language! {
     #[derive(Deserialize,Serialize)]
@@ -39,6 +61,8 @@ define_language! {
 
         "sillyadd" = SillyAdd([Id; 2]),
 
+
+        TinyConst(TinyConstVal),
         Constant(Constant),
         Symbol(Symbol),
     }
@@ -148,7 +172,8 @@ fn is_not_zero(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst
 pub static RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(rules);
 pub static SILLY_RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(|| {
     let mut r = rules();
-    r.push(silly_rule(0.00001));
+    r.push(silly_add(0.00001));
+    r.push(tiny_constant(0.00001));
     r
 });
 
@@ -241,7 +266,7 @@ fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
 // e-class whose magnitude is below `bound`. Walks the egraph from the Add's
 // root with cycle detection. Loop-immune because constants live in unique
 // e-classes that no self-referential rewrite can manufacture.
-fn silly_rule(bound: f64) -> Rewrite<Math, ConstantFold> {
+fn silly_add(bound: f64) -> Rewrite<Math, ConstantFold> {
     rewrite!("sillyadd-when-huge"; "(+ ?a ?b)" => "(sillyadd ?a ?b)"
         if has_small_constant_descendant(bound))
 }
@@ -269,6 +294,45 @@ fn has_small_constant_descendant(
             }
         }
         false
+    }
+}
+
+// Constants below a certain value dont count anymore
+fn tiny_constant(bound: f64) -> Rewrite<Math, ConstantFold> {
+    rewrite!("is-tiny"; "?a" => {
+        TinyConstApplier {
+            var: "?a".parse().unwrap(),
+            bound: Ratio::from_f64(bound).unwrap(),
+        }
+    })
+}
+
+struct TinyConstApplier {
+    var: Var,
+    bound: Constant,
+}
+
+impl Applier<Math, ConstantFold> for TinyConstApplier {
+    fn apply_one(
+        &self,
+        egraph: &mut EGraph<Math, ConstantFold>,
+        eclass: Id,
+        subst: &Subst,
+        _searcher_ast: Option<&PatternAst<Math>>,
+        _rule_name: Symbol,
+    ) -> Vec<Id> {
+        let Some((c, _)) = egraph[subst[self.var]].data.clone() else {
+            return vec![];
+        };
+        if c >= self.bound {
+            return vec![];
+        }
+        let new = egraph.add(Math::TinyConst(TinyConstVal(c)));
+        if egraph.union(eclass, new) {
+            vec![new]
+        } else {
+            vec![]
+        }
     }
 }
 
