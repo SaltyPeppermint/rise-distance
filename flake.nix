@@ -50,6 +50,7 @@
             lldb
             clang
             lld
+            pkg-config
             uv
             cargo-nextest
             cargo-expand
@@ -57,7 +58,6 @@
             cargo-unused-features
             cargo-wizard
             cargo-udeps
-            cargo-unused-features
             cargo-sweep
             samply
             nil
@@ -70,9 +70,6 @@
             freetype
             expat
             cbc
-            clang
-            lld
-            pkg-config
           ];
 
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
@@ -83,6 +80,7 @@
               expat
               vulkan-loader
               libGL
+              cbc
             ]
           );
         };
