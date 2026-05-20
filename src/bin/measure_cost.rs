@@ -122,7 +122,7 @@ where
     N: MyAnalysis<L>,
     CostThisRound<L>: IterationData<L, N>,
 {
-    println!("Now running {expr}");
+    eprintln!("Now running {expr}");
     let runner = Runner::new(Default::default())
         .with_expr(expr)
         .with_iter_limit(args.max_iters)
@@ -146,6 +146,7 @@ struct CostThisRound<L: MyLanguage> {
 
 impl<N: MyAnalysis<Math>> IterationData<Math, N> for CostThisRound<Math> {
     fn make(runner: &Runner<Math, N, Self>) -> Self {
+        eprintln!("Now running iteration {}", runner.iterations.len());
         let mut monotonic_costs = HashMap::new();
         monotonic_costs.insert("AstSize", cheapest(runner, AstSize));
         monotonic_costs.insert("AstDepth", cheapest(runner, AstDepth));
@@ -153,7 +154,7 @@ impl<N: MyAnalysis<Math>> IterationData<Math, N> for CostThisRound<Math> {
         monotonic_costs.insert("AddCheap", cheapest(runner, AddCheap));
 
         let mut ilp_extracts = HashMap::new();
-        ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));
+        // ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));
 
         CostThisRound {
             monotonic_costs,
@@ -164,6 +165,7 @@ impl<N: MyAnalysis<Math>> IterationData<Math, N> for CostThisRound<Math> {
 
 impl<N: MyAnalysis<Prop>> IterationData<Prop, N> for CostThisRound<Prop> {
     fn make(runner: &Runner<Prop, N, Self>) -> Self {
+        eprintln!("Now running iteration {}", runner.iterations.len());
         let mut monotonic_costs = HashMap::new();
         monotonic_costs.insert("AstSize", cheapest(runner, AstSize));
         monotonic_costs.insert("AstDepth", cheapest(runner, AstDepth));
@@ -171,7 +173,7 @@ impl<N: MyAnalysis<Prop>> IterationData<Prop, N> for CostThisRound<Prop> {
         // monotonic_costs.insert("AddCheap", cheapest(runner, AddCheap));
 
         let mut ilp_extracts = HashMap::new();
-        ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));
+        // ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));
 
         CostThisRound {
             monotonic_costs,

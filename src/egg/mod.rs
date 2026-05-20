@@ -432,7 +432,7 @@ pub fn id0() -> Id {
     Id::from(0)
 }
 
-pub fn cheapest<CF, L, N, C>(runner: &Runner<L, N, C>, cf: CF) -> usize
+pub fn cheapest<CF, L, N, I>(runner: &Runner<L, N, I>, cf: CF) -> usize
 where
     CF: CostFunction<L, Cost = usize>,
     L: MyLanguage,
@@ -441,11 +441,12 @@ where
     Extractor::new(&runner.egraph, cf).find_best_cost(runner.roots[0])
 }
 
-pub fn cheapest_ilp<CF, L, N, C>(runner: &Runner<L, N, C>, cf: CF) -> RecExpr<L>
+pub fn cheapest_ilp<CF, L, N, I>(runner: &Runner<L, N, I>, cf: CF) -> RecExpr<L>
 where
     CF: LpCostFunction<L, N>,
     L: MyLanguage,
     N: MyAnalysis<L>,
 {
-    LpExtractor::new(&runner.egraph, cf).solve(runner.roots[0])
+    let root = runner.egraph.find(runner.roots[0]);
+    LpExtractor::new(&runner.egraph, cf).solve(root)
 }
