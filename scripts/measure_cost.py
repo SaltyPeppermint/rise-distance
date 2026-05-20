@@ -6,9 +6,10 @@
 
 Spawns the `measure-cost` Rust binary once per term in a seed-terms
 `terms.json` (as produced by `scripts/generate_and_measure.py`). The
-binary runs eqsat and prints a JSON array of per-iteration cost dicts
-on stdout, one dict per iteration mapping cost-function name to the
-cheapest extracted cost at that point.
+binary runs eqsat and prints a JSON object on stdout with two
+per-iteration arrays: `monotonic` (cost-function name -> cheapest
+extracted cost) and `novelty` (cost-function name -> whether the ILP
+extract changed since the previous iteration).
 
 Egg limits (`--max-iters`, `--max-nodes`, `--max-time`,
 `--backoff-scheduler`) are read from the sibling `args.json` so that
@@ -16,9 +17,11 @@ the cost trajectory is measured under the same conditions used to
 generate and validate the terms.
 
 The result is written to `<input_dir>/cost_evolution.json` with shape
-`{term: [{costfn: value, ...}, ...]}`. On any per-term failure
-(non-zero exit, timeout, unparseable output), the term maps to an
-empty list. Plotting lives in `analysis/cost_evolution.ipynb`.
+`{term: {"monotonic": [{costfn: value, ...}, ...],
+         "novelty":   [{costfn: bool,  ...}, ...]}}`.
+On any per-term failure (non-zero exit, timeout, unparseable output),
+the term maps to an empty dict. Plotting lives in
+`analysis/cost_evolution.ipynb`.
 
 Example:
     cargo build --release --bin measure-cost
@@ -100,7 +103,7 @@ def main() -> int:
     if backoff:
         cmd_base.append("--backoff-scheduler")
 
-    def measure_one(term: str) -> list[dict[str, int]]:
+    def measure_one(term: str) -> dict:
         try:
             proc = subprocess.run(
                 [*cmd_base, "--term", term],
@@ -111,12 +114,12 @@ def main() -> int:
             return (
                 json.loads(proc.stdout.strip().splitlines()[-1])
                 if proc.returncode == 0
-                else []
+                else {}
             )
         except (subprocess.TimeoutExpired, json.JSONDecodeError, IndexError):
-            return []
+            return {}
 
-    results: dict[str, list[dict[str, int]]] = {}
+    results: dict[str, dict] = {}
     workers = max(1, args.parallelism)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(measure_one, t): t for t in all_terms}
