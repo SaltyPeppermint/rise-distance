@@ -88,7 +88,7 @@ def main() -> int:
     # big_collector is [[size, {term: [attempts, validation, peak_memory_bytes]}], ...]
     all_terms = [term for _size, terms_map in big_collector for term in terms_map]
 
-    timeout = max(1, int(max_time * 4) + 5)
+    timeout = max(1, int(max_time * 40) + 5)
     cmd_base = [
         str(args.binary),
         "--language",

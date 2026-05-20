@@ -172,8 +172,8 @@ fn is_not_zero(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst
 pub static RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(rules);
 pub static SILLY_RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(|| {
     let mut r = rules();
-    r.push(silly_add(0.00001));
-    r.push(tiny_constant(0.00001));
+    r.push(silly_add(0.000_000_1));
+    r.push(tiny_constant(0.000_000_1));
     r
 });
 
