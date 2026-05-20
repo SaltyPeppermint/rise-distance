@@ -48,19 +48,19 @@ fn main() {
 
     let costs = match args.language {
         Language::Math => {
-            let expr: RecExpr<Math> = args
+            let expr = args
                 .term
                 .parse()
                 .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
             run(&args, &expr, &math::RULES)
         }
-        Language::Prop => panic!("Not implemented"), // Language::Prop => {
-                                                     //     let expr: RecExpr<Prop> = args
-                                                     //         .term
-                                                     //         .parse()
-                                                     //         .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
-                                                     //     run::<_, _, CostThisRound<Prop>>(&args, &expr, &prop::RULES)
-                                                     // }
+        Language::Prop => {
+            let expr = args
+                .term
+                .parse()
+                .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
+            run(&args, &expr, &prop::RULES)
+        }
     };
 
     println!("{}", serde_json::to_string(&costs).unwrap());
@@ -151,6 +151,24 @@ impl<N: MyAnalysis<Math>> IterationData<Math, N> for CostThisRound<Math> {
         monotonic_costs.insert("AstDepth", cheapest(runner, AstDepth));
         monotonic_costs.insert("AddExpensive", cheapest(runner, AddExpensive));
         monotonic_costs.insert("AddCheap", cheapest(runner, AddCheap));
+
+        let mut ilp_extracts = HashMap::new();
+        ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));
+
+        CostThisRound {
+            monotonic_costs,
+            ilp_extracts,
+        }
+    }
+}
+
+impl<N: MyAnalysis<Prop>> IterationData<Prop, N> for CostThisRound<Prop> {
+    fn make(runner: &Runner<Prop, N, Self>) -> Self {
+        let mut monotonic_costs = HashMap::new();
+        monotonic_costs.insert("AstSize", cheapest(runner, AstSize));
+        monotonic_costs.insert("AstDepth", cheapest(runner, AstDepth));
+        // monotonic_costs.insert("AddExpensive", cheapest(runner, AddExpensive));
+        // monotonic_costs.insert("AddCheap", cheapest(runner, AddCheap));
 
         let mut ilp_extracts = HashMap::new();
         ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));
