@@ -13,8 +13,8 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use rise_distance::cli::argparse::{Distribution, Language};
+use rise_distance::generator::BoltzmannSampler;
 use rise_distance::langs::{math, prop};
-use rise_distance::sampler::BoltzmannSampler;
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser, Serialize)]

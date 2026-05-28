@@ -27,7 +27,7 @@ enum Experiment {
     Tile2d,
     Tile3d,
     Tile4d,
-    Reorder3d,
+    // Reorder3d,
 }
 
 #[derive(Subcommand)]
@@ -50,11 +50,17 @@ fn main() {
         Experiment::Tile2d => mini_rise::tile_2d(args.search, mode),
         Experiment::Tile3d => mini_rise::tile_3d(args.search, mode),
         Experiment::Tile4d => mini_rise::tile_4d(args.search, mode),
-        Experiment::Reorder3d => mini_rise::reorder_3d(mode),
+        // Experiment::Reorder3d => mini_rise::reorder_3d(mode),
     };
-    println!(
-        "=== reached={} ({} sampled guide terms)",
-        result.reached,
-        result.sampled.len()
-    );
+    match result.reached {
+        Some(goal) => println!(
+            "=== reached ({} sampled guide terms)\n{}",
+            result.sampled.len(),
+            goal,
+        ),
+        None => println!(
+            "=== NOT reached ({} sampled guide terms)",
+            result.sampled.len(),
+        ),
+    }
 }

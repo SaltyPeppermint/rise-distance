@@ -78,11 +78,11 @@ pub fn tile_1d(ts: TilingSearch, mode: SearchMode) -> ReachResult<Lang> {
         // 1 nested map that we want to tile (split + reoder):
         "(m (* n1 32) f)",
         // sketches for the splitted map nests we are looking for:
-        &["(contains (m n1 (m 32 f)))"],
-        &["(o j (o (m n1 (m 32 f)) (s 32)))"],
+        "(contains (m n1 (m 32 f)))",
+        "(o j (o (m n1 (m 32 f)) (s 32)))",
         // there's nothing to reorder in 1d:
-        &["(contains (m n1 (m 32 f)))"],
-        &["(o j (o (m n1 (m 32 f)) (s 32)))"],
+        "(contains (m n1 (m 32 f)))",
+        "(o j (o (m n1 (m 32 f)) (s 32)))",
     )
 }
 
@@ -95,16 +95,12 @@ pub fn tile_2d(ts: TilingSearch, mode: SearchMode) -> ReachResult<Lang> {
         // 2 nested maps that we want to tile (split + reorder):
         "(m (* n1 32) (m (* n2 32) f))",
         // sketches for the splitted map nests we are looking for:
-        &["(contains (m n1 (m 32 (m n2 (m 32 f)))))"],
+        "(contains (m n1 (m 32 (m n2 (m 32 f)))))",
         // the corresponding full programs that we expect to find:
-        &[
-            "(o (o (o (m (* n1 32) j) j) (o (m n1 (m 32 (m n2 (m 32 f)))) (m n1 (m 32 (s 32))))) (s 32))",
-        ],
+        "(o (o (o (m (* n1 32) j) j) (o (m n1 (m 32 (m n2 (m 32 f)))) (m n1 (m 32 (s 32))))) (s 32))",
         // sketches for the tiled map nests we are looking for:
-        &["(contains (m n1 (m n2 (m 32 (m 32 f)))))"],
-        &[
-            "(o (o (o (o (m (* n1 32) j) j) (m n1 T)) (o (m n1 (m n2 (m 32 (m 32 f)))) (m n1 T))) (o (m n1 (m 32 (s 32))) (s 32)))",
-        ],
+        "(contains (m n1 (m n2 (m 32 (m 32 f)))))",
+        "(o (o (o (o (m (* n1 32) j) j) (m n1 T)) (o (m n1 (m n2 (m 32 (m 32 f)))) (m n1 T))) (o (m n1 (m 32 (s 32))) (s 32)))",
     )
 }
 
@@ -117,43 +113,39 @@ pub fn tile_3d(ts: TilingSearch, mode: SearchMode) -> ReachResult<Lang> {
         // 3 nested maps that we want to tile (split + reorder):
         "(m (* n1 32) (m (* n2 32) (m (* n3 32) f)))",
         // sketches for the splitted map nests we are looking for:
-        &[
-            /* "(contains (m n1 (m 32 (m (* n2 32) (m (* n3 32) f)))))",
-            "(contains (m (* n1 32) (m n2 (m 32 (m (* n3 32) f)))))",
-            "(contains (m (* n1 32) (m (* n2 32) (m n3 (m 32 f)))))",
-            "(contains (m n1 (m 32 (contains (m n2 (m 32 (m (* n3 32) f))))))))",
-            "(contains (m (* n1 32) (contains (m n2 (m 32 (contains (m n3 (m 32 f)))))))))", */
-            "(contains (m n1 (m 32 (m n2 (m 32 (m n3 (m 32 f))))))))",
-        ],
+
+        /* "(contains (m n1 (m 32 (m (* n2 32) (m (* n3 32) f)))))",
+        "(contains (m (* n1 32) (m n2 (m 32 (m (* n3 32) f)))))",
+        "(contains (m (* n1 32) (m (* n2 32) (m n3 (m 32 f)))))",
+        "(contains (m n1 (m 32 (contains (m n2 (m 32 (m (* n3 32) f))))))))",
+        "(contains (m (* n1 32) (contains (m n2 (m 32 (contains (m n3 (m 32 f)))))))))", */
+        "(contains (m n1 (m 32 (m n2 (m 32 (m n3 (m 32 f))))))))",
         // the corresponding full programs that we expect to find:
-        &[
-            /* "(o (o j (m n1 (m 32 (m (* n2 32) (m (* n3 32) f))))) (s 32))",
-            "(o (m (* n1 32) j) (o (m (* n1 32) (m n2 (m 32 (m (* n3 32) f)))) (m (* n1 32) (s 32))))",
-            "(o (m (* n1 32) (m (* n2 32) j)) (o (m (* n1 32) (m (* n2 32) (m n3 (m 32 f)))) (m (* n1 32) (m (* n2 32) (s 32)))))",
-            "(o (o j (m n1 (m 32 (o j (o (m n2 (m 32 (m (* n3 32) f))) (s 32)))))) (s 32))",
-            "(m (* n1 32) (o j (o (m n2 (m 32 (o j (o (m n3 (m 32 f)) (s 32))))) (s 32))))", */
-            // "(o (o j (m n1 (m 32 (o j (o (m n2 (m 32 (o j (o (m n3 (m 32 f)) (s 32))))) (s 32)))))) (s 32))",
-            "(o (m (* n1 32) (o (m (* n2 32) j) j)) (o (o j (o (m n1 (m 32 (m n2 (m 32 (m n3 (m 32 f)))))) (s 32))) (m (* n1 32) (o (m n2 (m 32 (s 32))) (s 32)))))",
-        ],
+
+        /* "(o (o j (m n1 (m 32 (m (* n2 32) (m (* n3 32) f))))) (s 32))",
+        "(o (m (* n1 32) j) (o (m (* n1 32) (m n2 (m 32 (m (* n3 32) f)))) (m (* n1 32) (s 32))))",
+        "(o (m (* n1 32) (m (* n2 32) j)) (o (m (* n1 32) (m (* n2 32) (m n3 (m 32 f)))) (m (* n1 32) (m (* n2 32) (s 32)))))",
+        "(o (o j (m n1 (m 32 (o j (o (m n2 (m 32 (m (* n3 32) f))) (s 32)))))) (s 32))",
+        "(m (* n1 32) (o j (o (m n2 (m 32 (o j (o (m n3 (m 32 f)) (s 32))))) (s 32))))", */
+        // "(o (o j (m n1 (m 32 (o j (o (m n2 (m 32 (o j (o (m n3 (m 32 f)) (s 32))))) (s 32)))))) (s 32))",
+        "(o (m (* n1 32) (o (m (* n2 32) j) j)) (o (o j (o (m n1 (m 32 (m n2 (m 32 (m n3 (m 32 f)))))) (s 32))) (m (* n1 32) (o (m n2 (m 32 (s 32))) (s 32)))))",
         // sketches for the tiled map nests we are looking for:
-        &[
-            /* "(contains (m n1 (m 32 (m (* n2 32) (m (* n3 32) f)))))",
-            "(contains (m (* n1 32) (m n2 (m 32 (m (* n3 32) f)))))",
-            "(contains (m (* n1 32) (m (* n2 32) (m n3 (m 32 f)))))",
-            "(contains (m n1 (contains (m n2 (m 32 (m 32 (m (* n3 32) f))))))))",
-            "(contains (m (* n1 32) (contains (m n2 (contains (m n3 (m 32 (m 32 f)))))))))", */
-            "(contains (m n1 (m n2 (m n3 (m 32 (m 32 (m 32 f))))))))",
-        ],
+
+        /* "(contains (m n1 (m 32 (m (* n2 32) (m (* n3 32) f)))))",
+        "(contains (m (* n1 32) (m n2 (m 32 (m (* n3 32) f)))))",
+        "(contains (m (* n1 32) (m (* n2 32) (m n3 (m 32 f)))))",
+        "(contains (m n1 (contains (m n2 (m 32 (m 32 (m (* n3 32) f))))))))",
+        "(contains (m (* n1 32) (contains (m n2 (contains (m n3 (m 32 (m 32 f)))))))))", */
+        "(contains (m n1 (m n2 (m n3 (m 32 (m 32 (m 32 f))))))))",
         // the corresponding full programs that we expect to find:
-        &[
-            /* "(o j (o (m n1 (m 32 (m (* n2 32) (m (* n3 32) f)))) (s 32)))",
-            "(o (m (* n1 32) j) (o (m (* n1 32) (m n2 (m 32 (m (* n3 32) f)))) (m (* n1 32) (s 32))))",
-            "(o (o (m (* n1 32) (m (* n2 32) j)) (m (* n1 32) (m (* n2 32) (m n3 (m 32 f))))) (m (* n1 32) (m (* n2 32) (s 32))))",
-            "(o j (o (m n1 (o (m 32 j) (o (o T (m n2 (m 32 (m 32 (m (* n3 32) f))))) (o T (m 32 (s 32)))))) (s 32)))",
-            "(m (* n1 32) (o j (o (m n2 (o (o (o (m 32 j) T) (m n3 (m 32 (m 32 f)))) (o T (m 32 (s 32))))) (s 32))))", */
-            // "(o j (o (m n1 (o (o (o (m 32 j) T) (o (m n2 (o (m 32 (o (m 32 j) T)) (o (o T (o (m n3 (m 32 (m 32 (m 32 f)))) T)) (m 32 (o T (m 32 (s 32))))))) T)) (m 32 (s 32)))) (s 32)))",
-            "(o (o (m (* n1 32) (o (m (* n2 32) j) j)) j) (o (o (m n1 (o T (m n2 (o (m 32 T) T)))) (o (m n1 (m n2 (m n3 (m 32 (m 32 (m 32 f)))))) (m n1 (m n2 T)))) (o (o (m n1 (o (m n2 (m 32 T)) T)) (s 32)) (m (* n1 32) (o (m n2 (m 32 (s 32))) (s 32))))))",
-        ],
+
+        /* "(o j (o (m n1 (m 32 (m (* n2 32) (m (* n3 32) f)))) (s 32)))",
+        "(o (m (* n1 32) j) (o (m (* n1 32) (m n2 (m 32 (m (* n3 32) f)))) (m (* n1 32) (s 32))))",
+        "(o (o (m (* n1 32) (m (* n2 32) j)) (m (* n1 32) (m (* n2 32) (m n3 (m 32 f))))) (m (* n1 32) (m (* n2 32) (s 32))))",
+        "(o j (o (m n1 (o (m 32 j) (o (o T (m n2 (m 32 (m 32 (m (* n3 32) f))))) (o T (m 32 (s 32)))))) (s 32)))",
+        "(m (* n1 32) (o j (o (m n2 (o (o (o (m 32 j) T) (m n3 (m 32 (m 32 f)))) (o T (m 32 (s 32))))) (s 32))))", */
+        // "(o j (o (m n1 (o (o (o (m 32 j) T) (o (m n2 (o (m 32 (o (m 32 j) T)) (o (o T (o (m n3 (m 32 (m 32 (m 32 f)))) T)) (m 32 (o T (m 32 (s 32))))))) T)) (m 32 (s 32)))) (s 32)))",
+        "(o (o (m (* n1 32) (o (m (* n2 32) j) j)) j) (o (o (m n1 (o T (m n2 (o (m 32 T) T)))) (o (m n1 (m n2 (m n3 (m 32 (m 32 (m 32 f)))))) (m n1 (m n2 T)))) (o (o (m n1 (o (m n2 (m 32 T)) T)) (s 32)) (m (* n1 32) (o (m n2 (m 32 (s 32))) (s 32))))))",
     )
 }
 
@@ -166,17 +158,13 @@ pub fn tile_4d(ts: TilingSearch, mode: SearchMode) -> ReachResult<Lang> {
         // 4 nested maps that we want to tile (split + reorder):
         "(m (* n1 32) (m (* n2 32) (m (* n3 32) (m (* n4 32) f))))",
         // sketches for the splitted map nests we are looking for:
-        &["(contains (m n1 (m 32 (m n2 (m 32 (m n3 (m 32 (m n4 (m 32 f)))))))))"],
+        "(contains (m n1 (m 32 (m n2 (m 32 (m n3 (m 32 (m n4 (m 32 f)))))))))",
         // the corresponding full programs that we expect to find:
-        &[
-            "(o (m (* n1 32) (o (m (* n2 32) (o (m (* n3 32) j) j)) j)) (o (o j (o (m n1 (m 32 (m n2 (m 32 (m n3 (m 32 (m n4 (m 32 f)))))))) (s 32))) (m (* n1 32) (o (m n2 (m 32 (o (m n3 (m 32 (s 32))) (s 32)))) (s 32)))))",
-        ],
+        "(o (m (* n1 32) (o (m (* n2 32) (o (m (* n3 32) j) j)) j)) (o (o j (o (m n1 (m 32 (m n2 (m 32 (m n3 (m 32 (m n4 (m 32 f)))))))) (s 32))) (m (* n1 32) (o (m n2 (m 32 (o (m n3 (m 32 (s 32))) (s 32)))) (s 32)))))",
         // sketches for the tiled map nests we are looking for:
-        &["(contains (m n1 (m n2 (m n3 (m n4 (m 32 (m 32 (m 32 (m 32 f))))))))))"],
+        "(contains (m n1 (m n2 (m n3 (m n4 (m 32 (m 32 (m 32 (m 32 f))))))))))",
         // the corresponding full programs that we expect to find:
-        &[
-            "f", // ???
-        ],
+        "f", // ???
     )
 }
 
@@ -191,10 +179,10 @@ pub fn tile(
     mode: SearchMode,
     name: &str,
     start: &str,
-    split_sketches: &[&str],
-    split_expected: &[&str],
-    reorder_sketches: &[&str],
-    _reorder_expected: &[&str],
+    split_sketch: &str,
+    split_expected: &str,
+    reorder_sketches: &str,
+    _reorder_expected: &str,
 ) -> ReachResult<Lang> {
     let parse_expr = |s: &&str| {
         let e: Expr = s.parse().unwrap();
@@ -214,12 +202,12 @@ pub fn tile(
             let mut split_rules = common_rules();
             split_rules.extend(split_map());
             split_rules.extend(transpose_maps()); // <<< unused
-            let ss = split_sketches.iter().map(parse_sketch).collect::<Vec<_>>();
-            search(
+            let ss = parse_sketch(&split_sketch);
+            reach_sketches::<Lang, (), BigUint>(
                 &format!("tile_{name}_s"),
                 &start_expr,
                 &split_rules,
-                &ss,
+                ss,
                 mode,
             )
         }
@@ -227,59 +215,55 @@ pub fn tile(
             let mut reorder_rules = common_rules();
             reorder_rules.extend(split_map()); // <<< unused
             reorder_rules.extend(transpose_maps());
-            let rs = reorder_sketches
-                .iter()
-                .map(parse_sketch)
-                .collect::<Vec<_>>();
+            let rs = parse_sketch(&reorder_sketches);
             // The reorder phase starts from the (single) split program.
-            let se = parse_expr(&split_expected[0]);
-            search(&format!("tile_{name}_r"), &se, &reorder_rules, &rs, mode)
+            let se = parse_expr(&split_expected);
+            reach_sketches::<Lang, (), BigUint>(
+                &format!("tile_{name}_r"),
+                &se,
+                &reorder_rules,
+                rs,
+                mode,
+            )
         }
         TilingSearch::Tile => {
             let mut tile_rules = common_rules();
             tile_rules.extend(split_map());
             tile_rules.extend(transpose_maps());
-            let rs: Vec<Sketch> = reorder_sketches.iter().map(parse_sketch).collect();
-            search(&format!("tile_{name}"), &start_expr, &tile_rules, &rs, mode)
+            let rs = parse_sketch(&reorder_sketches);
+            reach_sketches::<Lang, (), BigUint>(
+                &format!("tile_{name}"),
+                &start_expr,
+                &tile_rules,
+                rs,
+                mode,
+            )
         }
     }
 }
 
-#[must_use]
-#[expect(clippy::missing_panics_doc)]
-pub fn reorder_3d(mode: SearchMode) -> ReachResult<Lang> {
-    let mut rules = common_rules();
-    rules.extend(transpose_maps());
+// #[must_use]
+// #[expect(clippy::missing_panics_doc)]
+// pub fn reorder_3d(mode: SearchMode) -> ReachResult<Lang> {
+//     let mut rules = common_rules();
+//     rules.extend(transpose_maps());
 
-    // 3 nested maps that we want to reorder.
-    let start: Expr = "(m n1 (m n2 (m n3 f)))".parse().unwrap();
-    // Sketches for the reordered map nests we are looking for.
-    let sketches: Vec<Sketch> = [
-        "(contains (m n1 (m n3 (m n2 f))))",
-        "(contains (m n2 (m n1 (m n3 f))))",
-        "(contains (m n2 (m n3 (m n1 f))))",
-        "(contains (m n3 (m n2 (m n1 f))))",
-        "(contains (m n3 (m n1 (m n2 f))))",
-    ]
-    .iter()
-    .map(|s| s.parse().unwrap())
-    .collect();
+//     // 3 nested maps that we want to reorder.
+//     let start: Expr = "(m n1 (m n2 (m n3 f)))".parse().unwrap();
+//     // Sketches for the reordered map nests we are looking for.
+//     let sketches: Vec<Sketch> = [
+//         "(contains (m n1 (m n3 (m n2 f))))",
+//         "(contains (m n2 (m n1 (m n3 f))))",
+//         "(contains (m n2 (m n3 (m n1 f))))",
+//         "(contains (m n3 (m n2 (m n1 f))))",
+//         "(contains (m n3 (m n1 (m n2 f))))",
+//     ]
+//     .iter()
+//     .map(|s| s.parse().unwrap())
+//     .collect();
 
-    search("reorder_3d", &start, &rules, &sketches, mode)
-}
-
-/// Thin `Lang`-specialized wrapper over [`reach_sketches`] for the untyped
-/// `mini_rise` language (`SymbolLang` + `()` analysis, `BigUint` frontier
-/// counter).
-fn search(
-    search_name: &str,
-    start: &Expr,
-    rules: &[Rewrite],
-    sketch_goals: &[Sketch],
-    mode: SearchMode,
-) -> ReachResult<Lang> {
-    reach_sketches::<Lang, (), BigUint>(search_name, start, rules, sketch_goals, mode)
-}
+//     reach_sketches::<Lang, (), BigUint>("reorder_3d", &start, &rules, &sketches, mode)
+// }
 
 #[must_use]
 pub fn string_of_expr(e: &Expr, flatten_o: bool) -> String {

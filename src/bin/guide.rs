@@ -330,10 +330,9 @@ impl Strategy {
                                 true,
                             )?;
                             let r =
-                                verify_reachability(&subset, &goal, &RULES, eqsat, args.full_union)
-                                    .map_err(|e| e.into());
+                                verify_reachability(&subset, &goal, &RULES, eqsat, args.full_union);
                             pb.inc(1);
-                            r
+                            Ok(r?.0)
                         })
                         .collect::<Vec<_>>();
                     (k, trials)
@@ -363,10 +362,9 @@ impl Strategy {
                                     &RULES,
                                     eqsat,
                                     args.full_union,
-                                )
-                                .map_err(Into::into);
+                                );
                                 pb.inc(1);
-                                r
+                                Ok(r?.0)
                             })
                             .collect(),
                     };
@@ -381,6 +379,7 @@ impl Strategy {
                     eqsat,
                     args.full_union,
                 )
+                .map(|r| r.0)
                 .map_err(Into::into);
                 pb.inc(1);
                 HashMap::from([(1, vec![r])])

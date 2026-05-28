@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use egg::{
-    Analysis, BackoffScheduler, CostFunction, EGraph, Extractor, FromOp, Id, Iteration,
+    Analysis, AstSize, BackoffScheduler, CostFunction, EGraph, Extractor, FromOp, Id, Iteration,
     IterationData, Language, LpCostFunction, LpExtractor, RecExpr, Rewrite, Runner,
     SimpleScheduler, StopReason,
 };
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::argparse::EqsatConfig;
 use crate::cli::{EqsatMetadata, GuideError};
-use crate::sketch::{Sketch, eclass_contains};
+use crate::sketch::{Sketch, eclass_contains, eclass_extract};
 use crate::{OriginLang, lower, tee_println};
 
 /// Trait for node labels in e-graphs and exprs.
@@ -318,7 +318,7 @@ where
 #[derive(Clone)]
 pub enum Goal<L: MyLanguage> {
     Expr(RecExpr<L>),
-    Sketches(Vec<Sketch<L>>),
+    Sketches(Sketch<L>),
 }
 
 impl<L: MyLanguage> Goal<L> {
@@ -327,12 +327,23 @@ impl<L: MyLanguage> Goal<L> {
     /// (rebuilt); [`eclass_contains`] asserts this.
     fn reached<N: Analysis<L>>(&self, egraph: &EGraph<L, N>, root: Id) -> bool {
         match self {
-            Goal::Expr(e) => egraph.lookup_expr(e).is_some(),
-            Goal::Sketches(sketches) => {
+            Goal::Expr(e) => egraph
+                .lookup_expr(e)
+                .is_some_and(|e| egraph.find(e) == root),
+            Goal::Sketches(sketch) => {
                 let root = egraph.find(root);
-                sketches.iter().all(|s| eclass_contains(s, egraph, root))
+                eclass_contains(sketch, egraph, root)
             }
         }
+    }
+
+    fn extract<N: Analysis<L>>(&self, egraph: &EGraph<L, N>, root: Id) -> Option<RecExpr<L>> {
+        self.reached(egraph, root).then_some({
+            match self {
+                Goal::Expr(rec_expr) => rec_expr.clone(),
+                Goal::Sketches(sketch) => eclass_extract(sketch, AstSize, egraph, root)?.1,
+            }
+        })
     }
 }
 
@@ -352,7 +363,7 @@ pub fn verify_reachability<L, N>(
     rules: &[Rewrite<L, N>],
     eqsat: &EqsatConfig,
     full_union: bool,
-) -> Result<Vec<egg::Iteration<()>>, GuideError>
+) -> Result<(Vec<egg::Iteration<()>>, RecExpr<L>), GuideError>
 where
     L: MyLanguage + Language + Display + 'static,
     N: MyAnalysis<L> + Default,
@@ -395,8 +406,8 @@ where
 
     r.egraph.rebuild();
     let root = r.roots[0];
-    if goal.reached(&r.egraph, root) {
-        Ok(r.iterations)
+    if let Some(target) = goal.extract(&r.egraph, root) {
+        Ok((r.iterations, target))
     } else {
         Err(GuideError::Unreached(r.stop_reason.clone().unwrap()))
     }

@@ -203,7 +203,7 @@ pub enum SearchMode {
 /// Outcome of a sketch-based reachability search.
 pub struct ReachResult<L: MyLanguage> {
     /// Whether all sketch goals were satisfied.
-    pub reached: bool,
+    pub reached: Option<RecExpr<L>>,
     /// For [`SearchMode::Cut`], the novel frontier terms sampled at the cut and
     /// used as guides. Empty for [`SearchMode::Brute`].
     pub sampled: Vec<RecExpr<L>>,
@@ -219,7 +219,7 @@ pub fn reach_sketches<L, N, C>(
     search_name: &str,
     start: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
-    sketch_goals: &[Sketch<L>],
+    sketch_goals: Sketch<L>,
     mode: SearchMode,
 ) -> ReachResult<L>
 where
@@ -242,7 +242,7 @@ fn reach_cut<L, N, C>(
     search_name: &str,
     start: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
-    sketch_goals: &[Sketch<L>],
+    sketch_goals: Sketch<L>,
     args: CutArgs,
 ) -> ReachResult<L>
 where
@@ -261,7 +261,7 @@ where
     let Some(result) = run_eqsat::<L, N, _>(start, rules.iter(), &cut_config) else {
         println!("{search_name}: run_eqsat produced no distinct cut state");
         return ReachResult {
-            reached: false,
+            reached: None,
             sampled: Vec::new(),
         };
     };
@@ -269,7 +269,7 @@ where
     let Some(pp) = PrecomputePackage::<C, _, _>::precompute(&result, args.max_size) else {
         println!("{search_name}: precompute returned None (empty frontier)");
         return ReachResult {
-            reached: false,
+            reached: None,
             sampled: Vec::new(),
         };
     };
@@ -286,7 +286,7 @@ where
         Err(e) => {
             println!("{search_name}: sampling failed ({e})");
             return ReachResult {
-                reached: false,
+                reached: None,
                 sampled: Vec::new(),
             };
         }
@@ -294,15 +294,17 @@ where
 
     let reached = verify_reachability(
         &sampled,
-        &Goal::Sketches(sketch_goals.to_vec()),
+        &Goal::Sketches(sketch_goals),
         rules,
         &cut_config,
         false,
     )
-    .is_ok();
+    .ok()
+    .map(|r| r.1);
 
     println!(
-        "{search_name}: reached={reached} from {} samples",
+        "{search_name}: reached={} from {} samples",
+        reached.is_some(),
         sampled.len()
     );
 
@@ -318,7 +320,7 @@ fn reach_brute<L, N>(
     search_name: &str,
     start: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
-    sketch_goals: &[Sketch<L>],
+    sketch_goals: Sketch<L>,
     args: BruteArgs,
 ) -> ReachResult<L>
 where
@@ -334,7 +336,7 @@ where
 
     // Lift the plain start expr into an OriginLang guide (inverse of `lower`);
     // origin is irrelevant here since there is no full-union dedup.
-    let guide: RecExpr<OriginLang<L>> = start
+    let guide = start
         .as_ref()
         .iter()
         .map(|n| OriginLang::new(n.clone(), id0()))
@@ -342,14 +344,18 @@ where
 
     let reached = verify_reachability(
         std::slice::from_ref(&guide),
-        &Goal::Sketches(sketch_goals.to_vec()),
+        &Goal::Sketches(sketch_goals),
         rules,
         &config,
         false,
     )
-    .is_ok();
+    .ok()
+    .map(|r| r.1);
 
-    println!("{search_name}: reached={reached} (brute force, no cut)");
+    println!(
+        "{search_name}: reached={} (brute force, no cut)",
+        reached.is_some()
+    );
 
     ReachResult {
         reached,
