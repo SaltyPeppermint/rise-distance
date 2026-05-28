@@ -292,7 +292,7 @@ where
             eqsat_meta: vec![cut_meta],
         };
     };
-    pp.log_root();
+    // pp.log_root();
 
     let sampled = match pp.sample_frontier_terms(
         args.sample_count,
