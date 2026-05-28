@@ -12,7 +12,6 @@ use crate::{
 };
 
 /// Returns the best program satisfying `s` according to `cost_fn` that is represented in the `id` e-class of `egraph`, if it exists.
-#[expect(clippy::missing_panics_doc)]
 pub fn eclass_extract<L, A, CF>(
     sketch: &Sketch<L>,
     cost_fn: CF,
@@ -25,10 +24,10 @@ where
     CF: CostFunction<L> + Debug,
     CF::Cost: 'static + Ord,
 {
-    assert_eq!(egraph.find(id), id);
+    let canon_id = egraph.find(id);
     let (exprs, eclass_to_best) = extract(sketch, cost_fn, egraph);
     eclass_to_best
-        .get(&id)
+        .get(&canon_id)
         .map(|(best_cost, best_id)| (best_cost.clone(), exprs.extract(*best_id)))
 }
 
