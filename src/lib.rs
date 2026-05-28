@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod cli;
 mod count;
 pub mod egg;
@@ -5,8 +6,9 @@ mod euler_str;
 mod flat_tree;
 pub mod min;
 mod sampling;
+pub mod sketch;
 mod structural;
-mod utils;
+pub(crate) mod utils;
 mod zs;
 
 pub use count::{Counter, NovelTermCount, PlainTermCount};
