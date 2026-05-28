@@ -8,8 +8,8 @@ use hashbrown::HashMap;
 use num::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
+use crate::MyLanguage;
 use crate::count::Counter;
-use crate::{MyLanguage, tee_println};
 
 /// Either a single seed s-expression or a path to a JSON file with objects containing `size` and `term` fields.
 #[derive(Debug, Clone)]
@@ -43,33 +43,29 @@ impl EqsatConfig {
         if self == other {
             return;
         }
-        tee_println!("WARNING: args.json differs from the config goal recorded:");
+        println!("WARNING: args.json differs from the config goal recorded:");
         if self.max_iters != other.max_iters {
-            tee_println!(
+            println!(
                 "  max_iters: this={} other={}",
-                self.max_iters,
-                other.max_iters
+                self.max_iters, other.max_iters
             );
         }
         if self.max_nodes != other.max_nodes {
-            tee_println!(
+            println!(
                 "  max_nodes: this={} other={}",
-                self.max_nodes,
-                other.max_nodes
+                self.max_nodes, other.max_nodes
             );
         }
         if self.max_time != other.max_time {
-            tee_println!(
+            println!(
                 "  max_time: this={} other={}",
-                self.max_time,
-                other.max_time
+                self.max_time, other.max_time
             );
         }
         if self.backoff_scheduler != other.backoff_scheduler {
-            tee_println!(
+            println!(
                 "  backoff_scheduler: this={} other={}",
-                self.backoff_scheduler,
-                other.backoff_scheduler
+                self.backoff_scheduler, other.backoff_scheduler
             );
         }
     }

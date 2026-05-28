@@ -24,7 +24,6 @@ use crate::sampling::{CountWeigher, NaiveWeigher};
 use crate::sketch::Sketch;
 use crate::{
     NovelSampler, NovelTermCount, OriginLang, PlainSampler, PlainTermCount, Sampler, lower,
-    tee_println,
 };
 
 pub struct PrecomputePackage<'a, C, L, N>
@@ -86,9 +85,9 @@ where
             .map(|(a, b)| (*a, b.to_owned()))
             .collect::<Vec<_>>();
         sorted_hist.sort_unstable();
-        tee_println!("Terms in frontier:");
+        println!("Terms in frontier:");
         for (k, v) in &sorted_hist {
-            tee_println!("{v} terms of size {k}");
+            println!("{v} terms of size {k}");
         }
     }
 

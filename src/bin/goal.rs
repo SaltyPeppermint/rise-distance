@@ -1,7 +1,6 @@
 // #[global_allocator]
 // static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use std::env::current_dir;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -17,12 +16,11 @@ use rise_distance::cli::argparse::{
     EqsatConfig, Language, SampleStrategy, SeedInput, TermSampleDist, parse_seeds,
     read_folder_args, read_folder_language,
 };
-use rise_distance::cli::init_log;
 use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
 use rise_distance::langs::{SplitMetadata, math, prop, run_eqsat};
+use rise_distance::lower;
 use rise_distance::search::PrecomputePackage;
 use rise_distance::{MyAnalysis, MyLanguage};
-use rise_distance::{lower, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -59,14 +57,12 @@ struct Args {
 }
 
 fn main() {
-    let log_file = current_dir().unwrap();
-    init_log(&log_file);
     let args = Args::parse();
     let eqsat = read_folder_args(&args.path);
     let language = read_folder_language(&args.path);
 
-    tee_println!("Input folder: {}", args.path.display());
-    tee_println!("Language: {language:?}");
+    println!("Input folder: {}", args.path.display());
+    println!("Language: {language:?}");
 
     match language {
         Language::Math => main_inner::<_, math::ConstantFold>(&args, &eqsat, &math::RULES),
@@ -81,19 +77,19 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
 ) {
     let seeds = parse_seeds::<L>(SeedInput::JSON(args.path.join("terms.json")));
     let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
-    tee_println!("Distribution: {}", args.size_distribution);
-    tee_println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
+    println!("Distribution: {}", args.size_distribution);
+    println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
 
     let mut enriched_map: HashMap<String, EnrichedSeed> = HashMap::new();
 
     for (i, (seed_str, seed_expr, max_size)) in seeds.into_iter().take(take_n).enumerate() {
-        tee_println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
+        println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
         let enriched = process_seed(args, eqsat, &seed_expr, max_size, rules);
         enriched_map.insert(seed_str.clone(), enriched);
     }
 
     write_enriched_terms(&args.path, &enriched_map);
-    tee_println!(
+    println!(
         "\nWrote {} enriched seed(s) to {}",
         enriched_map.len(),
         args.path.join("terms.json").display()
@@ -117,22 +113,17 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let stop_reason = format!("{:?}", result.stop_reason());
     let SplitMetadata { guide, goal } = result.split_metadata();
 
-    tee_println!(
+    println!(
         "goal_iters={} guide_iters={} stop={stop_reason}",
-        goal.iters,
-        guide.iters
+        goal.iters, guide.iters
     );
-    tee_println!(
+    println!(
         "guide egraph: {} nodes, {} classes in {:.2}s",
-        guide.nodes,
-        guide.classes,
-        guide.time
+        guide.nodes, guide.classes, guide.time
     );
-    tee_println!(
+    println!(
         "goal egraph:  {} nodes, {} classes in {:.2}s",
-        goal.nodes,
-        goal.classes,
-        goal.time
+        goal.nodes, goal.classes, goal.time
     );
 
     let now = Instant::now();
@@ -142,7 +133,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
             fail_reason: format!("goal precompute returned None (goal_iters={})", goal.iters),
         });
     };
-    tee_println!("Precompute built in {:.2}s", now.elapsed().as_secs_f64());
+    println!("Precompute built in {:.2}s", now.elapsed().as_secs_f64());
     pp.log_root();
 
     let goals = match pp.sample_frontier_terms(

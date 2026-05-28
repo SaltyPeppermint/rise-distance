@@ -15,14 +15,14 @@ use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 
+use rise_distance::Counter;
 use rise_distance::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist, read_folder_args};
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{EnrichedSeed, GoalGenMetadata, GoalSummary, TrialsPerK};
-use rise_distance::cli::{EqsatMetadata, get_run_folder, init_log, write_config, write_metadata};
+use rise_distance::cli::{EqsatMetadata, get_run_folder, write_config, write_metadata};
 use rise_distance::langs::math::{ConstantFold, Math, RULES};
 use rise_distance::langs::{Goal, run_eqsat, verify_reachability};
 use rise_distance::search::PrecomputePackage;
-use rise_distance::{Counter, tee_println};
 use time::OffsetDateTime;
 
 #[derive(Parser, Serialize)]
@@ -72,29 +72,27 @@ fn main() {
         folder_args.max_iters, args.full_union
     );
     let run_folder = get_run_folder(args.output.as_deref(), "guide_eval", &prefix);
-    init_log(&run_folder);
 
-    tee_println!("Starting at {}", OffsetDateTime::now_local().unwrap());
-    tee_println!("Run Folder: {}", run_folder.to_string_lossy());
-    tee_println!("Input folder: {}", args.path.display());
+    println!("Starting at {}", OffsetDateTime::now_local().unwrap());
+    println!("Run Folder: {}", run_folder.to_string_lossy());
+    println!("Input folder: {}", args.path.display());
 
     let seeds = read_enriched_terms(&args.path);
     let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
-    tee_println!("Distribution: {}", args.size_distribution);
-    tee_println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
+    println!("Distribution: {}", args.size_distribution);
+    println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
 
     let mut all: HashMap<String, Vec<GoalResults>> = HashMap::new();
     let mut all_metadata = Vec::new();
 
     for (i, (seed_str, payload)) in seeds.iter().take(take_n).enumerate() {
         let EnrichedSeed::Ok(ok) = payload else {
-            tee_println!("\n=== Seed {i}: {seed_str} SKIPPED (failed in goal stage) ===");
+            println!("\n=== Seed {i}: {seed_str} SKIPPED (failed in goal stage) ===");
             continue;
         };
-        tee_println!(
+        println!(
             "\n=== Seed {i}: {seed_str} (max_size={}, guide_iters={}) ===",
-            ok.max_size,
-            ok.guide_egraph.iters
+            ok.max_size, ok.guide_egraph.iters
         );
         if let Some((r, metadata)) = process_seed(&args, &folder_args, seed_str, ok) {
             all_metadata.push(metadata);
@@ -102,7 +100,7 @@ fn main() {
                 all.entry(name).or_default().extend(r_s);
             }
         }
-        tee_println!(
+        println!(
             "\nFinished seed at {}",
             OffsetDateTime::now_local().unwrap()
         );
@@ -111,7 +109,7 @@ fn main() {
     write_top_k_outputs(&run_folder, all);
     write_config(&run_folder, &args);
     write_metadata(&run_folder, &all_metadata);
-    tee_println!("\nFinished at {}", OffsetDateTime::now_local().unwrap());
+    println!("\nFinished at {}", OffsetDateTime::now_local().unwrap());
 }
 
 /// Read enriched `terms.json`. Returns a flat list in deterministic order
@@ -157,13 +155,13 @@ fn process_seed(
         ..*folder_args
     };
     let result = run_eqsat(&seed_expr, RULES.iter(), &replay_config)?;
-    tee_println!("Guide replay stop reason: {:?}", result.stop_reason());
+    println!("Guide replay stop reason: {:?}", result.stop_reason());
 
     let guide_nodes = result.curr().total_number_of_nodes();
     let guide_classes = result.curr().classes().len();
     let guide_time = result.data().last().unwrap().total_time;
     let guide_iters = result.data().len();
-    tee_println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
+    println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
     folder_args.warn_on_config_drift(&payload.eqsat_config);
 
     let pc = PrecomputePackage::<BigUint, _, _>::precompute(&result, payload.max_size)?;
@@ -188,7 +186,7 @@ fn process_seed(
         Strategy::Smallest { novel: true },
     ];
 
-    tee_println!("\nRunning {} strategies in parallel...", strategies.len());
+    println!("\nRunning {} strategies in parallel...", strategies.len());
     let r = strategies
         .into_par_iter()
         .map(|strat| {

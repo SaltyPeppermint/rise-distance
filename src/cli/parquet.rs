@@ -5,7 +5,7 @@ use egg::RecExpr;
 use polars::prelude::*;
 
 use crate::cli::{ExperimentError, GoalSummary, GuideError, GuideEval};
-use crate::{MyLanguage, OriginLang, tee_println};
+use crate::{MyLanguage, OriginLang};
 
 /// Dump eval results to a new Parquet file inside `run_folder/out/`.
 ///
@@ -88,7 +88,7 @@ pub fn dump_full_eval_parquet<L: MyLanguage>(
         .finish(&mut df)
         .expect("write parquet");
 
-    tee_println!("Wrote goal to {}", parquet_path.display());
+    println!("Wrote goal to {}", parquet_path.display());
 }
 
 /// Write a flat `top_k_summary.parquet` from pre-computed summaries.

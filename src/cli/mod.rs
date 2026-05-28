@@ -1,9 +1,7 @@
 pub mod argparse;
-pub mod logging;
 pub mod parquet;
 pub mod types;
 
-pub use logging::{_tee_print, init_log};
 pub use types::*;
 
 use std::env::current_dir;
