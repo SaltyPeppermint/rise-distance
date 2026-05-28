@@ -158,11 +158,6 @@ where
     }
 }
 
-/// Node/time limits shared by both strategies. Iteration limits are
-/// strategy-specific (`CutArgs::cut_iters` vs `BruteArgs::max_iters`).
-const MAX_NODES: usize = 100_000_000;
-const MAX_TIME_SECS: f64 = 5.0 * 60.0;
-
 /// Tunable knobs for the cut-and-sample search strategy.
 #[derive(Copy, Clone, Debug, clap::Args)]
 pub struct CutArgs {
@@ -176,6 +171,14 @@ pub struct CutArgs {
     #[arg(long, default_value_t = 30)]
     pub max_size: usize,
 
+    /// Maximum nodes in an egraph
+    #[arg(long, default_value_t = 1_000_000)]
+    pub max_nodes: usize,
+
+    /// Maximum time in an egraph
+    #[arg(long, default_value_t = 30.0)]
+    pub max_time: f64,
+
     /// Number of novel frontier terms to sample at the cut point as the guide
     /// set to continue eqsat from.
     #[arg(long, default_value_t = 100)]
@@ -188,6 +191,14 @@ pub struct BruteArgs {
     /// Maximum eqsat iterations before giving up.
     #[arg(long, default_value_t = 100)]
     pub max_iters: usize,
+
+    /// Maximum nodes in an egraph
+    #[arg(long, default_value_t = 1_000_000)]
+    pub max_nodes: usize,
+
+    /// Maximum time in an egraph
+    #[arg(long, default_value_t = 30.0)]
+    pub max_time: f64,
 }
 
 /// Which search strategy to run.
@@ -250,14 +261,14 @@ where
     N::Data: Clone,
     C: Counter,
 {
-    let cut_config = EqsatConfig {
+    let eqsat_config = EqsatConfig {
         max_iters: args.cut_iters,
-        max_nodes: MAX_NODES,
-        max_time: MAX_TIME_SECS,
+        max_nodes: args.max_nodes,
+        max_time: args.max_time,
         backoff_scheduler: false,
     };
 
-    let Some(result) = run_eqsat::<L, N, _>(start, rules.iter(), &cut_config) else {
+    let Some(result) = run_eqsat::<L, N, _>(start, rules.iter(), &eqsat_config) else {
         println!("{search_name}: run_eqsat produced no distinct cut state");
         return ReachResult {
             reached: None,
@@ -291,11 +302,17 @@ where
         }
     };
 
+    println!(
+        "Sampled {} terms after {} iterations!",
+        sampled.len(),
+        result.iters()
+    );
+
     let reached = verify_reachability(
         &sampled,
         &Goal::Sketches(sketch_goals),
         rules,
-        &cut_config,
+        &eqsat_config,
         false,
     )
     .ok()
@@ -328,8 +345,8 @@ where
 {
     let config = EqsatConfig {
         max_iters: args.max_iters,
-        max_nodes: MAX_NODES,
-        max_time: MAX_TIME_SECS,
+        max_nodes: args.max_nodes,
+        max_time: args.max_time,
         backoff_scheduler: false,
     };
 
