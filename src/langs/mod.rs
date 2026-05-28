@@ -16,8 +16,8 @@ use egg::{
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
+use crate::cli::GuideError;
 use crate::cli::argparse::EqsatConfig;
-use crate::cli::{EqsatMetadata, GuideError};
 use crate::sketch::{Sketch, eclass_contains, eclass_extract};
 use crate::{OriginLang, lower};
 
@@ -84,6 +84,36 @@ pub fn stack_children<L: MyLanguage>(children: &[RecExpr<L>], root: L) -> RecExp
         new_id
     })
     .join_recexprs(|c_id| children[usize::from(c_id)].clone())
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EqsatMetadata {
+    pub nodes: usize,
+    pub classes: usize,
+    pub time: f64,
+    pub iters: usize,
+}
+
+impl EqsatMetadata {
+    /// Summarize a single eqsat run from its per-iteration log. egg records
+    /// `egraph_nodes`/`egraph_classes` at the *start* of each iteration, so the
+    /// last entry holds the final size. `time` sums every iteration's
+    /// `total_time`; `iters` is the index of the last applied iteration
+    /// (`len() - 1`), matching [`crate::langs::EqsatResult::iters`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `iterations` is empty (a runner always logs at least one).
+    #[must_use]
+    pub fn from_iterations(iterations: &[Iteration<()>]) -> Self {
+        let last = iterations.last().expect("eqsat run logged no iterations");
+        Self {
+            nodes: last.egraph_nodes,
+            classes: last.egraph_classes,
+            time: iterations.iter().map(|i| i.total_time).sum(),
+            iters: iterations.len() - 1,
+        }
+    }
 }
 
 /// Result of running eqsat. Holds only the last two egraphs (`prev` and

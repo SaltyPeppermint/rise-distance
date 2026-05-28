@@ -18,7 +18,7 @@ use crate::cli::ExperimentError;
 use crate::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist};
 use crate::count::Counter;
 use crate::langs::{
-    EqsatResult, Goal, MyAnalysis, MyLanguage, id0, run_eqsat, verify_reachability,
+    EqsatMetadata, EqsatResult, Goal, MyAnalysis, MyLanguage, id0, run_eqsat, verify_reachability,
 };
 use crate::sampling::{CountWeigher, NaiveWeigher};
 use crate::sketch::Sketch;
@@ -217,6 +217,11 @@ pub struct ReachResult<L: MyLanguage> {
     /// For [`SearchMode::Cut`], the novel frontier terms sampled at the cut and
     /// used as guides. Empty for [`SearchMode::Brute`].
     pub sampled: Vec<RecExpr<L>>,
+
+    /// Per-phase eqsat metadata. [`SearchMode::Cut`] yields up to two entries
+    /// (the cut growth, then the verify run); [`SearchMode::Brute`] yields one
+    /// (the verify run). Empty when the search bailed before running eqsat.
+    pub eqsat_meta: Vec<EqsatMetadata>,
 }
 
 /// Search whether `start` can reach an e-graph state satisfying every sketch in
@@ -273,14 +278,18 @@ where
         return ReachResult {
             reached: None,
             sampled: Vec::new(),
+            eqsat_meta: Vec::new(),
         };
     };
+
+    let cut_meta = EqsatMetadata::from_iterations(result.data());
 
     let Some(pp) = PrecomputePackage::<C, _, _>::precompute(&result, args.max_size) else {
         println!("{search_name}: precompute returned None (empty frontier)");
         return ReachResult {
             reached: None,
             sampled: Vec::new(),
+            eqsat_meta: vec![cut_meta],
         };
     };
     pp.log_root();
@@ -298,6 +307,7 @@ where
             return ReachResult {
                 reached: None,
                 sampled: Vec::new(),
+                eqsat_meta: vec![cut_meta],
             };
         }
     };
@@ -307,26 +317,38 @@ where
         sampled.len(),
         result.iters()
     );
+    for s in &sampled {
+        println!("{}", lower(s.to_owned()));
+    }
 
-    let reached = verify_reachability(
+    let verify = verify_reachability(
         &sampled,
         &Goal::Sketches(sketch_goals),
         rules,
         &eqsat_config,
         false,
-    )
-    .ok()
-    .map(|r| r.1);
+    );
 
     println!(
         "{search_name}: reached={} from {} samples",
-        reached.is_some(),
+        verify.is_ok(),
         sampled.len()
     );
+
+    let (reached, verify_iters) = match verify {
+        Ok((iters, expr)) => (Some(expr), Some(iters)),
+        Err(_) => (None, None),
+    };
+
+    let mut eqsat_meta = vec![cut_meta];
+    if let Some(iters) = &verify_iters {
+        eqsat_meta.push(EqsatMetadata::from_iterations(iters));
+    }
 
     ReachResult {
         reached,
         sampled: sampled.into_iter().map(lower).collect(),
+        eqsat_meta,
     }
 }
 
@@ -358,23 +380,32 @@ where
         .map(|n| OriginLang::new(n.clone(), id0()))
         .collect();
 
-    let reached = verify_reachability(
+    let verify = verify_reachability(
         std::slice::from_ref(&guide),
         &Goal::Sketches(sketch_goals),
         rules,
         &config,
         false,
-    )
-    .ok()
-    .map(|r| r.1);
+    );
 
     println!(
         "{search_name}: reached={} (brute force, no cut)",
-        reached.is_some()
+        verify.is_ok()
     );
+
+    let (reached, verify_iters) = match verify {
+        Ok((iters, expr)) => (Some(expr), Some(iters)),
+        Err(_) => (None, None),
+    };
+
+    let eqsat_meta = verify_iters
+        .iter()
+        .map(|iters| EqsatMetadata::from_iterations(iters))
+        .collect();
 
     ReachResult {
         reached,
         sampled: Vec::new(),
+        eqsat_meta,
     }
 }

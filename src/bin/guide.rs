@@ -19,9 +19,9 @@ use rise_distance::Counter;
 use rise_distance::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist, read_folder_args};
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{EnrichedSeed, GoalGenMetadata, GoalSummary, TrialsPerK};
-use rise_distance::cli::{EqsatMetadata, get_run_folder, write_config, write_metadata};
+use rise_distance::cli::{get_run_folder, write_config, write_metadata};
 use rise_distance::langs::math::{ConstantFold, Math, RULES};
-use rise_distance::langs::{Goal, run_eqsat, verify_reachability};
+use rise_distance::langs::{EqsatMetadata, Goal, run_eqsat, verify_reachability};
 use rise_distance::search::PrecomputePackage;
 use time::OffsetDateTime;
 

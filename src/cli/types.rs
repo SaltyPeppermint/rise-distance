@@ -6,6 +6,7 @@ use strum::Display;
 use thiserror::Error;
 
 use crate::cli::argparse::EqsatConfig;
+use crate::langs::EqsatMetadata;
 use crate::{MyLanguage, OriginLang};
 
 #[derive(Debug, Error, Display, Serialize, Clone)]
@@ -75,14 +76,6 @@ pub struct GoalGenMetadata {
     pub stop_reason: String,
     pub guide_egraph: EqsatMetadata,
     pub goal_egraph: EqsatMetadata,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct EqsatMetadata {
-    pub nodes: usize,
-    pub classes: usize,
-    pub time: f64,
-    pub iters: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
