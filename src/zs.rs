@@ -1,4 +1,96 @@
-use crate::{FlatTree, MyLanguage};
+use std::fmt::{self, Display};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use egg::{Id, RecExpr};
+use rayon::prelude::*;
+
+use crate::egg::id0;
+use crate::{MyLanguage, OriginLang};
+
+/// Core Zhang-Shasha minimum distance search over a parallel iterator of candidate trees.
+///
+/// Applies size-difference and Euler-string lower-bound pruning before computing
+/// the full edit distance.
+pub fn find_min_zs<L, CF, I>(
+    candidates: I,
+    reference: &RecExpr<L>,
+    costs: &CF,
+) -> (Option<(RecExpr<L>, usize)>, ZSStats)
+where
+    L: MyLanguage,
+    CF: EditCosts<L>,
+    I: ParallelIterator<Item = RecExpr<L>>,
+{
+    let ref_flat: FlatTree<L> = reference.into();
+
+    let ref_size = ref_flat.size();
+    let ref_pp = PreprocessedTree::new(&ref_flat);
+    let running_best = AtomicUsize::new(usize::MAX);
+
+    candidates
+        .map(|candidate| {
+            let candidate_flat: FlatTree<L> = (&candidate).into();
+            let best = running_best.load(Ordering::Relaxed);
+
+            if candidate_flat.size().abs_diff(ref_size) > best {
+                return (None, ZSStats::size_pruned());
+            }
+
+            let distance = tree_distance_with_ref(&candidate_flat, &ref_pp, costs);
+            running_best.fetch_min(distance, Ordering::Relaxed);
+
+            (Some((candidate, distance)), ZSStats::compared())
+        })
+        .reduce(
+            || (None, ZSStats::default()),
+            |a, b| {
+                let best = [a.0, b.0].into_iter().flatten().min_by_key(|v| v.1);
+                (best, a.1 + b.1)
+            },
+        )
+}
+
+/// Statistics from filtered extraction
+#[derive(Debug, Clone, Default)]
+pub struct ZSStats {
+    /// Total number of trees enumerated
+    pub trees_enumerated: usize,
+    /// Trees pruned by simple metric
+    pub size_pruned: usize,
+
+    /// Number of trees for which full distance was computed
+    pub full_comparisons: usize,
+}
+
+impl ZSStats {
+    pub(crate) fn size_pruned() -> Self {
+        Self {
+            trees_enumerated: 1,
+            size_pruned: 1,
+            full_comparisons: 0,
+        }
+    }
+
+    pub(crate) fn compared() -> Self {
+        Self {
+            trees_enumerated: 1,
+            size_pruned: 0,
+            full_comparisons: 1,
+        }
+    }
+}
+
+impl std::ops::Add for ZSStats {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            trees_enumerated: self.trees_enumerated + rhs.trees_enumerated,
+            size_pruned: self.size_pruned + rhs.size_pruned,
+            full_comparisons: self.full_comparisons + rhs.full_comparisons,
+        }
+    }
+}
 
 /// Postorder traversal information for a tree node.
 #[derive(Debug, Clone)]
@@ -260,183 +352,72 @@ pub fn tree_distance_unit<L: MyLanguage>(tree1: &FlatTree<L>, tree2: &FlatTree<L
     tree_distance(tree1, tree2, &UnitCost)
 }
 
-// TODO: re-enable tests!!
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::{};
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct FlatTree<L: MyLanguage> {
+    pub(super) label: L,
+    pub(super) children: Vec<FlatTree<L>>,
+}
 
-//     #[test]
-//     fn basic_zhang_shasha() {
-//         let tree1 = node(
-//             "a".to_owned(),
-//             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-//         )
-//         .flatten(false);
-//         let tree2 = node(
-//             "a".to_owned(),
-//             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-//         )
-//         .flatten(false);
-//         assert_eq!(tree_distance(&tree1, &tree2, &UnitCost), 0);
+impl<L: MyLanguage> FlatTree<L> {
+    pub fn children(&self) -> &[FlatTree<L>] {
+        &self.children
+    }
 
-//         let tree3 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(false);
-//         assert_eq!(tree_distance(&tree1, &tree3, &UnitCost), 1);
-//     }
+    pub fn label(&self) -> &L {
+        &self.label
+    }
 
-//     #[test]
-//     fn identical_trees() {
-//         let tree1 = node(
-//             "a".to_owned(),
-//             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-//         )
-//         .flatten(false);
-//         let tree2 = node(
-//             "a".to_owned(),
-//             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-//         )
-//         .flatten(false);
-//         assert_eq!(tree_distance_unit(&tree1, &tree2), 0);
-//     }
+    /// Returns true if this node has no children.
+    pub fn is_leaf(&self) -> bool {
+        self.children.is_empty()
+    }
 
-//     #[test]
-//     fn single_node_difference() {
-//         let tree1 = leaf("a".to_owned()).flatten(false);
-//         let tree2 = leaf("b".to_owned()).flatten(false);
-//         assert_eq!(tree_distance_unit(&tree1, &tree2), 1); // relabel a -> b
-//     }
+    pub fn size(&self) -> usize {
+        1 + self.children.iter().map(Self::size).sum::<usize>()
+    }
+}
 
-//     #[test]
-//     fn insert_child() {
-//         let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(false);
-//         let tree2 = node(
-//             "a".to_owned(),
-//             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-//         )
-//         .flatten(false);
-//         assert_eq!(tree_distance_unit(&tree1, &tree2), 1); // insert c
-//     }
+impl<L: MyLanguage> From<&RecExpr<L>> for FlatTree<L> {
+    fn from(value: &RecExpr<L>) -> Self {
+        fn rec<LL: MyLanguage>(expr: &RecExpr<LL>, id: Id) -> FlatTree<LL> {
+            let children = expr[id]
+                .children()
+                .iter()
+                .map(|c_id| rec(expr, *c_id))
+                .collect();
+            let label = expr[id].clone().map_children(|_| id0());
+            FlatTree { label, children }
+        }
+        rec(value, value.root())
+    }
+}
 
-//     #[test]
-//     fn delete_child() {
-//         let tree1 = node(
-//             "a".to_owned(),
-//             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-//         )
-//         .flatten(false);
-//         let tree2 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(false);
-//         assert_eq!(tree_distance_unit(&tree1, &tree2), 1); // delete c
-//     }
+impl<L: MyLanguage> From<&RecExpr<OriginLang<L>>> for FlatTree<L> {
+    fn from(value: &RecExpr<OriginLang<L>>) -> Self {
+        fn rec<LL: MyLanguage>(expr: &RecExpr<OriginLang<LL>>, id: Id) -> FlatTree<LL> {
+            let children = expr[id]
+                .inner()
+                .children()
+                .iter()
+                .map(|c_id| rec(expr, *c_id))
+                .collect();
+            let label = expr[id].inner().clone().map_children(|_| id0());
+            FlatTree { label, children }
+        }
+        rec(value, value.root())
+    }
+}
 
-//     #[test]
-//     fn empty_to_tree() {
-//         // Empty tree represented as single node to non-empty
-//         let tree1 = leaf("a".to_owned()).flatten(false);
-//         let tree2 = node(
-//             "a".to_owned(),
-//             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-//         )
-//         .flatten(false);
-//         assert_eq!(tree_distance_unit(&tree1, &tree2), 2); // insert b, insert c
-//     }
-
-//     #[test]
-//     fn different_structure() {
-//         // Tree 1:    a          Tree 2:    a
-//         //           /|                     |
-//         //          b c                     b
-//         //                                  |
-//         //                                  c
-//         let tree1 = node(
-//             "a".to_owned(),
-//             vec![leaf("b".to_owned()), leaf("c".to_owned())],
-//         )
-//         .flatten(false);
-//         let tree2 = node(
-//             "a".to_owned(),
-//             vec![node("b".to_owned(), vec![leaf("c".to_owned())])],
-//         )
-//         .flatten(false);
-//         // One way: delete c from tree1, insert c under b = 2 operations
-//         assert_eq!(tree_distance_unit(&tree1, &tree2), 2);
-//     }
-
-//     #[test]
-//     fn completely_different() {
-//         let tree1 = node("a".to_owned(), vec![leaf("b".to_owned())]).flatten(false);
-//         let tree2 = node("x".to_owned(), vec![leaf("y".to_owned())]).flatten(false);
-//         // relabel a->x, relabel b->y = 2 operations
-//         assert_eq!(tree_distance_unit(&tree1, &tree2), 2);
-//     }
-
-//     #[test]
-//     fn larger_trees() {
-//         // Tree 1:       a
-//         //             / | \
-//         //            b  c  d
-//         //           /|
-//         //          e f
-//         let tree1 = node(
-//             "a".to_owned(),
-//             vec![
-//                 node(
-//                     "b".to_owned(),
-//                     vec![leaf("e".to_owned()), leaf("f".to_owned())],
-//                 ),
-//                 leaf("c".to_owned()),
-//                 leaf("d".to_owned()),
-//             ],
-//         )
-//         .flatten(false);
-
-//         // Tree 2:       a
-//         //             / | \
-//         //            b  c  d
-//         //           /
-//         //          e
-//         let tree2 = node(
-//             "a".to_owned(),
-//             vec![
-//                 node("b".to_owned(), vec![leaf("e".to_owned())]),
-//                 leaf("c".to_owned()),
-//                 leaf("d".to_owned()),
-//             ],
-//         )
-//         .flatten(false);
-
-//         // Delete f from tree1
-//         assert_eq!(tree_distance_unit(&tree1, &tree2), 1);
-//     }
-
-//     #[test]
-//     fn deep_vs_shexpect() {
-//         // Tree 1: a - b - c - d (linear chain)
-//         let tree1 = node(
-//             "a".to_owned(),
-//             vec![node(
-//                 "b".to_owned(),
-//                 vec![node("c".to_owned(), vec![leaf("d".to_owned())])],
-//             )],
-//         )
-//         .flatten(false);
-
-//         // Tree 2:    a
-//         //          / | \
-//         //         b  c  d
-//         let tree2 = node(
-//             "a".to_owned(),
-//             vec![
-//                 leaf("b".to_owned()),
-//                 leaf("c".to_owned()),
-//                 leaf("d".to_owned()),
-//             ],
-//         )
-//         .flatten(false);
-
-//         // Need to restructure: this requires delete and insert operations
-//         // The exact cost depends on the optimal alignment
-//         let dist = tree_distance_unit(&tree1, &tree2);
-//         assert!(dist > 0);
-//         assert!(dist <= 4); // Upper bound: delete all and insert all (minus common)
-//     }
-// }
+impl<L: MyLanguage + Display> Display for FlatTree<L> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_leaf() {
+            write!(f, "{}", self.label)
+        } else {
+            write!(f, "({}", self.label)?;
+            for child in &self.children {
+                write!(f, " {child}")?;
+            }
+            write!(f, ")")
+        }
+    }
+}
