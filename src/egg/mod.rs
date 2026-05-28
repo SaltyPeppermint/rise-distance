@@ -1,5 +1,6 @@
 pub mod lambda;
 pub mod math;
+pub mod mini_rise;
 pub mod prop;
 pub mod sampler;
 

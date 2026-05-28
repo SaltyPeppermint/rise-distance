@@ -36,6 +36,7 @@ thiserror = "2"
 plotters = "0.3"
 csv = "1"
 rlimit = "0.11"
+memory-stats = "1"
 time = { version = "0.3", features = ["macros", "local-offset"] }
 
 [lints.clippy]
@@ -99,9 +100,9 @@ path = "src/bin/goal.rs"
 name = "generate"
 path = "src/bin/generate.rs"
 
-# [[bin]]
-# name = "training-data"
-# path = "src/bin/training_data.rs"
+[[bin]]
+name = "rise"
+path = "src/bin/rise.rs"
 
 [[bin]]
 name = "measure-size"
