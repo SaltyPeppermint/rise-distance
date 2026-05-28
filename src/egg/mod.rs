@@ -19,8 +19,8 @@ use egg::{
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
-use crate::cli::GuideError;
 use crate::cli::argparse::EqsatConfig;
+use crate::cli::{EqsatMetadata, GuideError};
 use crate::tee_println;
 
 pub use origin::{OriginLang, lower};
@@ -152,6 +152,48 @@ where
     pub fn stop_reason(&self) -> &StopReason {
         &self.stop_reason
     }
+
+    /// Split this run into guide- and goal-phase metadata. The guide phase is
+    /// the first half of the applied iterations (`iters() / 2`); the goal phase
+    /// is the whole run.
+    ///
+    /// egg's `Iteration` records `egraph_nodes`/`egraph_classes` at the *start*
+    /// of each iteration, so iter K+1's start equals iter K's end. The guide
+    /// node/class counts therefore read from `data()[guide_iters + 1]`.
+    #[must_use]
+    pub fn split_metadata(&self) -> SplitMetadata {
+        let goal_iters = self.iters();
+        let guide_iters = goal_iters / 2;
+
+        let guide_time = self.iter_data[..=guide_iters]
+            .iter()
+            .map(|i| i.total_time)
+            .sum();
+        let goal_time = self.iter_data.iter().map(|i| i.total_time).sum();
+
+        let guide_iter_end = &self.iter_data[guide_iters + 1];
+        SplitMetadata {
+            guide: EqsatMetadata {
+                nodes: guide_iter_end.egraph_nodes,
+                classes: guide_iter_end.egraph_classes,
+                time: guide_time,
+                iters: guide_iters,
+            },
+            goal: EqsatMetadata {
+                nodes: self.curr.total_number_of_nodes(),
+                classes: self.curr.classes().len(),
+                time: goal_time,
+                iters: goal_iters,
+            },
+        }
+    }
+}
+
+/// Guide- and goal-phase metadata for a single eqsat run. See
+/// [`EqsatResult::split_metadata`].
+pub struct SplitMetadata {
+    pub guide: EqsatMetadata,
+    pub goal: EqsatMetadata,
 }
 
 /// Holds the latest two *distinct* egraph snapshots seen by the hook. A

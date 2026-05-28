@@ -18,8 +18,8 @@ use rise_distance::cli::argparse::{
     read_folder_args, read_folder_language,
 };
 use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
-use rise_distance::cli::{EqsatMetadata, PrecomputePackage, init_log};
-use rise_distance::egg::{lower, math, prop, run_eqsat};
+use rise_distance::cli::{PrecomputePackage, init_log};
+use rise_distance::egg::{SplitMetadata, lower, math, prop, run_eqsat};
 use rise_distance::tee_println;
 use rise_distance::{MyAnalysis, MyLanguage};
 
@@ -113,33 +113,35 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
         });
     };
 
-    let goal_iters = result.iters();
-    let guide_iters = goal_iters / 2;
     let stop_reason = format!("{:?}", result.stop_reason());
+    let SplitMetadata { guide, goal } = result.split_metadata();
 
-    let guide_secs = result.data()[..=guide_iters]
-        .iter()
-        .map(|i| i.total_time)
-        .sum::<f64>();
-    let goal_secs = result.data().iter().map(|i| i.total_time).sum::<f64>();
-
-    // egg's `Iteration` records `egraph_nodes`/`egraph_classes` at the start
-    // of each iteration, so iter K+1's start equals iter K's end.
-    let guide_iter_end = &result.data()[guide_iters + 1];
-    let guide_nodes = guide_iter_end.egraph_nodes;
-    let guide_classes = guide_iter_end.egraph_classes;
-    let goal_nodes = result.curr().total_number_of_nodes();
-    let goal_classes = result.curr().classes().len();
-
-    tee_println!("goal_iters={goal_iters} guide_iters={guide_iters} stop={stop_reason}");
-    tee_println!("guide egraph: {guide_nodes} nodes, {guide_classes} classes in {guide_secs:.2}s");
-    tee_println!("goal egraph:  {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
+    tee_println!(
+        "goal_iters={} guide_iters={} stop={stop_reason}",
+        goal.iters,
+        guide.iters
+    );
+    tee_println!(
+        "guide egraph: {} nodes, {} classes in {:.2}s",
+        guide.nodes,
+        guide.classes,
+        guide.time
+    );
+    tee_println!(
+        "goal egraph:  {} nodes, {} classes in {:.2}s",
+        goal.nodes,
+        goal.classes,
+        goal.time
+    );
 
     let now = Instant::now();
     let Some(pp) = PrecomputePackage::<BigUint, L, _>::precompute(&result, max_size) else {
         return EnrichedSeed::Failed(EnrichedSeedFailed {
             max_size,
-            fail_reason: format!("goal precompute returned None (goal_iters={goal_iters})"),
+            fail_reason: format!(
+                "goal precompute returned None (goal_iters={})",
+                goal.iters
+            ),
         });
     };
     tee_println!("Precompute built in {:.2}s", now.elapsed().as_secs_f64());
@@ -175,21 +177,11 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let ok = GoalGenMetadata {
         eqsat_config: *eqsat,
         max_size,
-        goal_egraph: EqsatMetadata {
-            nodes: goal_nodes,
-            classes: goal_classes,
-            time: goal_secs,
-            iters: goal_iters,
-        },
-        guide_egraph: EqsatMetadata {
-            nodes: guide_nodes,
-            classes: guide_classes,
-            time: guide_secs,
-            iters: guide_iters,
-        },
+        goal_egraph: goal,
+        guide_egraph: guide,
         goals: goal_strings,
         frontier_histogram,
-        stop_reason: stop_reason.clone(),
+        stop_reason,
     };
 
     EnrichedSeed::Ok(ok)

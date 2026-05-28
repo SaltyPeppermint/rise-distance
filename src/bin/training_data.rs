@@ -19,7 +19,7 @@ use rise_distance::cli::{
     write_metadata,
 };
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
-use rise_distance::egg::{run_eqsat, verify_reachability};
+use rise_distance::egg::{SplitMetadata, run_eqsat, verify_reachability};
 use rise_distance::tree_distance_unit;
 use rise_distance::{Counter, FlatTree, OriginLang, lower, tee_println};
 
@@ -163,31 +163,30 @@ fn process_seed(
     run_folder: &Path,
 ) -> Option<serde_json::Value> {
     let result = run_eqsat(seed_expr, RULES.iter(), eqsat)?;
-    let goal_iters = result.iters();
-    let guide_iters = goal_iters / 2;
-    tee_println!("Goal Iterations: {goal_iters}");
-    tee_println!("Guide Iterations: {guide_iters}");
+    let SplitMetadata {
+        guide,
+        goal: goal_meta,
+    } = result.split_metadata();
+    tee_println!("Goal Iterations: {}", goal_meta.iters);
+    tee_println!("Guide Iterations: {}", guide.iters);
     tee_println!("Stop Reason: {:?}", result.stop_reason());
-
-    let guide_secs = result.data()[..=guide_iters]
-        .iter()
-        .map(|i| i.total_time)
-        .sum::<f64>();
-    let goal_secs = result.data().iter().map(|i| i.total_time).sum::<f64>();
-
-    // egg's `Iteration` records `egraph_nodes`/`egraph_classes` at the start
-    // of each iteration, so iter K+1's start equals iter K's end.
-    let guide_iter_end = &result.data()[guide_iters + 1];
-    let guide_nodes = guide_iter_end.egraph_nodes;
-    let guide_classes = guide_iter_end.egraph_classes;
-    let goal_nodes = result.curr().total_number_of_nodes();
-    let goal_classes = result.curr().classes().len();
     tee_println!(
-        "Guide egraph had {guide_nodes} nodes, {guide_classes} classes in {guide_secs:.2}s"
+        "Guide egraph had {} nodes, {} classes in {:.2}s",
+        guide.nodes,
+        guide.classes,
+        guide.time
     );
-    tee_println!("Final egraph had {goal_nodes} nodes, {goal_classes} classes in {goal_secs:.2}s");
+    tee_println!(
+        "Final egraph had {} nodes, {} classes in {:.2}s",
+        goal_meta.nodes,
+        goal_meta.classes,
+        goal_meta.time
+    );
 
-    tee_println!("\nSampling goals from iteration-{goal_iters} frontier...",);
+    tee_println!(
+        "\nSampling goals from iteration-{} frontier...",
+        goal_meta.iters
+    );
     let pp = PrecomputePackage::<BigUint, Math, _>::precompute(&result, max_size)?;
     pp.log_root();
     let Ok(goals) = pp.sample_frontier_terms(
@@ -205,14 +204,14 @@ fn process_seed(
     let metadata = json!({
         "seed": seed_str,
         "max_size": max_size,
-        "guide_egraph_iters": guide_iters,
-        "guide_egraph_nodes": guide_nodes,
-        "guide_egraph_classes": guide_classes,
-        "guide_eqsat_time": guide_secs,
-        "goal_egraph_iters": goal_iters,
-        "goal_egraph_nodes": goal_nodes,
-        "goal_egraph_classes": goal_classes,
-        "goal_eqsat_time": goal_secs,
+        "guide_egraph_iters": guide.iters,
+        "guide_egraph_nodes": guide.nodes,
+        "guide_egraph_classes": guide.classes,
+        "guide_eqsat_time": guide.time,
+        "goal_egraph_iters": goal_meta.iters,
+        "goal_egraph_nodes": goal_meta.nodes,
+        "goal_egraph_classes": goal_meta.classes,
+        "goal_eqsat_time": goal_meta.time,
     });
 
     let pc = PrecomputePackage::<BigUint, _, _>::precompute(&result, max_size)?;
