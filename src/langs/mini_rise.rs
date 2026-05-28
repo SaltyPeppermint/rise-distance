@@ -186,12 +186,12 @@ pub fn tile(
 ) -> ReachResult<Lang> {
     let parse_expr = |s: &&str| {
         let e: Expr = s.parse().unwrap();
-        println!("LaTeX Expr: {}", latex_of_expr(&e));
+        // println!("LaTeX Expr: {}", latex_of_expr(&e));
         e
     };
     let parse_sketch = |s: &&str| {
         let e: Sketch = s.parse().unwrap();
-        println!("LaTeX Sketch: {}", latex_of_expr(&e));
+        // println!("LaTeX Sketch: {}", latex_of_expr(&e));
         e
     };
 

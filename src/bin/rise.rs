@@ -52,21 +52,20 @@ fn main() {
         Experiment::Tile4d => mini_rise::tile_4d(args.search, mode),
         // Experiment::Reorder3d => mini_rise::reorder_3d(mode),
     };
+
+    println!("\n--- Results ---");
+    match result.reached {
+        Some(goal) => println!(
+            "REACHED ({} sampled guide terms)\n{}",
+            result.sampled.len(),
+            goal,
+        ),
+        None => println!("NOT REACHED ({} sampled guide terms)", result.sampled.len(),),
+    }
     for (i, m) in result.eqsat_meta.iter().enumerate() {
         println!(
             "eqsat phase {i}: {} nodes, {} classes, {:.2}s, {} iters",
             m.nodes, m.classes, m.time, m.iters,
         );
-    }
-    match result.reached {
-        Some(goal) => println!(
-            "=== reached ({} sampled guide terms)\n{}",
-            result.sampled.len(),
-            goal,
-        ),
-        None => println!(
-            "=== NOT reached ({} sampled guide terms)",
-            result.sampled.len(),
-        ),
     }
 }

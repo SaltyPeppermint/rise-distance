@@ -243,6 +243,8 @@ where
     N::Data: Clone,
     C: Counter,
 {
+    println!("Start:         {start}");
+    println!("(Sketch) Goal: {sketch_goals}\n");
     match mode {
         SearchMode::Cut(args) => {
             reach_cut::<L, N, C>(search_name, start, rules, sketch_goals, args)
@@ -266,6 +268,7 @@ where
     N::Data: Clone,
     C: Counter,
 {
+    println!("Doing search '{search_name}' via cut\n");
     let eqsat_config = EqsatConfig {
         max_iters: args.cut_iters,
         max_nodes: args.max_nodes,
@@ -329,12 +332,6 @@ where
         false,
     );
 
-    println!(
-        "{search_name}: reached={} from {} samples",
-        verify.is_ok(),
-        sampled.len()
-    );
-
     let (reached, verify_iters) = match verify {
         Ok((iters, expr)) => (Some(expr), Some(iters)),
         Err(_) => (None, None),
@@ -365,6 +362,7 @@ where
     L: MyLanguage + Language + Display + 'static,
     N: MyAnalysis<L> + Default,
 {
+    println!("Doing search '{search_name}' via brute_force");
     let config = EqsatConfig {
         max_iters: args.max_iters,
         max_nodes: args.max_nodes,
@@ -386,11 +384,6 @@ where
         rules,
         &config,
         false,
-    );
-
-    println!(
-        "{search_name}: reached={} (brute force, no cut)",
-        verify.is_ok()
     );
 
     let (reached, verify_iters) = match verify {
