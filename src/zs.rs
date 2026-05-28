@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use egg::{Id, RecExpr};
 use rayon::prelude::*;
 
-use crate::egg::id0;
+use crate::langs::id0;
 use crate::{MyLanguage, OriginLang};
 
 /// Core Zhang-Shasha minimum distance search over a parallel iterator of candidate trees.

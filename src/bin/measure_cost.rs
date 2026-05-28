@@ -10,9 +10,9 @@ use hashbrown::HashMap;
 use serde::Serialize;
 
 use rise_distance::cli::argparse::Language;
-use rise_distance::egg::cheapest;
-use rise_distance::egg::math::{self, AddCheap, AddExpensive, Math, SillyCheap, TinyConstant};
-use rise_distance::egg::prop::{self, Prop};
+use rise_distance::langs::cheapest;
+use rise_distance::langs::math::{self, AddCheap, AddExpensive, Math, SillyCheap, TinyConstant};
+use rise_distance::langs::prop::{self, Prop};
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]

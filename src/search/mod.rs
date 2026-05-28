@@ -17,7 +17,9 @@ use hashbrown::HashMap;
 use crate::cli::ExperimentError;
 use crate::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist};
 use crate::count::Counter;
-use crate::egg::{EqsatResult, Goal, MyAnalysis, MyLanguage, id0, run_eqsat, verify_reachability};
+use crate::langs::{
+    EqsatResult, Goal, MyAnalysis, MyLanguage, id0, run_eqsat, verify_reachability,
+};
 use crate::sampling::{CountWeigher, NaiveWeigher};
 use crate::sketch::Sketch;
 use crate::{

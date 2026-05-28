@@ -501,7 +501,7 @@ mod tests {
 
     use super::*;
     use crate::count::PlainTermCount;
-    use crate::egg::math::Math;
+    use crate::langs::math::Math;
     use crate::lower;
     use crate::utils::combined_rng;
 

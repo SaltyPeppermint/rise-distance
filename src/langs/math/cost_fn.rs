@@ -1,6 +1,6 @@
 use egg::{CostFunction, Id, Language};
 
-use crate::egg::math::Math;
+use crate::langs::math::Math;
 
 pub struct DiffIntExpensive;
 impl CostFunction<Math> for DiffIntExpensive {

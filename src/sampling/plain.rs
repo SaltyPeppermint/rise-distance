@@ -137,7 +137,7 @@ mod tests {
     use num::BigUint;
 
     use super::*;
-    use crate::egg::math::Math;
+    use crate::langs::math::Math;
     use crate::lower;
     use crate::sampling::{CountWeigher, NaiveWeigher};
     use crate::utils::combined_rng;

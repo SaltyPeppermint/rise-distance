@@ -486,7 +486,7 @@ mod tests {
     use num::BigUint;
 
     use super::*;
-    use crate::egg::math::Math;
+    use crate::langs::math::Math;
 
     fn sym(name: &str) -> Math {
         Math::Symbol(name.into())

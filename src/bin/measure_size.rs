@@ -4,10 +4,10 @@ use clap::Parser;
 use egg::{Analysis, BackoffScheduler, FromOp, RecExpr, Rewrite, Runner, SimpleScheduler};
 use rlimit::{Resource, setrlimit};
 
-use rise_distance::cli::argparse::Language;
-use rise_distance::egg::math::{self, Math};
-use rise_distance::egg::prop::{self, Prop};
 use rise_distance::MyLanguage;
+use rise_distance::cli::argparse::Language;
+use rise_distance::langs::math::{self, Math};
+use rise_distance::langs::prop::{self, Prop};
 
 #[derive(Parser)]
 #[command(about = "Run eqsat on a single term and print peak RSS in bytes.")]

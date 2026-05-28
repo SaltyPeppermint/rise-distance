@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use rise_distance::egg::mini_rise::{self, TilingSearch};
+use rise_distance::langs::mini_rise::{self, TilingSearch};
 use rise_distance::search::{BruteArgs, CutArgs, SearchMode};
 
 #[derive(Parser)]

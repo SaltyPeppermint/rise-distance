@@ -19,7 +19,7 @@ use rise_distance::cli::argparse::{
 };
 use rise_distance::cli::init_log;
 use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
-use rise_distance::egg::{SplitMetadata, math, prop, run_eqsat};
+use rise_distance::langs::{SplitMetadata, math, prop, run_eqsat};
 use rise_distance::search::PrecomputePackage;
 use rise_distance::{MyAnalysis, MyLanguage};
 use rise_distance::{lower, tee_println};

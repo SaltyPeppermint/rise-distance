@@ -3,8 +3,8 @@ use std::sync::LazyLock;
 use egg::RecExpr;
 use rand::Rng;
 
-use crate::egg::{id0, stack_children};
-use crate::sampler::BoltzmannSampler;
+use crate::generator::BoltzmannSampler;
+use crate::langs::{id0, stack_children};
 
 use super::Prop;
 
