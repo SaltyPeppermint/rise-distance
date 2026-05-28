@@ -58,15 +58,6 @@ impl<L: MyLanguage> FromOp for OriginLang<L> {
     }
 }
 
-impl<L: MyLanguage> MyLanguage for OriginLang<L> {
-    fn type_of() -> Self {
-        OriginLang {
-            inner: L::type_of(),
-            origin: id0(),
-        }
-    }
-}
-
 impl<L: MyLanguage> Display for OriginLang<L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.inner, f)

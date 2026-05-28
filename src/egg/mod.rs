@@ -2,9 +2,6 @@ pub mod lambda;
 pub mod math;
 pub mod mini_rise;
 pub mod prop;
-pub mod sampler;
-
-pub mod origin;
 
 use std::cell::RefCell;
 use std::fmt::Display;
@@ -21,9 +18,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::argparse::EqsatConfig;
 use crate::cli::{EqsatMetadata, GuideError};
-use crate::tee_println;
-
-pub use origin::{OriginLang, lower};
+use crate::sketch::{Sketch, eclass_contains};
+use crate::{OriginLang, lower, tee_println};
 
 /// Trait for node labels in e-graphs and exprs.
 pub trait MyLanguage:
@@ -36,13 +32,19 @@ pub trait MyLanguage:
     + FromOp<Error: Display>
     + 'static
 {
-    /// Returns the label used for type annotations (e.g., "typeOf").
-    fn type_of() -> Self;
+}
 
-    /// Returns true if this label is the type annotation label.
-    fn is_type_of(&self) -> bool {
-        &Self::type_of() == self
-    }
+impl<
+    L: Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + Display
+        + Language<Discriminant: Send + Sync>
+        + FromOp<Error: Display>
+        + 'static,
+> MyLanguage for L
+{
 }
 
 /// Trait for node labels in e-graphs and exprs.
@@ -57,19 +59,21 @@ pub trait MyAnalysis<L: MyLanguage>:
     + Clone
     + 'static
 {
-    fn is_typed(id: Id) -> bool;
-
-    fn ty(id: Id) -> Option<RecExpr<OriginLang<L>>>;
 }
 
-impl<L: MyLanguage> MyAnalysis<L> for () {
-    fn is_typed(_id: Id) -> bool {
-        false
-    }
-
-    fn ty(_id: Id) -> Option<RecExpr<OriginLang<L>>> {
-        None
-    }
+impl<
+    N: Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + Analysis<L, Data: Send + Sync + Clone + Eq + Default>
+        + Default
+        + Clone
+        + 'static,
+    L: MyLanguage,
+> MyAnalysis<L> for N
+{
 }
 
 pub fn stack_children<L: MyLanguage>(children: &[RecExpr<L>], root: L) -> RecExpr<L> {
@@ -80,19 +84,6 @@ pub fn stack_children<L: MyLanguage>(children: &[RecExpr<L>], root: L) -> RecExp
         new_id
     })
     .join_recexprs(|c_id| children[usize::from(c_id)].clone())
-}
-
-pub fn typed_stack_children<L: MyLanguage>(
-    children: &[RecExpr<L>],
-    root: L,
-    ty: Option<RecExpr<L>>,
-) -> RecExpr<L> {
-    let untyped = stack_children(children, root);
-    if let Some(ty) = ty {
-        stack_children(&[untyped, ty], L::type_of())
-    } else {
-        untyped
-    }
 }
 
 /// Result of running eqsat. Holds only the last two egraphs (`prev` and
@@ -319,6 +310,32 @@ where
     })
 }
 
+/// What `verify_reachability` searches for. Either a single concrete program
+/// (`Expr`, checked with `lookup_expr`) or a set of sketches that must *all*
+/// be satisfied by the (canonical) root e-class (`Sketches`, checked with
+/// [`eclass_contains`]). The guide/goal binaries use `Expr`; the `mini_rise`
+/// tile searches use `Sketches`.
+#[derive(Clone)]
+pub enum Goal<L: MyLanguage> {
+    Expr(RecExpr<L>),
+    Sketches(Vec<Sketch<L>>),
+}
+
+impl<L: MyLanguage> Goal<L> {
+    /// True once this goal is reached in `egraph`. `root` must be the canonical
+    /// id of the unioned guide root. For `Sketches` the egraph must be clean
+    /// (rebuilt); [`eclass_contains`] asserts this.
+    fn reached<N: Analysis<L>>(&self, egraph: &EGraph<L, N>, root: Id) -> bool {
+        match self {
+            Goal::Expr(e) => egraph.lookup_expr(e).is_some(),
+            Goal::Sketches(sketches) => {
+                let root = egraph.find(root);
+                sketches.iter().all(|s| eclass_contains(s, egraph, root))
+            }
+        }
+    }
+}
+
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
 /// Returns `Some((iterations, nodes))` if reached, `None` otherwise.
 ///
@@ -331,7 +348,7 @@ where
 /// Panics if not at least one guide is given
 pub fn verify_reachability<L, N>(
     guides: &[RecExpr<OriginLang<L>>],
-    goal: &RecExpr<L>,
+    goal: &Goal<L>,
     rules: &[Rewrite<L, N>],
     eqsat: &EqsatConfig,
     full_union: bool,
@@ -348,7 +365,8 @@ where
         .with_node_limit(eqsat.max_nodes)
         .with_iter_limit(eqsat.max_iters)
         .with_hook(move |runner| {
-            if runner.egraph.lookup_expr(&goal_clone).is_some() {
+            let root = runner.roots[0];
+            if goal_clone.reached(&runner.egraph, root) {
                 return Err("goal found".to_owned());
             }
             Ok(())
@@ -368,16 +386,20 @@ where
 
     runner.egraph.rebuild();
 
-    let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
-        println!("Panic caught verify_reachability for guide/goal pair: {guides:?}/{goal}");
+    let Ok(mut r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules)))
+    else {
+        println!("Panic caught verify_reachability for guides: {guides:?}");
         return Err(GuideError::PanicWhileAttempt);
     };
     // let runner = runner.run(rules);
 
-    r.egraph
-        .lookup_expr(goal)
-        .map(|_| r.iterations)
-        .ok_or(GuideError::Unreached(r.stop_reason.clone().unwrap()))
+    r.egraph.rebuild();
+    let root = r.roots[0];
+    if goal.reached(&r.egraph, root) {
+        Ok(r.iterations)
+    } else {
+        Err(GuideError::Unreached(r.stop_reason.clone().unwrap()))
+    }
 }
 
 fn add_with_root_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>

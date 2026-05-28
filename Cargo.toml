@@ -36,7 +36,6 @@ thiserror = "2"
 plotters = "0.3"
 csv = "1"
 rlimit = "0.11"
-memory-stats = "1"
 time = { version = "0.3", features = ["macros", "local-offset"] }
 
 [lints.clippy]

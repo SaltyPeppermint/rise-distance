@@ -18,11 +18,10 @@ use serde_json::json;
 use rise_distance::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist, read_folder_args};
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{EnrichedSeed, GoalGenMetadata, GoalSummary, TrialsPerK};
-use rise_distance::cli::{
-    EqsatMetadata, PrecomputePackage, get_run_folder, init_log, write_config, write_metadata,
-};
+use rise_distance::cli::{EqsatMetadata, get_run_folder, init_log, write_config, write_metadata};
 use rise_distance::egg::math::{ConstantFold, Math, RULES};
-use rise_distance::egg::{run_eqsat, verify_reachability};
+use rise_distance::egg::{Goal, run_eqsat, verify_reachability};
+use rise_distance::search::PrecomputePackage;
 use rise_distance::{Counter, tee_println};
 use time::OffsetDateTime;
 
@@ -290,7 +289,11 @@ impl Strategy {
         pp: &PrecomputePackage<C, Math, ConstantFold>,
         mp: &MultiProgress,
     ) -> Vec<GoalResults> {
-        let pb = strategy_bar(mp, self.name(), self.work_per_goal(args) * goals.len() as u64);
+        let pb = strategy_bar(
+            mp,
+            self.name(),
+            self.work_per_goal(args) * goals.len() as u64,
+        );
         let r = goals
             .par_iter()
             .map(|goal| GoalResults {
@@ -311,6 +314,7 @@ impl Strategy {
         pp: &PrecomputePackage<C, Math, ConstantFold>,
         pb: &ProgressBar,
     ) -> TrialsPerK {
+        let goal = Goal::Expr(goal_recexpr.clone());
         match self {
             Strategy::WithReplacement(strategy) => TRIAL_SIZE
                 .par_iter()
@@ -325,14 +329,9 @@ impl Strategy {
                                 [k as u64, s as u64],
                                 true,
                             )?;
-                            let r = verify_reachability(
-                                &subset,
-                                goal_recexpr,
-                                &RULES,
-                                eqsat,
-                                args.full_union,
-                            )
-                            .map_err(|e| e.into());
+                            let r =
+                                verify_reachability(&subset, &goal, &RULES, eqsat, args.full_union)
+                                    .map_err(|e| e.into());
                             pb.inc(1);
                             r
                         })
@@ -360,7 +359,7 @@ impl Strategy {
                             .map(|subset| {
                                 let r = verify_reachability(
                                     subset,
-                                    goal_recexpr,
+                                    &goal,
                                     &RULES,
                                     eqsat,
                                     args.full_union,
@@ -377,7 +376,7 @@ impl Strategy {
             Strategy::Smallest { novel } => {
                 let r = verify_reachability(
                     std::slice::from_ref(&pp.smallest(pp.root(), novel)),
-                    goal_recexpr,
+                    &goal,
                     &RULES,
                     eqsat,
                     args.full_union,

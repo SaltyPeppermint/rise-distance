@@ -13,8 +13,8 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use rise_distance::cli::argparse::{Distribution, Language};
-use rise_distance::egg::sampler::BoltzmannSampler;
 use rise_distance::egg::{math, prop};
+use rise_distance::sampler::BoltzmannSampler;
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser, Serialize)]
@@ -126,13 +126,13 @@ fn main() {
     sized_rngs.sort_by_key(|(size, _, _)| *size);
 
     let big_collector = match args.language {
-        Language::Math => run_language::<math::BoltzmannSampler, math::ConstantFold>(
+        Language::Math => run_language::<math::MathSampler, math::ConstantFold>(
             &args,
             &validity_config,
             sized_rngs,
             &math::RULES,
         ),
-        Language::Prop => run_language::<prop::BoltzmannSampler, prop::ConstantFold>(
+        Language::Prop => run_language::<prop::PropSampler, prop::ConstantFold>(
             &args,
             &validity_config,
             sized_rngs,

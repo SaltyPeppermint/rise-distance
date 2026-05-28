@@ -5,8 +5,6 @@ use egg::{
 use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
 
-use crate::MyLanguage;
-
 define_language! {
     #[derive(Deserialize,Serialize)]
     pub enum Lambda {
@@ -135,12 +133,6 @@ fn is_not_same_var(
 
 fn is_const(v: Var) -> impl Fn(&mut EGraph<Lambda, LambdaAnalysis>, Id, &Subst) -> bool {
     move |egraph, _, subst| egraph[subst[v]].data.constant.is_some()
-}
-
-impl MyLanguage for Lambda {
-    fn type_of() -> Self {
-        panic!("No types to see here");
-    }
 }
 
 #[must_use]

@@ -4,8 +4,8 @@ mod generate;
 use std::sync::LazyLock;
 
 use egg::{
-    Analysis, Applier, DidMerge, EGraph, Id, Language, PatternAst, RecExpr, Rewrite, Subst, Symbol,
-    Var, define_language, merge_option, rewrite,
+    Analysis, Applier, DidMerge, EGraph, Id, Language, PatternAst, Rewrite, Subst, Symbol, Var,
+    define_language, merge_option, rewrite,
 };
 use hashbrown::HashSet;
 use num::rational::Ratio;
@@ -16,9 +16,7 @@ use serde::{Deserialize, Serialize};
 pub use cost_fn::{
     AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive, SillyCheap, TinyConstant,
 };
-pub use generate::BoltzmannSampler;
-
-use crate::{MyAnalysis, MyLanguage, OriginLang};
+pub use generate::MathSampler;
 
 pub type Constant = Ratio<BigInt>;
 
@@ -176,22 +174,6 @@ pub static SILLY_RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::n
     r.push(tiny_constant(0.000_000_1));
     r
 });
-
-impl MyLanguage for Math {
-    fn type_of() -> Self {
-        panic!("No types to see here");
-    }
-}
-
-impl MyAnalysis<Math> for ConstantFold {
-    fn is_typed(_id: Id) -> bool {
-        false
-    }
-
-    fn ty(_id: Id) -> Option<RecExpr<OriginLang<Math>>> {
-        None
-    }
-}
 
 #[rustfmt::skip]
 fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![

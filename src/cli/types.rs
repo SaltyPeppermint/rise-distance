@@ -6,7 +6,7 @@ use strum::Display;
 use thiserror::Error;
 
 use crate::cli::argparse::EqsatConfig;
-use crate::{MyLanguage, egg::OriginLang};
+use crate::{MyLanguage, OriginLang};
 
 #[derive(Debug, Error, Display, Serialize, Clone)]
 pub enum ExperimentError {

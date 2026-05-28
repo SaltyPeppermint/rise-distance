@@ -17,11 +17,12 @@ use rise_distance::cli::argparse::{
     EqsatConfig, Language, SampleStrategy, SeedInput, TermSampleDist, parse_seeds,
     read_folder_args, read_folder_language,
 };
+use rise_distance::cli::init_log;
 use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
-use rise_distance::cli::{PrecomputePackage, init_log};
-use rise_distance::egg::{SplitMetadata, lower, math, prop, run_eqsat};
-use rise_distance::tee_println;
+use rise_distance::egg::{SplitMetadata, math, prop, run_eqsat};
+use rise_distance::search::PrecomputePackage;
 use rise_distance::{MyAnalysis, MyLanguage};
+use rise_distance::{lower, tee_println};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -138,10 +139,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let Some(pp) = PrecomputePackage::<BigUint, L, _>::precompute(&result, max_size) else {
         return EnrichedSeed::Failed(EnrichedSeedFailed {
             max_size,
-            fail_reason: format!(
-                "goal precompute returned None (goal_iters={})",
-                goal.iters
-            ),
+            fail_reason: format!("goal precompute returned None (goal_iters={})", goal.iters),
         });
     };
     tee_println!("Precompute built in {:.2}s", now.elapsed().as_secs_f64());

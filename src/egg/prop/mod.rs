@@ -3,14 +3,12 @@ mod generate;
 use std::sync::LazyLock;
 
 use egg::{
-    Analysis, DidMerge, EGraph, Id, PatternAst, RecExpr, Rewrite, Subst, Symbol, define_language,
+    Analysis, DidMerge, EGraph, Id, PatternAst, Rewrite, Subst, Symbol, define_language,
     merge_option, rewrite,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{MyAnalysis, MyLanguage, OriginLang};
-
-pub use generate::BoltzmannSampler;
+pub use generate::PropSampler;
 
 pub static RULES: LazyLock<Vec<Rewrite<Prop, ConstantFold>>> = LazyLock::new(rules);
 
@@ -26,24 +24,8 @@ define_language! {
     }
 }
 
-impl MyLanguage for Prop {
-    fn type_of() -> Self {
-        panic!("No types to see here");
-    }
-}
-
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct ConstantFold;
-
-impl MyAnalysis<Prop> for ConstantFold {
-    fn is_typed(_id: Id) -> bool {
-        false
-    }
-
-    fn ty(_id: Id) -> Option<RecExpr<OriginLang<Prop>>> {
-        None
-    }
-}
 
 impl Analysis<Prop> for ConstantFold {
     type Data = Option<(bool, PatternAst<Prop>)>;

@@ -11,18 +11,9 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use egg::{Id, Iteration, RecExpr};
-use hashbrown::HashMap;
+use egg::Iteration;
 use num::ToPrimitive;
 use serde::Serialize;
-
-use crate::cli::argparse::{SampleStrategy, TermSampleDist};
-use crate::count::{Counter, PlainTermCount};
-use crate::egg::EqsatResult;
-use crate::sampling::{CountWeigher, NaiveWeigher, Sampler};
-use crate::{
-    MyAnalysis, MyLanguage, NovelSampler, NovelTermCount, OriginLang, PlainSampler, tee_println,
-};
 
 pub fn trial_avg<
     F: Fn(&Vec<Iteration<()>>) -> Option<T>,
@@ -48,138 +39,6 @@ pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T
     let max = items.iter().map(&f).max().unwrap();
     let med = f(&items[items.len() / 2]);
     (min, med, max)
-}
-
-pub struct PrecomputePackage<'a, C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
-{
-    tc: NovelTermCount<'a, C, L, N>,
-    min_size: usize,
-    max_size: usize,
-    root: Id,
-}
-
-impl<'a, C, L, N> PrecomputePackage<'a, C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L> + Clone,
-    C: Counter,
-{
-    /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg` for the sampling process later
-    #[must_use]
-    pub fn precompute(
-        result: &'a EqsatResult<L, N>,
-        max_size: usize,
-    ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let tc = NovelTermCount::new(
-            max_size,
-            result.curr(),
-            result.prev(),
-            PlainTermCount::new(max_size, result.curr()),
-        );
-
-        let root = result.curr().find(result.root());
-        let histogram = tc.data().get(&root)?;
-
-        let min_size = histogram.keys().min().copied().unwrap_or(1);
-        Some(PrecomputePackage {
-            tc,
-            min_size,
-            max_size,
-            root,
-        })
-    }
-
-    /// Log the stats about the root
-    ///
-    /// # Panics
-    ///
-    /// Panics if there are no terms in the root
-    pub fn log_root(&self) {
-        let histogram = self
-            .tc
-            .data()
-            .get(&self.root)
-            .expect("Somehow the root does not contain any terms?");
-        let mut sorted_hist = histogram
-            .iter()
-            .map(|(a, b)| (*a, b.to_owned()))
-            .collect::<Vec<_>>();
-        sorted_hist.sort_unstable();
-        tee_println!("Terms in frontier:");
-        for (k, v) in &sorted_hist {
-            tee_println!("{v} terms of size {k}");
-        }
-    }
-
-    /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
-    #[expect(clippy::missing_errors_doc, clippy::missing_panics_doc)]
-    pub fn sample_frontier_terms(
-        &self,
-        count: usize,
-        distribution: TermSampleDist,
-        sample_strategy: SampleStrategy,
-        seed: [u64; 2],
-        novel: bool,
-    ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError> {
-        let histogram = self
-            .tc
-            .data()
-            .get(&self.root)
-            .ok_or(ExperimentError::InsufficientSamples)?;
-
-        let samples_per_size =
-            distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
-        let samples = match (sample_strategy, novel) {
-            (SampleStrategy::Naive, true) => NovelSampler::new(&self.tc, self.root, NaiveWeigher)
-                .sample_batch_root(&samples_per_size, seed),
-            (SampleStrategy::Count, true) => NovelSampler::new(&self.tc, self.root, CountWeigher)
-                .sample_batch_root(&samples_per_size, seed),
-            (SampleStrategy::Naive, false) => {
-                PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
-                    .sample_batch_root(&samples_per_size, seed)
-            }
-            (SampleStrategy::Count, false) => {
-                PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, CountWeigher)
-                    .sample_batch_root(&samples_per_size, seed)
-            }
-        };
-        let samples = samples?;
-        assert!(samples.len() == count, "insufficient samples");
-        Ok(samples)
-    }
-
-    #[must_use]
-    pub fn smallest(&self, id: Id, novel: bool) -> RecExpr<OriginLang<L>> {
-        if novel {
-            NovelSampler::new(&self.tc, self.root, NaiveWeigher).smallest(id)
-        } else {
-            PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher).smallest(id)
-        }
-    }
-
-    #[must_use]
-    pub fn root(&self) -> Id {
-        self.root
-    }
-
-    /// Histogram of novel root extractions by size. Guaranteed non-empty
-    /// because [`Self::precompute`] returns `None` otherwise.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the root histogram is somehow missing (would indicate a bug
-    /// in `precompute`'s None check).
-    #[must_use]
-    pub fn root_histogram(&self) -> &HashMap<usize, C> {
-        self.tc
-            .data()
-            .get(&self.root)
-            .expect("root histogram present iff precompute returned Some")
-    }
 }
 
 /// Create an output folder for a run.

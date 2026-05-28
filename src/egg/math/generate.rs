@@ -6,7 +6,8 @@ use num::FromPrimitive;
 use num::rational::Ratio;
 use rand::Rng;
 
-use crate::egg::{id0, sampler, stack_children};
+use crate::egg::{id0, stack_children};
+use crate::sampler::BoltzmannSampler;
 
 use super::Math;
 
@@ -30,7 +31,7 @@ use super::Math;
 ///
 /// Additionally, generated expressions are filtered so that the bound variable in each Diff/Integral
 /// node actually appears free in child[0].
-pub struct BoltzmannSampler {
+pub struct MathSampler {
     /// Probability of generating a leaf node at each step.
     p_leaf: f64,
     /// Cumulative probability threshold for unary nodes (after leaf).
@@ -79,7 +80,7 @@ static BINDER_OPS: LazyLock<[Math; 2]> =
     LazyLock::new(|| [Math::Diff([id0(), id0()]), Math::Integral([id0(), id0()])]);
 
 #[expect(clippy::cast_precision_loss)]
-impl sampler::BoltzmannSampler for BoltzmannSampler {
+impl BoltzmannSampler for MathSampler {
     type Lang = Math;
 
     /// Create a sampler targeting terms of the given expected size.
@@ -125,7 +126,7 @@ impl sampler::BoltzmannSampler for BoltzmannSampler {
 
         let max_depth = (target + tolerance) * 4;
 
-        BoltzmannSampler {
+        MathSampler {
             p_leaf,
             p_unary: p_leaf + p_unary,
             p_binder: p_leaf + p_unary + p_binder,
@@ -307,14 +308,13 @@ fn default_symbols() -> Vec<Math> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egg::sampler::BoltzmannSampler as _;
     use egg::{AstSize, CostFunction, StopReason};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn sampler_produces_exprs_near_target() {
-        let sampler = BoltzmannSampler::new(15, 5, None);
+        let sampler = MathSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(42);
 
         let exprs = sampler.sample_many(&mut rng, 50, &|_| Some(StopReason::Other(String::new())));
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn small_target_size() {
-        let sampler = BoltzmannSampler::new(5, 2, None);
+        let sampler = MathSampler::new(5, 2, None);
         let mut rng = ChaCha8Rng::seed_from_u64(123);
 
         let exprs = sampler.sample_many(&mut rng, 30, &|_| Some(StopReason::Other(String::new())));
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn binders_have_valid_bound_variables() {
-        let sampler = BoltzmannSampler::new(15, 5, None);
+        let sampler = MathSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(99);
 
         let exprs = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn binder_child1_is_always_a_variable() {
-        let sampler = BoltzmannSampler::new(15, 5, None);
+        let sampler = MathSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(7);
 
         let exprs = sampler.sample_many(&mut rng, 100, &|_| Some(StopReason::Other(String::new())));
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn sample_many_count_zero() {
-        let sampler = BoltzmannSampler::new(10, 3, None);
+        let sampler = MathSampler::new(10, 3, None);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
         let exprs = sampler.sample_many(&mut rng, 0, &|_| Some(StopReason::Other(String::new())));
         assert!(exprs.is_empty());

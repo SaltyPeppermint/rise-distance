@@ -3,7 +3,8 @@ use std::sync::LazyLock;
 use egg::RecExpr;
 use rand::Rng;
 
-use crate::egg::{id0, sampler, stack_children};
+use crate::egg::{id0, stack_children};
+use crate::sampler::BoltzmannSampler;
 
 use super::Prop;
 
@@ -22,7 +23,7 @@ use super::Prop;
 ///   `rho = 1 / (n_u + 2 * sqrt(n_b * n_l))`
 ///
 /// We binary-search for `x < rho` giving the target expected size, then use rejection sampling.
-pub struct BoltzmannSampler {
+pub struct PropSampler {
     /// Probability of generating a leaf node at each step.
     p_leaf: f64,
     /// Cumulative probability threshold for unary nodes (after leaf).
@@ -53,7 +54,7 @@ static BINARY_OPS: LazyLock<[Prop; 3]> = LazyLock::new(|| {
 });
 
 #[expect(clippy::cast_precision_loss)]
-impl sampler::BoltzmannSampler for BoltzmannSampler {
+impl BoltzmannSampler for PropSampler {
     type Lang = Prop;
 
     /// Create a sampler targeting terms of the given expected size.
@@ -83,7 +84,7 @@ impl sampler::BoltzmannSampler for BoltzmannSampler {
 
         let max_depth = (target + tolerance) * 4;
 
-        BoltzmannSampler {
+        PropSampler {
             p_leaf,
             p_unary: p_leaf + p_unary,
             symbols,
@@ -164,14 +165,13 @@ fn default_symbols() -> Vec<Prop> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egg::sampler::BoltzmannSampler as _;
     use egg::{AstSize, CostFunction};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn sampler_produces_exprs_near_target() {
-        let sampler = BoltzmannSampler::new(15, 5, None);
+        let sampler = PropSampler::new(15, 5, None);
         let mut rng = ChaCha8Rng::seed_from_u64(42);
 
         let exprs = sampler.sample_many(&mut rng, 50, &|_| Some(()));
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn small_target_size() {
-        let sampler = BoltzmannSampler::new(5, 2, None);
+        let sampler = PropSampler::new(5, 2, None);
         let mut rng = ChaCha8Rng::seed_from_u64(123);
 
         let exprs = sampler.sample_many(&mut rng, 30, &|_| Some(()));
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn sample_many_count_zero() {
-        let sampler = BoltzmannSampler::new(10, 3, None);
+        let sampler = PropSampler::new(10, 3, None);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
         let exprs = sampler.sample_many(&mut rng, 0, &|_| Some(()));
         assert!(exprs.is_empty());

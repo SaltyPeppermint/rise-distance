@@ -62,16 +62,17 @@ pub trait BoltzmannSampler: Sized {
         count: usize,
         filter_hook: &F,
     ) -> Vec<(RecExpr<Self::Lang>, T)> {
-        let (exprs, total_attempts, failed) = (0..count).map(|_| self.sample(rng, filter_hook)).fold(
-            (Vec::with_capacity(count), 0, 0),
-            |(mut exprs, attempts, failed), result| match result {
-                Some((expr, reason, a)) => {
-                    exprs.push((expr, reason));
-                    (exprs, attempts + a, failed)
-                }
-                None => (exprs, attempts, failed + 1),
-            },
-        );
+        let (exprs, total_attempts, failed) =
+            (0..count).map(|_| self.sample(rng, filter_hook)).fold(
+                (Vec::with_capacity(count), 0, 0),
+                |(mut exprs, attempts, failed), result| match result {
+                    Some((expr, reason, a)) => {
+                        exprs.push((expr, reason));
+                        (exprs, attempts + a, failed)
+                    }
+                    None => (exprs, attempts, failed + 1),
+                },
+            );
         println!(
             "Took a total of {total_attempts} attempts for {} terms. {failed} failed!",
             exprs.len()

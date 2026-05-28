@@ -1,12 +1,13 @@
 use std::fmt::Write;
 
-use egg::{AstSize, Language, RecExpr, rewrite};
+use egg::{Language, RecExpr, rewrite};
+use num::BigUint;
 
-use crate::sketch::{SketchLang, eclass_contains, eclass_extract};
-use crate::utils::grow_egraph_until;
+use crate::search::{ReachResult, SearchMode, reach_sketches};
+use crate::sketch::SketchLang;
 
 type Lang = egg::SymbolLang;
-type EGraph = egg::EGraph<Lang, ()>;
+
 type Rewrite = egg::Rewrite<Lang, ()>;
 type Expr = egg::RecExpr<Lang>;
 type Sketch = RecExpr<SketchLang<Lang>>;
@@ -69,9 +70,10 @@ pub enum TilingSearch {
 }
 
 #[must_use]
-pub fn tile_1d(ts: TilingSearch) -> Vec<Expr> {
+pub fn tile_1d(ts: TilingSearch, mode: SearchMode) -> ReachResult<Lang> {
     tile(
         ts,
+        mode,
         "1d",
         // 1 nested map that we want to tile (split + reoder):
         "(m (* n1 32) f)",
@@ -85,9 +87,10 @@ pub fn tile_1d(ts: TilingSearch) -> Vec<Expr> {
 }
 
 #[must_use]
-pub fn tile_2d(ts: TilingSearch) -> Vec<Expr> {
+pub fn tile_2d(ts: TilingSearch, mode: SearchMode) -> ReachResult<Lang> {
     tile(
         ts,
+        mode,
         "2d",
         // 2 nested maps that we want to tile (split + reorder):
         "(m (* n1 32) (m (* n2 32) f))",
@@ -106,9 +109,10 @@ pub fn tile_2d(ts: TilingSearch) -> Vec<Expr> {
 }
 
 #[must_use]
-pub fn tile_3d(ts: TilingSearch) -> Vec<Expr> {
+pub fn tile_3d(ts: TilingSearch, mode: SearchMode) -> ReachResult<Lang> {
     tile(
         ts,
+        mode,
         "3d",
         // 3 nested maps that we want to tile (split + reorder):
         "(m (* n1 32) (m (* n2 32) (m (* n3 32) f)))",
@@ -154,9 +158,10 @@ pub fn tile_3d(ts: TilingSearch) -> Vec<Expr> {
 }
 
 #[must_use]
-pub fn tile_4d(ts: TilingSearch) -> Vec<Expr> {
+pub fn tile_4d(ts: TilingSearch, mode: SearchMode) -> ReachResult<Lang> {
     tile(
         ts,
+        mode,
         "4d",
         // 4 nested maps that we want to tile (split + reorder):
         "(m (* n1 32) (m (* n2 32) (m (* n3 32) (m (* n4 32) f))))",
@@ -175,17 +180,22 @@ pub fn tile_4d(ts: TilingSearch) -> Vec<Expr> {
     )
 }
 
+/// Run one of the rise-specific tile searches by dispatching to the generic
+/// [`reach_sketches`] with the hardcoded start expr / sketch goals for `ts`.
+/// The `*_expected` tables are documentation of the programs we hope to find;
+/// they no longer drive the search.
 #[must_use]
-#[expect(clippy::missing_panics_doc)]
+#[expect(clippy::missing_panics_doc, clippy::too_many_arguments)]
 pub fn tile(
     ts: TilingSearch,
+    mode: SearchMode,
     name: &str,
     start: &str,
     split_sketches: &[&str],
     split_expected: &[&str],
     reorder_sketches: &[&str],
-    reorder_expected: &[&str],
-) -> Vec<Expr> {
+    _reorder_expected: &[&str],
+) -> ReachResult<Lang> {
     let parse_expr = |s: &&str| {
         let e: Expr = s.parse().unwrap();
         println!("LaTeX Expr: {}", latex_of_expr(&e));
@@ -197,7 +207,7 @@ pub fn tile(
         e
     };
 
-    let s = &[parse_expr(&start)];
+    let start_expr = parse_expr(&start);
 
     match ts {
         TilingSearch::Split => {
@@ -205,8 +215,13 @@ pub fn tile(
             split_rules.extend(split_map());
             split_rules.extend(transpose_maps()); // <<< unused
             let ss = split_sketches.iter().map(parse_sketch).collect::<Vec<_>>();
-            let se = split_expected.iter().map(parse_expr).collect::<Vec<_>>();
-            reach_sketches_from_exprs(&format!("tile_{name}_s"), s, &split_rules, &ss, &se)
+            search(
+                &format!("tile_{name}_s"),
+                &start_expr,
+                &split_rules,
+                &ss,
+                mode,
+            )
         }
         TilingSearch::Reorder => {
             let mut reorder_rules = common_rules();
@@ -216,105 +231,54 @@ pub fn tile(
                 .iter()
                 .map(parse_sketch)
                 .collect::<Vec<_>>();
-            let se = split_expected.iter().map(parse_expr).collect::<Vec<_>>();
-            let re = reorder_expected.iter().map(parse_expr).collect::<Vec<_>>();
-            reach_sketches_from_exprs(&format!("tile_{name}_r"), &se, &reorder_rules, &rs, &re)
+            // The reorder phase starts from the (single) split program.
+            let se = parse_expr(&split_expected[0]);
+            search(&format!("tile_{name}_r"), &se, &reorder_rules, &rs, mode)
         }
         TilingSearch::Tile => {
             let mut tile_rules = common_rules();
             tile_rules.extend(split_map());
             tile_rules.extend(transpose_maps());
             let rs: Vec<Sketch> = reorder_sketches.iter().map(parse_sketch).collect();
-            reach_sketches_from_exprs(
-                &format!("tile_{name}"),
-                s,
-                &tile_rules,
-                &rs,
-                &[],
-                // may find different programs: &re[..],
-            )
+            search(&format!("tile_{name}"), &start_expr, &tile_rules, &rs, mode)
         }
     }
 }
 
 #[must_use]
 #[expect(clippy::missing_panics_doc)]
-pub fn reorder_3d() -> Vec<Expr> {
+pub fn reorder_3d(mode: SearchMode) -> ReachResult<Lang> {
     let mut rules = common_rules();
     rules.extend(transpose_maps());
 
-    reach_sketches_from_exprs(
-        "reorder_3d",
-        // 3 nested maps that we want to reorder:
-        &["(m n1 (m n2 (m n3 f)))".parse().unwrap()],
-        &rules,
-        // sketches for the reordered map nests we are looking for:
-        &[
-            "(contains (m n1 (m n3 (m n2 f))))".parse().unwrap(),
-            "(contains (m n2 (m n1 (m n3 f))))".parse().unwrap(),
-            "(contains (m n2 (m n3 (m n1 f))))".parse().unwrap(),
-            "(contains (m n3 (m n2 (m n1 f))))".parse().unwrap(),
-            "(contains (m n3 (m n1 (m n2 f))))".parse().unwrap(),
-        ],
-        // the corresponding full programs that we expect to find:
-        &[
-            "(o (m n1 T) (o (m n1 (m n3 (m n2 f))) (m n1 T)))"
-                .parse()
-                .unwrap(),
-            "(o T (o (m n2 (m n1 (m n3 f))) T))".parse().unwrap(),
-            "(o (o T (m n2 T)) (o (m n2 (m n3 (m n1 f))) (o (m n2 T) T)))"
-                .parse()
-                .unwrap(),
-            "(o (o (o (o T (m n2 T)) T) (o (m n3 (m n2 (m n1 f))) (o T (m n2 T)))) T)"
-                .parse()
-                .unwrap(),
-            "(o (m n1 T) (o (o T (o (m n3 (m n1 (m n2 f))) T)) (m n1 T)))"
-                .parse()
-                .unwrap(),
-        ],
-    )
+    // 3 nested maps that we want to reorder.
+    let start: Expr = "(m n1 (m n2 (m n3 f)))".parse().unwrap();
+    // Sketches for the reordered map nests we are looking for.
+    let sketches: Vec<Sketch> = [
+        "(contains (m n1 (m n3 (m n2 f))))",
+        "(contains (m n2 (m n1 (m n3 f))))",
+        "(contains (m n2 (m n3 (m n1 f))))",
+        "(contains (m n3 (m n2 (m n1 f))))",
+        "(contains (m n3 (m n1 (m n2 f))))",
+    ]
+    .iter()
+    .map(|s| s.parse().unwrap())
+    .collect();
+
+    search("reorder_3d", &start, &rules, &sketches, mode)
 }
 
-#[must_use]
-#[expect(clippy::missing_panics_doc)]
-pub fn reach_sketches_from_exprs(
+/// Thin `Lang`-specialized wrapper over [`reach_sketches`] for the untyped
+/// `mini_rise` language (`SymbolLang` + `()` analysis, `BigUint` frontier
+/// counter).
+fn search(
     search_name: &str,
-    starts: &[Expr],
+    start: &Expr,
     rules: &[Rewrite],
     sketch_goals: &[Sketch],
-    expected_goals: &[Expr], // may be empty to avoid checks
-) -> Vec<Expr> {
-    let mut egraph = EGraph::default();
-    let eclass = starts
-        .iter()
-        .map(|e| egraph.add_expr(e))
-        .collect::<Vec<_>>()
-        .into_iter()
-        .reduce(|a, b| {
-            egraph.union(a, b);
-            a
-        })
-        .expect("need at least one starting expression");
-    let sketches_hook = sketch_goals.to_owned();
-    let egraph = grow_egraph_until(search_name, egraph, rules, move |r| {
-        let cano_eclass = r.egraph.find(eclass);
-        sketches_hook.iter().all(|s| {
-            // eclass_extract_sketch(s, egg::AstSize, &r.egraph, cano_eclass).is_some()
-            eclass_contains(s, &r.egraph, cano_eclass)
-        })
-    });
-
-    let cano_eclass = egraph.find(eclass);
-    // FIXME: will return empty vec if expected goals is empty
-    sketch_goals
-        .iter()
-        .zip(expected_goals.iter())
-        .map(|(sketch, _expected)| {
-            eclass_extract(sketch, AstSize, &egraph, cano_eclass)
-                .unwrap()
-                .1
-        })
-        .collect()
+    mode: SearchMode,
+) -> ReachResult<Lang> {
+    reach_sketches::<Lang, (), BigUint>(search_name, start, rules, sketch_goals, mode)
 }
 
 #[must_use]
