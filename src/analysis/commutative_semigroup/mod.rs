@@ -14,12 +14,12 @@ pub use expr_count::ExprCount;
 
 pub trait CommutativeSemigroupAnalysis<L, N, C = ()>: Sized + Debug + Sync + Send
 where
-    L: Language + Sync + Send,
+    L: Language + Sync,
     L::Discriminant: Sync,
-    N: Analysis<L> + Debug + Sync,
+    N: Analysis<L> + Sync,
     N::Data: Sync,
 {
-    type Data: PartialEq + Debug + Sync + Send;
+    type Data: PartialEq + Sync + Send;
 
     fn make(
         &self,
@@ -38,12 +38,12 @@ where
             data: &Arc<DashMap<Id, B::Data>>,
             analysis_pending: &Arc<Mutex<UniqueQueue<Id>>>,
         ) where
-            L: Language + Sync + Send,
+            L: Language + Sync,
             L::Discriminant: Sync,
-            N: Analysis<L> + Debug + Sync,
-            N::Data: Debug + Sync,
-            B: CommutativeSemigroupAnalysis<L, N, CC> + Sync + Send,
-            B::Data: PartialEq + Debug,
+            N: Analysis<L> + Sync,
+            N::Data: Sync,
+            B: CommutativeSemigroupAnalysis<L, N, CC> + Sync,
+            B::Data: PartialEq,
         {
             // Potentially, this might lead to a situation where only one thread is working on the queue.
             // This has not been observed in practice, but it is a potential bottleneck.

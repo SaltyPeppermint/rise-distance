@@ -1,27 +1,75 @@
+mod count;
 mod novel;
 mod plain;
 mod weigher;
 // mod zs_min_distance;
 
-use std::{fmt::Display, str::FromStr};
+use std::{
+    fmt::Display,
+    iter::{Product, Sum},
+    str::FromStr,
+};
 
 use egg::{Id, RecExpr};
 use foldhash::fast::FixedState;
 use hashbrown::{HashMap, HashSet};
+use num_traits::{NumAssignRef, NumRef};
 use rand::SeedableRng;
+use rand::distributions::uniform::SampleUniform;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::cli::ExperimentError;
-use crate::eqsat::EqsatResult;
-use crate::{Counter, MyAnalysis, MyLanguage, NovelTermCount, OriginLang, PlainTermCount, utils};
+use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
+use crate::{cli::ExperimentError, sampling::count::NovelTermCount};
+use crate::{eqsat::EqsatResult, sampling::count::PlainTermCount};
 
 // TODO: reenable zs_min_distance sampler
 // pub use zs_min_distance::ZSDistanceSampler;
 pub use novel::NovelSampler;
 pub use plain::PlainSampler;
 pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
+
+pub trait Counter:
+    Clone
+    + Send
+    + Sync
+    + NumRef
+    + NumAssignRef
+    + Default
+    + std::fmt::Debug
+    + Display
+    + SampleUniform
+    + PartialEq
+    + Ord
+    + for<'a> Sum<&'a Self>
+    + TryInto<u64, Error: std::fmt::Debug>
+    + TryFrom<u64, Error: std::fmt::Debug>
+    + TryFrom<usize, Error: std::fmt::Debug>
+    + Product // + Weight
+{
+}
+
+impl<
+    T: Clone
+        + Send
+        + Sync
+        + NumRef
+        + NumAssignRef
+        + Default
+        + std::fmt::Debug
+        + Display
+        + SampleUniform
+        + PartialEq
+        + Ord
+        + for<'a> Sum<&'a Self>
+        + TryInto<u64, Error: std::fmt::Debug>
+        + TryFrom<u64, Error: std::fmt::Debug>
+        + TryFrom<usize, Error: std::fmt::Debug>
+        + Product, // + Weight,
+> Counter for T
+{
+}
 
 #[must_use]
 pub const fn powers_of_two<const N: usize>() -> [usize; N] {

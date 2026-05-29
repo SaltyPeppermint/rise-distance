@@ -6,8 +6,8 @@ use rand_chacha::ChaCha12Rng;
 // TODO: reenable zs_min_distance sampler
 // pub use zs_min_distance::ZSDistanceSampler;
 
-use crate::count::{Counter, PlainTermCount};
-use crate::sampling::Weigher;
+use crate::sampling::count::PlainTermCount;
+use crate::sampling::{Counter, Weigher};
 use crate::{MyAnalysis, MyLanguage, OriginLang, Sampler, stack_children};
 
 pub struct PlainSampler<'a, 'b, C, L, N, W>

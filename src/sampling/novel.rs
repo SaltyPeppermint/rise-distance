@@ -6,8 +6,8 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-use crate::count::{NodeMatch, NovelTermCount, PlainTermCount};
 use crate::sampling::Weigher;
+use crate::sampling::count::{NodeMatch, NovelTermCount, convolve, suffix_convolutions};
 use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, Sampler, lower, stack_children};
 
 /// Sampler that draws size-targeted terms which are *not* extractable from
@@ -373,7 +373,7 @@ where
         child_budget: usize,
         rng: &mut ChaCha12Rng,
     ) -> Vec<RecExpr<OriginLang<L>>> {
-        let suffix = PlainTermCount::<C>::suffix_convolutions(child_hists, child_budget);
+        let suffix = suffix_convolutions(child_hists, child_budget);
 
         let mut remaining = child_budget;
         let mut sampled = Vec::with_capacity(children_ids.len());
@@ -486,7 +486,7 @@ fn convolve_at<C: Counter>(histograms: &[&HashMap<usize, C>], budget: usize) -> 
     if histograms.iter().any(|h| h.is_empty()) {
         return None;
     }
-    let conv = PlainTermCount::<C>::convolve(histograms, budget);
+    let conv = convolve(histograms, budget);
     conv.get(&budget).cloned()
 }
 
@@ -500,9 +500,9 @@ mod tests {
     use num::BigUint;
 
     use super::*;
-    use crate::count::PlainTermCount;
     use crate::langs::math::Math;
     use crate::lower;
+    use crate::sampling::count::PlainTermCount;
     use crate::utils::combined_rng;
 
     fn sym(name: &str) -> Math {

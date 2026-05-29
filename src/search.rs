@@ -13,7 +13,7 @@ use std::fmt::Display;
 
 use egg::{Language, RecExpr, Rewrite};
 
-use crate::count::Counter;
+use crate::Counter;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
 use crate::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
 use crate::sketch::Sketch;

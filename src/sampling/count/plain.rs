@@ -2,11 +2,9 @@
 //!
 //! Counts the number of terms up to a given size that can be extracted from each e-class.
 
-use std::borrow::Borrow;
-
 use dashmap::DashMap;
-use egg::RecExpr;
-use egg::{EGraph, Id};
+use egg::{Analysis, EGraph, Id};
+use egg::{Language, RecExpr};
 use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar};
 use rayon::prelude::*;
@@ -14,6 +12,7 @@ use rayon::prelude::*;
 // use crate::graph::{Class, Graph};
 // use crate::ids::{EClassId, ExprChildId};
 use crate::analysis::commutative_semigroup::{CommutativeSemigroupAnalysis, ExprCount};
+use crate::sampling::count::suffix_convolutions;
 use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// Map from e-class ID to a map of (size -> count) (histogram).
@@ -32,65 +31,23 @@ impl<C: Counter> PlainTermCount<C> {
     /// # Arguments
     /// * `max_size` - Maximum term size to count
     #[must_use]
-    pub fn new<L: MyLanguage, N: MyAnalysis<L>>(
-        max_size: usize,
-        graph: &EGraph<L, N>,
-    ) -> PlainTermCount<C> {
+    pub fn new<L, N>(max_size: usize, graph: &EGraph<L, N>) -> PlainTermCount<C>
+    where
+        L: Language + Sync,
+        L::Discriminant: Sync,
+        N: Analysis<L> + Sync,
+        N::Data: Sync,
+    {
         // The per-class (size -> count) histogram is exactly the `ExprCount`
         // commutative-semigroup analysis with `limit = max_size`. Delegate the
         // counting fixpoint to it; everything below (suffix cache, enumeration)
         // is a consumer of `data`.
         let data = ExprCount::new(max_size).one_shot_analysis(graph);
 
-        let suffix_cache = Self::build_suffix_cache_from_map(max_size, graph, &data);
-        PlainTermCount { data, suffix_cache }
-    }
-
-    /// Get the count data for a child, reading from a plain `HashMap`.
-    fn get_child_data_from_map<L: MyLanguage, N: MyAnalysis<L>>(
-        graph: &EGraph<L, N>,
-        child_id: Id,
-        data: &HashMap<Id, HashMap<usize, C>>,
-    ) -> HashMap<usize, C> {
-        data.get(&graph.find(child_id)).cloned().unwrap_or_default()
-    }
-
-    /// Convolve all child histograms into a single result (left-to-right).
-    pub(crate) fn convolve<H: Borrow<HashMap<usize, C>>>(
-        histograms: &[H],
-        budget: usize,
-    ) -> HashMap<usize, C> {
-        let mut acc = HashMap::from([(0, C::one())]);
-        let mut prev = HashMap::new();
-
-        for h in histograms {
-            std::mem::swap(&mut acc, &mut prev);
-            for (&s_acc, c_acc) in &prev {
-                for (&s_h, c_h) in h.borrow() {
-                    let total = s_acc + s_h;
-                    if total > budget {
-                        continue;
-                    }
-                    let product = c_acc.to_owned() * c_h;
-                    acc.entry(total)
-                        .and_modify(|c| *c += &product)
-                        .or_insert(product);
-                }
-            }
-            prev.clear();
-        }
-
-        acc
-    }
-
-    /// Build suffix convolution tables for all e-classes at the maximum budget.
-    fn build_suffix_cache_from_map<L: MyLanguage, N: MyAnalysis<L>>(
-        max_size: usize,
-        graph: &EGraph<L, N>,
-        data: &HashMap<Id, HashMap<usize, C>>,
-    ) -> HashMap<Id, Vec<Vec<HashMap<usize, C>>>> {
         let max_budget = max_size.saturating_sub(1);
-        data.par_iter()
+        // Build suffix convolution tables for all e-classes at the maximum budget.
+        let suffix_cache = data
+            .par_iter()
             .map(|(&id, _)| {
                 let nodes = &graph[id].nodes;
                 let per_node = nodes
@@ -99,44 +56,15 @@ impl<C: Counter> PlainTermCount<C> {
                         let histograms = n
                             .children()
                             .iter()
-                            .map(|&c_id| Self::get_child_data_from_map(graph, c_id, data))
+                            .map(|&c_id| data.get(&graph.find(c_id)).cloned().unwrap_or_default())
                             .collect::<Vec<_>>();
-                        Self::suffix_convolutions(&histograms, max_budget)
+                        suffix_convolutions(&histograms, max_budget)
                     })
                     .collect();
                 (id, per_node)
             })
-            .collect()
-    }
-
-    /// Convolve child histograms right-to-left, returning suffix intermediates.
-    /// `suffix[i]` = convolution of children `i..n`, mapping budget -> count.
-    pub(crate) fn suffix_convolutions<H: Borrow<HashMap<usize, C>>>(
-        histograms: &[H],
-        budget: usize,
-    ) -> Vec<HashMap<usize, C>> {
-        let n = histograms.len();
-        let mut suffix = vec![HashMap::new(); n + 1];
-        suffix[n] = HashMap::from([(0, C::one())]);
-
-        for i in (0..n).rev() {
-            let (left, right) = suffix.split_at_mut(i + 1);
-            for (&s_i, c_i) in histograms[i].borrow() {
-                for (&s_rest, c_rest) in &right[0] {
-                    let total = s_i + s_rest;
-                    if total > budget {
-                        continue;
-                    }
-                    let product = c_i.to_owned() * c_rest;
-                    left[i]
-                        .entry(total)
-                        .and_modify(|c: &mut C| *c += &product)
-                        .or_insert(product);
-                }
-            }
-        }
-
-        suffix
+            .collect();
+        PlainTermCount { data, suffix_cache }
     }
 
     /// Get the histogram for a child (size -> count). `None` means the child
@@ -161,7 +89,6 @@ impl<C: Counter> PlainTermCount<C> {
 
     /// Enumerate all terms from an e-class with sizes in `1..=max_size`.
     #[must_use]
-    #[expect(clippy::missing_panics_doc)]
     pub fn enumerate<L: MyLanguage, N: MyAnalysis<L>>(
         &self,
         graph: &EGraph<L, N>,

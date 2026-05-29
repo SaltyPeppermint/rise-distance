@@ -15,13 +15,13 @@
 //! Two prev classes cannot share a term (`prev.lookup(t)` is unique once
 //! prev has been rebuilt), so the sum over `pc` does not double-count.
 
-use egg::{EGraph, Id};
+use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 
-use super::{Counter, PlainTermCount};
+use crate::sampling::Counter;
+use crate::sampling::count::PlainTermCount;
 use crate::utils::UniqueQueue;
-use crate::{MyAnalysis, MyLanguage};
 
 /// Inline-allocated list of child class ids. Sized for the typical e-node
 /// arity (0–2); higher-arity nodes spill to the heap transparently.
@@ -70,8 +70,8 @@ pub type JointTable<C> = HashMap<(Id, Id), HashMap<usize, C>>;
 pub struct NovelTermCount<'g, C, L, N>
 where
     C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
+    L: Language,
+    N: Analysis<L>,
 {
     curr: &'g EGraph<L, N>,
     prev: &'g EGraph<L, N>,
@@ -94,12 +94,7 @@ where
     data: HashMap<Id, HashMap<usize, C>>,
 }
 
-impl<'g, C, L, N> NovelTermCount<'g, C, L, N>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
+impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
     #[must_use]
     pub fn new(
         max_size: usize,
@@ -209,7 +204,7 @@ fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
 /// that share a term with `c_i`). For each combo, look up the translated node
 /// in `prev`; if found, record the match and add the discovered prev class to
 /// `cover[curr_class_of_n]`. Iterate until no new matches/cover entries.
-fn enumerate_matches<L: MyLanguage, N: MyAnalysis<L>>(
+fn enumerate_matches<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     prev: &EGraph<L, N>,
 ) -> NodeMatches {
@@ -291,7 +286,7 @@ fn child_combinations(children: &[Id], cover: &MatchCover) -> Vec<ChildIds> {
 
 /// Compute `joint[(c, pc)]` for every pair appearing in matches, via a
 /// bottom-up fixpoint similar to `PlainTermCount::new`.
-fn compute_joint<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
+fn compute_joint<C: Counter, L: Language, N: Analysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,
     matches: &NodeMatches,
@@ -369,7 +364,7 @@ fn compute_joint<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
 }
 
 /// Compute the histogram for a single `(c, pc)` pair from its matches.
-fn compute_pair_histogram<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
+fn compute_pair_histogram<C: Counter, L: Language, N: Analysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,
     c: Id,
@@ -413,7 +408,7 @@ fn compute_pair_histogram<C: Counter, L: MyLanguage, N: MyAnalysis<L>>(
             continue;
         }
 
-        let conv = PlainTermCount::<C>::convolve(&histograms, budget);
+        let conv = super::convolve(&histograms, budget);
         for (s, count) in conv {
             let total = s + base;
             acc.entry(total)

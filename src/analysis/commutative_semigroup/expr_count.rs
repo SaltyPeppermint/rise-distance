@@ -22,9 +22,9 @@ impl ExprCount {
 
 impl<C, L, N> CommutativeSemigroupAnalysis<L, N, C> for ExprCount
 where
-    L: Language + Sync + Send,
+    L: Language + Sync,
     L::Discriminant: Sync,
-    N: Analysis<L> + Debug + Sync,
+    N: Analysis<L> + Sync,
     N::Data: Sync,
     C: Counter,
 {
