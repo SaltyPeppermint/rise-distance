@@ -7,13 +7,13 @@ use std::borrow::Borrow;
 use dashmap::DashMap;
 use egg::RecExpr;
 use egg::{EGraph, Id};
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar};
 use rayon::prelude::*;
 
 // use crate::graph::{Class, Graph};
 // use crate::ids::{EClassId, ExprChildId};
-use crate::utils::UniqueQueue;
+use crate::analysis::commutative_semigroup::{CommutativeSemigroupAnalysis, ExprCount};
 use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// Map from e-class ID to a map of (size -> count) (histogram).
@@ -32,141 +32,18 @@ impl<C: Counter> PlainTermCount<C> {
     /// # Arguments
     /// * `max_size` - Maximum term size to count
     #[must_use]
-    #[expect(clippy::missing_panics_doc)]
     pub fn new<L: MyLanguage, N: MyAnalysis<L>>(
         max_size: usize,
         graph: &EGraph<L, N>,
     ) -> PlainTermCount<C> {
-        // Build parent map and type size cache
-        let parents = Self::build_parent_map(graph);
-        // let type_sizes = TypeSizeCache::build(graph);
-
-        // Find leaf classes (classes with at least one leaf node)
-        let mut pending = graph
-            .classes()
-            .filter(|&class| graph[class.id].nodes.iter().any(|n| n.is_leaf()))
-            .map(|e| e.id)
-            .collect::<UniqueQueue<_>>();
-
-        let mut data = HashMap::new();
-
-        // Fixpoint iteration: process classes in rounds.
-        // Each round drains the current queue, computes new data for each class
-        // in parallel (reading only from the previous round's data), then applies
-        // all updates sequentially before the next round.
-        while !pending.is_empty() {
-            // Compute new data for each class in parallel, reading from `data` (immutable)
-            let results = pending
-                .drain()
-                .par_bridge()
-                .map(|id| {
-                    debug_assert_eq!(graph.find(id), id);
-                    let eclass = &graph[id];
-
-                    let available_data = eclass.nodes.iter().filter_map(|node| {
-                        let all_ready = node
-                            .children()
-                            .iter()
-                            .all(|child_id| data.contains_key(&graph.find(*child_id)));
-                        all_ready.then(|| {
-                            Self::make_node_data_from_map(max_size, graph, node.children(), &data)
-                        })
-                    });
-
-                    let merged = available_data.reduce(|mut a, b| {
-                        Self::merge(&mut a, b);
-                        a
-                    });
-
-                    (id, merged)
-                })
-                .collect::<Vec<_>>();
-
-            // Apply results sequentially -> no concurrent mutation
-            for (id, computed) in results {
-                if let Some(computed_data) = computed {
-                    if data.get(&id).is_none_or(|v| *v != computed_data) {
-                        if let Some(parent_set) = parents.get(&id) {
-                            pending.extend(parent_set.iter().copied());
-                        }
-                        data.insert(id, computed_data);
-                    }
-                } else {
-                    // Not all children ready yet -> re-queue
-                    assert!(!graph[id].is_empty());
-                    pending.insert(id);
-                }
-            }
-        }
+        // The per-class (size -> count) histogram is exactly the `ExprCount`
+        // commutative-semigroup analysis with `limit = max_size`. Delegate the
+        // counting fixpoint to it; everything below (suffix cache, enumeration)
+        // is a consumer of `data`.
+        let data = ExprCount::new(max_size).one_shot_analysis(graph);
 
         let suffix_cache = Self::build_suffix_cache_from_map(max_size, graph, &data);
         PlainTermCount { data, suffix_cache }
-    }
-
-    /// Merge two term count data maps.
-    fn merge(a: &mut HashMap<usize, C>, b: HashMap<usize, C>) {
-        for (size, count) in b {
-            a.entry(size).and_modify(|c| *c += &count).or_insert(count);
-        }
-    }
-
-    /// Compute term counts for a single e-node, reading from a plain `HashMap`.
-    fn make_node_data_from_map<L: MyLanguage, N: MyAnalysis<L>>(
-        max_size: usize,
-        graph: &EGraph<L, N>,
-        children: &[Id],
-        data: &HashMap<Id, HashMap<usize, C>>,
-    ) -> HashMap<usize, C> {
-        // Base size: 1 for the node itself
-        let base_size = 1;
-
-        if children.is_empty() {
-            if base_size <= max_size {
-                return HashMap::from([(base_size, C::one())]);
-            }
-            return HashMap::new();
-        }
-
-        let Some(budget) = max_size.checked_sub(base_size) else {
-            return HashMap::new();
-        };
-
-        let histograms = children
-            .iter()
-            .map(|c| Self::get_child_data_from_map(graph, *c, data))
-            .collect::<Vec<_>>();
-        let mut result = Self::convolve(&histograms, budget);
-
-        // Offset all keys by base_size
-        if base_size > 0 {
-            result = result
-                .into_iter()
-                .map(|(size, count)| (size + base_size, count))
-                .collect();
-        }
-
-        result
-    }
-
-    /// Build a map from child e-class to parent e-classes.
-    pub(super) fn build_parent_map<L: MyLanguage, N: MyAnalysis<L>>(
-        graph: &EGraph<L, N>,
-    ) -> HashMap<Id, HashSet<Id>> {
-        let mut parents = HashMap::<Id, HashSet<Id>>::new();
-
-        for class in graph.classes() {
-            for node in &class.nodes {
-                for child_id in node.children() {
-                    let c_id = graph.find(*child_id);
-                    parents
-                        .entry(c_id)
-                        .or_default()
-                        .insert(graph.find(class.id));
-                }
-            }
-        }
-
-        parents
     }
 
     /// Get the count data for a child, reading from a plain `HashMap`.

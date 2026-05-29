@@ -52,18 +52,6 @@ impl<T: Eq + Hash + Clone> UniqueQueue<T> {
         }
         res
     }
-
-    pub fn is_empty(&self) -> bool {
-        let r = self.queue.is_empty();
-        debug_assert_eq!(r, self.set.is_empty());
-        r
-    }
-
-    /// Drain all elements from the queue, returning them in order.
-    pub fn drain(&mut self) -> std::collections::vec_deque::Drain<'_, T> {
-        self.set.clear();
-        self.queue.drain(..)
-    }
 }
 
 pub fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
