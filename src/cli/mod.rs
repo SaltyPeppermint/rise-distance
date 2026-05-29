@@ -1,6 +1,8 @@
 pub mod parquet;
 pub mod types;
 
+use strum::Display;
+use thiserror::Error;
 pub use types::*;
 
 use std::env::current_dir;
@@ -12,7 +14,15 @@ use egg::Iteration;
 use num::ToPrimitive;
 use serde::Serialize;
 
-use crate::eqsat::EqsatConfig;
+use crate::eqsat::{EqsatConfig, GuideError};
+use crate::langs::AvailableLanguages;
+
+#[derive(Debug, Error, Display, Serialize, Clone)]
+pub enum ExperimentError {
+    Guide(#[from] GuideError),
+    InsufficientSamples,
+    NothingInHistogram,
+}
 
 pub fn trial_avg<
     F: Fn(&Vec<Iteration<()>>) -> Option<T>,
@@ -105,6 +115,21 @@ pub fn write_metadata(run_folder: &Path, metadata: &[serde_json::Value]) {
 /// Panics if `args.json` is missing, unreadable, or the required fields are missing/wrong-typed.
 #[must_use]
 pub fn read_folder_args(folder: &Path) -> EqsatConfig {
+    let path = folder.join("args.json");
+    let reader =
+        File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
+    serde_json::from_reader(reader)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()))
+}
+
+/// Read the `language` field from `<folder>/args.json`.
+///
+/// # Panics
+///
+/// Panics if `args.json` is missing, unreadable, malformed, or lacks a
+/// `language` field (older runs predating the field must be regenerated).
+#[must_use]
+pub fn read_folder_language(folder: &Path) -> AvailableLanguages {
     let path = folder.join("args.json");
     let reader =
         File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));

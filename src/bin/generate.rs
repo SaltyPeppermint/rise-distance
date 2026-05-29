@@ -1,10 +1,10 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use clap::Parser;
-use egg::{BackoffScheduler, RecExpr, Rewrite, Runner, SimpleScheduler, StopReason};
+use egg::{RecExpr, Rewrite, StopReason};
 use hashbrown::{HashMap, hash_map::Entry};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
@@ -13,6 +13,7 @@ use rayon::prelude::*;
 use rise_distance::sampling::Distribution;
 use serde::Serialize;
 
+use rise_distance::eqsat::EqsatConfig;
 use rise_distance::generator::BoltzmannSampler;
 use rise_distance::langs::{AvailableLanguages, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -111,7 +112,12 @@ fn main() {
         .distribution
         .samples_per_size(&sizes, args.total_samples);
 
-    let validity_config = (&args).into();
+    let validity_config = EqsatConfig {
+        max_iters: args.max_iters,
+        max_nodes: args.max_nodes,
+        max_time: args.max_time,
+        backoff_scheduler: args.backoff_scheduler,
+    };
 
     // Derive one RNG per size by advancing the root RNG sequentially, making it deterministic and ordered.
     let mut root_rng = ChaCha12Rng::seed_from_u64(args.seed);
@@ -158,7 +164,7 @@ type SizeBucket = (usize, HashMap<String, (usize, ValidationResult)>);
 
 fn run_language<S, N>(
     args: &Args,
-    validity_config: &ValidityConfig,
+    validity_config: &EqsatConfig,
     sized_rngs: Vec<(usize, u64, ChaCha12Rng)>,
     rules: &[Rewrite<S::Lang, N>],
 ) -> Vec<SizeBucket>
@@ -197,7 +203,7 @@ fn collect_for_size<S, N>(
     rng: &mut ChaCha12Rng,
     tolerance: usize,
     retry_limit: usize,
-    validity_config: &ValidityConfig,
+    validity_config: &EqsatConfig,
     rules: &[Rewrite<S::Lang, N>],
 ) -> HashMap<String, (usize, ValidationResult)>
 where
@@ -239,28 +245,10 @@ pub struct ValidationResult {
     pub iterations: usize,
 }
 
-pub struct ValidityConfig {
-    pub max_iters: usize,
-    pub max_nodes: usize,
-    pub max_time: f64,
-    pub backoff_scheduler: bool,
-}
-
-impl From<&Args> for ValidityConfig {
-    fn from(args: &Args) -> Self {
-        Self {
-            max_iters: args.max_iters,
-            max_nodes: args.max_nodes,
-            max_time: args.max_time,
-            backoff_scheduler: args.backoff_scheduler,
-        }
-    }
-}
-
 #[must_use]
 pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     expr: &RecExpr<L>,
-    config: &ValidityConfig,
+    config: &EqsatConfig,
     rules: &[Rewrite<L, N>],
 ) -> Option<ValidationResult> {
     // egg's Runner can panic on certain malformed inside its merge check.
@@ -270,16 +258,7 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     // '(cos (* (sqrt (* x (sqrt (i (/ 0 x) x)))) (sin (+ (pow 1 (/ 1 2)) (cos 2)))))'
     // The issue is that the binder check does not catch (i (/ 0 x) x) although (/ 0 x)
     // trivially simplifies to 0
-    let runner = Runner::default()
-        .with_expr(expr)
-        .with_iter_limit(config.max_iters)
-        .with_node_limit(config.max_nodes)
-        .with_time_limit(Duration::from_secs_f64(config.max_time));
-    let runner = if config.backoff_scheduler {
-        runner.with_scheduler(BackoffScheduler::default())
-    } else {
-        runner.with_scheduler(SimpleScheduler)
-    };
+    let runner = config.build_runner::<_, _, ()>(expr);
 
     // Setting and unsetting the panic hook so we dont get debug spam. it is fine to ignore the output
     // Afterwards we reinstall the old default panic hook

@@ -1,13 +1,13 @@
-use std::time::Duration;
-
 use clap::Parser;
-use egg::{Analysis, BackoffScheduler, FromOp, RecExpr, Rewrite, Runner, SimpleScheduler};
-use rise_distance::langs::AvailableLanguages;
+use egg::{RecExpr, Rewrite};
+
 use rlimit::{Resource, setrlimit};
 
-use rise_distance::MyLanguage;
+use rise_distance::eqsat::EqsatConfig;
+use rise_distance::langs::AvailableLanguages;
 use rise_distance::langs::math::{self, Math};
 use rise_distance::langs::prop::{self, Prop};
+use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]
 #[command(about = "Run eqsat on a single term and print peak RSS in bytes.")]
@@ -58,29 +58,19 @@ fn main() {
     println!("{}", peak_rss_bytes());
 }
 
-fn run<L, N>(args: &Args, rules: &[Rewrite<L, N>])
-where
-    L: MyLanguage + FromOp + 'static,
-    L::Error: std::fmt::Display,
-    N: Analysis<L> + Default + 'static,
-    N::Data: Clone,
-{
+fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
     let expr: RecExpr<L> = args
         .term
         .parse()
         .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
 
-    let runner = Runner::default()
-        .with_expr(&expr)
-        .with_iter_limit(args.max_iters)
-        .with_node_limit(args.max_nodes)
-        .with_time_limit(Duration::from_secs_f64(args.max_time));
-    let runner = if args.backoff_scheduler {
-        runner.with_scheduler(BackoffScheduler::default())
-    } else {
-        runner.with_scheduler(SimpleScheduler)
+    let config = EqsatConfig {
+        max_iters: args.max_iters,
+        max_nodes: args.max_nodes,
+        max_time: args.max_time,
+        backoff_scheduler: args.backoff_scheduler,
     };
-    let runner = runner.run(rules);
+    let runner = config.build_runner::<_, _, ()>(&expr).run(rules);
 
     drop(runner);
 }

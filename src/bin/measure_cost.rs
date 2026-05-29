@@ -1,12 +1,9 @@
 use core::panic;
-use std::time::Duration;
 
 use clap::Parser;
-use egg::{
-    AstDepth, AstSize, BackoffScheduler, Iteration, IterationData, RecExpr, Rewrite, Runner,
-    SimpleScheduler,
-};
+use egg::{AstDepth, AstSize, Iteration, IterationData, RecExpr, Rewrite, Runner};
 use hashbrown::HashMap;
+use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::AvailableLanguages;
 use serde::Serialize;
 
@@ -73,10 +70,10 @@ struct CostEvolution {
 }
 
 impl CostEvolution {
-    fn from_iterations<L, N>(iterations: Vec<Iteration<CostThisRound<L>>>) -> CostEvolution
+    fn from_iterations<L: MyLanguage, N: MyAnalysis<L>>(
+        iterations: Vec<Iteration<CostThisRound<L>>>,
+    ) -> CostEvolution
     where
-        L: MyLanguage,
-        N: MyAnalysis<L>,
         CostThisRound<L>: IterationData<L, N>,
     {
         let novelty = CostEvolution::is_new_extract(&iterations);
@@ -88,12 +85,10 @@ impl CostEvolution {
         CostEvolution { monotonic, novelty }
     }
 
-    fn is_new_extract<L, N>(
+    fn is_new_extract<L: MyLanguage, N: MyAnalysis<L>>(
         iterations: &[Iteration<CostThisRound<L>>],
     ) -> Vec<HashMap<&'static str, bool>>
     where
-        L: MyLanguage,
-        N: MyAnalysis<L>,
         CostThisRound<L>: IterationData<L, N>,
     {
         iterations
@@ -116,24 +111,24 @@ impl CostEvolution {
     }
 }
 
-fn run<L, N>(args: &Args, expr: &RecExpr<L>, rules: &[Rewrite<L, N>]) -> CostEvolution
+fn run<L: MyLanguage, N: MyAnalysis<L>>(
+    args: &Args,
+    expr: &RecExpr<L>,
+    rules: &[Rewrite<L, N>],
+) -> CostEvolution
 where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
     CostThisRound<L>: IterationData<L, N>,
 {
     eprintln!("Now running {expr}");
-    let runner = Runner::new(Default::default())
-        .with_expr(expr)
-        .with_iter_limit(args.max_iters)
-        .with_node_limit(args.max_nodes)
-        .with_time_limit(Duration::from_secs_f64(args.max_time));
-    let runner = if args.backoff_scheduler {
-        runner.with_scheduler(BackoffScheduler::default())
-    } else {
-        runner.with_scheduler(SimpleScheduler)
+    let config = EqsatConfig {
+        max_iters: args.max_iters,
+        max_nodes: args.max_nodes,
+        max_time: args.max_time,
+        backoff_scheduler: args.backoff_scheduler,
     };
-    let runner = runner.run(rules);
+    let runner = config
+        .build_runner::<_, _, CostThisRound<L>>(expr)
+        .run(rules);
 
     CostEvolution::from_iterations(runner.iterations)
 }

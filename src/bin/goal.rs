@@ -13,8 +13,8 @@ use num::{BigUint, ToPrimitive};
 
 use serde::Serialize;
 
-use rise_distance::cli::read_folder_args;
 use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
+use rise_distance::cli::{read_folder_args, read_folder_language};
 use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
 use rise_distance::langs::{AvailableLanguages, math, prop};
 use rise_distance::lower;
@@ -139,20 +139,17 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     println!("Precompute built in {:.2}s", now.elapsed().as_secs_f64());
     pp.log_root();
 
-    let goals = match pp.sample_frontier_terms(
+    let Some(goals) = pp.sample_frontier_terms(
         args.goals,
         args.size_distribution,
         args.goal_sample_strategy,
         [0, 0],
         true,
-    ) {
-        Ok(g) => g,
-        Err(e) => {
-            return EnrichedSeed::Failed(EnrichedSeedFailed {
-                max_size,
-                fail_reason: format!("sample_frontier failed (e={e})"),
-            });
-        }
+    ) else {
+        return EnrichedSeed::Failed(EnrichedSeedFailed {
+            max_size,
+            fail_reason: "sample_frontier failed".to_owned(),
+        });
     };
 
     let goal_strings = goals
@@ -236,22 +233,6 @@ fn write_enriched_terms(folder: &Path, enriched_map: &HashMap<String, EnrichedSe
 pub enum SeedInput {
     Single { term: String, max_size: usize },
     JSON(PathBuf),
-}
-
-/// Read the `language` field from `<folder>/args.json`.
-///
-/// # Panics
-///
-/// Panics if `args.json` is missing, unreadable, malformed, or lacks a
-/// `language` field (older runs predating the field must be regenerated).
-#[must_use]
-pub fn read_folder_language(folder: &Path) -> AvailableLanguages {
-    let path = folder.join("args.json");
-    let reader =
-        File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
-    let parsed: AvailableLanguages = serde_json::from_reader(reader)
-        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()));
-    parsed
 }
 
 /// Parse a `SeedInput` into a list of `(seed_string, parsed_expr, max_size)` triples.

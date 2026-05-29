@@ -13,15 +13,15 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
 use rise_distance::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
-use rise_distance::langs::AvailableLanguages;
-use rise_distance::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
+use rise_distance::sampling::{Counter, PrecomputePackage, SampleStrategy, TermSampleDist};
 use serde::Serialize;
 use serde_json::json;
 
-use rise_distance::Counter;
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{EnrichedSeed, GoalGenMetadata, GoalSummary, TrialsPerK};
-use rise_distance::cli::{get_run_folder, read_folder_args, write_config, write_metadata};
+use rise_distance::cli::{
+    ExperimentError, get_run_folder, read_folder_args, write_config, write_metadata,
+};
 use rise_distance::langs::math::{ConstantFold, Math, RULES};
 use time::OffsetDateTime;
 
@@ -320,13 +320,15 @@ impl Strategy {
                     let trials = (0..args.repetitions)
                         .into_par_iter()
                         .map(|s| {
-                            let subset = pp.sample_frontier_terms(
-                                k,
-                                args.size_distribution,
-                                strategy,
-                                [k as u64, s as u64],
-                                true,
-                            )?;
+                            let subset = pp
+                                .sample_frontier_terms(
+                                    k,
+                                    args.size_distribution,
+                                    strategy,
+                                    [k as u64, s as u64],
+                                    true,
+                                )
+                                .ok_or(ExperimentError::InsufficientSamples)?;
                             let r = eqsat::verify_reachability(
                                 &subset,
                                 &goal,
@@ -352,11 +354,11 @@ impl Strategy {
                         true,
                     );
                     let trials = match samples {
-                        Err(e) => {
+                        None => {
                             pb.inc(args.repetitions as u64);
-                            vec![Err(e); args.repetitions]
+                            vec![Err(ExperimentError::InsufficientSamples); args.repetitions]
                         }
-                        Ok(samples) => samples
+                        Some(samples) => samples
                             .par_chunks(k)
                             .map(|subset| {
                                 let r = eqsat::verify_reachability(
@@ -389,20 +391,4 @@ impl Strategy {
             }
         }
     }
-}
-
-/// Read the `language` field from `<folder>/args.json`.
-///
-/// # Panics
-///
-/// Panics if `args.json` is missing, unreadable, malformed, or lacks a
-/// `language` field (older runs predating the field must be regenerated).
-#[must_use]
-pub fn read_folder_language(folder: &Path) -> AvailableLanguages {
-    let path = folder.join("args.json");
-    let reader =
-        File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
-    let parsed: AvailableLanguages = serde_json::from_reader(reader)
-        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()));
-    parsed
 }

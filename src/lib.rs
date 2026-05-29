@@ -7,12 +7,12 @@ mod origin;
 pub mod sampling;
 pub mod search;
 pub mod sketch;
+#[cfg(test)]
+pub mod test_utils;
 pub(crate) mod utils;
 mod zs;
 
 pub use langs::{MyAnalysis, MyLanguage};
 pub use origin::{OriginLang, lower};
-pub use sampling::Counter;
-pub use sampling::{NovelSampler, PlainSampler, Sampler};
 pub use utils::{cheapest, cheapest_ilp, id0, stack_children};
 pub use zs::{find_min_zs, tree_distance_unit};

@@ -3,8 +3,7 @@ use std::fmt::Display;
 use egg::{FromOp, Id, Language, RecExpr};
 use serde::{Deserialize, Serialize};
 
-use crate::MyLanguage;
-use crate::id0;
+use crate::{MyLanguage, id0};
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(bound = "L: MyLanguage")]

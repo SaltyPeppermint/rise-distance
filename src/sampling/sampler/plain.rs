@@ -1,4 +1,5 @@
 use egg::{EGraph, Id, RecExpr};
+use hashbrown::HashMap;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
@@ -7,8 +8,9 @@ use rand_chacha::ChaCha12Rng;
 // pub use zs_min_distance::ZSDistanceSampler;
 
 use crate::sampling::count::PlainTermCount;
+use crate::sampling::sampler::Sampler;
 use crate::sampling::{Counter, Weigher};
-use crate::{MyAnalysis, MyLanguage, OriginLang, Sampler, stack_children};
+use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 pub struct PlainSampler<'a, 'b, C, L, N, W>
 where
@@ -57,26 +59,12 @@ where
         self.root
     }
 
-    fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool {
-        let canon_id = self.graph.find(id);
-        let Some(count) = self
-            .term_count
-            .data()
-            .get(&canon_id)
-            .and_then(|h| h.get(&size))
-        else {
-            return false;
-        };
-        samples.try_into().is_ok_and(|s: C| count > &s)
+    fn find(&self, id: Id) -> Id {
+        self.graph.find(id)
     }
 
-    fn term_sizes(&self, id: Id) -> Vec<usize> {
-        let canon_id = self.graph.find(id);
-        self.term_count
-            .data()
-            .get(&canon_id)
-            .map(|h| h.keys().copied().collect())
-            .unwrap_or_default()
+    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, C>> {
+        self.term_count.data().get(&id)
     }
 
     fn enumerate_size(&self, id: Id, size: usize) -> Vec<RecExpr<OriginLang<L>>> {
@@ -140,11 +128,8 @@ mod tests {
     use crate::langs::math::Math;
     use crate::lower;
     use crate::sampling::{CountWeigher, NaiveWeigher};
+    use crate::test_utils::sym;
     use crate::utils::combined_rng;
-
-    fn sym(name: &str) -> Math {
-        Math::Symbol(name.into())
-    }
 
     #[test]
     fn naive_sample_single_leaf() {

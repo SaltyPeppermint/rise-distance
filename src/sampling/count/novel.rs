@@ -480,10 +480,7 @@ mod tests {
 
     use super::*;
     use crate::langs::math::Math;
-
-    fn sym(name: &str) -> Math {
-        Math::Symbol(name.into())
-    }
+    use crate::test_utils::sym;
 
     #[test]
     fn no_novelty_yields_empty() {

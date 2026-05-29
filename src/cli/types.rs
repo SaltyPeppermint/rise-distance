@@ -1,25 +1,11 @@
-use egg::{Iteration, RecExpr, StopReason};
+use egg::{Iteration, RecExpr};
 use hashbrown::HashMap;
 use num::BigUint;
 use serde::{Deserialize, Serialize};
-use strum::Display;
-use thiserror::Error;
 
-use crate::eqsat::{EqsatConfig, EqsatMetadata};
+use crate::cli::ExperimentError;
+use crate::eqsat::{EqsatConfig, EqsatMetadata, GuideError};
 use crate::{MyLanguage, OriginLang};
-
-#[derive(Debug, Error, Display, Serialize, Clone)]
-pub enum ExperimentError {
-    Guide(#[from] GuideError),
-    InsufficientSamples,
-    NothingInHistogram,
-}
-
-#[derive(Debug, Error, Display, Serialize, Clone)]
-pub enum GuideError {
-    Unreached(StopReason),
-    PanicWhileAttempt,
-}
 
 #[derive(Serialize, Debug, Clone)]
 pub struct GuideEval<L: MyLanguage> {

@@ -12,8 +12,8 @@ use rayon::prelude::*;
 // use crate::graph::{Class, Graph};
 // use crate::ids::{EClassId, ExprChildId};
 use crate::analysis::commutative_semigroup::{CommutativeSemigroupAnalysis, ExprCount};
-use crate::sampling::count::suffix_convolutions;
-use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, stack_children};
+use crate::sampling::count::{Counter, suffix_convolutions};
+use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// Map from e-class ID to a map of (size -> count) (histogram).
 #[derive(Debug, Clone)]
@@ -291,10 +291,7 @@ mod tests {
 
     use super::*;
     use crate::langs::math::Math;
-
-    fn sym(name: &str) -> Math {
-        Math::Symbol(name.into())
-    }
+    use crate::test_utils::sym;
 
     #[test]
     fn enumerate_single_leaf() {

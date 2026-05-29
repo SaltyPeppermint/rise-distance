@@ -6,11 +6,12 @@ use egg::{
 };
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
+use strum::Display;
+use thiserror::Error;
 
 use crate::{
-    MyAnalysis, MyLanguage, OriginLang,
-    cli::GuideError,
-    lower,
+    langs::{MyAnalysis, MyLanguage},
+    origin::{OriginLang, lower},
     sketch::{self, Sketch},
 };
 
@@ -20,6 +21,12 @@ pub struct EqsatMetadata {
     pub classes: usize,
     pub time: f64,
     pub iters: usize,
+}
+
+#[derive(Debug, Error, Display, Serialize, Clone)]
+pub enum GuideError {
+    Unreached(StopReason),
+    PanicWhileAttempt,
 }
 
 impl EqsatMetadata {
@@ -89,6 +96,26 @@ impl EqsatConfig {
                 "  backoff_scheduler: this={} other={}",
                 self.backoff_scheduler, other.backoff_scheduler
             );
+        }
+    }
+
+    /// Build a [`Runner`] configured with this config's limits and scheduler.
+    #[must_use]
+    pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> Runner<L, N, D>
+    where
+        L: MyLanguage,
+        N: MyAnalysis<L>,
+        D: IterationData<L, N>,
+    {
+        let runner = Runner::<L, N, D>::new(N::default())
+            .with_expr(expr)
+            .with_iter_limit(self.max_iters)
+            .with_node_limit(self.max_nodes)
+            .with_time_limit(Duration::from_secs_f64(self.max_time));
+        if self.backoff_scheduler {
+            runner.with_scheduler(BackoffScheduler::default())
+        } else {
+            runner.with_scheduler(SimpleScheduler)
         }
     }
 }

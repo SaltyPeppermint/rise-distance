@@ -1,14 +1,14 @@
+mod novel;
+mod plain;
+
 use std::borrow::Borrow;
 
 use hashbrown::HashMap;
 
-mod novel;
-mod plain;
+use crate::sampling::Counter;
 
 pub use novel::{NodeMatch, NovelTermCount};
 pub use plain::PlainTermCount;
-
-use crate::sampling::Counter;
 
 /// Convolve all child histograms into a single result (left-to-right).
 pub(crate) fn convolve<C: Counter, H: Borrow<HashMap<usize, C>>>(

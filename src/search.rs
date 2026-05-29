@@ -13,9 +13,8 @@ use std::fmt::Display;
 
 use egg::{Language, RecExpr, Rewrite};
 
-use crate::Counter;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
-use crate::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
+use crate::sampling::{Counter, PrecomputePackage, SampleStrategy, TermSampleDist};
 use crate::sketch::Sketch;
 use crate::{MyAnalysis, MyLanguage, OriginLang, id0, lower};
 
@@ -72,7 +71,7 @@ pub enum SearchMode {
 }
 
 /// Outcome of a sketch-based reachability search.
-pub struct ReachResult<L: MyLanguage> {
+pub struct ReachResult<L: Language> {
     /// Whether all sketch goals were satisfied.
     pub reached: Option<RecExpr<L>>,
     /// For [`SearchMode::Cut`], the novel frontier terms sampled at the cut and
@@ -99,9 +98,8 @@ pub fn reach_sketches<L, N, C>(
     mode: SearchMode,
 ) -> ReachResult<L>
 where
-    L: MyLanguage + Language + Display + 'static,
-    N: MyAnalysis<L> + Default + Clone + 'static,
-    N::Data: Clone,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
     C: Counter,
 {
     println!("Start:         {start}");
@@ -124,9 +122,8 @@ fn reach_cut<L, N, C>(
     args: CutArgs,
 ) -> ReachResult<L>
 where
-    L: MyLanguage + Language + Display + 'static,
-    N: MyAnalysis<L> + Default + Clone + 'static,
-    N::Data: Clone,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
     C: Counter,
 {
     println!("Doing search '{search_name}' via cut\n");
@@ -158,22 +155,19 @@ where
     };
     // pp.log_root();
 
-    let sampled = match pp.sample_frontier_terms(
+    let Some(sampled) = pp.sample_frontier_terms(
         args.sample_count,
         TermSampleDist::UNIFORM,
         SampleStrategy::Count,
         [args.cut_iters as u64, 0],
         true,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            println!("{search_name}: sampling failed ({e})");
-            return ReachResult {
-                reached: None,
-                sampled: Vec::new(),
-                eqsat_meta: vec![cut_meta],
-            };
-        }
+    ) else {
+        println!("{search_name}: sampling failed");
+        return ReachResult {
+            reached: None,
+            sampled: Vec::new(),
+            eqsat_meta: vec![cut_meta],
+        };
     };
 
     println!(

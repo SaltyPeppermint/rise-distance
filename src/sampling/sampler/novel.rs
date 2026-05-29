@@ -6,9 +6,10 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-use crate::sampling::Weigher;
 use crate::sampling::count::{NodeMatch, NovelTermCount, convolve, suffix_convolutions};
-use crate::{Counter, MyAnalysis, MyLanguage, OriginLang, Sampler, lower, stack_children};
+use crate::sampling::sampler::Sampler;
+use crate::sampling::{Counter, Weigher};
+use crate::{MyAnalysis, MyLanguage, OriginLang, lower, stack_children};
 
 /// Sampler that draws size-targeted terms which are *not* extractable from
 /// any e-class in `prev` — i.e., terms that carry information learned in
@@ -410,21 +411,12 @@ where
         self.root
     }
 
-    fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool {
-        let canon_id = self.graph().find(id);
-        let Some(count) = self.novel.data().get(&canon_id).and_then(|h| h.get(&size)) else {
-            return false;
-        };
-        samples.try_into().is_ok_and(|s: C| count > &s)
+    fn find(&self, id: Id) -> Id {
+        self.graph().find(id)
     }
 
-    fn term_sizes(&self, id: Id) -> Vec<usize> {
-        let canon_id = self.graph().find(id);
-        self.novel
-            .data()
-            .get(&canon_id)
-            .map(|h| h.keys().copied().collect())
-            .unwrap_or_default()
+    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, C>> {
+        self.novel.data().get(&id)
     }
 
     fn enumerate_size(&self, id: Id, size: usize) -> Vec<RecExpr<OriginLang<L>>> {
@@ -502,12 +494,10 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::lower;
+    use crate::sampling::CountWeigher;
     use crate::sampling::count::PlainTermCount;
+    use crate::test_utils::sym;
     use crate::utils::combined_rng;
-
-    fn sym(name: &str) -> Math {
-        Math::Symbol(name.into())
-    }
 
     #[test]
     fn novel_sample_picks_only_novel_term() {
@@ -528,7 +518,7 @@ mod tests {
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
         let novel = NovelTermCount::new(5, &curr, &prev, plain);
 
-        let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
+        let sampler = NovelSampler::new(&novel, root, CountWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -555,7 +545,7 @@ mod tests {
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
         let novel = NovelTermCount::new(5, &curr, &prev, plain);
 
-        let sampler = NovelSampler::new(&novel, root, super::super::CountWeigher);
+        let sampler = NovelSampler::new(&novel, root, CountWeigher);
 
         for s in 0..100_u64 {
             let mut rng = combined_rng([s]);
@@ -577,7 +567,7 @@ mod tests {
         let plain = PlainTermCount::<BigUint>::new(5, &graph);
         let novel = NovelTermCount::new(5, &graph, &graph, plain);
 
-        let sampler = NovelSampler::new(&novel, a, super::super::CountWeigher);
+        let sampler = NovelSampler::new(&novel, a, CountWeigher);
         // Nothing is novel, so possible_size should be false everywhere.
         assert!(!sampler.possible_size(a, 1, 0));
     }

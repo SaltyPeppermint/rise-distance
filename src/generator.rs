@@ -1,7 +1,7 @@
 use egg::{AstSize, CostFunction, RecExpr};
 use rand::Rng;
 
-use super::MyLanguage;
+use crate::MyLanguage;
 
 /// Shared interface for Boltzmann samplers of random terms.
 ///
