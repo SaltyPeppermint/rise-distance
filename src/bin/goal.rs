@@ -9,18 +9,17 @@ use std::time::Instant;
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
 use hashbrown::HashMap;
-use num::BigUint;
+use num::{BigUint, ToPrimitive};
+
 use serde::Serialize;
 
-use rise_distance::cli::argparse::{
-    EqsatConfig, Language, SampleStrategy, SeedInput, TermSampleDist, parse_seeds,
-    read_folder_args, read_folder_language,
-};
+use rise_distance::cli::read_folder_args;
 use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
-use rise_distance::langs::{SplitMetadata, math, prop, run_eqsat};
+use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
+use rise_distance::langs::{AvailableLanguages, math, prop};
 use rise_distance::lower;
-use rise_distance::search::PrecomputePackage;
-use rise_distance::{MyAnalysis, MyLanguage};
+use rise_distance::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
+use rise_distance::{MyAnalysis, MyLanguage, eqsat};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -65,8 +64,12 @@ fn main() {
     println!("Language: {language:?}");
 
     match language {
-        Language::Math => main_inner::<_, math::ConstantFold>(&args, &eqsat, &math::RULES),
-        Language::Prop => main_inner::<_, prop::ConstantFold>(&args, &eqsat, &prop::RULES),
+        AvailableLanguages::Math => {
+            main_inner::<_, math::ConstantFold>(&args, &eqsat, &math::RULES);
+        }
+        AvailableLanguages::Prop => {
+            main_inner::<_, prop::ConstantFold>(&args, &eqsat, &prop::RULES);
+        }
     }
 }
 
@@ -103,7 +106,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     max_size: usize,
     rules: &[Rewrite<L, N>],
 ) -> EnrichedSeed {
-    let Some(result) = run_eqsat(seed_expr, rules.iter(), eqsat) else {
+    let Some(result) = eqsat::run_eqsat(seed_expr, rules.iter(), eqsat) else {
         return EnrichedSeed::Failed(EnrichedSeedFailed {
             max_size,
             fail_reason: "big eqsat failed".to_owned(),
@@ -226,4 +229,73 @@ fn write_enriched_terms(folder: &Path, enriched_map: &HashMap<String, EnrichedSe
         &serde_json::Value::Array(out_groups),
     )
     .expect("Failed to write enriched terms.json");
+}
+
+/// Either a single seed s-expression or a path to a JSON file with objects containing `size` and `term` fields.
+#[derive(Debug, Clone)]
+pub enum SeedInput {
+    Single { term: String, max_size: usize },
+    JSON(PathBuf),
+}
+
+/// Read the `language` field from `<folder>/args.json`.
+///
+/// # Panics
+///
+/// Panics if `args.json` is missing, unreadable, malformed, or lacks a
+/// `language` field (older runs predating the field must be regenerated).
+#[must_use]
+pub fn read_folder_language(folder: &Path) -> AvailableLanguages {
+    let path = folder.join("args.json");
+    let reader =
+        File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
+    let parsed: AvailableLanguages = serde_json::from_reader(reader)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()));
+    parsed
+}
+
+/// Parse a `SeedInput` into a list of `(seed_string, parsed_expr, max_size)` triples.
+///
+/// # Panics
+///
+/// Panics on malformed seed expressions or unreadable JSON files.
+#[must_use]
+pub fn parse_seeds<L: MyLanguage>(input: SeedInput) -> Vec<(String, RecExpr<L>, usize)> {
+    match input {
+        SeedInput::Single { term, max_size } => {
+            let expr = term
+                .parse::<RecExpr<L>>()
+                .unwrap_or_else(|e| panic!("Failed to parse seed: {e}"));
+            vec![(term, expr, max_size)]
+        }
+        SeedInput::JSON(path) => {
+            let reader = File::open(&path)
+                .unwrap_or_else(|e| panic!("Failed to open JSON {}: {e}", path.display()));
+            serde_json::from_reader::<_, serde_json::Value>(reader)
+                .unwrap()
+                .as_array()
+                .unwrap_or_else(|| panic!("Expected top-level JSON array in {}", path.display()))
+                .iter()
+                .flat_map(|group| {
+                    let pair = group.as_array().expect("Expected [size, {{terms}}]");
+                    let max_size = 2 * pair[0]
+                        .as_u64()
+                        .expect("Expected size as u64 in")
+                        .to_usize()
+                        .unwrap();
+
+                    pair[1]
+                        .as_object()
+                        .expect("Expected term object as second element")
+                        .keys()
+                        .map(move |term| {
+                            let expr = term
+                                .parse::<RecExpr<L>>()
+                                .unwrap_or_else(|e| panic!("Failed to parse seed '{term}': {e}"));
+                            (term.clone(), expr, max_size)
+                        })
+                })
+                .collect()
+        }
+    }
 }

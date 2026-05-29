@@ -7,10 +7,10 @@ use egg::{
     SimpleScheduler,
 };
 use hashbrown::HashMap;
+use rise_distance::langs::AvailableLanguages;
 use serde::Serialize;
 
-use rise_distance::cli::argparse::Language;
-use rise_distance::langs::cheapest;
+use rise_distance::cheapest;
 use rise_distance::langs::math::{self, AddCheap, AddExpensive, Math, SillyCheap, TinyConstant};
 use rise_distance::langs::prop::{self, Prop};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -40,21 +40,21 @@ struct Args {
 
     /// Language to sample terms from
     #[arg(long)]
-    language: Language,
+    language: AvailableLanguages,
 }
 
 fn main() {
     let args = Args::parse();
 
     let costs = match args.language {
-        Language::Math => {
+        AvailableLanguages::Math => {
             let expr = args
                 .term
                 .parse()
                 .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
             run(&args, &expr, &math::SILLY_RULES)
         }
-        Language::Prop => {
+        AvailableLanguages::Prop => {
             let expr = args
                 .term
                 .parse()

@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use strum::Display;
 use thiserror::Error;
 
-use crate::cli::argparse::EqsatConfig;
-use crate::langs::EqsatMetadata;
+use crate::eqsat::{EqsatConfig, EqsatMetadata};
 use crate::{MyLanguage, OriginLang};
 
 #[derive(Debug, Error, Display, Serialize, Clone)]

@@ -10,11 +10,11 @@ use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
+use rise_distance::sampling::Distribution;
 use serde::Serialize;
 
-use rise_distance::cli::argparse::{Distribution, Language};
 use rise_distance::generator::BoltzmannSampler;
-use rise_distance::langs::{math, prop};
+use rise_distance::langs::{AvailableLanguages, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser, Serialize)]
@@ -69,7 +69,7 @@ struct Args {
 
     /// Language to sample terms from
     #[arg(long)]
-    language: Language,
+    language: AvailableLanguages,
 
     /// Output JSON path
     #[arg(long)]
@@ -126,13 +126,13 @@ fn main() {
     sized_rngs.sort_by_key(|(size, _, _)| *size);
 
     let big_collector = match args.language {
-        Language::Math => run_language::<math::MathSampler, math::ConstantFold>(
+        AvailableLanguages::Math => run_language::<math::MathSampler, math::ConstantFold>(
             &args,
             &validity_config,
             sized_rngs,
             &math::RULES,
         ),
-        Language::Prop => run_language::<prop::PropSampler, prop::ConstantFold>(
+        AvailableLanguages::Prop => run_language::<prop::PropSampler, prop::ConstantFold>(
             &args,
             &validity_config,
             sized_rngs,

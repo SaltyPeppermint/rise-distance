@@ -11,152 +11,13 @@
 
 use std::fmt::Display;
 
-use egg::{Id, Language, RecExpr, Rewrite};
-use hashbrown::HashMap;
+use egg::{Language, RecExpr, Rewrite};
 
-use crate::cli::ExperimentError;
-use crate::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist};
 use crate::count::Counter;
-use crate::langs::{
-    EqsatMetadata, EqsatResult, Goal, MyAnalysis, MyLanguage, id0, run_eqsat, verify_reachability,
-};
-use crate::sampling::{CountWeigher, NaiveWeigher};
+use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
+use crate::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
 use crate::sketch::Sketch;
-use crate::{
-    NovelSampler, NovelTermCount, OriginLang, PlainSampler, PlainTermCount, Sampler, lower,
-};
-
-pub struct PrecomputePackage<'a, C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
-{
-    tc: NovelTermCount<'a, C, L, N>,
-    min_size: usize,
-    max_size: usize,
-    root: Id,
-}
-
-impl<'a, C, L, N> PrecomputePackage<'a, C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L> + Clone,
-    C: Counter,
-{
-    /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg` for the sampling process later
-    #[must_use]
-    pub fn precompute(
-        result: &'a EqsatResult<L, N>,
-        max_size: usize,
-    ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let tc = NovelTermCount::new(
-            max_size,
-            result.curr(),
-            result.prev(),
-            PlainTermCount::new(max_size, result.curr()),
-        );
-
-        let root = result.curr().find(result.root());
-        let histogram = tc.data().get(&root)?;
-
-        let min_size = histogram.keys().min().copied().unwrap_or(1);
-        Some(PrecomputePackage {
-            tc,
-            min_size,
-            max_size,
-            root,
-        })
-    }
-
-    /// Log the stats about the root
-    ///
-    /// # Panics
-    ///
-    /// Panics if there are no terms in the root
-    pub fn log_root(&self) {
-        let histogram = self
-            .tc
-            .data()
-            .get(&self.root)
-            .expect("Somehow the root does not contain any terms?");
-        let mut sorted_hist = histogram
-            .iter()
-            .map(|(a, b)| (*a, b.to_owned()))
-            .collect::<Vec<_>>();
-        sorted_hist.sort_unstable();
-        println!("Terms in frontier:");
-        for (k, v) in &sorted_hist {
-            println!("{v} terms of size {k}");
-        }
-    }
-
-    /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
-    #[expect(clippy::missing_errors_doc, clippy::missing_panics_doc)]
-    pub fn sample_frontier_terms(
-        &self,
-        count: usize,
-        distribution: TermSampleDist,
-        sample_strategy: SampleStrategy,
-        seed: [u64; 2],
-        novel: bool,
-    ) -> Result<Vec<RecExpr<OriginLang<L>>>, ExperimentError> {
-        let histogram = self
-            .tc
-            .data()
-            .get(&self.root)
-            .ok_or(ExperimentError::InsufficientSamples)?;
-
-        let samples_per_size =
-            distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
-        let samples = match (sample_strategy, novel) {
-            (SampleStrategy::Naive, true) => NovelSampler::new(&self.tc, self.root, NaiveWeigher)
-                .sample_batch_root(&samples_per_size, seed),
-            (SampleStrategy::Count, true) => NovelSampler::new(&self.tc, self.root, CountWeigher)
-                .sample_batch_root(&samples_per_size, seed),
-            (SampleStrategy::Naive, false) => {
-                PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
-                    .sample_batch_root(&samples_per_size, seed)
-            }
-            (SampleStrategy::Count, false) => {
-                PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, CountWeigher)
-                    .sample_batch_root(&samples_per_size, seed)
-            }
-        };
-        let samples = samples?;
-        assert!(samples.len() == count, "insufficient samples");
-        Ok(samples)
-    }
-
-    #[must_use]
-    pub fn smallest(&self, id: Id, novel: bool) -> RecExpr<OriginLang<L>> {
-        if novel {
-            NovelSampler::new(&self.tc, self.root, NaiveWeigher).smallest(id)
-        } else {
-            PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher).smallest(id)
-        }
-    }
-
-    #[must_use]
-    pub fn root(&self) -> Id {
-        self.root
-    }
-
-    /// Histogram of novel root extractions by size. Guaranteed non-empty
-    /// because [`Self::precompute`] returns `None` otherwise.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the root histogram is somehow missing (would indicate a bug
-    /// in `precompute`'s None check).
-    #[must_use]
-    pub fn root_histogram(&self) -> &HashMap<usize, C> {
-        self.tc
-            .data()
-            .get(&self.root)
-            .expect("root histogram present iff precompute returned Some")
-    }
-}
+use crate::{MyAnalysis, MyLanguage, OriginLang, id0, lower};
 
 /// Tunable knobs for the cut-and-sample search strategy.
 #[derive(Copy, Clone, Debug, clap::Args)]
@@ -276,7 +137,7 @@ where
         backoff_scheduler: false,
     };
 
-    let Some(result) = run_eqsat::<L, N, _>(start, rules.iter(), &eqsat_config) else {
+    let Some(result) = eqsat::run_eqsat::<L, N, _>(start, rules.iter(), &eqsat_config) else {
         println!("{search_name}: run_eqsat produced no distinct cut state");
         return ReachResult {
             reached: None,
@@ -324,7 +185,7 @@ where
         println!("{}", lower(s.to_owned()));
     }
 
-    let verify = verify_reachability(
+    let verify = eqsat::verify_reachability(
         &sampled,
         &Goal::Sketches(sketch_goals),
         rules,
@@ -378,7 +239,7 @@ where
         .map(|n| OriginLang::new(n.clone(), id0()))
         .collect();
 
-    let verify = verify_reachability(
+    let verify = eqsat::verify_reachability(
         std::slice::from_ref(&guide),
         &Goal::Sketches(sketch_goals),
         rules,

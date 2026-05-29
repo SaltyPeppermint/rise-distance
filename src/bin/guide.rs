@@ -12,17 +12,17 @@ use hashbrown::HashMap;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use num::BigUint;
 use rayon::prelude::*;
+use rise_distance::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
+use rise_distance::langs::AvailableLanguages;
+use rise_distance::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
 use serde::Serialize;
 use serde_json::json;
 
 use rise_distance::Counter;
-use rise_distance::cli::argparse::{EqsatConfig, SampleStrategy, TermSampleDist, read_folder_args};
 use rise_distance::cli::parquet::dump_summary_parquet;
 use rise_distance::cli::types::{EnrichedSeed, GoalGenMetadata, GoalSummary, TrialsPerK};
-use rise_distance::cli::{get_run_folder, write_config, write_metadata};
+use rise_distance::cli::{get_run_folder, read_folder_args, write_config, write_metadata};
 use rise_distance::langs::math::{ConstantFold, Math, RULES};
-use rise_distance::langs::{EqsatMetadata, Goal, run_eqsat, verify_reachability};
-use rise_distance::search::PrecomputePackage;
 use time::OffsetDateTime;
 
 #[derive(Parser, Serialize)]
@@ -154,7 +154,7 @@ fn process_seed(
         max_iters: payload.guide_egraph.iters,
         ..*folder_args
     };
-    let result = run_eqsat(&seed_expr, RULES.iter(), &replay_config)?;
+    let result = eqsat::run_eqsat(&seed_expr, RULES.iter(), &replay_config)?;
     println!("Guide replay stop reason: {:?}", result.stop_reason());
 
     let guide_nodes = result.curr().total_number_of_nodes();
@@ -327,8 +327,13 @@ impl Strategy {
                                 [k as u64, s as u64],
                                 true,
                             )?;
-                            let r =
-                                verify_reachability(&subset, &goal, &RULES, eqsat, args.full_union);
+                            let r = eqsat::verify_reachability(
+                                &subset,
+                                &goal,
+                                &RULES,
+                                eqsat,
+                                args.full_union,
+                            );
                             pb.inc(1);
                             Ok(r?.0)
                         })
@@ -354,7 +359,7 @@ impl Strategy {
                         Ok(samples) => samples
                             .par_chunks(k)
                             .map(|subset| {
-                                let r = verify_reachability(
+                                let r = eqsat::verify_reachability(
                                     subset,
                                     &goal,
                                     &RULES,
@@ -370,7 +375,7 @@ impl Strategy {
                 })
                 .collect(),
             Strategy::Smallest { novel } => {
-                let r = verify_reachability(
+                let r = eqsat::verify_reachability(
                     std::slice::from_ref(&pp.smallest(pp.root(), novel)),
                     &goal,
                     &RULES,
@@ -384,4 +389,20 @@ impl Strategy {
             }
         }
     }
+}
+
+/// Read the `language` field from `<folder>/args.json`.
+///
+/// # Panics
+///
+/// Panics if `args.json` is missing, unreadable, malformed, or lacks a
+/// `language` field (older runs predating the field must be regenerated).
+#[must_use]
+pub fn read_folder_language(folder: &Path) -> AvailableLanguages {
+    let path = folder.join("args.json");
+    let reader =
+        File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
+    let parsed: AvailableLanguages = serde_json::from_reader(reader)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()));
+    parsed
 }

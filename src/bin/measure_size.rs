@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use clap::Parser;
 use egg::{Analysis, BackoffScheduler, FromOp, RecExpr, Rewrite, Runner, SimpleScheduler};
+use rise_distance::langs::AvailableLanguages;
 use rlimit::{Resource, setrlimit};
 
 use rise_distance::MyLanguage;
-use rise_distance::cli::argparse::Language;
 use rise_distance::langs::math::{self, Math};
 use rise_distance::langs::prop::{self, Prop};
 
@@ -18,7 +18,7 @@ struct Args {
 
     /// Language the term is drawn from.
     #[arg(long)]
-    language: Language,
+    language: AvailableLanguages,
 
     /// Iter limit for the runner
     #[arg(long, default_value_t = 11)]
@@ -51,8 +51,8 @@ fn main() {
     }
 
     match args.language {
-        Language::Math => run::<Math, math::ConstantFold>(&args, &math::RULES),
-        Language::Prop => run::<Prop, prop::ConstantFold>(&args, &prop::RULES),
+        AvailableLanguages::Math => run::<Math, math::ConstantFold>(&args, &math::RULES),
+        AvailableLanguages::Prop => run::<Prop, prop::ConstantFold>(&args, &prop::RULES),
     }
 
     println!("{}", peak_rss_bytes());

@@ -7,7 +7,7 @@ use num::rational::Ratio;
 use rand::Rng;
 
 use crate::generator::BoltzmannSampler;
-use crate::langs::{id0, stack_children};
+use crate::utils::{id0, stack_children};
 
 use super::Math;
 
