@@ -221,17 +221,13 @@ impl FromStr for Distribution {
         match s {
             "uniform" => Ok(Self::Uniform),
             "normal" => Ok(Self::Normal(2.6)),
-            _ => {
-                if let Some(rest) = s.strip_prefix("normal:") {
-                    rest.parse::<f64>()
-                        .map(Self::Normal)
-                        .map_err(|e| format!("invalid sigma in 'normal:{rest}': {e}"))
-                } else {
-                    Err(format!(
-                        "unknown distribution '{s}': expected 'uniform' or 'normal:<sigma>'"
-                    ))
-                }
-            }
+            _ if let Some(rest) = s.strip_prefix("normal:") => rest
+                .parse::<f64>()
+                .map(Self::Normal)
+                .map_err(|e| format!("invalid sigma in 'normal:{rest}': {e}")),
+            _ => Err(format!(
+                "unknown distribution '{s}': expected 'uniform' or 'normal:<sigma>'"
+            )),
         }
     }
 }

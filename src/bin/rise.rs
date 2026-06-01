@@ -60,7 +60,7 @@ fn main() {
             result.sampled.len(),
             goal,
         ),
-        None => println!("NOT REACHED ({} sampled guide terms)", result.sampled.len(),),
+        None => println!("NOT REACHED ({} sampled guide terms)", result.sampled.len()),
     }
     for (i, m) in result.eqsat_meta.iter().enumerate() {
         println!(
