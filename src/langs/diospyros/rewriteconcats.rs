@@ -1,6 +1,6 @@
 use std::io;
 
-use super::config::VECTOR_WIDTH;
+use super::VECTOR_WIDTH;
 
 // Rewrite a list of expressions to a nested concatenation of fixed-width
 // vectors, based on the configuration's vector width

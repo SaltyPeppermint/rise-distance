@@ -1,6 +1,6 @@
 use egg::{Id, Subst, Var};
 
-use super::config::VECTOR_WIDTH;
+use super::VECTOR_WIDTH;
 
 #[must_use]
 pub fn vec_with_op(op: &str, pre: &str) -> String {

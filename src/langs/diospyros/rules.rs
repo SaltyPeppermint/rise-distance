@@ -1,8 +1,8 @@
 use egg::{EGraph, Extractor, Id, Pattern, RecExpr, Rewrite, Runner, Subst, Var, rewrite as rw};
 use hashbrown::HashSet;
 
+use super::VECTOR_WIDTH;
 use super::binopsearcher::build_binop_or_zero_rule;
-use super::config::VECTOR_WIDTH;
 use super::cost::VecCostFn;
 use super::macsearcher::build_mac_rule;
 use super::searchutils::{ids_with_prefix, vec_fold_op, vec_map_op, vec_with_var};

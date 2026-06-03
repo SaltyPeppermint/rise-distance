@@ -4,7 +4,7 @@ use egg::{
 
 use std::str::FromStr;
 
-use super::config::VECTOR_WIDTH;
+use super::VECTOR_WIDTH;
 use super::searchutils::{all_matches_to_substs, vec_with_var};
 use super::veclang::VecLang;
 

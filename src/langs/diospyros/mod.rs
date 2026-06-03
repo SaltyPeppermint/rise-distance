@@ -1,5 +1,4 @@
 pub mod binopsearcher;
-pub mod config;
 pub mod cost;
 pub mod macsearcher;
 pub mod rewriteconcats;
@@ -10,6 +9,27 @@ pub mod veclang;
 
 pub use rules::rules;
 pub use veclang::VecLang;
+
+// // Compile-time vector width, default to 4
+// #[must_use]
+// pub const fn vector_width() -> usize {
+//     // #[cfg(feature = "vec_width_2")]
+//     // {
+//     //     2
+//     // }
+//     // #[cfg(feature = "vec_width_8")]
+//     // {
+//     //     8
+//     // }
+//     // // Default to a width of 4
+//     // #[cfg(not(any(feature = "vec_width_2", feature = "vec_width_8")))]
+//     // {
+//     //     4
+//     // }
+
+// }
+
+pub const VECTOR_WIDTH: usize = 4;
 
 #[cfg(test)]
 #[expect(clippy::no_effect_underscore_binding)]
