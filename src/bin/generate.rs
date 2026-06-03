@@ -132,6 +132,7 @@ fn main() {
     sized_rngs.sort_by_key(|(size, _, _)| *size);
 
     let big_collector = match args.language {
+        AvailableLanguages::Dios => unimplemented!("Dios has no sampler"),
         AvailableLanguages::Math => run_language::<math::MathSampler, math::ConstantFold>(
             &args,
             &validity_config,

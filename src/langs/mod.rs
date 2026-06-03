@@ -1,3 +1,4 @@
+pub mod dios_egraphs;
 pub mod lambda;
 pub mod math;
 pub mod mini_rise;
@@ -67,6 +68,7 @@ impl<
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum AvailableLanguages {
+    Dios,
     Math,
     Prop,
 }

@@ -16,7 +16,7 @@ use serde::Serialize;
 use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
 use rise_distance::cli::{read_folder_args, read_folder_language};
 use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
-use rise_distance::langs::{AvailableLanguages, math, prop};
+use rise_distance::langs::{AvailableLanguages, dios_egraphs, math, prop};
 use rise_distance::lower;
 use rise_distance::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
 use rise_distance::{MyAnalysis, MyLanguage, eqsat};
@@ -64,6 +64,9 @@ fn main() {
     println!("Language: {language:?}");
 
     match language {
+        AvailableLanguages::Dios => {
+            main_inner::<_, ()>(&args, &eqsat, &dios_egraphs::rules(false, false));
+        }
         AvailableLanguages::Math => {
             main_inner::<_, math::ConstantFold>(&args, &eqsat, &math::RULES);
         }

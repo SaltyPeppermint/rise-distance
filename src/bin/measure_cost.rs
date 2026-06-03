@@ -5,6 +5,7 @@ use egg::{AstDepth, AstSize, Iteration, IterationData, RecExpr, Rewrite, Runner}
 use hashbrown::HashMap;
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::AvailableLanguages;
+use rise_distance::langs::dios_egraphs;
 use serde::Serialize;
 
 use rise_distance::cheapest;
@@ -44,6 +45,13 @@ fn main() {
     let args = Args::parse();
 
     let costs = match args.language {
+        AvailableLanguages::Dios => {
+            let expr = args
+                .term
+                .parse()
+                .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
+            run(&args, &expr, &dios_egraphs::rules(false, false))
+        }
         AvailableLanguages::Math => {
             let expr = args
                 .term
@@ -168,11 +176,24 @@ impl<N: MyAnalysis<Prop>> IterationData<Prop, N> for CostThisRound<Prop> {
         monotonic_costs.insert("AstDepth", cheapest(runner, AstDepth));
 
         let ilp_extracts = HashMap::new();
-        // ilp_extracts.insert("AstSize", cheapest_ilp(runner, AstSize));
 
         CostThisRound {
             monotonic_costs,
             ilp_extracts,
+        }
+    }
+}
+
+impl IterationData<dios_egraphs::VecLang, ()> for CostThisRound<dios_egraphs::VecLang> {
+    fn make(runner: &Runner<dios_egraphs::VecLang, (), Self>) -> Self {
+        eprintln!("Now running iteration {}", runner.iterations.len());
+        let mut monotonic_costs = HashMap::new();
+        monotonic_costs.insert("AstSize", cheapest(runner, AstSize));
+        monotonic_costs.insert("AstDepth", cheapest(runner, AstDepth));
+
+        CostThisRound {
+            monotonic_costs,
+            ilp_extracts: HashMap::new(),
         }
     }
 }
