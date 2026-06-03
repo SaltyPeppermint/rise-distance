@@ -1,11 +1,12 @@
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
 
+use rise_distance::langs::diospyros::VecLang;
 use rlimit::{Resource, setrlimit};
 
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::AvailableLanguages;
-use rise_distance::langs::dios_egraphs;
+use rise_distance::langs::diospyros;
 use rise_distance::langs::math::{self, Math};
 use rise_distance::langs::prop::{self, Prop};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -52,8 +53,8 @@ fn main() {
     }
 
     match args.language {
-        AvailableLanguages::Dios => {
-            run::<dios_egraphs::VecLang, ()>(&args, &dios_egraphs::rules(false, false));
+        AvailableLanguages::Diospyros => {
+            run::<VecLang, ()>(&args, &diospyros::rules(false, false));
         }
         AvailableLanguages::Math => run::<Math, math::ConstantFold>(&args, &math::RULES),
         AvailableLanguages::Prop => run::<Prop, prop::ConstantFold>(&args, &prop::RULES),
