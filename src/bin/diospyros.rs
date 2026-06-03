@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use egg::Extractor;
+use egg::{Extractor, RecExpr};
+use num::BigUint;
 
 use rise_distance::eqsat::{EqsatConfig, EqsatMetadata, EqsatResult};
 use rise_distance::langs::diospyros::VecLang;
@@ -99,7 +100,7 @@ struct CutArgs {
 
 struct RunResult {
     cost: f64,
-    best: egg::RecExpr<VecLang>,
+    best: RecExpr<VecLang>,
     meta: Vec<EqsatMetadata>,
 }
 
@@ -129,7 +130,7 @@ fn main() {
     }
 }
 
-fn load_benchmark(path: &PathBuf) -> egg::RecExpr<VecLang> {
+fn load_benchmark(path: &Path) -> RecExpr<VecLang> {
     let display = path.display();
     let src =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("Cannot read {display}: {e}"));
@@ -141,7 +142,7 @@ fn load_benchmark(path: &PathBuf) -> egg::RecExpr<VecLang> {
         .unwrap_or_else(|e| panic!("parse failed for {display}: {e}"))
 }
 
-fn run_benchmark(path: &PathBuf, mode: &Mode, no_ac: bool, no_vec: bool) {
+fn run_benchmark(path: &Path, mode: &Mode, no_ac: bool, no_vec: bool) {
     let prog = load_benchmark(path);
     let result = match mode {
         Mode::Brute(a) => run_brute(&prog, a, no_ac, no_vec),
@@ -182,7 +183,7 @@ fn config(max_iters: usize, max_nodes: usize, timeout: f64) -> EqsatConfig {
 }
 
 /// Extract the cheapest term from an eqsat result.
-fn extract(result: EqsatResult<VecLang, ()>) -> (EqsatMetadata, f64, egg::RecExpr<VecLang>) {
+fn extract(result: EqsatResult<VecLang, ()>) -> (EqsatMetadata, f64, RecExpr<VecLang>) {
     let meta = EqsatMetadata::from_iterations(result.data());
     let (eg, root) = result.into_curr();
     let (cost, expr) = Extractor::new(&eg, VecCostFn { egraph: &eg }).find_best(root);
@@ -192,7 +193,7 @@ fn extract(result: EqsatResult<VecLang, ()>) -> (EqsatMetadata, f64, egg::RecExp
 // ---------------------------------------------------------------------------
 
 fn run_brute(
-    prog: &egg::RecExpr<VecLang>,
+    prog: &RecExpr<VecLang>,
     args: &BruteArgs,
     no_ac: bool,
     no_vec: bool,
@@ -217,7 +218,7 @@ fn run_brute(
 // ---------------------------------------------------------------------------
 
 fn run_cut(
-    prog: &egg::RecExpr<VecLang>,
+    prog: &RecExpr<VecLang>,
     args: &CutArgs,
     no_ac: bool,
     no_vec: bool,
@@ -235,7 +236,7 @@ fn run_cut(
     let cut_meta = EqsatMetadata::from_iterations(cut_result.data());
 
     let Some(pp) =
-        PrecomputePackage::<num::BigUint, VecLang, ()>::precompute(&cut_result, args.max_size)
+        PrecomputePackage::<BigUint, VecLang, ()>::precompute(&cut_result, args.max_size)
     else {
         warn("Precompute returned None (empty frontier)");
         return None;
@@ -262,7 +263,7 @@ fn run_cut(
     let verify_cfg = config(args.verify_iters, args.max_nodes, args.timeout);
     let runs = sampled.iter().enumerate().filter_map(|(i, sample)| {
         let start = lower(sample.clone());
-        eqsat::run_eqsat::<VecLang, (), _>(&start, rule_set.iter(), &verify_cfg)
+        eqsat::run_eqsat::<VecLang, (), _>(&start, &rule_set, &verify_cfg)
             .or_else(|| {
                 warn(&format!("Sample {i}: run_eqsat returned None, skipping"));
                 None
@@ -271,7 +272,7 @@ fn run_cut(
     });
 
     let mut meta = vec![cut_meta];
-    let mut best = None::<(f64, egg::RecExpr<VecLang>)>;
+    let mut best = None;
     for (vmeta, cost, expr) in runs {
         meta.push(vmeta);
         if best.as_ref().is_none_or(|(b, _)| cost < *b) {
