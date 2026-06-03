@@ -178,6 +178,12 @@ where
         &self.stop_reason
     }
 
+    /// Consume the result and return the final egraph together with the root id.
+    #[must_use]
+    pub fn into_curr(self) -> (EGraph<L, N>, Id) {
+        (self.curr, self.root)
+    }
+
     /// Split this run into guide- and goal-phase metadata. The guide phase is
     /// the first half of the applied iterations (`iters() / 2`); the goal phase
     /// is the whole run.

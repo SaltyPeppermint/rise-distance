@@ -25,7 +25,7 @@ fn is_all_same_memory_or_zero(
     }
 }
 
-fn filter_applicable_rules(rules: &mut Vec<Rewrite<VecLang, ()>>, prog: &RecExpr<VecLang>) {
+pub fn filter_applicable_rules(rules: &mut Vec<Rewrite<VecLang, ()>>, prog: &RecExpr<VecLang>) {
     let prog_str: String = prog.pretty(80);
     let ops_to_filter = ["neg", "sqrt", "/"];
     let unused_ops: Vec<&&str> = ops_to_filter
