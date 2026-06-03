@@ -137,13 +137,13 @@ fn main() {
             &args,
             &validity_config,
             sized_rngs,
-            &math::RULES,
+            &math::rules(),
         ),
         AvailableLanguages::Prop => run_language::<prop::PropSampler, prop::ConstantFold>(
             &args,
             &validity_config,
             sized_rngs,
-            &prop::RULES,
+            &prop::rules(),
         ),
     };
 

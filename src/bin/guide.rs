@@ -22,7 +22,7 @@ use rise_distance::cli::types::{EnrichedSeed, GoalGenMetadata, GoalSummary, Tria
 use rise_distance::cli::{
     ExperimentError, get_run_folder, read_folder_args, write_config, write_metadata,
 };
-use rise_distance::langs::math::{ConstantFold, Math, RULES};
+use rise_distance::langs::math::{self, ConstantFold, Math};
 use time::OffsetDateTime;
 
 #[derive(Parser, Serialize)]
@@ -154,7 +154,7 @@ fn process_seed(
         max_iters: payload.guide_egraph.iters,
         ..*folder_args
     };
-    let result = eqsat::run_eqsat(&seed_expr, RULES.iter(), &replay_config)?;
+    let result = eqsat::run_eqsat(&seed_expr, &math::rules(), &replay_config)?;
     println!("Guide replay stop reason: {:?}", result.stop_reason());
 
     let guide_nodes = result.curr().total_number_of_nodes();
@@ -332,7 +332,7 @@ impl Strategy {
                             let r = eqsat::verify_reachability(
                                 &subset,
                                 &goal,
-                                &RULES,
+                                &math::rules(),
                                 eqsat,
                                 args.full_union,
                             );
@@ -364,7 +364,7 @@ impl Strategy {
                                 let r = eqsat::verify_reachability(
                                     subset,
                                     &goal,
-                                    &RULES,
+                                    &math::rules(),
                                     eqsat,
                                     args.full_union,
                                 );
@@ -380,7 +380,7 @@ impl Strategy {
                 let r = eqsat::verify_reachability(
                     std::slice::from_ref(&pp.smallest(pp.root(), novel)),
                     &goal,
-                    &RULES,
+                    &math::rules(),
                     eqsat,
                     args.full_union,
                 )

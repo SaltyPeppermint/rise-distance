@@ -1,7 +1,5 @@
 mod generate;
 
-use std::sync::LazyLock;
-
 use egg::{
     Analysis, DidMerge, EGraph, Id, PatternAst, Rewrite, Subst, Symbol, define_language,
     merge_option, rewrite,
@@ -9,8 +7,6 @@ use egg::{
 use serde::{Deserialize, Serialize};
 
 pub use generate::PropSampler;
-
-pub static RULES: LazyLock<Vec<Rewrite<Prop, ConstantFold>>> = LazyLock::new(rules);
 
 define_language! {
     #[derive(Deserialize, Serialize)]
@@ -70,7 +66,8 @@ impl Analysis<Prop> for ConstantFold {
 }
 
 #[rustfmt::skip]
-fn rules() -> Vec<Rewrite<Prop, ConstantFold>> {
+#[must_use]
+pub fn rules() -> Vec<Rewrite<Prop, ConstantFold>> {
     let mut rs = vec![
         rewrite!("assoc_or";       "(| ?a (| ?b ?c))" => "(| (| ?a ?b) ?c)"),
         rewrite!("dist_and_or";    "(& ?a (| ?b ?c))" => "(| (& ?a ?b) (& ?a ?c))"),

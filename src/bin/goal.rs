@@ -68,10 +68,10 @@ fn main() {
             main_inner::<_, ()>(&args, &eqsat, &diospyros::rules(false, false));
         }
         AvailableLanguages::Math => {
-            main_inner::<_, math::ConstantFold>(&args, &eqsat, &math::RULES);
+            main_inner::<_, math::ConstantFold>(&args, &eqsat, &math::rules());
         }
         AvailableLanguages::Prop => {
-            main_inner::<_, prop::ConstantFold>(&args, &eqsat, &prop::RULES);
+            main_inner::<_, prop::ConstantFold>(&args, &eqsat, &prop::rules());
         }
     }
 }

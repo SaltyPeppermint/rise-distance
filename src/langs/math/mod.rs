@@ -1,8 +1,6 @@
 mod cost_fn;
 mod generate;
 
-use std::sync::LazyLock;
-
 use egg::{
     Analysis, Applier, DidMerge, EGraph, Id, Language, PatternAst, Rewrite, Subst, Symbol, Var,
     define_language, merge_option, rewrite,
@@ -167,16 +165,17 @@ fn is_not_zero(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst
     }
 }
 
-pub static RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(rules);
-pub static SILLY_RULES: LazyLock<Vec<Rewrite<Math, ConstantFold>>> = LazyLock::new(|| {
+#[must_use]
+pub fn silly_rules() -> Vec<Rewrite<Math, ConstantFold>> {
     let mut r = rules();
     r.push(silly_add(0.000_000_1));
     r.push(tiny_constant(0.000_000_1));
     r
-});
+}
 
 #[rustfmt::skip]
-fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
+#[must_use]
+pub fn rules() -> Vec<Rewrite<Math, ConstantFold>> { vec![
     rewrite!("comm-add";  "(+ ?a ?b)"        => "(+ ?b ?a)"),
     rewrite!("comm-mul";  "(* ?a ?b)"        => "(* ?b ?a)"),
     rewrite!("assoc-add"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),

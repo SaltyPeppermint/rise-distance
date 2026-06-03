@@ -56,8 +56,8 @@ fn main() {
         AvailableLanguages::Diospyros => {
             run::<VecLang, ()>(&args, &diospyros::rules(false, false));
         }
-        AvailableLanguages::Math => run::<Math, math::ConstantFold>(&args, &math::RULES),
-        AvailableLanguages::Prop => run::<Prop, prop::ConstantFold>(&args, &prop::RULES),
+        AvailableLanguages::Math => run::<Math, math::ConstantFold>(&args, &math::silly_rules()),
+        AvailableLanguages::Prop => run::<Prop, prop::ConstantFold>(&args, &prop::rules()),
     }
 
     println!("{}", peak_rss_bytes());

@@ -57,14 +57,14 @@ fn main() {
                 .term
                 .parse()
                 .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
-            run(&args, &expr, &math::SILLY_RULES)
+            run(&args, &expr, &math::silly_rules())
         }
         AvailableLanguages::Prop => {
             let expr = args
                 .term
                 .parse()
                 .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
-            run(&args, &expr, &prop::RULES)
+            run(&args, &expr, &prop::rules())
         }
     };
 
