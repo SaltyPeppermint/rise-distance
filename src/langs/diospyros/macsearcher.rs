@@ -89,9 +89,12 @@ impl<A: Analysis<VecLang>> Searcher<VecLang, A> for MacSearcher {
         &self,
         egraph: &EGraph<VecLang, A>,
         eclass: Id,
-        _limit: usize,
+        limit: usize,
     ) -> Option<SearchMatches<'_, VecLang>> {
-        self.search_eclass(egraph, eclass)
+        let mut result = self.search_eclass(egraph, eclass)?;
+        // egg asserts substs.len() <= limit after this call; truncate to satisfy it
+        result.substs.truncate(limit);
+        Some(result)
     }
 
     fn search_eclass(
