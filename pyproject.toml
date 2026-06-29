@@ -15,6 +15,8 @@ dependencies = [
     "tqdm",
     "flash-linear-attention",
     "torch-tb-profiler",
+    "diceware",
+    "tyro",
     # "causal-conv1d",
 ]
 

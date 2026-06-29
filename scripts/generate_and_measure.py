@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["tqdm", "tyro", "diceware"]
-# ///
 """Generate random math terms and measure peak RSS of eqsat on each.
 
 Shells out to `target/release/generate` to produce a nested JSON of terms
@@ -66,8 +62,7 @@ def generate_unique_dir(parent: Path, max_attempts: int = 100) -> Path:
             candidate.mkdir()
             return candidate
     raise RuntimeError(
-        f"Could not find an unused diceware name under {parent} "
-        f"after {max_attempts} attempts."
+        f"Could not find an unused diceware name under {parent} after {max_attempts} attempts."
     )
 
 
@@ -208,12 +203,8 @@ def main() -> int:
                 text=True,
                 timeout=timeout,
             )
-            return (
-                int(proc.stdout.strip().splitlines()[-1])
-                if proc.returncode == 0
-                else -1
-            )
-        except (subprocess.TimeoutExpired, ValueError, IndexError):
+            return int(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else -1
+        except subprocess.TimeoutExpired, ValueError, IndexError:
             return -1
 
     # big_collector is [[size, {term_str: [attempts, validation_result]}], ...].

@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["tqdm"]
-# ///
 """Measure how extraction cost evolves per iteration of eqsat on each seed term.
 
 Spawns the `measure-cost` Rust binary once per term in a seed-terms
@@ -47,9 +43,7 @@ def main() -> int:
         help="Seed-terms JSON (e.g. data/seed_terms/foo-bar/terms.json). "
         "Its sibling `args.json` is read for the egg limits.",
     )
-    parser.add_argument(
-        "--binary", type=Path, default=Path("target/release/measure-cost")
-    )
+    parser.add_argument("--binary", type=Path, default=Path("target/release/measure-cost"))
     parser.add_argument(
         "--parallelism",
         type=int,

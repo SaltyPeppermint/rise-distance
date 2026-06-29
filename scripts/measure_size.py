@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["tqdm"]
-# ///
 """Measure peak resident set size of running eqsat on each seed term.
 
 Spawns the `measure-size` Rust binary once per term in a seed-terms
@@ -51,12 +47,9 @@ def main() -> int:
         "--path",
         type=Path,
         required=True,
-        help="Seed-terms JSON (e.g. data/seed_terms/foo-bar/terms.json). "
-        "Edited in place.",
+        help="Seed-terms JSON (e.g. data/seed_terms/foo-bar/terms.json). Edited in place.",
     )
-    parser.add_argument(
-        "--binary", type=Path, default=Path("target/release/measure-size")
-    )
+    parser.add_argument("--binary", type=Path, default=Path("target/release/measure-size"))
     parser.add_argument(
         "--language",
         required=True,
@@ -119,12 +112,8 @@ def main() -> int:
                 text=True,
                 timeout=timeout,
             )
-            peak = (
-                int(proc.stdout.strip().splitlines()[-1])
-                if proc.returncode == 0
-                else -1
-            )
-        except (subprocess.TimeoutExpired, ValueError, IndexError):
+            peak = int(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else -1
+        except subprocess.TimeoutExpired, ValueError, IndexError:
             peak = -1
 
         entry = big_collector[size_idx][1][term]
