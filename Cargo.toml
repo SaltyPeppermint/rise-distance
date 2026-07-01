@@ -90,8 +90,12 @@ debug = 1
 # path = "src/bin/distance.rs"
 
 [[bin]]
-name = "guide"
-path = "src/bin/guide.rs"
+name = "sample"
+path = "src/bin/sample.rs"
+
+[[bin]]
+name = "verify"
+path = "src/bin/verify.rs"
 
 [[bin]]
 name = "goal"

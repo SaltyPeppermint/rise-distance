@@ -1,43 +1,10 @@
-use egg::{Iteration, RecExpr};
 use hashbrown::HashMap;
 use num::BigUint;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::ExperimentError;
-use crate::eqsat::{EqsatConfig, EqsatMetadata, GuideError};
-use crate::{MyLanguage, OriginLang};
+use crate::eqsat::{EqsatConfig, EqsatMetadata};
 
-#[derive(Serialize, Debug, Clone)]
-pub struct GuideEval<L: MyLanguage> {
-    pub guide: RecExpr<OriginLang<L>>,
-    pub zs_distance: usize,
-    pub iterations: Result<Vec<Iteration<()>>, GuideError>,
-}
-
-/// Type alias for the per-k trial data: maps each guide-set size `k` to its
-/// trial results (one `Option` per trial. `None` means the goal was not reached).
-pub type TrialsPerK = HashMap<usize, Vec<Result<Vec<Iteration<()>>, ExperimentError>>>;
-
-/// Same as `TrialsPerK` but with pre-computed summaries instead of full iteration data.
-pub type SummaryPerK = HashMap<usize, Vec<Result<TrialSummary, ExperimentError>>>;
-
-/// Pre-computed per-trial summary. Much smaller than the full `Iteration`
-/// vectors, so Python can load it instantly.
-#[derive(Serialize)]
-pub struct TrialSummary {
-    /// Number of eqsat iterations to reach the goal.
-    pub iters: usize,
-    /// Egraph node count at the final iteration.
-    pub nodes: usize,
-    /// Egraph e-class count at the final iteration.
-    pub classes: usize,
-    /// Total number of rule applications across all iterations.
-    pub total_applied: usize,
-    /// Total wall-clock time (seconds) across all iterations.
-    pub total_time: f64,
-}
-
-/// Per-seed payload written by `goal` and consumed by `guide`. Stored as the
+/// Per-seed payload written by `goal` and consumed by `sample`. Stored as the
 /// value slot in `terms.json` (one entry per seed s-expression). Tagged on
 /// `status` so the two variants share a flat JSON shape.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -67,54 +34,4 @@ pub struct GoalGenMetadata {
 pub struct EnrichedSeedFailed {
     pub max_size: usize,
     pub fail_reason: String,
-}
-
-#[derive(Serialize)]
-pub struct GoalSummary {
-    pub seed: String,
-    pub goal: String,
-    pub entries_per_k: SummaryPerK,
-}
-
-impl GoalSummary {
-    /// Build a summary from the full per-k trial data for a given goal.
-    ///
-    /// # Panics
-    /// Panics if a reachable trial has an empty iteration list.
-    #[must_use]
-    pub fn from_entries(seed: &str, goal: &str, entries: &TrialsPerK) -> Self {
-        Self {
-            seed: seed.to_owned(),
-            goal: goal.to_owned(),
-            entries_per_k: entries
-                .iter()
-                .map(|(k, trials)| {
-                    (
-                        *k,
-                        trials
-                            .iter()
-                            .map(|trial| {
-                                trial
-                                    .as_ref()
-                                    .map(|iters| {
-                                        let last = iters.last().expect("non-empty iteration list");
-                                        TrialSummary {
-                                            iters: iters.len(),
-                                            nodes: last.egraph_nodes,
-                                            classes: last.egraph_classes,
-                                            total_applied: iters
-                                                .iter()
-                                                .map(|i| i.applied.values().sum::<usize>())
-                                                .sum(),
-                                            total_time: iters.iter().map(|i| i.total_time).sum(),
-                                        }
-                                    })
-                                    .map_err(|e| e.clone())
-                            })
-                            .collect(),
-                    )
-                })
-                .collect(),
-        }
-    }
 }

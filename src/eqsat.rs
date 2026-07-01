@@ -63,7 +63,7 @@ pub struct EqsatConfig {
 impl EqsatConfig {
     /// Warn if the `EqsatConfig` `guide` is running under differs from the one
     /// `goal` recorded in the seed payload. Catches accidental drift in
-    /// `args.json` between the two stages — the replay egraph would no longer
+    /// `args.json` between the two stages. The replay egraph would no longer
     /// match the assumptions baked into the stored `guide_iters`, goals, and
     /// frontier histogram, so downstream results are not comparable to a fresh
     /// `goal` run under the new config.
@@ -122,9 +122,9 @@ impl EqsatConfig {
 
 /// Result of running eqsat. Holds only the last two egraphs (`prev` and
 /// `curr`), plus per-iteration metadata in `iter_data` (timings,
-/// `egraph_nodes`, etc. — no egraphs). `root` is the id returned by the
-/// initial `add`, so it may not be canonical in later iterations —
-/// canonicalize with `egraph.find(root)` before using it as a `HashMap` key.
+/// `egraph_nodes`, etc.). `root` is the id returned by the
+/// initial `add`, so it may not be canonical in later iterations.
+/// It also canonicalizes with `egraph.find(root)` before using it as a `HashMap` key.
 pub struct EqsatResult<L, N>
 where
     L: Language,
@@ -528,7 +528,8 @@ fn add_uncanon_remember<L: MyLanguage, N: MyAnalysis<L>>(
 /// Egg only ever grows an egraph: `add` increases the node count, `union`
 /// decreases the class count (never the other way around). So for a shared
 /// lineage, equal class count *and* equal node count implies no rewrite took
-/// effect — the canonical ids in `a` and `b` agree on every class, and the
+/// effect.
+/// The canonical ids in `a` and `b` agree on every class, and the
 /// node sets coincide.
 ///
 /// Not valid for comparing independent egraphs: those need a full e-class

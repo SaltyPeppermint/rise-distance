@@ -1,8 +1,6 @@
-pub mod parquet;
+pub mod sample;
 pub mod types;
 
-use strum::Display;
-use thiserror::Error;
 pub use types::*;
 
 use std::env::current_dir;
@@ -10,45 +8,10 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use egg::Iteration;
-use num::ToPrimitive;
 use serde::Serialize;
 
-use crate::eqsat::{EqsatConfig, GuideError};
+use crate::eqsat::EqsatConfig;
 use crate::langs::AvailableLanguages;
-
-#[derive(Debug, Error, Display, Serialize, Clone)]
-pub enum ExperimentError {
-    Guide(#[from] GuideError),
-    InsufficientSamples,
-    NothingInHistogram,
-}
-
-pub fn trial_avg<
-    F: Fn(&Vec<Iteration<()>>) -> Option<T>,
-    T: for<'a> std::iter::Sum<&'a T> + ToPrimitive,
->(
-    trials: &[Option<Vec<Iteration<()>>>],
-    f: F,
-) -> Option<f64> {
-    let values = trials
-        .iter()
-        .filter_map(|x| x.as_ref().and_then(&f))
-        .collect::<Vec<_>>();
-    if values.is_empty() {
-        return None;
-    }
-    let avg = values.iter().sum::<T>().to_f64()? / values.len().to_f64()?;
-    Some(avg)
-}
-
-#[expect(clippy::missing_panics_doc)]
-pub fn min_med_max<T: Ord + Copy, I, F: Fn(&I) -> T>(items: &[I], f: F) -> (T, T, T) {
-    let min = items.iter().map(&f).min().unwrap();
-    let max = items.iter().map(&f).max().unwrap();
-    let med = f(&items[items.len() / 2]);
-    (min, med, max)
-}
 
 /// Create an output folder for a run.
 ///
@@ -124,15 +87,25 @@ pub fn read_folder_args(folder: &Path) -> EqsatConfig {
 
 /// Read the `language` field from `<folder>/args.json`.
 ///
+/// `args.json` is the full arg object written by `generate_and_measure.py`, so
+/// pull the `language` field out of it rather than deserializing the whole file
+/// as a bare enum.
+///
 /// # Panics
 ///
 /// Panics if `args.json` is missing, unreadable, malformed, or lacks a
 /// `language` field (older runs predating the field must be regenerated).
 #[must_use]
 pub fn read_folder_language(folder: &Path) -> AvailableLanguages {
+    #[derive(serde::Deserialize)]
+    struct LanguageField {
+        language: AvailableLanguages,
+    }
+
     let path = folder.join("args.json");
     let reader =
         File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
-    serde_json::from_reader(reader)
-        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()))
+    let parsed: LanguageField = serde_json::from_reader(reader)
+        .unwrap_or_else(|e| panic!("Failed to parse `language` from {}: {e}", path.display()));
+    parsed.language
 }

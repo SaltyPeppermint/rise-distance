@@ -1,5 +1,4 @@
 from pathlib import Path
-import json
 
 import numpy as np
 import polars as pl
@@ -12,7 +11,7 @@ SCATTER_MAX_POINTS = 20_000
 def plot_predictor_vs_iters(
     data: pl.DataFrame,
     predictor: str,
-    target: str = "iterations_to_reach",
+    target: str = "iters",
     title_suffix: str = "",
     ax: plt.Axes | None = None,  # pyright: ignore[reportPrivateImportUsage]
     max_points: int = SCATTER_MAX_POINTS,
@@ -100,9 +99,10 @@ def plot_predictor_vs_iters(
     return ax
 
 
-def find_latest_run(pattern: str) -> Path:
-    """Find the most recently modified run directory matching `pattern` in DATA_DIR."""
-    data_dir = Path(__file__).parent / "../data/guide_eval"
+def find_latest_run(pattern: str = "run", subdir: str = "guide_driver") -> Path:
+    """Find the most recently modified run directory matching `pattern` under
+    `data/<subdir>` (defaults to `guide_driver`, where `driver.py` writes)."""
+    data_dir = Path(__file__).parent / ".." / "data" / subdir
     candidates = sorted(
         [f for f in data_dir.iterdir() if f.is_dir() and pattern in f.name],
         key=lambda p: p.stat().st_mtime,
@@ -125,118 +125,59 @@ def stop_reason_category(s: str | None) -> str | None:
     return "Other"
 
 
-def parse_replacement_summary(raw: list[dict], strategy_name: str) -> list[dict]:
-    """Parse a no/with_replacement_top_k_summary.json into flat rows.
+def load_driver_run(run_dir: Path, adjust_guide_overhead: bool = True) -> pl.DataFrame:
+    """Load a `driver.py` run's `results.parquet` into a flat DataFrame.
 
-    Format: [{seed, goal, entries_per_k: {k: [{'Ok': {...}} | {'Err': ...}]}}]
+    The parquet is already one row per leg with columns::
 
-    Each row has: goal, strategy, k, iters, nodes, classes, total_applied,
-    total_time, not_enough_samples, nothing_in_hist, unreached (Optional[str]
-    StopReason debug repr), panic_while_sample.
+        seed, goal, strategy, k, restart_round, reached, gave_up, iters,
+        nodes, classes, total_applied, total_time, stop_reason, panic,
+        guide_nodes, guide_classes, guide_time
+
+    When `adjust_guide_overhead` is set, the per-leg cost is folded together with
+    the guide-phase replay it built on (mirrors the old `load_top_k`):
+
+      - nodes   = max(leg_nodes, guide_nodes)
+      - classes = max(leg_classes, guide_classes)
+      - total_time += guide_time
+
+    Null cost columns (unreached / empty-pool / panic legs) are left null.
     """
-    rows = []
-    for entry in raw:
-        goal = entry["goal"]
-        for k_str, trials in entry["entries_per_k"].items():
-            k = int(k_str)
-            for trial in trials:
-                if "Ok" in trial:
-                    t = trial["Ok"]
-                    rows.append(
-                        {
-                            "goal": goal,
-                            "strategy": strategy_name,
-                            "k": k,
-                            "iters": t["iters"],
-                            "nodes": t["nodes"],
-                            "classes": t["classes"],
-                            "total_applied": t["total_applied"],
-                            "total_time": t["total_time"],
-                            "not_enough_samples": False,
-                            "nothing_in_hist": False,
-                            "unreached": None,
-                            "panic_while_sample": False,
-                        }
-                    )
-                else:
-                    err = trial.get("Err", "")
-                    unreached_reason: str | None = None
-                    if isinstance(err, dict) and "Guide" in err:
-                        guide_err = err["Guide"]
-                        if isinstance(guide_err, dict) and "Unreached" in guide_err:
-                            unreached_reason = repr(guide_err["Unreached"])
-                    rows.append(
-                        {
-                            "goal": goal,
-                            "strategy": strategy_name,
-                            "k": k,
-                            "iters": None,
-                            "nodes": None,
-                            "classes": None,
-                            "total_applied": None,
-                            "total_time": None,
-                            "not_enough_samples": err == "InsufficientSamples",
-                            "nothing_in_hist": err == "NothingInHistogram",
-                            "unreached": unreached_reason,
-                            "panic_while_sample": (
-                                isinstance(err, dict) and err.get("Guide") == "PanicWhileAttempt"
-                            ),
-                        }
-                    )
-    return rows
-
-
-def load_top_k(run_dir: Path, strategy_name: str, file_prefix: str) -> pl.DataFrame:
-    """Load trial rows from a run directory, preferring parquet over JSON summary.
-
-    Adjusts `nodes` and `total_time` to account for the guide egraph overhead:
-      - nodes = max(trial_nodes, guide_egraph_nodes)
-      - total_time += guide_eqsat_time
-      - classes = max(trial_classes, guide_egraph_nodes)
-    """
-    with open(run_dir / "metadata.json", encoding="utf-8") as f:
-        run_metadata = json.load(f)[0]["goal_eqsat"]
-    guide_nodes = run_metadata["guide_egraph"]["nodes"]
-    guide_time = run_metadata["guide_egraph"]["time"]
-    guide_classes = run_metadata["guide_egraph"]["classes"]
-
-    prefix = file_prefix
-    parquet_path = run_dir / f"{prefix}_top_k_summary.parquet"
-    df = pl.read_parquet(parquet_path).with_columns(pl.lit(strategy_name).alias("strategy"))
+    df = pl.read_parquet(run_dir / "results.parquet")
+    if not adjust_guide_overhead:
+        return df
 
     return df.with_columns(
         pl.when(pl.col("nodes").is_not_null())
-        .then(pl.max_horizontal(pl.col("nodes"), pl.lit(guide_nodes)))
+        .then(pl.max_horizontal(pl.col("nodes"), pl.col("guide_nodes")))
         .otherwise(None)
         .alias("nodes"),
-        pl.when(pl.col("total_time").is_not_null())
-        .then(pl.col("total_time") + guide_time)
-        .otherwise(None)
-        .alias("total_time"),
         pl.when(pl.col("classes").is_not_null())
-        .then(pl.max_horizontal(pl.col("nodes"), pl.lit(guide_classes)))
+        .then(pl.max_horizontal(pl.col("classes"), pl.col("guide_classes")))
         .otherwise(None)
         .alias("classes"),
+        pl.when(pl.col("total_time").is_not_null())
+        .then(pl.col("total_time") + pl.col("guide_time"))
+        .otherwise(None)
+        .alias("total_time"),
     )
 
 
 def compute_goal_reach(df: pl.DataFrame) -> pl.DataFrame:
     """Per-goal×k reachability aggregation.
 
-    cond_reach_rate excludes sampling-failure trials (insufficient samples or
-    nothing-in-histogram) from the denominator: "given we could sample k
-    guides, did we reach the goal?"
+    `driver.py` re-samples on failure rather than emitting sampling-failure
+    trials, so the only "couldn't sample" case is an empty candidate pool
+    (`stop_reason == "empty_pool"`). `cond_reach_rate` excludes those legs from
+    the denominator: "given we could sample k guides, did we reach the goal?"
     """
-    sampling_failure = pl.col("not_enough_samples") | pl.col("nothing_in_hist")
+    empty_pool = pl.col("stop_reason") == "empty_pool"
     return (
         df.group_by("goal", "k")
         .agg(
-            pl.col("iters").is_not_null().mean().alias("reach_rate"),
-            (pl.col("iters").is_not_null().sum() / sampling_failure.not_().sum()).alias(
-                "cond_reach_rate"
-            ),
-            pl.col("not_enough_samples").mean().alias("insuf_rate"),
-            pl.col("nothing_in_hist").mean().alias("nothing_in_hist_rate"),
+            pl.col("reached").mean().alias("reach_rate"),
+            (pl.col("reached").sum() / empty_pool.not_().sum()).alias("cond_reach_rate"),
+            empty_pool.mean().alias("empty_pool_rate"),
         )
         .sort("goal", "k")
     )

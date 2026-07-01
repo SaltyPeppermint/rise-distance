@@ -189,7 +189,7 @@ where
     }
 }
 
-#[derive(Serialize, Debug, Clone, Copy, clap::ValueEnum, strum::Display)]
+#[derive(Serialize, serde::Deserialize, Debug, Clone, Copy, clap::ValueEnum, strum::Display)]
 #[strum(serialize_all = "kebab-case")]
 pub enum SampleStrategy {
     Naive,
