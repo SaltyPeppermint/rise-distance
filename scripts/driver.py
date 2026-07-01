@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import random
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,7 +58,7 @@ class Args:
     max_restarts: int = 5
     """Give up on a seed/goal pair after this many failed legs."""
     strategy: str = "no_replacement_count"
-    """Which candidate pool to restart with. One of: """ + ", ".join(ALL_STRATEGIES)
+    """Which candidate pool to restart with. One of: """ + ", ".join(ALL_STRATEGIES)  # pyright: ignore[reportUnusedExpression]
     k: int = 10
     """Guides unioned per leg. Forced to 1 for the `smallest_*` strategies."""
     full_union: bool = False
@@ -71,6 +73,11 @@ class Args:
 
     seed: int = 0
     """RNG seed for subset selection (offset per restart round)."""
+
+    jobs: int | None = None
+    """Max concurrent `verify` legs (one seed/goal pair per worker). Each pair's
+    restart loop stays sequential, so this parallelises across pairs. Defaults to
+    `os.cpu_count()`. Lower it if the large leg egraphs exhaust RAM."""
 
 
 def run_sample(args: Args, sample_out: Path) -> Path:
@@ -90,9 +97,7 @@ def run_sample(args: Args, sample_out: Path) -> Path:
     return sample_out / "samples.json"
 
 
-def pick_subset(
-    pool: list, strategy: str, k: int, rng: random.Random
-) -> list:
+def pick_subset(pool: list, strategy: str, k: int, rng: random.Random) -> list:
     """Choose this leg's guide subset from a strategy's candidate pool.
 
     `smallest_*` pools hold a single term (k is forced to 1). `with_replacement_*`
@@ -137,6 +142,65 @@ def run_leg(
     return json.loads(proc.stdout)
 
 
+def run_pair(
+    args: Args,
+    language: str,
+    k: int,
+    seed: str,
+    goal: str,
+    pool: list,
+    guide_meta: dict,
+) -> list[dict]:
+    """Run one seed/goal pair's restart loop and return its result rows.
+
+    Sequential by design: round N+1 only fires if round N failed, so the loop
+    early-stops on the first reach. Runs in a worker thread; touches no shared
+    state, and marks its own last row `gave_up` if it exhausted the restarts.
+    """
+    rows: list[dict] = []
+    for rnd in range(args.max_restarts):
+        rng = random.Random(f"{args.seed}:{seed}:{goal}:{rnd}")
+        guides = pick_subset(pool, args.strategy, k, rng)
+        row = {
+            "seed": seed,
+            "goal": goal,
+            "strategy": args.strategy,
+            "k": len(guides),
+            "restart_round": rnd,
+            "reached": False,
+            "gave_up": False,
+            "iters": None,
+            "nodes": None,
+            "classes": None,
+            "total_applied": None,
+            "total_time": None,
+            "stop_reason": None,
+            "panic": False,
+            **guide_meta,
+        }
+        if not guides:
+            row["stop_reason"] = "empty_pool"
+            rows.append(row)
+            return rows
+        result = run_leg(args, language, goal, guides)
+        row["reached"] = result["reached"]
+        row["iters"] = result.get("iters")
+        row["nodes"] = result.get("nodes")
+        row["classes"] = result.get("classes")
+        row["total_applied"] = result.get("total_applied")
+        row["total_time"] = result.get("total_time")
+        row["stop_reason"] = result.get("stop_reason")
+        row["panic"] = result.get("panic", False)
+        rows.append(row)
+        if result["reached"]:
+            return rows
+
+    # Exhausted all restarts without reaching: mark the last leg as given up.
+    if rows:
+        rows[-1]["gave_up"] = True
+    return rows
+
+
 def main() -> int:
     args = tyro.cli(Args, description=__doc__)
 
@@ -170,77 +234,38 @@ def main() -> int:
     samples_path = run_sample(args, out / "sample_run")
     seed_records = json.loads(samples_path.read_text())
 
-    rows: list[dict] = []
-    for record in tqdm(seed_records, desc="seeds", unit="seed"):
-        seed = record["seed"]
+    # Flatten to independent (seed, goal) work items. Each pair's restart loop
+    # is sequential (early-stops on first reach); pairs run concurrently.
+    pairs = []
+    for record in seed_records:
         pool = record["candidates"].get(args.strategy, [])
-        # Per-seed guide-egraph overhead, carried into every row so analysis is
-        # self-contained (analysis/helpers.py folds this into nodes/total_time).
         guide_meta = {
             "guide_nodes": record["guide_nodes"],
             "guide_classes": record["guide_classes"],
             "guide_time": record["guide_time"],
         }
-        for goal in tqdm(record["goals"], desc="goals", unit="goal", leave=False):
-            reached = False
-            for rnd in range(args.max_restarts):
-                rng = random.Random(f"{args.seed}:{seed}:{goal}:{rnd}")
-                guides = pick_subset(pool, args.strategy, k, rng)
-                row = {
-                    "seed": seed,
-                    "goal": goal,
-                    "strategy": args.strategy,
-                    "k": len(guides),
-                    "restart_round": rnd,
-                    "reached": False,
-                    "gave_up": False,
-                    "iters": None,
-                    "nodes": None,
-                    "classes": None,
-                    "total_applied": None,
-                    "total_time": None,
-                    "stop_reason": None,
-                    "panic": False,
-                    **guide_meta,
-                }
-                if not guides:
-                    row["stop_reason"] = "empty_pool"
-                    rows.append(row)
-                    break
-                result = run_leg(args, language, goal, guides)
-                row["reached"] = result["reached"]
-                row["iters"] = result.get("iters")
-                row["nodes"] = result.get("nodes")
-                row["classes"] = result.get("classes")
-                row["total_applied"] = result.get("total_applied")
-                row["total_time"] = result.get("total_time")
-                row["stop_reason"] = result.get("stop_reason")
-                row["panic"] = result.get("panic", False)
-                rows.append(row)
-                if result["reached"]:
-                    reached = True
-                    break
-            if not reached and rows:
-                # Mark the pair as given up on its last recorded round.
-                rows[-1]["gave_up"] = True
+        for goal in record["goals"]:
+            pairs.append((record["seed"], goal, pool, guide_meta))
+
+    jobs = args.jobs or os.cpu_count() or 1
+    rows: list[dict] = []
+    with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
+        futures = [
+            pool_exec.submit(run_pair, args, language, k, seed, goal, cand_pool, guide_meta)
+            for (seed, goal, cand_pool, guide_meta) in pairs
+        ]
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="pairs", unit="pair"):
+            rows.extend(fut.result())
 
     df = pl.DataFrame(rows)
     df.write_parquet(out / "results.parquet")
     (out / "results.json").write_text(json.dumps(rows, indent=2))
-    (out / "config.json").write_text(
-        json.dumps(dataclasses.asdict(args), indent=2, default=str)
-    )
+    (out / "config.json").write_text(json.dumps(dataclasses.asdict(args), indent=2, default=str))
 
-    reached_pairs = (
-        df.filter(pl.col("reached"))
-        .select("seed", "goal")
-        .unique()
-        .height
-    )
+    reached_pairs = df.filter(pl.col("reached")).select("seed", "goal").unique().height
     total_pairs = df.select("seed", "goal").unique().height
     print(
-        f"\nReached {reached_pairs}/{total_pairs} seed/goal pairs. "
-        f"Wrote {out / 'results.parquet'}",
+        f"\nReached {reached_pairs}/{total_pairs} seed/goal pairs. Wrote {out / 'results.parquet'}",
         file=sys.stderr,
     )
     return 0
