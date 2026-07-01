@@ -2,14 +2,15 @@
 
 Replaces the "second half" of the old `guide` binary. The Rust `sample` binary
 produces a guide-candidate menu per seed (`samples.json`); this driver then runs
-the individual search legs (one `verify` subprocess each), restarting with fresh
-guide subsets until it either reaches the goal or exhausts `--max-restarts` for a
+the individual search legs (one `verify` subprocess each), resampling fresh
+guide subsets until it either reaches the goal or uses all `--attempts` for a
 seed/goal pair. All logging and data wrangling (parquet/JSON) live here.
 
 Example:
     cargo build --release --bin sample --bin verify
     uv run scripts/driver.py data/seed_terms/dusky-cramp \\
-        --max-restarts 5 --k 10 --strategy no_replacement_count --full-union
+        --attempts 5 --k 1 2 5 10 50 100 \\
+        --strategy no_replacement_count --full-union
 """
 
 from __future__ import annotations
@@ -55,12 +56,16 @@ class Args:
     verify_binary: Path = Path("target/release/verify")
 
     # search policy
-    max_restarts: int = 5
-    """Give up on a seed/goal pair after this many failed legs."""
+    attempts: int = 5
+    """How many legs to try per (seed, goal, k), each with a freshly resampled
+    guide subset. Counts the first try, so `attempts=1` means a single leg with
+    no resampling. Stops early on the first reach; gives up after the last."""
     strategy: str = "no_replacement_count"
     """Which candidate pool to restart with. One of: """ + ", ".join(ALL_STRATEGIES)  # pyright: ignore[reportUnusedExpression]
-    k: int = 10
-    """Guides unioned per leg. Forced to 1 for the `smallest_*` strategies."""
+    k: list[int] = dataclasses.field(default_factory=lambda: [1, 2, 5, 10, 50, 100])
+    """Guide-set sizes to sweep: each seed/goal pair is tried independently at
+    every `k` (its own attempt loop), reproducing the old reach-rate-vs-k curve.
+    Forced to `[1]` for the `smallest_*` strategies."""
     full_union: bool = False
     """Use the experimental full-union add for the leg egraph."""
 
@@ -72,11 +77,11 @@ class Args:
     """Only process the first N seeds."""
 
     seed: int = 0
-    """RNG seed for subset selection (offset per restart round)."""
+    """RNG seed for subset selection (offset per attempt)."""
 
     jobs: int | None = None
     """Max concurrent `verify` legs (one seed/goal pair per worker). Each pair's
-    restart loop stays sequential, so this parallelises across pairs. Defaults to
+    attempt loop stays sequential, so this parallelises across pairs. Defaults to
     `os.cpu_count()`. Lower it if the large leg egraphs exhaust RAM."""
 
 
@@ -151,22 +156,22 @@ def run_pair(
     pool: list,
     guide_meta: dict,
 ) -> list[dict]:
-    """Run one seed/goal pair's restart loop and return its result rows.
+    """Run one seed/goal pair's attempt loop and return its result rows.
 
-    Sequential by design: round N+1 only fires if round N failed, so the loop
-    early-stops on the first reach. Runs in a worker thread; touches no shared
-    state, and marks its own last row `gave_up` if it exhausted the restarts.
+    Sequential by design: attempt N+1 only fires if attempt N failed, so the
+    loop early-stops on the first reach. Runs in a worker thread; touches no
+    shared state, and marks its own last row `gave_up` if it used every attempt.
     """
     rows: list[dict] = []
-    for rnd in range(args.max_restarts):
-        rng = random.Random(f"{args.seed}:{seed}:{goal}:{rnd}")
+    for attempt in range(args.attempts):
+        rng = random.Random(f"{args.seed}:{seed}:{goal}:{attempt}")
         guides = pick_subset(pool, args.strategy, k, rng)
         row = {
             "seed": seed,
             "goal": goal,
             "strategy": args.strategy,
             "k": len(guides),
-            "restart_round": rnd,
+            "attempt": attempt,
             "reached": False,
             "gave_up": False,
             "iters": None,
@@ -195,7 +200,7 @@ def run_pair(
         if result["reached"]:
             return rows
 
-    # Exhausted all restarts without reaching: mark the last leg as given up.
+    # Used every attempt without reaching: mark the last leg as given up.
     if rows:
         rows[-1]["gave_up"] = True
     return rows
@@ -210,7 +215,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    k = 1 if args.strategy in SMALLEST_STRATEGIES else args.k
+    k_values = [1] if args.strategy in SMALLEST_STRATEGIES else args.k
 
     for binary in (args.sample_binary, args.verify_binary):
         if not binary.exists():
@@ -234,9 +239,10 @@ def main() -> int:
     samples_path = run_sample(args, out / "sample_run")
     seed_records = json.loads(samples_path.read_text())
 
-    # Flatten to independent (seed, goal) work items. Each pair's restart loop
-    # is sequential (early-stops on first reach); pairs run concurrently.
-    pairs = []
+    # Flatten to independent (seed, goal, k) work items. Each item runs its own
+    # sequential attempt loop (early-stops on first reach); items run
+    # concurrently. Sweeping k per pair reproduces the reach-rate-vs-k curve.
+    items = []
     for record in seed_records:
         pool = record["candidates"].get(args.strategy, [])
         guide_meta = {
@@ -245,16 +251,17 @@ def main() -> int:
             "guide_time": record["guide_time"],
         }
         for goal in record["goals"]:
-            pairs.append((record["seed"], goal, pool, guide_meta))
+            for k in k_values:
+                items.append((record["seed"], goal, k, pool, guide_meta))
 
     jobs = args.jobs or os.cpu_count() or 1
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = [
             pool_exec.submit(run_pair, args, language, k, seed, goal, cand_pool, guide_meta)
-            for (seed, goal, cand_pool, guide_meta) in pairs
+            for (seed, goal, k, cand_pool, guide_meta) in items
         ]
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="pairs", unit="pair"):
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="legs", unit="pair×k"):
             rows.extend(fut.result())
 
     df = pl.DataFrame(rows)
@@ -262,12 +269,25 @@ def main() -> int:
     (out / "results.json").write_text(json.dumps(rows, indent=2))
     (out / "config.json").write_text(json.dumps(dataclasses.asdict(args), indent=2, default=str))
 
+    # Per-pair "reached" = reached at any swept k. Also report reach rate per k
+    # (the point of the sweep): fraction of (seed, goal) pairs reached at each k.
     reached_pairs = df.filter(pl.col("reached")).select("seed", "goal").unique().height
     total_pairs = df.select("seed", "goal").unique().height
+    per_k = (
+        df.group_by("k", "seed", "goal")
+        .agg(pl.col("reached").any().alias("reached"))
+        .group_by("k")
+        .agg(pl.col("reached").mean().alias("reach_rate"))
+        .sort("k")
+    )
     print(
-        f"\nReached {reached_pairs}/{total_pairs} seed/goal pairs. Wrote {out / 'results.parquet'}",
+        f"\nReached {reached_pairs}/{total_pairs} seed/goal pairs (at any k). "
+        f"Wrote {out / 'results.parquet'}",
         file=sys.stderr,
     )
+    print("Reach rate by k:", file=sys.stderr)
+    for r in per_k.iter_rows(named=True):
+        print(f"  k={r['k']:>3}: {r['reach_rate']:.2f}", file=sys.stderr)
     return 0
 
 

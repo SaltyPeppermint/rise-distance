@@ -130,7 +130,7 @@ def load_driver_run(run_dir: Path, adjust_guide_overhead: bool = True) -> pl.Dat
 
     The parquet is already one row per leg with columns::
 
-        seed, goal, strategy, k, restart_round, reached, gave_up, iters,
+        seed, goal, strategy, k, attempt, reached, gave_up, iters,
         nodes, classes, total_applied, total_time, stop_reason, panic,
         guide_nodes, guide_classes, guide_time
 
