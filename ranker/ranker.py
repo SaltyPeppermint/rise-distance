@@ -44,9 +44,7 @@ class GuideRanker(nn.Module):
             for param in layer.parameters():
                 param.requires_grad = True
 
-    def forward(
-        self, input_ids: torch.Tensor, attention_mask: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         attention_mask = attention_mask.to(torch.long)
         outputs = self.backbone(
             input_ids=input_ids,
@@ -85,9 +83,7 @@ def load_checkpoint(
 
 def find_latest_checkpoint() -> Path:
     runs_dir = Path(__file__).parent / "runs"
-    candidates = sorted(
-        runs_dir.glob("ranker-*/ranker.pt"), key=lambda p: p.stat().st_mtime
-    )
+    candidates = sorted(runs_dir.glob("ranker-*/ranker.pt"), key=lambda p: p.stat().st_mtime)
     if not candidates:
         print(f"No checkpoints found in {runs_dir.resolve()}", file=sys.stderr)
         sys.exit(1)

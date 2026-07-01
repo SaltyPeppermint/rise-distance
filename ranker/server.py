@@ -23,7 +23,7 @@ from pathlib import Path
 
 import torch
 
-from ranker import find_latest_checkpoint, format_input, load_checkpoint
+from ranker.ranker import find_latest_checkpoint, format_input, load_checkpoint
 
 
 def make_handler(model, tokenizer, config: dict, device: torch.device):
