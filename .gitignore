@@ -5,9 +5,6 @@ profile.json.gz
 /old_data/
 *.log
 
-/data/guide_eval/
-/data/seed_terms/
-/data/goal_gen/
 
 # direnv
 .direnv/
