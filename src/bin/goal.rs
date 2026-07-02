@@ -9,7 +9,9 @@ use std::time::Instant;
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
 use hashbrown::HashMap;
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use num::{BigUint, ToPrimitive};
+use rayon::prelude::*;
 
 use serde::Serialize;
 
@@ -86,13 +88,21 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
     println!("Distribution: {}", args.size_distribution);
     println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
 
-    let mut enriched_map: HashMap<String, EnrichedSeed> = HashMap::new();
+    let style = ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} seeds ({eta})",
+    )
+    .expect("valid template")
+    .progress_chars("=>-");
 
-    for (i, (seed_str, seed_expr, max_size)) in seeds.into_iter().take(take_n).enumerate() {
-        println!("\n=== Seed {i}: {seed_str} (max_size={max_size}) ===");
-        let enriched = process_seed(args, eqsat, &seed_expr, max_size, rules);
-        enriched_map.insert(seed_str.clone(), enriched);
-    }
+    let enriched_map = seeds
+        .into_par_iter()
+        .take(take_n)
+        .map(|(seed_str, seed_expr, max_size)| {
+            let enriched = process_seed(args, eqsat, &seed_expr, max_size, rules);
+            (seed_str, enriched)
+        })
+        .progress_with_style(style)
+        .collect();
 
     write_enriched_terms(&args.path, &enriched_map);
     println!(
