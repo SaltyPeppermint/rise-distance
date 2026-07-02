@@ -106,12 +106,12 @@ where
         })
     }
 
-    /// Log the stats about the root
+    /// Log the stats about the root into `out`.
     ///
     /// # Panics
     ///
-    /// Panics if there are no terms in the root
-    pub fn log_root(&self) {
+    /// Panics if there are no terms in the root, or if writing to `out` fails.
+    pub fn log_root<W: std::fmt::Write>(&self, out: &mut W) {
         let histogram = self
             .tc
             .data()
@@ -122,9 +122,9 @@ where
             .map(|(a, b)| (*a, b.to_owned()))
             .collect::<Vec<_>>();
         sorted_hist.sort_unstable();
-        println!("Terms in frontier:");
+        writeln!(out, "Terms in frontier:").unwrap();
         for (k, v) in &sorted_hist {
-            println!("{v} terms of size {k}");
+            writeln!(out, "{v} terms of size {k}").unwrap();
         }
     }
 

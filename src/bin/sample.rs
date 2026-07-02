@@ -159,7 +159,9 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
 
     let pc = PrecomputePackage::<BigUint, _, _>::precompute(&result, payload.max_size)?;
-    pc.log_root();
+    let mut root_log = String::new();
+    pc.log_root(&mut root_log);
+    print!("{root_log}");
 
     let mut candidates: BTreeMap<String, Vec<GuideExpr<L>>> = BTreeMap::new();
     for strategy in Strategy::ALL {

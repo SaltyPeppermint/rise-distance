@@ -1,6 +1,7 @@
 // #[global_allocator]
 // static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use std::time::Instant;
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
 use hashbrown::HashMap;
-use indicatif::{ParallelProgressIterator, ProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
@@ -102,16 +103,24 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
     )
     .expect("valid template")
     .progress_chars("=>-");
+    let bar = ProgressBar::new(take_n as u64).with_style(style);
 
     let enriched_map = seeds
-        .into_iter()
+        .into_par_iter()
         .take(take_n)
         .map(|(seed_str, seed_expr, max_size)| {
-            let enriched = process_seed(args, eqsat, &seed_expr, max_size, rules);
+            // Buffer this seed's log lines and flush them in a single atomic
+            // write so that output from concurrent seeds does not interleave.
+            let mut log = String::new();
+            let enriched = process_seed(args, eqsat, &seed_expr, max_size, rules, &mut log);
+            if !log.is_empty() {
+                bar.println(log.trim_end());
+            }
             (seed_str, enriched)
         })
-        .progress_with_style(style)
+        .progress_with(bar.clone())
         .collect();
+    bar.finish();
 
     write_enriched_terms(&args.path, &enriched_map);
     println!(
@@ -127,6 +136,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     seed_expr: &RecExpr<L>,
     max_size: usize,
     rules: &[Rewrite<L, N>],
+    log: &mut String,
 ) -> Result<GoalGenMetadata, EnrichedSeedFailed> {
     let Some(result) = eqsat::run_eqsat(seed_expr, rules.iter(), eqsat) else {
         return Err(EnrichedSeedFailed {
@@ -138,18 +148,24 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let stop_reason = format!("{:?}", result.stop_reason());
     let SplitMetadata { guide, goal } = result.split_metadata();
 
-    println!(
+    writeln!(
+        log,
         "goal_iters={} guide_iters={} stop={stop_reason}",
         goal.iters, guide.iters
-    );
-    println!(
+    )
+    .unwrap();
+    writeln!(
+        log,
         "guide egraph: {} nodes, {} classes in {:.2}s",
         guide.nodes, guide.classes, guide.time
-    );
-    println!(
+    )
+    .unwrap();
+    writeln!(
+        log,
         "goal egraph:  {} nodes, {} classes in {:.2}s",
         goal.nodes, goal.classes, goal.time
-    );
+    )
+    .unwrap();
 
     let now = Instant::now();
     // Grow `max_size` additively on each retry until precompute finds novel
@@ -160,7 +176,11 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
             PrecomputePackage::<BigUint, L, _>::precompute(&result, size)
                 .map(|pp| (size, pp))
                 .or_else(|| {
-                    println!("goal precompute returned None (max_size={size}), retrying");
+                    writeln!(
+                        log,
+                        "goal precompute returned None (max_size={size}), retrying"
+                    )
+                    .unwrap();
                     None
                 })
         })
@@ -174,8 +194,13 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
                 ),
             }
         })?;
-    println!("Precompute built in {:.2}s", now.elapsed().as_secs_f64());
-    pp.log_root();
+    writeln!(
+        log,
+        "Precompute built in {:.2}s",
+        now.elapsed().as_secs_f64()
+    )
+    .unwrap();
+    pp.log_root(log);
 
     let goals = pp
         .sample_frontier_terms(
