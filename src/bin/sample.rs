@@ -8,21 +8,21 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufWriter;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
 use num::BigUint;
 use serde::Serialize;
+use time::OffsetDateTime;
 
 use rise_distance::cli::sample::{GuideExpr, SeedSamples, Strategy, read_enriched_terms};
-use rise_distance::cli::types::EnrichedSeed;
+use rise_distance::cli::types::GoalGenMetadata;
 use rise_distance::cli::{get_run_folder, read_folder_args, read_folder_language, write_config};
 use rise_distance::eqsat::{EqsatConfig, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::sampling::{PrecomputePackage, TermSampleDist};
-use rise_distance::{MyAnalysis, MyLanguage};
-use time::OffsetDateTime;
+use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
 
 #[derive(Parser, Serialize)]
 #[command(
@@ -104,7 +104,7 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     eqsat: &EqsatConfig,
     rules: &[Rewrite<L, N>],
-    samples_path: &std::path::Path,
+    samples_path: &Path,
 ) -> usize {
     let seeds = read_enriched_terms(&args.path);
     let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
@@ -112,7 +112,7 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
 
     let mut out: Vec<SeedSamples<L>> = Vec::new();
     for (i, (seed_str, payload)) in seeds.iter().take(take_n).enumerate() {
-        let EnrichedSeed::Ok(ok) = payload else {
+        let Ok(ok) = payload else {
             println!("\n=== Seed {i}: {seed_str} SKIPPED (failed in goal stage) ===");
             continue;
         };
@@ -135,7 +135,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     eqsat: &EqsatConfig,
     seed_str: &str,
-    payload: &rise_distance::cli::types::GoalGenMetadata,
+    payload: &GoalGenMetadata,
     rules: &[Rewrite<L, N>],
 ) -> Option<SeedSamples<L>> {
     let seed_expr = seed_str
@@ -190,7 +190,7 @@ fn draw_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     strategy: Strategy,
     pc: &PrecomputePackage<BigUint, L, N>,
-) -> Vec<RecExpr<rise_distance::OriginLang<L>>> {
+) -> Vec<RecExpr<OriginLang<L>>> {
     match strategy {
         // Replacement is a driver concern (how it re-draws subsets from the
         // pool across restarts); the pool itself is one novel sampled batch

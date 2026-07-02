@@ -5,14 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::eqsat::{EqsatConfig, EqsatMetadata};
 
 /// Per-seed payload written by `goal` and consumed by `sample`. Stored as the
-/// value slot in `terms.json` (one entry per seed s-expression). Tagged on
-/// `status` so the two variants share a flat JSON shape.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum EnrichedSeed {
-    Ok(GoalGenMetadata),
-    Failed(EnrichedSeedFailed),
-}
+/// value slot in `terms.json` (one entry per seed s-expression). Serializes via
+/// `Result`'s `{"Ok": ..}` / `{"Err": ..}` shape.
+pub type EnrichedSeed = Result<GoalGenMetadata, EnrichedSeedFailed>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GoalGenMetadata {

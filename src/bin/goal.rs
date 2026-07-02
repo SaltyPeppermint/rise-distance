@@ -9,13 +9,13 @@ use std::time::Instant;
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
 use hashbrown::HashMap;
-use indicatif::{ParallelProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressIterator, ProgressStyle};
 use num::{BigUint, ToPrimitive};
 use rayon::prelude::*;
 
 use serde::Serialize;
 
-use rise_distance::cli::types::{EnrichedSeed, EnrichedSeedFailed, GoalGenMetadata};
+use rise_distance::cli::types::{EnrichedSeedFailed, GoalGenMetadata};
 use rise_distance::cli::{read_folder_args, read_folder_language};
 use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
@@ -51,6 +51,15 @@ struct Args {
     /// Only process the first N seeds.
     #[arg(long)]
     take_first: Option<usize>,
+
+    /// How much to grow `max_size` on each precompute retry.
+    #[arg(long, default_value_t = 10)]
+    max_size_retry_step: usize,
+
+    /// How many times to retry precompute with a larger `max_size` before
+    /// giving up on a seed.
+    #[arg(long, default_value_t = 3)]
+    max_size_retries: usize,
 
     /// Output run folder for logs and metadata (auto-generated if omitted).
     #[arg(short, long)]
@@ -95,7 +104,7 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
     .progress_chars("=>-");
 
     let enriched_map = seeds
-        .into_par_iter()
+        .into_iter()
         .take(take_n)
         .map(|(seed_str, seed_expr, max_size)| {
             let enriched = process_seed(args, eqsat, &seed_expr, max_size, rules);
@@ -118,9 +127,9 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     seed_expr: &RecExpr<L>,
     max_size: usize,
     rules: &[Rewrite<L, N>],
-) -> EnrichedSeed {
+) -> Result<GoalGenMetadata, EnrichedSeedFailed> {
     let Some(result) = eqsat::run_eqsat(seed_expr, rules.iter(), eqsat) else {
-        return EnrichedSeed::Failed(EnrichedSeedFailed {
+        return Err(EnrichedSeedFailed {
             max_size,
             fail_reason: "big eqsat failed".to_owned(),
         });
@@ -143,27 +152,43 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     );
 
     let now = Instant::now();
-    let Some(pp) = PrecomputePackage::<BigUint, L, _>::precompute(&result, max_size) else {
-        return EnrichedSeed::Failed(EnrichedSeedFailed {
-            max_size,
-            fail_reason: format!("goal precompute returned None (goal_iters={})", goal.iters),
-        });
-    };
+    // Grow `max_size` additively on each retry until precompute finds novel
+    // frontier terms, up to `max_size_retries` extra attempts.
+    let (used_max_size, pp) = (0..=args.max_size_retries)
+        .map(|i| max_size + i * args.max_size_retry_step)
+        .find_map(|size| {
+            PrecomputePackage::<BigUint, L, _>::precompute(&result, size)
+                .map(|pp| (size, pp))
+                .or_else(|| {
+                    println!("goal precompute returned None (max_size={size}), retrying");
+                    None
+                })
+        })
+        .ok_or_else(|| {
+            let tried_max_size = max_size + args.max_size_retries * args.max_size_retry_step;
+            EnrichedSeedFailed {
+                max_size: tried_max_size,
+                fail_reason: format!(
+                    "goal precompute returned None after {} retries (goal_iters={}, max_size={})",
+                    args.max_size_retries, goal.iters, max_size
+                ),
+            }
+        })?;
     println!("Precompute built in {:.2}s", now.elapsed().as_secs_f64());
     pp.log_root();
 
-    let Some(goals) = pp.sample_frontier_terms(
-        args.goals,
-        args.size_distribution,
-        args.goal_sample_strategy,
-        [0, 0],
-        true,
-    ) else {
-        return EnrichedSeed::Failed(EnrichedSeedFailed {
-            max_size,
+    let goals = pp
+        .sample_frontier_terms(
+            args.goals,
+            args.size_distribution,
+            args.goal_sample_strategy,
+            [0, 0],
+            true,
+        )
+        .ok_or_else(|| EnrichedSeedFailed {
+            max_size: used_max_size,
             fail_reason: "sample_frontier failed".to_owned(),
-        });
-    };
+        })?;
 
     let goal_strings = goals
         .iter()
@@ -176,24 +201,25 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
         .map(|(s, c)| (s.to_string(), c.clone()))
         .collect();
 
-    let ok = GoalGenMetadata {
+    Ok(GoalGenMetadata {
         eqsat_config: *eqsat,
-        max_size,
+        max_size: used_max_size,
         goal_egraph: goal,
         guide_egraph: guide,
         goals: goal_strings,
         frontier_histogram,
         stop_reason,
-    };
-
-    EnrichedSeed::Ok(ok)
+    })
 }
 
 /// Rewrite `<folder>/terms.json`, preserving the `[size, {term: payload}]`
 /// grouping but replacing each payload slot with the enriched per-seed data.
 /// Seeds not present in `enriched_map` (e.g. dropped by `--take-first`) are
 /// omitted from the output.
-fn write_enriched_terms(folder: &Path, enriched_map: &HashMap<String, EnrichedSeed>) {
+fn write_enriched_terms(
+    folder: &Path,
+    enriched_map: &HashMap<String, Result<GoalGenMetadata, EnrichedSeedFailed>>,
+) {
     let in_path = folder.join("terms.json");
     let file = File::open(&in_path)
         .unwrap_or_else(|e| panic!("Failed to open {}: {e}", in_path.display()));
