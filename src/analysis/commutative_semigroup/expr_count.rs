@@ -1,7 +1,5 @@
 use std::fmt::Debug;
-use std::sync::Arc;
 
-use dashmap::DashMap;
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
 use hashbrown::HashMap;
 
@@ -22,10 +20,8 @@ impl ExprCount {
 
 impl<C, L, N> CommutativeSemigroupAnalysis<L, N, C> for ExprCount
 where
-    L: Language + Sync,
-    L::Discriminant: Sync,
-    N: Analysis<L> + Sync,
-    N::Data: Sync,
+    L: Language,
+    N: Analysis<L>,
     C: Counter,
 {
     // Size and number of programs of that size
@@ -36,7 +32,7 @@ where
         _egraph: &EGraph<L, N>,
         _eclass_id: Id,
         enode: &L,
-        analysis_of: &Arc<DashMap<Id, Self::Data>>,
+        analysis_of: &HashMap<Id, Self::Data>,
     ) -> Self::Data {
         let mut children_data = Vec::new();
         {
