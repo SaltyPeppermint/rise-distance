@@ -206,6 +206,7 @@ fn run_brute(
         warn("run_eqsat returned None. Not enough distinct iterations");
         return None;
     };
+    println!("Stopped with stop reason: {:?}", result.stop_reason());
 
     let (meta, cost, best) = extract(result);
     Some(RunResult {
@@ -233,6 +234,10 @@ fn run_cut(
         warn("Cut phase 1 returned None");
         return None;
     };
+    println!(
+        "Cut phase 1 stopped with stop reason: {:?}",
+        cut_result.stop_reason()
+    );
     let cut_meta = EqsatMetadata::from_iterations(cut_result.data());
 
     let Some(pp) =
@@ -268,7 +273,13 @@ fn run_cut(
                 warn(&format!("Sample {i}: run_eqsat returned None, skipping"));
                 None
             })
-            .map(extract)
+            .map(|result| {
+                println!(
+                    "Sample {i}: stopped with stop reason: {:?}",
+                    result.stop_reason()
+                );
+                extract(result)
+            })
     });
 
     let mut meta = vec![cut_meta];

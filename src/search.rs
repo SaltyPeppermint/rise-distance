@@ -142,6 +142,10 @@ where
             eqsat_meta: Vec::new(),
         };
     };
+    println!(
+        "{search_name}: stopped with reason {:?}",
+        result.stop_reason()
+    );
 
     let cut_meta = EqsatMetadata::from_iterations(result.data());
 

@@ -303,7 +303,6 @@ where
     .run(rules);
 
     let stop_reason = runner.stop_reason.unwrap();
-    println!("Stopped with stop reason: {stop_reason:?}");
 
     let root = runner.roots[0];
     // Drop hook closures so the slot's Rc has only our local clone left.
@@ -312,7 +311,6 @@ where
     let mut curr = runner.egraph;
 
     if iter_data.len() < MIN_ITERS {
-        println!("Not enough iterations ({} < {MIN_ITERS})", iter_data.len());
         return None;
     }
 

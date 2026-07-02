@@ -108,14 +108,13 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
     let enriched_map = seeds
         .into_par_iter()
         .take(take_n)
-        .map(|(seed_str, seed_expr, max_size)| {
+        .enumerate()
+        .map(|(idx, (seed_str, seed_expr, max_size))| {
             // Buffer this seed's log lines and flush them in a single atomic
             // write so that output from concurrent seeds does not interleave.
-            let mut log = String::new();
+            let mut log = format!("[seed {}/{take_n}] {seed_str}\n", idx + 1);
             let enriched = process_seed(args, eqsat, &seed_expr, max_size, rules, &mut log);
-            if !log.is_empty() {
-                bar.println(log.trim_end());
-            }
+            bar.println(log.trim_end());
             (seed_str, enriched)
         })
         .progress_with(bar.clone())
