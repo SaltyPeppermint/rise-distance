@@ -72,7 +72,6 @@ shadow_unrelated = "warn"
 
 [profile.release]
 debug = 1
-overflow-checks = true
 
 
 # [[bin]]
