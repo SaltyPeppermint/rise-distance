@@ -59,12 +59,12 @@ struct Args {
     samples_per_strategy: usize,
 
     /// How much to grow `max_size` on each precompute retry.
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 1)]
     retry_step: usize,
 
     /// How many times to retry precompute with a larger `max_size` before
     /// giving up on a seed.
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 50)]
     max_retries: usize,
 
     /// How many sizes need to be present in the precomputed histogram of root
