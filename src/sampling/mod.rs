@@ -7,7 +7,7 @@ use std::fmt::Display;
 use std::iter::{Product, Sum};
 use std::str::FromStr;
 
-use egg::{AstSize, Extractor, Id, RecExpr};
+use egg::{Id, RecExpr};
 use hashbrown::HashMap;
 use num::traits::{NumAssignRef, NumRef};
 use rand::distributions::uniform::SampleUniform;
@@ -124,12 +124,12 @@ where
     /// the largest `max_size` that was tried (`start_size + max_retries * step_size`).
     pub fn backoff_precompute<W: std::fmt::Write>(
         result: &'a EqsatResult<L, N>,
+        start_size: usize,
         max_retries: usize,
         retry_step: usize,
         min_sizes: usize,
         log: &mut W,
     ) -> Result<(usize, PrecomputePackage<'a, C, L, N>), usize> {
-        let start_size = Extractor::new(result.curr(), AstSize).find_best_cost(result.root());
         (0..=max_retries)
             .map(|i| start_size + i * retry_step)
             .find_map(|size| {

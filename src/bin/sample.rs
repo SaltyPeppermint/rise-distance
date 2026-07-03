@@ -11,7 +11,7 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use egg::{RecExpr, Rewrite};
+use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use serde::Serialize;
 use time::OffsetDateTime;
 
@@ -175,8 +175,11 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
 
     let mut root_log = String::new();
+
+    let start_size = AstSize.cost_rec(&seed_expr);
     let (max_size, pc) = PrecomputePackage::<u128, _, _>::backoff_precompute(
         &result,
+        start_size,
         args.max_retries,
         args.retry_step,
         args.min_sizes,

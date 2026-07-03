@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::Parser;
-use egg::{RecExpr, Rewrite};
+use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use num::ToPrimitive;
@@ -176,8 +176,10 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
 
     let now = Instant::now();
 
+    let start_size = AstSize.cost_rec(seed_expr);
     let (used_max_size, pp) = PrecomputePackage::<u128, L, _>::backoff_precompute(
         &result,
+        start_size,
         args.max_retries,
         args.retry_step,
         args.min_sizes,
