@@ -122,7 +122,6 @@ where
     ///
     /// Errors if every attempt up to and including `max_retries` fails. The error value is
     /// the largest `max_size` that was tried (`start_size + max_retries * step_size`).
-    #[expect(clippy::missing_panics_doc)]
     pub fn backoff_precompute<W: std::fmt::Write>(
         result: &'a EqsatResult<L, N>,
         start_size: usize,
@@ -134,17 +133,17 @@ where
         (0..=max_retries)
             .map(|i| start_size + i * retry_step)
             .find_map(|size| {
-                if let Some(pp) = PrecomputePackage::<C, L, _>::precompute(result, size)
+                if let Some(mut pp) = PrecomputePackage::<C, L, _>::precompute(result, size)
                     && pp.root_histogram().keys().len() >= sizes
                 {
-                    if pp.root_histogram().keys().len() == sizes {
-                        Some((size, pp))
-                    } else {
-                        let real_limit = *pp.root_histogram().keys().take(sizes).max().unwrap();
-                        let actual_pp =
-                            PrecomputePackage::<C, L, _>::precompute(result, real_limit).unwrap();
-                        Some((real_limit, actual_pp))
-                    }
+                    // Ensure that even if we have too many we dont sample from too many sizes
+                    pp.max_size = **pp
+                        .root_histogram()
+                        .keys()
+                        .collect::<Vec<_>>()
+                        .select_nth_unstable(sizes - 1)
+                        .1;
+                    Some((size, pp))
                 } else {
                     writeln!(
                         log,
