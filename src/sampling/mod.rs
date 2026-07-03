@@ -9,9 +9,10 @@ use std::str::FromStr;
 
 use egg::{AstSize, Extractor, Id, RecExpr};
 use hashbrown::HashMap;
-use num_traits::{NumAssignRef, NumRef};
+use num::traits::{NumAssignRef, NumRef};
 use rand::distributions::uniform::SampleUniform;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::eqsat::EqsatResult;
 use crate::sampling::count::{NovelTermCount, PlainTermCount};
@@ -38,6 +39,8 @@ pub trait Counter:
     + TryInto<u64, Error: std::fmt::Debug>
     + TryFrom<u64, Error: std::fmt::Debug>
     + TryFrom<usize, Error: std::fmt::Debug>
+    + Serialize
+    + DeserializeOwned
     + Product // + Weight
 {
 }
@@ -58,6 +61,8 @@ impl<
         + TryInto<u64, Error: std::fmt::Debug>
         + TryFrom<u64, Error: std::fmt::Debug>
         + TryFrom<usize, Error: std::fmt::Debug>
+        + Serialize
+        + DeserializeOwned
         + Product, // + Weight,
 > Counter for T
 {

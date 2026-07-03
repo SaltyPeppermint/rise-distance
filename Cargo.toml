@@ -9,21 +9,16 @@ name = "rise_distance"
 crate-type = ["rlib"]
 
 [dependencies]
-bon = "3"
 clap = { version = "4", features = ["derive"] }
-polars = { version = "0.54", features = ["parquet", "polars-io"] }
 dashmap = "6"
 egg = { version = "0.11", features = ["serde-1", "lp"] }
-env_logger = "0.11"
 foldhash = "0.2"
 hashbrown = { version = "0.17", features = ["rayon", "serde"] }
-indexmap = { version = "2", features = ["serde"] }
 lexpr = "0.2"
 indicatif = { version = "0.18", features = ["rayon"] }
 # tikv-jemallocator = "0.6"
 # log = "0.4"
 num = { version = "0.4", features = ["serde", "rand"] }
-num-traits = "0.2"
 ordered-float = { version = "5", features = ["serde"] }
 rand = "0.8"
 rand_chacha = "0.3"
@@ -34,8 +29,6 @@ smallvec = "1"
 strum = { version = "0.28", features = ["derive"] }
 symbolic_expressions = "5"
 thiserror = "2"
-plotters = "0.3"
-csv = "1"
 rlimit = "0.11"
 time = { version = "0.3", features = ["macros", "local-offset"] }
 assert_approx_eq = "1"
@@ -79,6 +72,7 @@ shadow_unrelated = "warn"
 
 [profile.release]
 debug = 1
+overflow-checks = true
 
 
 # [[bin]]
