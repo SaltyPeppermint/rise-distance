@@ -59,7 +59,7 @@ struct Args {
 
     /// How many times to retry precompute with a larger `max_size` before
     /// giving up on a seed.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 10)]
     max_retries: usize,
 
     /// How many sizes need to be present in the precomputed histogram of root
@@ -118,6 +118,14 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
             // write so that output from concurrent seeds does not interleave.
             let mut log = format!("[seed {}/{take_n}] {seed_str}\n", idx + 1);
             let enriched = process_seed(args, eqsat, &seed_expr, rules, &mut log);
+            match &enriched {
+                Ok(g) => {
+                    writeln!(log, "Successfully generated {} goals!", g.goals.len()).unwrap();
+                }
+                Err(e) => {
+                    writeln!(log, "Failed to generate any goals due to: {e}").unwrap();
+                }
+            }
             bar.println(log.trim_end());
             (seed_str, enriched)
         })

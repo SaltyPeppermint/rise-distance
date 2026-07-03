@@ -63,7 +63,7 @@ struct Args {
 
     /// How many times to retry precompute with a larger `max_size` before
     /// giving up on a seed.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 10)]
     max_retries: usize,
 
     /// How many sizes need to be present in the precomputed histogram of root
