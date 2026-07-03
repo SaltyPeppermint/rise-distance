@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use egg::{Extractor, RecExpr};
 
+use num::BigUint;
 use rise_distance::eqsat::{EqsatConfig, EqsatMetadata, EqsatResult};
 use rise_distance::langs::diospyros::VecLang;
 use rise_distance::langs::diospyros::cost::VecCostFn;
@@ -240,7 +241,7 @@ fn run_cut(
     let cut_meta = EqsatMetadata::from_iterations(cut_result.data());
 
     let Some(pp) =
-        PrecomputePackage::<u128, VecLang, ()>::precompute(&cut_result, args.max_size)
+        PrecomputePackage::<BigUint, VecLang, ()>::precompute(&cut_result, args.max_size)
     else {
         warn("Precompute returned None (empty frontier)");
         return None;
