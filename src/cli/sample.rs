@@ -8,9 +8,11 @@ use std::fs::File;
 use std::path::Path;
 
 use egg::RecExpr;
+use hashbrown::HashMap;
+use num::BigUint;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::types::EnrichedSeed;
+use crate::eqsat::{EqsatConfig, EqsatMetadata};
 use crate::sampling::SampleStrategy;
 use crate::{MyLanguage, OriginLang};
 
@@ -132,4 +134,25 @@ pub fn read_enriched_terms(folder: &Path) -> Vec<(String, EnrichedSeed)> {
         .into_iter()
         .flat_map(|(_size, inner)| inner)
         .collect()
+}
+
+/// Per-seed payload written by `goal` and consumed by `sample`. Stored as the
+/// value slot in `terms.json` (one entry per seed s-expression). Serializes via
+/// `Result`'s `{"Ok": ..}` / `{"Err": ..}` shape.
+pub type EnrichedSeed = Result<GoalGenMetadata, String>;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GoalGenMetadata {
+    /// Snapshot of the `EqsatConfig` that `goal` ran under. `guide` compares
+    /// this against its current `args.json` to detect config drift.
+    pub eqsat_config: EqsatConfig,
+    pub max_size: usize,
+    pub goals: Vec<String>,
+    /// Histogram of novel root extractions by size. Keys are size-as-string
+    /// because JSON object keys must be strings and `serde_json` doesn't
+    /// auto-convert numeric strings back to `usize` on read.
+    pub frontier_histogram: HashMap<String, BigUint>,
+    pub stop_reason: String,
+    pub guide_egraph: EqsatMetadata,
+    pub goal_egraph: EqsatMetadata,
 }

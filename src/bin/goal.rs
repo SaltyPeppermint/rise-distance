@@ -16,7 +16,7 @@ use rayon::prelude::*;
 
 use serde::Serialize;
 
-use rise_distance::cli::types::GoalGenMetadata;
+use rise_distance::cli::sample::GoalGenMetadata;
 use rise_distance::cli::{read_folder_args, read_folder_language};
 use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};

@@ -1,7 +1,4 @@
 pub mod sample;
-pub mod types;
-
-pub use types::*;
 
 use std::env::current_dir;
 use std::fs::File;

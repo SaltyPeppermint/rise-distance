@@ -16,8 +16,9 @@ use num::BigUint;
 use serde::Serialize;
 use time::OffsetDateTime;
 
-use rise_distance::cli::sample::{GuideExpr, SeedSamples, Strategy, read_enriched_terms};
-use rise_distance::cli::types::GoalGenMetadata;
+use rise_distance::cli::sample::{
+    GoalGenMetadata, GuideExpr, SeedSamples, Strategy, read_enriched_terms,
+};
 use rise_distance::cli::{get_run_folder, read_folder_args, read_folder_language, write_config};
 use rise_distance::eqsat::{EqsatConfig, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
