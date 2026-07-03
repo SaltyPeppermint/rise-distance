@@ -7,7 +7,7 @@ use crate::eqsat::{EqsatConfig, EqsatMetadata};
 /// Per-seed payload written by `goal` and consumed by `sample`. Stored as the
 /// value slot in `terms.json` (one entry per seed s-expression). Serializes via
 /// `Result`'s `{"Ok": ..}` / `{"Err": ..}` shape.
-pub type EnrichedSeed = Result<GoalGenMetadata, EnrichedSeedFailed>;
+pub type EnrichedSeed = Result<GoalGenMetadata, String>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GoalGenMetadata {
@@ -23,10 +23,4 @@ pub struct GoalGenMetadata {
     pub stop_reason: String,
     pub guide_egraph: EqsatMetadata,
     pub goal_egraph: EqsatMetadata,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct EnrichedSeedFailed {
-    pub max_size: usize,
-    pub fail_reason: String,
 }

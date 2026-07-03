@@ -19,18 +19,15 @@ use crate::{MyLanguage, OriginLang};
 /// that used to live in `guide.rs`.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum Strategy {
-    NoReplacement(SampleStrategy),
-    WithReplacement(SampleStrategy),
+    Sample(SampleStrategy),
     Smallest { novel: bool },
 }
 
 impl Strategy {
     /// All six strategies, in the order `guide.rs` used.
-    pub const ALL: [Strategy; 6] = [
-        Strategy::NoReplacement(SampleStrategy::Count),
-        Strategy::WithReplacement(SampleStrategy::Count),
-        Strategy::NoReplacement(SampleStrategy::Naive),
-        Strategy::WithReplacement(SampleStrategy::Naive),
+    pub const ALL: [Strategy; 4] = [
+        Strategy::Sample(SampleStrategy::Count),
+        Strategy::Sample(SampleStrategy::Naive),
         Strategy::Smallest { novel: false },
         Strategy::Smallest { novel: true },
     ];
@@ -38,10 +35,8 @@ impl Strategy {
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
-            Strategy::NoReplacement(SampleStrategy::Count) => "no_replacement_count",
-            Strategy::NoReplacement(SampleStrategy::Naive) => "no_replacement_naive",
-            Strategy::WithReplacement(SampleStrategy::Count) => "with_replacement_count",
-            Strategy::WithReplacement(SampleStrategy::Naive) => "with_replacement_naive",
+            Strategy::Sample(SampleStrategy::Count) => "sample_count",
+            Strategy::Sample(SampleStrategy::Naive) => "sample_naive",
             Strategy::Smallest { novel: true } => "smallest_novel",
             Strategy::Smallest { novel: false } => "smallest_overall",
         }
@@ -52,10 +47,8 @@ impl Strategy {
     #[must_use]
     pub fn seed_of(&self) -> u64 {
         match self {
-            Strategy::NoReplacement(SampleStrategy::Count) => 1,
-            Strategy::NoReplacement(SampleStrategy::Naive) => 2,
-            Strategy::WithReplacement(SampleStrategy::Count) => 3,
-            Strategy::WithReplacement(SampleStrategy::Naive) => 4,
+            Strategy::Sample(SampleStrategy::Count) => 1,
+            Strategy::Sample(SampleStrategy::Naive) => 2,
             Strategy::Smallest { .. } => 0,
         }
     }

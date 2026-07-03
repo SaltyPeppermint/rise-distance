@@ -7,7 +7,7 @@ use std::fmt::Display;
 use std::iter::{Product, Sum};
 use std::str::FromStr;
 
-use egg::{Id, RecExpr};
+use egg::{AstSize, Extractor, Id, RecExpr};
 use hashbrown::HashMap;
 use num_traits::{NumAssignRef, NumRef};
 use rand::distributions::uniform::SampleUniform;
@@ -104,6 +104,44 @@ where
             max_size,
             root,
         })
+    }
+
+    /// Like [`precompute`](Self::precompute), but retries with progressively larger `max_size`
+    /// values until it succeeds.
+    ///
+    /// The starting size is the cost of the cheapest term extractable from the root (via
+    /// [`AstSize`]). Each retry increases `max_size` by `step_size`, for up to `max_retries`
+    /// additional attempts (so at most `max_retries + 1` calls to `precompute`).
+    ///
+    /// # Errors
+    ///
+    /// Errors if every attempt up to and including `max_retries` fails. The error value is
+    /// the largest `max_size` that was tried (`start_size + max_retries * step_size`).
+    pub fn backoff_precompute<W: std::fmt::Write>(
+        result: &'a EqsatResult<L, N>,
+        max_retries: usize,
+        retry_step: usize,
+        min_sizes: usize,
+        log: &mut W,
+    ) -> Result<(usize, PrecomputePackage<'a, C, L, N>), usize> {
+        let start_size = Extractor::new(result.curr(), AstSize).find_best_cost(result.root());
+        (0..=max_retries)
+            .map(|i| start_size + i * retry_step)
+            .find_map(|size| {
+                if let Some(pp) = PrecomputePackage::<C, L, _>::precompute(result, size)
+                    && pp.root_histogram().keys().len() > min_sizes
+                {
+                    Some((size, pp))
+                } else {
+                    writeln!(
+                        log,
+                        "goal precompute returned None (max_size={size}), retrying"
+                    )
+                    .unwrap();
+                    None
+                }
+            })
+            .ok_or(start_size + max_retries * retry_step)
     }
 
     /// Log the stats about the root into `out`.

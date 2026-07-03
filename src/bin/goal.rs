@@ -16,7 +16,7 @@ use rayon::prelude::*;
 
 use serde::Serialize;
 
-use rise_distance::cli::types::{EnrichedSeedFailed, GoalGenMetadata};
+use rise_distance::cli::types::GoalGenMetadata;
 use rise_distance::cli::{read_folder_args, read_folder_language};
 use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
@@ -55,12 +55,16 @@ struct Args {
 
     /// How much to grow `max_size` on each precompute retry.
     #[arg(long, default_value_t = 10)]
-    max_size_retry_step: usize,
+    retry_step: usize,
 
     /// How many times to retry precompute with a larger `max_size` before
     /// giving up on a seed.
-    #[arg(long, default_value_t = 3)]
-    max_size_retries: usize,
+    #[arg(long, default_value_t = 5)]
+    max_retries: usize,
+
+    /// How many sizes need to be present in the precomputed histogram of root
+    #[arg(long, default_value_t = 5)]
+    min_sizes: usize,
 
     /// Output run folder for logs and metadata (auto-generated if omitted).
     #[arg(short, long)]
@@ -109,11 +113,11 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
         .into_par_iter()
         .take(take_n)
         .enumerate()
-        .map(|(idx, (seed_str, seed_expr, max_size))| {
+        .map(|(idx, (seed_str, seed_expr, _max_size))| {
             // Buffer this seed's log lines and flush them in a single atomic
             // write so that output from concurrent seeds does not interleave.
             let mut log = format!("[seed {}/{take_n}] {seed_str}\n", idx + 1);
-            let enriched = process_seed(args, eqsat, &seed_expr, max_size, rules, &mut log);
+            let enriched = process_seed(args, eqsat, &seed_expr, rules, &mut log);
             bar.println(log.trim_end());
             (seed_str, enriched)
         })
@@ -133,15 +137,11 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     eqsat: &EqsatConfig,
     seed_expr: &RecExpr<L>,
-    max_size: usize,
     rules: &[Rewrite<L, N>],
     log: &mut String,
-) -> Result<GoalGenMetadata, EnrichedSeedFailed> {
+) -> Result<GoalGenMetadata, String> {
     let Some(result) = eqsat::run_eqsat(seed_expr, rules.iter(), eqsat) else {
-        return Err(EnrichedSeedFailed {
-            max_size,
-            fail_reason: "big eqsat failed".to_owned(),
-        });
+        return Err("big eqsat failed".to_owned());
     };
 
     let stop_reason = format!("{:?}", result.stop_reason());
@@ -167,32 +167,20 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     .unwrap();
 
     let now = Instant::now();
-    // Grow `max_size` additively on each retry until precompute finds novel
-    // frontier terms, up to `max_size_retries` extra attempts.
-    let (used_max_size, pp) = (0..=args.max_size_retries)
-        .map(|i| max_size + i * args.max_size_retry_step)
-        .find_map(|size| {
-            PrecomputePackage::<BigUint, L, _>::precompute(&result, size)
-                .map(|pp| (size, pp))
-                .or_else(|| {
-                    writeln!(
-                        log,
-                        "goal precompute returned None (max_size={size}), retrying"
-                    )
-                    .unwrap();
-                    None
-                })
-        })
-        .ok_or_else(|| {
-            let tried_max_size = max_size + args.max_size_retries * args.max_size_retry_step;
-            EnrichedSeedFailed {
-                max_size: tried_max_size,
-                fail_reason: format!(
-                    "goal precompute returned None after {} retries (goal_iters={}, max_size={})",
-                    args.max_size_retries, goal.iters, max_size
-                ),
-            }
-        })?;
+
+    let (used_max_size, pp) = PrecomputePackage::<BigUint, L, _>::backoff_precompute(
+        &result,
+        args.max_retries,
+        args.retry_step,
+        args.min_sizes,
+        log,
+    )
+    .map_err(|tried_max_size| {
+        format!(
+            "goal precompute returned None after {} retries (goal_iters={}, max_size={})",
+            args.max_retries, goal.iters, tried_max_size
+        )
+    })?;
     writeln!(
         log,
         "Precompute built in {:.2}s",
@@ -209,10 +197,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
             [0, 0],
             true,
         )
-        .ok_or_else(|| EnrichedSeedFailed {
-            max_size: used_max_size,
-            fail_reason: "sample_frontier failed".to_owned(),
-        })?;
+        .ok_or_else(|| "sample_frontier failed".to_owned())?;
 
     let goal_strings = goals
         .iter()
@@ -242,7 +227,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
 /// omitted from the output.
 fn write_enriched_terms(
     folder: &Path,
-    enriched_map: &HashMap<String, Result<GoalGenMetadata, EnrichedSeedFailed>>,
+    enriched_map: &HashMap<String, Result<GoalGenMetadata, String>>,
 ) {
     let in_path = folder.join("terms.json");
     let file = File::open(&in_path)

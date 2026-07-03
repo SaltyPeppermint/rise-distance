@@ -56,6 +56,19 @@ struct Args {
     /// across restarts. `Smallest` always contributes exactly one term.
     #[arg(long, default_value_t = 1000)]
     samples_per_strategy: usize,
+
+    /// How much to grow `max_size` on each precompute retry.
+    #[arg(long, default_value_t = 10)]
+    retry_step: usize,
+
+    /// How many times to retry precompute with a larger `max_size` before
+    /// giving up on a seed.
+    #[arg(long, default_value_t = 5)]
+    max_retries: usize,
+
+    /// How many sizes need to be present in the precomputed histogram of root
+    #[arg(long, default_value_t = 5)]
+    min_sizes: usize,
 }
 
 fn main() {
@@ -110,7 +123,7 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
     let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
     println!("Seeds to process: {take_n} (of {} total)", seeds.len());
 
-    let mut out: Vec<SeedSamples<L>> = Vec::new();
+    let mut out = Vec::new();
     for (i, (seed_str, payload)) in seeds.iter().take(take_n).enumerate() {
         let Ok(ok) = payload else {
             println!("\n=== Seed {i}: {seed_str} SKIPPED (failed in goal stage) ===");
@@ -120,8 +133,11 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
             "\n=== Seed {i}: {seed_str} (max_size={}, guide_iters={}) ===",
             ok.max_size, ok.guide_egraph.iters
         );
-        if let Some(record) = sample_seed(args, eqsat, seed_str, ok, rules) {
-            out.push(record);
+        match sample_seed(args, eqsat, seed_str, ok, rules) {
+            Ok(record) => {
+                out.push(record);
+            }
+            Err(e) => println!("ERROR OCCURRED:\n{e}"),
         }
         println!("Finished seed at {}", OffsetDateTime::now_local().unwrap());
     }
@@ -137,7 +153,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     seed_str: &str,
     payload: &GoalGenMetadata,
     rules: &[Rewrite<L, N>],
-) -> Option<SeedSamples<L>> {
+) -> Result<SeedSamples<L>, String> {
     let seed_expr = seed_str
         .parse::<RecExpr<L>>()
         .unwrap_or_else(|e| panic!("Failed to parse seed '{seed_str}': {e}"));
@@ -149,7 +165,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     };
     eqsat.warn_on_config_drift(&payload.eqsat_config);
 
-    let result = run_eqsat(&seed_expr, rules.iter(), &replay_config)?;
+    let result = run_eqsat(&seed_expr, rules.iter(), &replay_config).ok_or("Eqsat failed")?;
     println!("Guide replay stop reason: {:?}", result.stop_reason());
 
     let guide_nodes = result.curr().total_number_of_nodes();
@@ -158,12 +174,25 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let guide_time = result.data().iter().map(|i| i.total_time).sum();
     println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
 
-    let pc = PrecomputePackage::<BigUint, _, _>::precompute(&result, payload.max_size)?;
     let mut root_log = String::new();
+    let (max_size, pc) = PrecomputePackage::<BigUint, _, _>::backoff_precompute(
+        &result,
+        args.max_retries,
+        args.retry_step,
+        args.min_sizes,
+        &mut root_log,
+    )
+    .map_err(|tried_max_size| {
+        format!(
+            "goal precompute returned None after {} retries (max_size={})",
+            args.max_retries, tried_max_size
+        )
+    })?;
+    println!("PC computation succeeded with max_size {max_size}!");
     pc.log_root(&mut root_log);
     print!("{root_log}");
 
-    let mut candidates: BTreeMap<String, Vec<GuideExpr<L>>> = BTreeMap::new();
+    let mut candidates = BTreeMap::new();
     for strategy in Strategy::ALL {
         let terms = draw_candidates(args, strategy, &pc);
         candidates.insert(
@@ -172,7 +201,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
         );
     }
 
-    Some(SeedSamples {
+    Ok(SeedSamples {
         seed: seed_str.to_owned(),
         goals: payload.goals.clone(),
         candidates,
@@ -197,7 +226,7 @@ fn draw_candidates<L: MyLanguage, N: MyAnalysis<L>>(
         // Replacement is a driver concern (how it re-draws subsets from the
         // pool across restarts); the pool itself is one novel sampled batch
         // either way. Sampling strategies always draw novel terms.
-        Strategy::NoReplacement(s) | Strategy::WithReplacement(s) => pc
+        Strategy::Sample(s) => pc
             .sample_frontier_terms(
                 args.samples_per_strategy,
                 args.size_distribution,
