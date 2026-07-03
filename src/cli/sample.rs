@@ -9,11 +9,10 @@ use std::path::Path;
 
 use egg::RecExpr;
 use hashbrown::HashMap;
-use num::BigUint;
 use serde::{Deserialize, Serialize};
 
 use crate::eqsat::{EqsatConfig, EqsatMetadata};
-use crate::sampling::SampleStrategy;
+use crate::sampling::{Counter, SampleStrategy};
 use crate::{MyLanguage, OriginLang};
 
 /// The six guide-sampling strategies. Sampling variants always draw novel
@@ -112,7 +111,7 @@ pub struct SeedSamples<L: MyLanguage> {
 ///
 /// Panics if `terms.json` is missing or was not enriched by `goal` first.
 #[must_use]
-pub fn read_enriched_terms(folder: &Path) -> Vec<(String, EnrichedSeed)> {
+pub fn read_enriched_terms<C: Counter>(folder: &Path) -> Vec<(String, EnrichedSeed<C>)> {
     let path = folder.join("terms.json");
     let file =
         File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
@@ -122,7 +121,7 @@ pub fn read_enriched_terms(folder: &Path) -> Vec<(String, EnrichedSeed)> {
     // that `from_value` doesn't do. The inner map is a BTreeMap so its
     // iteration order is deterministic; a HashMap here would make
     // `--take-first` pick a different subset each run.
-    let groups: Vec<(usize, BTreeMap<String, EnrichedSeed>)> = serde_json::from_reader(file)
+    let groups: Vec<(usize, BTreeMap<String, EnrichedSeed<C>>)> = serde_json::from_reader(file)
         .unwrap_or_else(|e| {
             panic!(
                 "Failed to parse {}: {e}. Did you run `goal` on this folder first?",
@@ -139,10 +138,11 @@ pub fn read_enriched_terms(folder: &Path) -> Vec<(String, EnrichedSeed)> {
 /// Per-seed payload written by `goal` and consumed by `sample`. Stored as the
 /// value slot in `terms.json` (one entry per seed s-expression). Serializes via
 /// `Result`'s `{"Ok": ..}` / `{"Err": ..}` shape.
-pub type EnrichedSeed = Result<GoalGenMetadata, String>;
+pub type EnrichedSeed<C> = Result<GoalGenMetadata<C>, String>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct GoalGenMetadata {
+#[serde(bound(serialize = "C: Counter", deserialize = "C: Counter"))]
+pub struct GoalGenMetadata<C: Counter> {
     /// Snapshot of the `EqsatConfig` that `goal` ran under. `guide` compares
     /// this against its current `args.json` to detect config drift.
     pub eqsat_config: EqsatConfig,
@@ -151,7 +151,7 @@ pub struct GoalGenMetadata {
     /// Histogram of novel root extractions by size. Keys are size-as-string
     /// because JSON object keys must be strings and `serde_json` doesn't
     /// auto-convert numeric strings back to `usize` on read.
-    pub frontier_histogram: HashMap<String, BigUint>,
+    pub frontier_histogram: HashMap<String, C>,
     pub stop_reason: String,
     pub guide_egraph: EqsatMetadata,
     pub goal_egraph: EqsatMetadata,

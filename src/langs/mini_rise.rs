@@ -1,7 +1,6 @@
 use std::fmt::Write;
 
 use egg::{Language, RecExpr, rewrite};
-use num::BigUint;
 
 use crate::search::{ReachResult, SearchMode, reach_sketches};
 use crate::sketch::SketchLang;
@@ -203,7 +202,7 @@ pub fn tile(
             split_rules.extend(split_map());
             split_rules.extend(transpose_maps()); // <<< unused
             let ss = parse_sketch(&split_sketch);
-            reach_sketches::<Lang, (), BigUint>(
+            reach_sketches::<Lang, (), u128>(
                 &format!("tile_{name}_s"),
                 &start_expr,
                 &split_rules,
@@ -218,7 +217,7 @@ pub fn tile(
             let rs = parse_sketch(&reorder_sketches);
             // The reorder phase starts from the (single) split program.
             let se = parse_expr(&split_expected);
-            reach_sketches::<Lang, (), BigUint>(
+            reach_sketches::<Lang, (), u128>(
                 &format!("tile_{name}_r"),
                 &se,
                 &reorder_rules,
@@ -231,7 +230,7 @@ pub fn tile(
             tile_rules.extend(split_map());
             tile_rules.extend(transpose_maps());
             let rs = parse_sketch(&reorder_sketches);
-            reach_sketches::<Lang, (), BigUint>(
+            reach_sketches::<Lang, (), u128>(
                 &format!("tile_{name}"),
                 &start_expr,
                 &tile_rules,
@@ -262,7 +261,7 @@ pub fn tile(
 //     .map(|s| s.parse().unwrap())
 //     .collect();
 
-//     reach_sketches::<Lang, (), BigUint>("reorder_3d", &start, &rules, &sketches, mode)
+//     reach_sketches::<Lang, (), u128>("reorder_3d", &start, &rules, &sketches, mode)
 // }
 
 #[must_use]

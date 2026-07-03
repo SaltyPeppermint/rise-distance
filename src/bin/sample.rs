@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
-use num::BigUint;
 use serde::Serialize;
 use time::OffsetDateTime;
 
@@ -120,7 +119,7 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
     rules: &[Rewrite<L, N>],
     samples_path: &Path,
 ) -> usize {
-    let seeds = read_enriched_terms(&args.path);
+    let seeds = read_enriched_terms::<u128>(&args.path);
     let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
     println!("Seeds to process: {take_n} (of {} total)", seeds.len());
 
@@ -152,7 +151,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     eqsat: &EqsatConfig,
     seed_str: &str,
-    payload: &GoalGenMetadata,
+    payload: &GoalGenMetadata<u128>,
     rules: &[Rewrite<L, N>],
 ) -> Result<SeedSamples<L>, String> {
     let seed_expr = seed_str
@@ -176,7 +175,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
 
     let mut root_log = String::new();
-    let (max_size, pc) = PrecomputePackage::<BigUint, _, _>::backoff_precompute(
+    let (max_size, pc) = PrecomputePackage::<u128, _, _>::backoff_precompute(
         &result,
         args.max_retries,
         args.retry_step,
@@ -221,7 +220,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
 fn draw_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     strategy: Strategy,
-    pc: &PrecomputePackage<BigUint, L, N>,
+    pc: &PrecomputePackage<u128, L, N>,
 ) -> Vec<RecExpr<OriginLang<L>>> {
     match strategy {
         // Replacement is a driver concern (how it re-draws subsets from the

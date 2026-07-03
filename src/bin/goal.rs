@@ -11,7 +11,7 @@ use clap::Parser;
 use egg::{RecExpr, Rewrite};
 use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
-use num::{BigUint, ToPrimitive};
+use num::ToPrimitive;
 use rayon::prelude::*;
 
 use serde::Serialize;
@@ -147,7 +147,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     seed_expr: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     log: &mut String,
-) -> Result<GoalGenMetadata, String> {
+) -> Result<GoalGenMetadata<u128>, String> {
     let Some(result) = eqsat::run_eqsat(seed_expr, rules.iter(), eqsat) else {
         return Err("big eqsat failed".to_owned());
     };
@@ -176,7 +176,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
 
     let now = Instant::now();
 
-    let (used_max_size, pp) = PrecomputePackage::<BigUint, L, _>::backoff_precompute(
+    let (used_max_size, pp) = PrecomputePackage::<u128, L, _>::backoff_precompute(
         &result,
         args.max_retries,
         args.retry_step,
@@ -215,7 +215,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let frontier_histogram = pp
         .root_histogram()
         .iter()
-        .map(|(s, c)| (s.to_string(), c.clone()))
+        .map(|(s, c)| (s.to_string(), *c))
         .collect();
 
     Ok(GoalGenMetadata {
@@ -235,7 +235,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
 /// omitted from the output.
 fn write_enriched_terms(
     folder: &Path,
-    enriched_map: &HashMap<String, Result<GoalGenMetadata, String>>,
+    enriched_map: &HashMap<String, Result<GoalGenMetadata<u128>, String>>,
 ) {
     let in_path = folder.join("terms.json");
     let file = File::open(&in_path)
