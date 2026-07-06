@@ -32,8 +32,8 @@ use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
 Example:
   # Pre-generate goals first:
   goal data/seed_terms/dusky-cramp --goals 10
-  # Then sample the guide menu:
-  sample --take-first 10 data/seed_terms/dusky-cramp
+  # Then sample the guide menu for one seed (driver.py fans these out):
+  sample --seed-index 0 data/seed_terms/dusky-cramp
 "
 )]
 struct Args {
@@ -48,9 +48,12 @@ struct Args {
     #[arg(short, long)]
     output: Option<String>,
 
-    /// Only process the first N seeds (useful for quick experiments).
+    /// Which seed to sample, as a 0-based index into the flattened seed list
+    /// (see `read_enriched_terms` for the ordering). Exactly one seed is
+    /// processed per invocation; `driver.py` fans these out across parallel
+    /// subprocesses, one per seed.
     #[arg(long)]
-    take_first: Option<usize>,
+    seed_index: usize,
 
     /// How many guide candidates to draw per sampling strategy. The menu must be
     /// large enough for the driver to pick its widest `k` and to reshuffle
@@ -121,26 +124,31 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
     samples_path: &Path,
 ) -> usize {
     let seeds = read_enriched_terms::<BigUint>(&args.path);
-    let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
-    println!("Seeds to process: {take_n} (of {} total)", seeds.len());
+    let i = args.seed_index;
+    let (seed_str, payload) = seeds.get(i).unwrap_or_else(|| {
+        panic!(
+            "--seed-index {i} out of range (folder has {} seeds)",
+            seeds.len()
+        )
+    });
+    println!("Processing seed {i} of {} total", seeds.len());
 
     let mut out = Vec::new();
-    for (i, (seed_str, payload)) in seeds.iter().take(take_n).enumerate() {
-        let Ok(ok) = payload else {
-            println!("\n=== Seed {i}: {seed_str} SKIPPED (failed in goal stage) ===");
-            continue;
-        };
-        println!(
-            "\n=== Seed {i}: {seed_str} (max_size={}, guide_iters={}) ===",
-            ok.max_size, ok.guide_egraph.iters
-        );
-        match sample_seed(args, eqsat, seed_str, ok, rules) {
-            Ok(record) => {
-                out.push(record);
-            }
-            Err(e) => println!("ERROR OCCURRED:\n{e}"),
+    match payload {
+        Err(e) => {
+            println!("\n=== Seed {i} : {seed_str} SKIPPED (failed in goal stage with {e}) ===");
         }
-        println!("Finished seed at {}", OffsetDateTime::now_local().unwrap());
+        Ok(ok) => {
+            println!(
+                "\n=== Seed {i}: {seed_str} (max_size={}, guide_iters={}) ===",
+                ok.max_size, ok.guide_egraph.iters
+            );
+            match sample_seed(args, eqsat, seed_str, ok, rules) {
+                Ok(record) => out.push(record),
+                Err(e) => println!("ERROR OCCURRED:\n{e}"),
+            }
+            println!("Finished seed at {}", OffsetDateTime::now_local().unwrap());
+        }
     }
 
     let file = File::create(samples_path).expect("create samples.json");

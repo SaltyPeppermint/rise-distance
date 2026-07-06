@@ -85,21 +85,82 @@ class Args:
     `os.cpu_count()`. Lower it if the large leg egraphs exhaust RAM."""
 
 
-def run_sample(args: Args, sample_out: Path) -> Path:
-    """Invoke `sample` and return the path to its `samples.json`."""
+def count_seeds(args: Args) -> int:
+    """How many seeds to fan out over, honouring the driver's `--take-first`.
+
+    Mirrors `read_enriched_terms` in Rust: `terms.json` is a list of
+    `[size, {seed: payload}]` groups in JSON order, flattened to one entry per
+    seed. The driver decides the range (the `sample` binary now processes one
+    seed per `--seed-index`), so we only need the count here, not the payloads.
+    """
+    groups = json.loads((args.path / "terms.json").read_text())
+    total = sum(len(inner) for _size, inner in groups)
+    if args.take_first is not None:
+        total = min(total, args.take_first)
+    return total
+
+
+def _run_sample_seed(args: Args, seed_index: int, shard_out: Path) -> Path:
+    """Run `sample` for a single seed (`--seed-index`).
+
+    Writes its own `samples.json` into `shard_out` so parallel shards don't
+    collide. Output is captured (not streamed) to keep concurrent logs readable;
+    it is only surfaced on failure.
+    """
     cmd = [
         str(args.sample_binary),
         str(args.path),
         "--output",
-        str(sample_out),
+        str(shard_out),
         "--samples-per-strategy",
         str(args.samples_per_strategy),
+        "--seed-index",
+        str(seed_index),
     ]
-    if args.take_first is not None:
-        cmd += ["--take-first", str(args.take_first)]
-    print(f"Sampling guide menu -> {sample_out}", file=sys.stderr)
-    subprocess.run(cmd, check=True)
-    return sample_out / "samples.json"
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"sample failed (code {proc.returncode}) for seed index {seed_index}:\n"
+            f"{proc.stdout}\n{proc.stderr}"
+        )
+    return shard_out / "samples.json"
+
+
+def run_sample(args: Args, sample_out: Path) -> Path:
+    """Sample the guide menu, one `sample` subprocess per seed, in parallel.
+
+    Fans the per-seed sampling out across a `ThreadPoolExecutor` (the same
+    pattern the pair legs use), then merges each shard's `samples.json` back into
+    a single `samples.json` under `sample_out`, preserving seed order so the
+    output stays deterministic regardless of completion order.
+    """
+    n_seeds = count_seeds(args)
+    sample_out.mkdir(parents=True, exist_ok=True)
+    jobs = args.jobs or os.cpu_count() or 1
+    print(
+        f"Sampling guide menu for {n_seeds} seed(s) -> {sample_out} ({jobs} workers)",
+        file=sys.stderr,
+    )
+
+    # index -> records, filled as shards finish; merged in seed order below.
+    shard_records: dict[int, list] = {}
+    with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
+        futures = {
+            pool_exec.submit(
+                _run_sample_seed, args, i, sample_out / f"seed_{i:04d}"
+            ): i
+            for i in range(n_seeds)
+        }
+        for fut in tqdm(
+            as_completed(futures), total=len(futures), desc="sampling", unit="seed"
+        ):
+            i = futures[fut]
+            shard_records[i] = json.loads(fut.result().read_text())
+
+    merged = [rec for i in range(n_seeds) for rec in shard_records[i]]
+    merged_path = sample_out / "samples.json"
+    merged_path.write_text(json.dumps(merged))
+    return merged_path
 
 
 def pick_subset(pool: list, strategy: str, k: int, rng: random.Random) -> list:
@@ -186,6 +247,7 @@ def run_pair(
         if not guides:
             row["stop_reason"] = "empty_pool"
             rows.append(row)
+            print("EMPTY POOL!!!")
             return rows
         result = run_leg(args, language, goal, guides)
         row["reached"] = result["reached"]
@@ -198,11 +260,15 @@ def run_pair(
         row["panic"] = result.get("panic", False)
         rows.append(row)
         if result["reached"]:
+            print("REACHED!!!")
             return rows
 
     # Used every attempt without reaching: mark the last leg as given up.
     if rows:
+        print("NOT REACHED!")
         rows[-1]["gave_up"] = True
+    else:
+        print("Reached with at least one!")
     return rows
 
 
@@ -236,7 +302,9 @@ def main() -> int:
         out = base / f"run.{max(existing, default=0) + 1}"
     out.mkdir(parents=True, exist_ok=True)
 
+    print("RUNNING SAMPLING")
     samples_path = run_sample(args, out / "sample_run")
+    print("SAMPLING FINISHED")
     seed_records = json.loads(samples_path.read_text())
 
     # Flatten to independent (seed, goal, k) work items. Each item runs its own
@@ -256,6 +324,7 @@ def main() -> int:
 
     jobs = args.jobs or os.cpu_count() or 1
     rows: list[dict] = []
+    print("STARTING PAIRS")
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = [
             pool_exec.submit(run_pair, args, language, k, seed, goal, cand_pool, guide_meta)
