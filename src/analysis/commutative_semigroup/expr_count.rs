@@ -4,7 +4,7 @@ use egg::{Analysis, DidMerge, EGraph, Id, Language};
 use hashbrown::HashMap;
 
 use super::CommutativeSemigroupAnalysis;
-use crate::sampling::Counter;
+use crate::Counter;
 
 #[derive(Debug, Copy, Clone)]
 pub struct ExprCount {

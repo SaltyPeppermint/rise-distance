@@ -13,8 +13,9 @@ use std::fmt::Display;
 
 use egg::{Language, RecExpr, Rewrite};
 
+use crate::Counter;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
-use crate::sampling::{Counter, PrecomputePackage, SampleStrategy, TermSampleDist};
+use crate::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
 use crate::sketch::Sketch;
 use crate::{MyAnalysis, MyLanguage, OriginLang, id0, lower};
 

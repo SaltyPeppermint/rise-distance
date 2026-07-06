@@ -11,8 +11,9 @@ use egg::RecExpr;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::Counter;
 use crate::eqsat::{EqsatConfig, EqsatMetadata};
-use crate::sampling::{Counter, SampleStrategy};
+use crate::sampling::SampleStrategy;
 use crate::{MyLanguage, OriginLang};
 
 /// The six guide-sampling strategies. Sampling variants always draw novel

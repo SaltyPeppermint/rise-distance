@@ -4,16 +4,13 @@ mod weigher;
 // mod zs_min_distance;
 
 use std::fmt::Display;
-use std::iter::{Product, Sum};
 use std::str::FromStr;
 
 use egg::{Id, RecExpr};
 use hashbrown::HashMap;
-use num::traits::{NumAssignRef, NumRef};
-use rand::distributions::uniform::SampleUniform;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 
+use crate::Counter;
 use crate::eqsat::EqsatResult;
 use crate::sampling::count::{
     NodeMatches, NovelTermCount, PlainTermCount, enumerate_matches, probe_novel_root_sizes,
@@ -24,51 +21,6 @@ use crate::{MyAnalysis, MyLanguage, OriginLang};
 // pub use zs_min_distance::ZSDistanceSampler;
 pub use sampler::{NovelSampler, PlainSampler, Sampler};
 pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
-
-pub trait Counter:
-    Clone
-    + Send
-    + Sync
-    + NumRef
-    + NumAssignRef
-    + Default
-    + std::fmt::Debug
-    + Display
-    + SampleUniform
-    + PartialEq
-    + Ord
-    + for<'a> Sum<&'a Self>
-    + TryInto<u64, Error: std::fmt::Debug>
-    + TryFrom<u64, Error: std::fmt::Debug>
-    + TryFrom<usize, Error: std::fmt::Debug>
-    + Serialize
-    + DeserializeOwned
-    + Product // + Weight
-{
-}
-
-impl<
-    T: Clone
-        + Send
-        + Sync
-        + NumRef
-        + NumAssignRef
-        + Default
-        + std::fmt::Debug
-        + Display
-        + SampleUniform
-        + PartialEq
-        + Ord
-        + for<'a> Sum<&'a Self>
-        + TryInto<u64, Error: std::fmt::Debug>
-        + TryFrom<u64, Error: std::fmt::Debug>
-        + TryFrom<usize, Error: std::fmt::Debug>
-        + Serialize
-        + DeserializeOwned
-        + Product, // + Weight,
-> Counter for T
-{
-}
 
 pub struct PrecomputePackage<'a, C, L, N>
 where
@@ -246,7 +198,7 @@ where
             .iter()
             .map(|(a, b)| (*a, b.to_owned()))
             .collect::<Vec<_>>();
-        sorted_hist.sort_unstable();
+        sorted_hist.sort_unstable_by_key(|(size, _)| *size);
         writeln!(out, "Terms in frontier:").unwrap();
         for (k, v) in &sorted_hist {
             writeln!(out, "{v} terms of size {k}").unwrap();

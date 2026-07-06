@@ -1,4 +1,4 @@
-use crate::sampling::Counter;
+use crate::Counter;
 
 pub trait Weigher<C: Counter>: Sync + Send {
     fn node_weight(&self, count: &C) -> C;
