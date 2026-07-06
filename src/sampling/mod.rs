@@ -15,7 +15,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::eqsat::EqsatResult;
-use crate::sampling::count::{NovelTermCount, PlainTermCount};
+use crate::sampling::count::{
+    NodeMatches, NovelTermCount, PlainTermCount, enumerate_matches, probe_novel_root_sizes,
+};
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
 // TODO: reenable zs_min_distance sampler
@@ -92,11 +94,24 @@ where
         result: &'a EqsatResult<L, N>,
         max_size: usize,
     ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let tc = NovelTermCount::new(
+        let matches = enumerate_matches(result.curr(), result.prev());
+        Self::precompute_with_matches(result, max_size, matches)
+    }
+
+    /// [`precompute`](Self::precompute) with the (size-independent) match
+    /// enumeration precomputed by the caller, so repeated runs on the same
+    /// egraph pair don't redo it.
+    fn precompute_with_matches(
+        result: &'a EqsatResult<L, N>,
+        max_size: usize,
+        matches: NodeMatches,
+    ) -> Option<PrecomputePackage<'a, C, L, N>> {
+        let tc = NovelTermCount::with_matches(
             max_size,
             result.curr(),
             result.prev(),
             PlainTermCount::new(max_size, result.curr()),
+            matches,
         );
 
         let root = result.curr().find(result.root());
@@ -111,17 +126,50 @@ where
         })
     }
 
-    /// Like [`precompute`](Self::precompute), but retries with progressively larger `max_size`
-    /// values until it succeeds.
+    /// One exact precompute attempt: succeeds iff the root has at least
+    /// `sizes` distinct novel term sizes, clamping `max_size` to the
+    /// `sizes`-th smallest so we don't sample from too many sizes.
+    fn exact_attempt(
+        result: &'a EqsatResult<L, N>,
+        max_size: usize,
+        matches: &NodeMatches,
+        sizes: usize,
+    ) -> Option<PrecomputePackage<'a, C, L, N>> {
+        let mut pp = Self::precompute_with_matches(result, max_size, matches.clone())?;
+        if pp.root_histogram().keys().len() < sizes {
+            return None;
+        }
+        pp.max_size = **pp
+            .root_histogram()
+            .keys()
+            .collect::<Vec<_>>()
+            .select_nth_unstable(sizes - 1)
+            .1;
+        Some(pp)
+    }
+
+    /// Like [`precompute`](Self::precompute), but searches for the smallest
+    /// `max_size` that yields at least `sizes` distinct novel term sizes at
+    /// the root while running the expensive exact analysis only once.
     ///
-    /// The starting size is the cost of the cheapest term extractable from the root (via
-    /// [`AstSize`]). Each retry increases `max_size` by `step_size`, for up to `max_retries`
-    /// additional attempts (so at most `max_retries + 1` calls to `precompute`).
+    /// The search runs on cheap fingerprint counts (`u64` arithmetic modulo
+    /// the prime `2^61 - 1`) over the same bound schedule the exact loop
+    /// used before (`start_size + i * retry_step` for `i in 0..=max_retries`).
+    /// Once a probe finds `sizes` novel sizes at the root, the exact analysis
+    /// runs a single time with `max_size` set to the `sizes`-th smallest of
+    /// them; that value is also the returned `usize`.
+    ///
+    /// A nonzero fingerprint proves a nonzero exact count, so the probe can
+    /// only err by *missing* a size whose exact count is divisible by
+    /// `2^61 - 1` (probability on the order of `2^-61` per size). The exact
+    /// run is therefore re-verified, and on a mismatch (or if no probe
+    /// succeeds) this falls back to the old exact backoff loop, so the
+    /// result is always exact.
     ///
     /// # Errors
     ///
     /// Errors if every attempt up to and including `max_retries` fails. The error value is
-    /// the largest `max_size` that was tried (`start_size + max_retries * step_size`).
+    /// the largest `max_size` that was tried (`start_size + max_retries * retry_step`).
     pub fn backoff_precompute<W: std::fmt::Write>(
         result: &'a EqsatResult<L, N>,
         start_size: usize,
@@ -130,19 +178,46 @@ where
         sizes: usize,
         log: &mut W,
     ) -> Result<(usize, PrecomputePackage<'a, C, L, N>), usize> {
+        let curr = result.curr();
+        let root = curr.find(result.root());
+        // The match enumeration is independent of `max_size`; compute it once
+        // and share it between all probe and exact runs.
+        let matches = enumerate_matches(curr, result.prev());
+
+        let probed = (0..=max_retries)
+            .map(|i| start_size + i * retry_step)
+            .find_map(|bound| {
+                let novel_sizes = probe_novel_root_sizes(bound, curr, root, &matches);
+                if novel_sizes.len() >= sizes {
+                    Some(novel_sizes[sizes - 1])
+                } else {
+                    writeln!(
+                        log,
+                        "probe found {found} of {sizes} novel sizes (max_size={bound}), retrying",
+                        found = novel_sizes.len()
+                    )
+                    .unwrap();
+                    None
+                }
+            });
+
+        if let Some(max_size) = probed {
+            if let Some(pp) = Self::exact_attempt(result, max_size, &matches, sizes) {
+                return Ok((max_size, pp));
+            }
+            // Only reachable through a fingerprint collision in the probe.
+            writeln!(
+                log,
+                "exact analysis found fewer novel sizes than the probe (max_size={max_size}), falling back"
+            )
+            .unwrap();
+        }
+
+        // Fallback
         (0..=max_retries)
             .map(|i| start_size + i * retry_step)
             .find_map(|size| {
-                if let Some(mut pp) = PrecomputePackage::<C, L, _>::precompute(result, size)
-                    && pp.root_histogram().keys().len() >= sizes
-                {
-                    // Ensure that even if we have too many we dont sample from too many sizes
-                    pp.max_size = **pp
-                        .root_histogram()
-                        .keys()
-                        .collect::<Vec<_>>()
-                        .select_nth_unstable(sizes - 1)
-                        .1;
+                if let Some(pp) = Self::exact_attempt(result, size, &matches, sizes) {
                     Some((size, pp))
                 } else {
                     writeln!(
@@ -434,7 +509,47 @@ impl TermSampleDist {
 
 #[cfg(test)]
 mod tests {
+    use egg::EGraph;
+    use num::BigUint;
+
     use super::*;
+    use crate::langs::math::Math;
+    use crate::test_utils::sym;
+
+    #[test]
+    fn backoff_precompute_runs_exact_analysis_at_kth_novel_size() {
+        // Unioning `a` with the root of (+ a b) creates a cycle: the root
+        // class extracts a, (+ a b), (+ (+ a b) b), ... (sizes 1, 3, 5, ...).
+        // `a` and (+ a b) already exist in prev, so the novel sizes are
+        // 5, 7, 9, ... asking for 3 sizes must yield max_size = 9.
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let apb = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        curr.union(a, apb);
+        curr.rebuild();
+
+        let result = EqsatResult::new_for_tests(prev, curr, apb);
+        let mut log = String::new();
+        let (used_max_size, pp) =
+            PrecomputePackage::<BigUint, _, _>::backoff_precompute(&result, 3, 10, 2, 3, &mut log)
+                .expect("backoff_precompute should succeed");
+
+        assert_eq!(used_max_size, 9, "log:\n{log}");
+        assert_eq!(pp.max_size, 9);
+        assert_eq!(pp.min_size, 5);
+        let mut keys = pp.root_histogram().keys().copied().collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, vec![5, 7, 9]);
+        assert!(
+            pp.root_histogram()
+                .values()
+                .all(|c| *c == BigUint::from(1u32))
+        );
+    }
 
     fn total(v: &[(usize, u64)]) -> u64 {
         v.iter().map(|(_, n)| n).sum()

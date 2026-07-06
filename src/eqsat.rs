@@ -144,6 +144,19 @@ where
     N: Analysis<L> + Clone,
     N::Data: Clone,
 {
+    /// Test-only constructor so downstream code (e.g. sampling) can be
+    /// exercised on hand-built egraph pairs without running eqsat.
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(prev: EGraph<L, N>, curr: EGraph<L, N>, root: Id) -> Self {
+        Self {
+            iter_data: Vec::new(),
+            prev,
+            curr,
+            root,
+            stop_reason: StopReason::Saturated,
+        }
+    }
+
     #[must_use]
     pub fn root(&self) -> Id {
         self.root

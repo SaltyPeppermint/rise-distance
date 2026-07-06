@@ -1,3 +1,4 @@
+mod mod61;
 mod novel;
 mod plain;
 
@@ -8,6 +9,7 @@ use hashbrown::HashMap;
 use crate::sampling::Counter;
 
 pub use novel::{NodeMatch, NovelTermCount};
+pub(crate) use novel::{NodeMatches, enumerate_matches, probe_novel_root_sizes};
 pub use plain::PlainTermCount;
 
 /// Convolve all child histograms into a single result (left-to-right).

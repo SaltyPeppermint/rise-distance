@@ -3,13 +3,13 @@
 //! A term extracted from `curr` is novel iff it is not extractable from any
 //! e-class in `prev`. This module computes:
 //!
-//! - `joint[(c, pc)](s)` — for each (curr-class, prev-class) pair, the number
+//! - `joint[(c, pc)](s)`: for each (curr-class, prev-class) pair, the number
 //!   of size-`s` extractions rooted at curr's `c` that are also extractable
 //!   from prev's `pc`.
-//! - `matches[(c, idx)]` — for each curr e-node, the list of prev matches
+//! - `matches[(c, idx)]`: for each curr e-node, the list of prev matches
 //!   (a prev e-class plus the canonical prev-class ids of the matching prev
 //!   node's children).
-//! - `data[c](s) = plain[c](s) - sum_pc joint[(c, pc)](s)` — the per-class
+//! - `data[c](s) = plain[c](s) - sum_pc joint[(c, pc)](s)`: the per-class
 //!   histogram of novel-reachable extractions.
 //!
 //! Two prev classes cannot share a term (`prev.lookup(t)` is unique once
@@ -19,6 +19,8 @@ use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 
+use super::mod61::Mod61;
+use crate::analysis::commutative_semigroup::{CommutativeSemigroupAnalysis, ExprCount};
 use crate::sampling::Counter;
 use crate::sampling::count::PlainTermCount;
 use crate::utils::UniqueQueue;
@@ -102,7 +104,21 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
         prev: &'g EGraph<L, N>,
         plain: PlainTermCount<C>,
     ) -> Self {
-        let matches = enumerate_matches(curr, prev);
+        Self::with_matches(max_size, curr, prev, plain, enumerate_matches(curr, prev))
+    }
+
+    /// Like [`new`](Self::new), but with the match enumeration precomputed by
+    /// the caller. The matches are independent of `max_size`, so callers that
+    /// run several analyses on the same egraph pair (see
+    /// `PrecomputePackage::backoff_precompute`) can share one enumeration.
+    #[must_use]
+    pub(crate) fn with_matches(
+        max_size: usize,
+        curr: &'g EGraph<L, N>,
+        prev: &'g EGraph<L, N>,
+        plain: PlainTermCount<C>,
+        matches: NodeMatches,
+    ) -> Self {
         let joint = compute_joint(max_size, curr, &matches);
         let cover = build_cover(&joint);
         let data = derive_novel(plain.data(), &joint);
@@ -118,7 +134,7 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
         }
     }
 
-    /// Per-class novel histograms. Keyed by **canonical** curr ids — callers
+    /// Per-class novel histograms. Keyed by **canonical** curr ids. Callers
     /// looking up by an `Id` that hasn't been through `curr.find` may miss.
     #[must_use]
     pub fn data(&self) -> &HashMap<Id, HashMap<usize, C>> {
@@ -194,7 +210,7 @@ fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
 }
 
 // ============================================================================
-// Phase 1 — match enumeration.
+// Phase 1: match enumeration.
 // ============================================================================
 
 /// Enumerate all matches of every curr e-node in `prev`.
@@ -204,7 +220,10 @@ fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
 /// that share a term with `c_i`). For each combo, look up the translated node
 /// in `prev`; if found, record the match and add the discovered prev class to
 /// `cover[curr_class_of_n]`. Iterate until no new matches/cover entries.
-fn enumerate_matches<L: Language, N: Analysis<L>>(
+///
+/// The result is independent of any size limit and can be shared across
+/// several counting runs on the same egraph pair.
+pub(crate) fn enumerate_matches<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     prev: &EGraph<L, N>,
 ) -> NodeMatches {
@@ -281,7 +300,7 @@ fn child_combinations(children: &[Id], cover: &MatchCover) -> Vec<ChildIds> {
 }
 
 // ============================================================================
-// Phase 2 — joint count fixpoint.
+// Phase 2: joint count fixpoint.
 // ============================================================================
 
 /// Compute `joint[(c, pc)]` for every pair appearing in matches, via a
@@ -421,7 +440,61 @@ fn compute_pair_histogram<C: Counter, L: Language, N: Analysis<L>>(
 }
 
 // ============================================================================
-// Phase 3 — derive novel histograms.
+// Fingerprint probe.
+// ============================================================================
+
+/// The sizes (ascending) at which `root` has at least one novel term, up to
+/// `max_size`, computed with cheap fingerprint arithmetic.
+///
+/// Runs the same plain/joint counting pipeline as [`NovelTermCount::new`],
+/// but with [`Mod61`] residues instead of exact big integers, and derives
+/// novelty at the root only. Everything the sampler would need (suffix
+/// caches, per-class novel histograms) is skipped.
+///
+/// The fingerprint is one-sided: a nonzero residue proves a nonzero exact
+/// count, so every reported size really has a novel term. A size can only be
+/// *missed* if its exact novel count is a nonzero multiple of `2^61 - 1`
+/// (probability on the order of `2^-61` per size), so callers must verify
+/// the exact analysis they run afterwards but can expect that verification
+/// to never fail in practice.
+pub(crate) fn probe_novel_root_sizes<L: Language, N: Analysis<L>>(
+    max_size: usize,
+    curr: &EGraph<L, N>,
+    root: Id,
+    matches: &NodeMatches,
+) -> Vec<usize> {
+    let root = curr.find(root);
+    let plain: HashMap<Id, HashMap<usize, Mod61>> =
+        ExprCount::new(max_size).one_shot_analysis(curr);
+    let joint: JointTable<Mod61> = compute_joint(max_size, curr, matches);
+
+    let Some(mut novel) = plain.get(&root).cloned() else {
+        return Vec::new();
+    };
+    // novel[s] = plain[s] - sum_pc joint[(root, pc)][s]. Every joint
+    // extraction is also a plain extraction, so joint sizes always have a
+    // plain entry; a missing key would indicate a bug upstream.
+    for ((c, _), hist) in &joint {
+        if *c == root {
+            for (size, count) in hist {
+                if let Some(n) = novel.get_mut(size) {
+                    *n -= count;
+                }
+            }
+        }
+    }
+
+    let mut sizes = novel
+        .iter()
+        .filter(|&(_, count)| *count != Mod61::ZERO)
+        .map(|(&size, _)| size)
+        .collect::<Vec<_>>();
+    sizes.sort_unstable();
+    sizes
+}
+
+// ============================================================================
+// Phase 3: derive novel histograms.
 // ============================================================================
 
 fn derive_novel<C: Counter>(
@@ -526,6 +599,73 @@ mod tests {
         // (prev had no ln(b)). So novel = 1.
         let root_canon = curr.find(root);
         assert_eq!(novel.data()[&root_canon][&2], BigUint::from(1u32));
+    }
+
+    /// The probe must report, for every class taken as root, exactly the
+    /// sizes present in the exact novel histogram (no fingerprint can
+    /// collide at these tiny counts).
+    fn assert_probe_agrees(curr: &EGraph<Math, ()>, prev: &EGraph<Math, ()>, max_size: usize) {
+        let plain = PlainTermCount::<BigUint>::new(max_size, curr);
+        let novel = NovelTermCount::new(max_size, curr, prev, plain);
+        let matches = enumerate_matches(curr, prev);
+
+        for class in curr.classes() {
+            let mut expected = novel
+                .data()
+                .get(&curr.find(class.id))
+                .map(|hist| hist.keys().copied().collect::<Vec<_>>())
+                .unwrap_or_default();
+            expected.sort_unstable();
+            let probed = probe_novel_root_sizes(max_size, curr, class.id, &matches);
+            assert_eq!(
+                probed, expected,
+                "novel sizes diverge for class {}",
+                class.id
+            );
+        }
+    }
+
+    #[test]
+    fn probe_agrees_with_exact_novel_sizes() {
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let _root = curr.add(Math::Ln(a));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        curr.union(a, b);
+        curr.rebuild();
+
+        assert_probe_agrees(&curr, &prev, 5);
+    }
+
+    #[test]
+    fn probe_agrees_when_nothing_is_novel() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let b = graph.add(sym("b"));
+        graph.union(a, b);
+        graph.rebuild();
+
+        assert_probe_agrees(&graph, &graph, 5);
+    }
+
+    #[test]
+    fn probe_agrees_on_cyclic_graph() {
+        // Unioning the root of (+ a b) with `a` creates a cycle, so novel
+        // terms exist at unboundedly many sizes.
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let apb = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        curr.union(a, apb);
+        curr.rebuild();
+
+        assert_probe_agrees(&curr, &prev, 11);
     }
 
     #[test]
