@@ -42,25 +42,6 @@ SMALLEST_STRATEGIES = ("smallest_novel", "smallest_overall")
 ALL_STRATEGIES = SAMPLING_STRATEGIES + SMALLEST_STRATEGIES
 
 
-def pool_key(strategy: str) -> str:
-    """Map a driver strategy to the candidate-pool key `sample` writes.
-
-    The driver's `SAMPLING_STRATEGIES` encode *two* independent choices: the
-    draw policy (`with_replacement` / `no_replacement`, handled here in Python by
-    `pick_subset`) and the underlying pool (`count` / `naive`). But `sample` only
-    emits two sampling pools, keyed `sample_count` / `sample_naive` (see
-    `Strategy::name` in `src/cli/sample.rs`). Collapse the replacement prefix so
-    the lookup actually finds a pool; `smallest_*` keys pass through unchanged.
-    """
-    if strategy in SMALLEST_STRATEGIES:
-        return strategy
-    if strategy.endswith("_count"):
-        return "sample_count"
-    if strategy.endswith("_naive"):
-        return "sample_naive"
-    return strategy
-
-
 @dataclass
 class Args:
     # I/O
@@ -104,13 +85,28 @@ class Args:
     `os.cpu_count()`. Lower it if the large leg egraphs exhaust RAM."""
 
 
-def count_seeds(args: Args) -> int:
-    """How many seeds to fan out over, honouring the driver's `--take-first`.
+def pool_key(strategy: str) -> str:
+    """Map a driver strategy to the candidate-pool key `sample` writes.
 
-    Mirrors `read_enriched_terms` in Rust: `terms.json` is a list of
-    `[size, {seed: payload}]` groups in JSON order, flattened to one entry per
-    seed. The driver decides the range (the `sample` binary now processes one
-    seed per `--seed-index`), so we only need the count here, not the payloads.
+    The replacement prefix is a Python-side draw policy (`pick_subset`), not a
+    pool: `sample` only emits `sample_count` / `sample_naive`, so collapse the
+    prefix to hit one of those. `smallest_*` keys pass through unchanged.
+    """
+    if strategy in SMALLEST_STRATEGIES:
+        return strategy
+    if strategy.endswith("_count"):
+        return "sample_count"
+    if strategy.endswith("_naive"):
+        return "sample_naive"
+    return strategy
+
+
+def count_seeds(args: Args) -> int:
+    """Count the seeds to fan out over, honouring `--take-first`.
+
+    `terms.json` is a list of `[size, {seed: payload}]` groups; the seed count is
+    the total across all groups. We only need the count, not the payloads, since
+    `sample` processes one seed per `--seed-index`.
     """
     groups = json.loads((args.path / "terms.json").read_text())
     total = sum(len(inner) for _size, inner in groups)
@@ -119,12 +115,11 @@ def count_seeds(args: Args) -> int:
     return total
 
 
-def _run_sample_seed(args: Args, seed_index: int, shard_out: Path) -> Path:
-    """Run `sample` for a single seed (`--seed-index`).
+def run_sample_shard(args: Args, seed_index: int, shard_out: Path) -> Path:
+    """Run `sample` for a single seed, writing `samples.json` into `shard_out`.
 
-    Writes its own `samples.json` into `shard_out` so parallel shards don't
-    collide. Output is captured (not streamed) to keep concurrent logs readable;
-    it is only surfaced on failure.
+    Each shard gets its own directory so parallel runs don't collide. Output is
+    captured rather than streamed, and only surfaced on failure.
     """
     cmd = [
         str(args.sample_binary),
@@ -146,12 +141,11 @@ def _run_sample_seed(args: Args, seed_index: int, shard_out: Path) -> Path:
 
 
 def run_sample(args: Args, sample_out: Path) -> Path:
-    """Sample the guide menu, one `sample` subprocess per seed, in parallel.
+    """Sample the guide menu in parallel, one `sample` subprocess per seed.
 
-    Fans the per-seed sampling out across a `ThreadPoolExecutor` (the same
-    pattern the pair legs use), then merges each shard's `samples.json` back into
-    a single `samples.json` under `sample_out`, preserving seed order so the
-    output stays deterministic regardless of completion order.
+    Merges each shard's `samples.json` into a single `samples.json` under
+    `sample_out`, in seed order so the output is deterministic regardless of
+    completion order.
     """
     n_seeds = count_seeds(args)
     sample_out.mkdir(parents=True, exist_ok=True)
@@ -165,7 +159,7 @@ def run_sample(args: Args, sample_out: Path) -> Path:
     shard_records: dict[int, list] = {}
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = {
-            pool_exec.submit(_run_sample_seed, args, i, sample_out / f"seed_{i:04d}"): i
+            pool_exec.submit(run_sample_shard, args, i, sample_out / f"seed_{i:04d}"): i
             for i in range(n_seeds)
         }
         for fut in tqdm(as_completed(futures), total=len(futures), desc="sampling", unit="seed"):
@@ -234,9 +228,9 @@ def run_pair(
 ) -> list[dict]:
     """Run one seed/goal pair's attempt loop and return its result rows.
 
-    Sequential by design: attempt N+1 only fires if attempt N failed, so the
-    loop early-stops on the first reach. Runs in a worker thread; touches no
-    shared state, and marks its own last row `gave_up` if it used every attempt.
+    Attempts are sequential and early-stop on the first reach. Runs in a worker
+    thread over no shared state; marks its last row `gave_up` if every attempt
+    failed.
     """
     rows: list[dict] = []
     for attempt in range(args.attempts):
