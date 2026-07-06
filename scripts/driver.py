@@ -42,6 +42,25 @@ SMALLEST_STRATEGIES = ("smallest_novel", "smallest_overall")
 ALL_STRATEGIES = SAMPLING_STRATEGIES + SMALLEST_STRATEGIES
 
 
+def pool_key(strategy: str) -> str:
+    """Map a driver strategy to the candidate-pool key `sample` writes.
+
+    The driver's `SAMPLING_STRATEGIES` encode *two* independent choices: the
+    draw policy (`with_replacement` / `no_replacement`, handled here in Python by
+    `pick_subset`) and the underlying pool (`count` / `naive`). But `sample` only
+    emits two sampling pools, keyed `sample_count` / `sample_naive` (see
+    `Strategy::name` in `src/cli/sample.rs`). Collapse the replacement prefix so
+    the lookup actually finds a pool; `smallest_*` keys pass through unchanged.
+    """
+    if strategy in SMALLEST_STRATEGIES:
+        return strategy
+    if strategy.endswith("_count"):
+        return "sample_count"
+    if strategy.endswith("_naive"):
+        return "sample_naive"
+    return strategy
+
+
 @dataclass
 class Args:
     # I/O
@@ -146,14 +165,10 @@ def run_sample(args: Args, sample_out: Path) -> Path:
     shard_records: dict[int, list] = {}
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = {
-            pool_exec.submit(
-                _run_sample_seed, args, i, sample_out / f"seed_{i:04d}"
-            ): i
+            pool_exec.submit(_run_sample_seed, args, i, sample_out / f"seed_{i:04d}"): i
             for i in range(n_seeds)
         }
-        for fut in tqdm(
-            as_completed(futures), total=len(futures), desc="sampling", unit="seed"
-        ):
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="sampling", unit="seed"):
             i = futures[fut]
             shard_records[i] = json.loads(fut.result().read_text())
 
@@ -247,7 +262,6 @@ def run_pair(
         if not guides:
             row["stop_reason"] = "empty_pool"
             rows.append(row)
-            print("EMPTY POOL!!!")
             return rows
         result = run_leg(args, language, goal, guides)
         row["reached"] = result["reached"]
@@ -260,15 +274,11 @@ def run_pair(
         row["panic"] = result.get("panic", False)
         rows.append(row)
         if result["reached"]:
-            print("REACHED!!!")
             return rows
 
     # Used every attempt without reaching: mark the last leg as given up.
     if rows:
-        print("NOT REACHED!")
         rows[-1]["gave_up"] = True
-    else:
-        print("Reached with at least one!")
     return rows
 
 
@@ -312,7 +322,7 @@ def main() -> int:
     # concurrently. Sweeping k per pair reproduces the reach-rate-vs-k curve.
     items = []
     for record in seed_records:
-        pool = record["candidates"].get(args.strategy, [])
+        pool = record["candidates"].get(pool_key(args.strategy), [])
         guide_meta = {
             "guide_nodes": record["guide_nodes"],
             "guide_classes": record["guide_classes"],
