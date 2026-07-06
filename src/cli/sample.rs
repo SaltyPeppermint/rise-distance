@@ -35,7 +35,7 @@ impl Strategy {
     ];
 
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Strategy::Sample(SampleStrategy::Count) => "sample_count",
             Strategy::Sample(SampleStrategy::Naive) => "sample_naive",
@@ -47,7 +47,7 @@ impl Strategy {
     /// Deterministic per-strategy RNG salt so the two `SampleStrategy` variants
     /// don't share a seed within a seed record.
     #[must_use]
-    pub fn seed_of(&self) -> u64 {
+    pub const fn seed_of(&self) -> u64 {
         match self {
             Strategy::Sample(SampleStrategy::Count) => 1,
             Strategy::Sample(SampleStrategy::Naive) => 2,

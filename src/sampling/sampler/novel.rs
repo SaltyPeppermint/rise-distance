@@ -64,7 +64,7 @@ where
     W: Weigher<C>,
 {
     #[must_use]
-    pub fn new(novel: &'a NovelTermCount<'g, C, L, N>, root: Id, weigher: W) -> Self {
+    pub const fn new(novel: &'a NovelTermCount<'g, C, L, N>, root: Id, weigher: W) -> Self {
         Self {
             novel,
             root,
@@ -72,7 +72,7 @@ where
         }
     }
 
-    fn graph(&self) -> &'g EGraph<L, N> {
+    const fn graph(&self) -> &'g EGraph<L, N> {
         self.novel.curr()
     }
 

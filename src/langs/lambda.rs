@@ -28,7 +28,7 @@ define_language! {
 }
 
 impl Lambda {
-    fn num(&self) -> Option<i32> {
+    const fn num(&self) -> Option<i32> {
         match self {
             Lambda::Num(n) => Some(*n),
             _ => None,

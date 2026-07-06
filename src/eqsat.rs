@@ -158,17 +158,17 @@ where
     }
 
     #[must_use]
-    pub fn root(&self) -> Id {
+    pub const fn root(&self) -> Id {
         self.root
     }
 
     #[must_use]
-    pub fn curr(&self) -> &EGraph<L, N> {
+    pub const fn curr(&self) -> &EGraph<L, N> {
         &self.curr
     }
 
     #[must_use]
-    pub fn prev(&self) -> &EGraph<L, N> {
+    pub const fn prev(&self) -> &EGraph<L, N> {
         &self.prev
     }
 
@@ -182,12 +182,12 @@ where
 
     /// Index of the last applied iteration (`iter_data.len() - 1`).
     #[must_use]
-    pub fn iters(&self) -> usize {
+    pub const fn iters(&self) -> usize {
         self.iter_data.len() - 1
     }
 
     #[must_use]
-    pub fn stop_reason(&self) -> &StopReason {
+    pub const fn stop_reason(&self) -> &StopReason {
         &self.stop_reason
     }
 

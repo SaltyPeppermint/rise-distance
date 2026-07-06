@@ -246,7 +246,7 @@ where
     }
 
     #[must_use]
-    pub fn root(&self) -> Id {
+    pub const fn root(&self) -> Id {
         self.root
     }
 

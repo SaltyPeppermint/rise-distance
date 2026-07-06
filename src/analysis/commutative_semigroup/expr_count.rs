@@ -13,7 +13,7 @@ pub struct ExprCount {
 
 impl ExprCount {
     #[must_use]
-    pub fn new(limit: usize) -> Self {
+    pub const fn new(limit: usize) -> Self {
         Self { limit }
     }
 }

@@ -13,15 +13,15 @@ pub struct OriginLang<L: MyLanguage> {
 }
 
 impl<L: MyLanguage> OriginLang<L> {
-    pub fn new(inner: L, origin: Id) -> Self {
+    pub const fn new(inner: L, origin: Id) -> Self {
         Self { inner, origin }
     }
 
-    pub fn inner(&self) -> &L {
+    pub const fn inner(&self) -> &L {
         &self.inner
     }
 
-    pub fn origin(&self) -> Id {
+    pub const fn origin(&self) -> Id {
         self.origin
     }
 }

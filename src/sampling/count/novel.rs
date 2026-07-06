@@ -137,27 +137,27 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
     /// Per-class novel histograms. Keyed by **canonical** curr ids. Callers
     /// looking up by an `Id` that hasn't been through `curr.find` may miss.
     #[must_use]
-    pub fn data(&self) -> &HashMap<Id, HashMap<usize, C>> {
+    pub const fn data(&self) -> &HashMap<Id, HashMap<usize, C>> {
         &self.data
     }
 
     #[must_use]
-    pub fn plain(&self) -> &PlainTermCount<C> {
+    pub const fn plain(&self) -> &PlainTermCount<C> {
         &self.plain
     }
 
     #[must_use]
-    pub fn curr(&self) -> &'g EGraph<L, N> {
+    pub const fn curr(&self) -> &'g EGraph<L, N> {
         self.curr
     }
 
     #[must_use]
-    pub fn prev(&self) -> &'g EGraph<L, N> {
+    pub const fn prev(&self) -> &'g EGraph<L, N> {
         self.prev
     }
 
     #[must_use]
-    pub fn joint(&self) -> &JointTable<C> {
+    pub const fn joint(&self) -> &JointTable<C> {
         &self.joint
     }
 

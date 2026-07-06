@@ -13,7 +13,7 @@ pub(crate) struct ExtractAnalysis<'a, L: Language, CF> {
 }
 
 impl<'a, L: Language, CF> ExtractAnalysis<'a, L, CF> {
-    pub(crate) fn new(exprs: &'a mut ExprHashCons<L>, cost_fn: &'a mut CF) -> Self {
+    pub(crate) const fn new(exprs: &'a mut ExprHashCons<L>, cost_fn: &'a mut CF) -> Self {
         Self { exprs, cost_fn }
     }
 }
@@ -71,7 +71,7 @@ where
     L: Language,
     CF: CostFunction<L>,
 {
-    pub fn new(
+    pub const fn new(
         exprs: &'a mut ExprHashCons<L>,
         cost_fn: &'a mut CF,
         precomputed_any: &'a HashMap<Id, (CF::Cost, usize)>,
@@ -175,7 +175,7 @@ where
     L: Language,
     CF: CostFunction<L>,
 {
-    pub fn new(exprs: &'a mut ExprHashCons<L>, cost_fn: &'a mut CF) -> Self {
+    pub const fn new(exprs: &'a mut ExprHashCons<L>, cost_fn: &'a mut CF) -> Self {
         Self { exprs, cost_fn }
     }
 }

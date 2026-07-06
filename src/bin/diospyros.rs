@@ -173,7 +173,7 @@ fn warn(msg: &str) {
     eprintln!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
 }
 
-fn config(max_iters: usize, max_nodes: usize, timeout: f64) -> EqsatConfig {
+const fn config(max_iters: usize, max_nodes: usize, timeout: f64) -> EqsatConfig {
     EqsatConfig {
         max_iters,
         max_nodes,

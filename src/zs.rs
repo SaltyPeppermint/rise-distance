@@ -62,7 +62,7 @@ pub struct ZSStats {
 }
 
 impl ZSStats {
-    pub(crate) fn size_pruned() -> Self {
+    pub(crate) const fn size_pruned() -> Self {
         Self {
             trees_enumerated: 1,
             size_pruned: 1,
@@ -70,7 +70,7 @@ impl ZSStats {
         }
     }
 
-    pub(crate) fn compared() -> Self {
+    pub(crate) const fn compared() -> Self {
         Self {
             trees_enumerated: 1,
             size_pruned: 0,
@@ -169,7 +169,7 @@ impl<'a, L: Language> PreprocessedTree<'a, L> {
     }
 
     /// Returns the number of nodes in the tree
-    fn size(&self) -> usize {
+    const fn size(&self) -> usize {
         self.nodes.len()
     }
 
@@ -362,12 +362,12 @@ impl<L: Language> FlatTree<L> {
         &self.children
     }
 
-    pub fn label(&self) -> &L {
+    pub const fn label(&self) -> &L {
         &self.label
     }
 
     /// Returns true if this node has no children.
-    pub fn is_leaf(&self) -> bool {
+    pub const fn is_leaf(&self) -> bool {
         self.children.is_empty()
     }
 

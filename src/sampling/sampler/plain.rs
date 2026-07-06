@@ -33,7 +33,7 @@ where
     W: Weigher<C>,
 {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         term_count: &'a PlainTermCount<C>,
         graph: &'b EGraph<L, N>,
         root: Id,
