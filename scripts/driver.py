@@ -70,7 +70,7 @@ class Args:
     """Use the experimental full-union add for the leg egraph."""
 
     # sampling
-    samples_per_strategy: int = 1000
+    samples_per_strategy: int = 10000
     """Menu size per sampling strategy (passed to `sample`)."""
 
     take_first: int | None = None
@@ -172,21 +172,40 @@ def run_sample(args: Args, sample_out: Path) -> Path:
     return merged_path
 
 
-def pick_subset(pool: list, strategy: str, k: int, rng: random.Random) -> list:
-    """Choose this leg's guide subset from a strategy's candidate pool.
+def build_attempt_subsets(
+    pool: list, strategy: str, k: int, attempts: int, rng: random.Random
+) -> list[list]:
+    """Precompute each attempt's guide subset for one seed/goal pair.
 
-    `smallest_*` pools hold a single term (k is forced to 1). `with_replacement_*`
-    draws `k` picks with replacement; the rest without. Returns raw guide node
-    lists ready to embed in a `LegRequest`.
+    Returns a list of `attempts` subsets. The `smallest_*` and `with_replacement_*`
+    strategies draw each attempt independently (a single term, resp. `k` picks with
+    replacement), so their subsets never coordinate.
+
+    For `no_replacement_*` we lay out one flat sequence of `attempts * eff_k` guides
+    by shuffling the whole pool and concatenating full passes, then cutting it into
+    `eff_k`-sized slices, where `eff_k = min(k, len(pool))` keeps each leg
+    duplicate-free even when `k` exceeds the pool. Within a pass the picks are
+    distinct; reuse only happens once a pass boundary is crossed, i.e. exactly when
+    `attempts * eff_k > len(pool)`. Cutting the *assembled* sequence (rather than
+    each pass) guarantees every slice is a full `eff_k`, so no attempt falls below
+    the effective size.
     """
     if strategy in SMALLEST_STRATEGIES:
-        return pool[:1]
+        return [pool[:1] for _ in range(attempts)]
     if not pool:
-        return []
+        return [[] for _ in range(attempts)]
     if strategy.startswith("with_replacement"):
-        return [rng.choice(pool) for _ in range(k)]
-    take = min(k, len(pool))
-    return rng.sample(pool, take)
+        return [[rng.choice(pool) for _ in range(k)] for _ in range(attempts)]
+
+    # no_replacement_*: build a length-(attempts*eff_k) sequence from shuffled passes.
+    eff_k = min(k, len(pool))
+    needed = attempts * eff_k
+    sequence: list = []
+    while len(sequence) < needed:
+        pass_pool = pool[:]
+        rng.shuffle(pass_pool)
+        sequence.extend(pass_pool)
+    return [sequence[a * eff_k : (a + 1) * eff_k] for a in range(attempts)]
 
 
 def run_leg(
@@ -232,10 +251,10 @@ def run_pair(
     thread over no shared state; marks its last row `gave_up` if every attempt
     failed.
     """
+    rng = random.Random(f"{args.seed}:{seed}:{goal}")
+    attempt_subsets = build_attempt_subsets(pool, args.strategy, k, args.attempts, rng)
     rows: list[dict] = []
-    for attempt in range(args.attempts):
-        rng = random.Random(f"{args.seed}:{seed}:{goal}:{attempt}")
-        guides = pick_subset(pool, args.strategy, k, rng)
+    for attempt, guides in enumerate(attempt_subsets):
         row = {
             "seed": seed,
             "goal": goal,
@@ -325,6 +344,28 @@ def main() -> int:
         for goal in record["goals"]:
             for k in k_values:
                 items.append((record["seed"], goal, k, pool, guide_meta))
+
+    # For no_replacement_*, each leg draws eff_k = min(k, pool) distinct guides and
+    # a pair wants attempts*eff_k of them; beyond len(pool) we reshuffle and reuse.
+    # Warn once per distinct (pool size, k) rather than per pair (identical shortfall).
+    if args.strategy in SAMPLING_STRATEGIES and args.strategy.startswith("no_replacement"):
+        combos = {(len(pool), k) for (_seed, _goal, k, pool, _meta) in items}
+        for pool_size, k in sorted(combos):
+            eff_k = min(k, pool_size)
+            if eff_k < k:
+                print(
+                    f"WARNING: k={k} exceeds pool size {pool_size}; capping each leg "
+                    f"to {eff_k} distinct guides.",
+                    file=sys.stderr,
+                )
+            if args.attempts * eff_k > pool_size:
+                print(
+                    f"WARNING: k={eff_k} x attempts={args.attempts} needs "
+                    f"{args.attempts * eff_k} guides but pool has {pool_size}; reshuffling "
+                    f"and reusing candidates across attempts "
+                    f"(excess {args.attempts * eff_k - pool_size}).",
+                    file=sys.stderr,
+                )
 
     jobs = args.jobs or os.cpu_count() or 1
     rows: list[dict] = []
