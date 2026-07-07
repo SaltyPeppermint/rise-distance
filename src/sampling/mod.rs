@@ -386,18 +386,24 @@ impl Distribution {
 pub enum TermSampleDist {
     /// Proportional to the number of terms of that size with a minimum number per size
     Proportional(usize),
+    /// Fill the sample budget greedily from the smallest size upward: take as
+    /// many terms as each size has before moving to the next bigger one, until
+    /// the goal is reached (or every size is exhausted).
+    Greedy,
     /// Delegate to a histogram-free `TermDistribution`
     Statistical(Distribution),
 }
 
 impl TermSampleDist {
     pub const UNIFORM: Self = Self::Statistical(Distribution::Uniform);
+    pub const GREEDY: Self = Self::Greedy;
 }
 
 impl Display for TermSampleDist {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Proportional(min) => write!(f, "proportional:{min}"),
+            Self::Greedy => write!(f, "greedy"),
             Self::Statistical(d) => write!(f, "{d}"),
         }
     }
@@ -416,10 +422,13 @@ impl FromStr for TermSampleDist {
                 .map_err(|e| format!("invalid min_per_size in 'proportional:{rest}': {e}"))?;
             return Ok(Self::Proportional(min));
         }
+        if s == "greedy" {
+            return Ok(Self::Greedy);
+        }
         Distribution::from_str(s)
             .map(Self::Statistical)
             .map_err(|_e| format!(
-                "unknown distribution '{s}': expected 'uniform', 'proportional:<min>', or 'normal:<sigma>'"
+                "unknown distribution '{s}': expected 'uniform', 'greedy', 'proportional:<min>', or 'normal:<sigma>'"
             ))
     }
 }
@@ -443,6 +452,19 @@ impl TermSampleDist {
                     .filter(|s| histogram.contains_key(s))
                     .collect::<Vec<_>>();
                 d.samples_per_size(&sizes, total_samples)
+            }
+            Self::Greedy => {
+                let mut remaining = u64::try_from(total_samples).unwrap();
+                (min_size..=max_size)
+                    .map(|size| {
+                        let available = histogram
+                            .get(&size)
+                            .map_or(0, |count| count.to_owned().try_into().unwrap_or(u64::MAX));
+                        let take = remaining.min(available);
+                        remaining -= take;
+                        (size, take)
+                    })
+                    .collect()
             }
             Self::Proportional(min_per_size) => {
                 let total_terms = (min_size..=max_size)
@@ -618,5 +640,47 @@ mod tests {
     fn normal_single_size() {
         let result = Distribution::Normal(2.6).samples_per_size(&[10], 50);
         assert_eq!(result, vec![(10, 50)]);
+    }
+
+    // --- Greedy ---
+
+    fn hist(pairs: &[(usize, u64)]) -> HashMap<usize, BigUint> {
+        pairs.iter().map(|&(s, c)| (s, BigUint::from(c))).collect()
+    }
+
+    #[test]
+    fn greedy_fills_from_smallest_size() {
+        // sizes 1,2,3 hold 5,5,5 terms; budget 8 => take 5 from size 1, 3 from
+        // size 2, nothing left for size 3.
+        let h = hist(&[(1, 5), (2, 5), (3, 5)]);
+        let result = TermSampleDist::Greedy.samples_per_size(&h, 1, 3, 8);
+        assert_eq!(result, vec![(1, 5), (2, 3), (3, 0)]);
+        assert_eq!(total(&result), 8);
+    }
+
+    #[test]
+    fn greedy_stops_once_budget_is_met() {
+        // The first size alone covers the whole budget.
+        let h = hist(&[(1, 100), (2, 100)]);
+        let result = TermSampleDist::Greedy.samples_per_size(&h, 1, 2, 30);
+        assert_eq!(result, vec![(1, 30), (2, 0)]);
+    }
+
+    #[test]
+    fn greedy_undersupply_takes_all_available() {
+        // Total available (2+3) is below the budget => take everything.
+        let h = hist(&[(1, 2), (2, 3)]);
+        let result = TermSampleDist::Greedy.samples_per_size(&h, 1, 2, 100);
+        assert_eq!(result, vec![(1, 2), (2, 3)]);
+        assert_eq!(total(&result), 5);
+    }
+
+    #[test]
+    fn greedy_skips_absent_sizes() {
+        // Size 2 is not in the histogram; it contributes 0 and is passed over.
+        let h = hist(&[(1, 3), (3, 10)]);
+        let result = TermSampleDist::Greedy.samples_per_size(&h, 1, 3, 8);
+        assert_eq!(result, vec![(1, 3), (2, 0), (3, 5)]);
+        assert_eq!(total(&result), 8);
     }
 }

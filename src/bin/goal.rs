@@ -42,7 +42,7 @@ struct Args {
     goals: usize,
 
     /// How to distribute the sample budget across sizes.
-    #[arg(long, default_value_t = TermSampleDist::UNIFORM)]
+    #[arg(long, default_value_t = TermSampleDist::GREEDY)]
     size_distribution: TermSampleDist,
 
     /// How to sample the GOAL terms.

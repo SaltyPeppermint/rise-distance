@@ -41,7 +41,7 @@ struct Args {
     path: PathBuf,
 
     /// How to distribute the guide sample budget across sizes.
-    #[arg(long, default_value_t = TermSampleDist::UNIFORM)]
+    #[arg(long, default_value_t = TermSampleDist::GREEDY)]
     size_distribution: TermSampleDist,
 
     /// Output folder (generated if omitted).

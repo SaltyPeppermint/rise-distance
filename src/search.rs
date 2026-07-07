@@ -162,7 +162,7 @@ where
 
     let Some(sampled) = pp.sample_frontier_terms(
         args.sample_count,
-        TermSampleDist::UNIFORM,
+        TermSampleDist::GREEDY,
         SampleStrategy::Count,
         [args.cut_iters as u64, 0],
         true,
