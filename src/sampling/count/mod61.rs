@@ -15,9 +15,7 @@
 
 use std::fmt::Display;
 use std::iter::{Product, Sum};
-use std::ops::{
-    Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign,
-};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
 
 use num::traits::{FromPrimitive, Num, One, ToPrimitive, Zero};
 use rand::Rng;
@@ -109,14 +107,6 @@ impl From<u64> for Mod61 {
 impl From<Mod61> for u64 {
     fn from(v: Mod61) -> Self {
         v.0
-    }
-}
-
-impl TryFrom<usize> for Mod61 {
-    type Error = std::num::TryFromIntError;
-
-    fn try_from(v: usize) -> Result<Self, Self::Error> {
-        u64::try_from(v).map(Self::from)
     }
 }
 
@@ -294,11 +284,7 @@ mod tests {
                 let (ma, mb) = (Mod61::from(a), Mod61::from(b));
                 let (a, b) = (u128::from(a), u128::from(b));
                 assert_eq!(u128::from(u64::from(ma + mb)), (a + b) % P128, "add");
-                assert_eq!(
-                    u128::from(u64::from(ma - mb)),
-                    (P128 + a - b) % P128,
-                    "sub"
-                );
+                assert_eq!(u128::from(u64::from(ma - mb)), (P128 + a - b) % P128, "sub");
                 assert_eq!(u128::from(u64::from(ma * mb)), (a * b) % P128, "mul");
             }
         }
