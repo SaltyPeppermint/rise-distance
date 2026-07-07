@@ -459,7 +459,7 @@ impl TermSampleDist {
                     .map(|size| {
                         let available = histogram
                             .get(&size)
-                            .map_or(0, |count| count.to_owned().try_into().unwrap_or(u64::MAX));
+                            .map_or(0, |count| count.to_u64().unwrap_or(u64::MAX));
                         let take = remaining.min(available);
                         remaining -= take;
                         (size, take)
@@ -470,15 +470,15 @@ impl TermSampleDist {
                 let total_terms = (min_size..=max_size)
                     .filter_map(|s| histogram.get(&s))
                     .sum::<C>();
-                let budget = total_samples.try_into().unwrap();
+                let budget = C::from_usize(total_samples).unwrap();
+                let floor = u64::try_from(min_per_size).unwrap();
                 (min_size..=max_size)
                     .map(|size| {
                         let n = histogram.get(&size).map_or(0, |count| {
-                            let c = count.to_owned();
-                            (c * &budget / &total_terms)
-                                .try_into()
+                            (count.clone() * &budget / &total_terms)
+                                .to_u64()
                                 .unwrap_or(u64::MAX)
-                                .max(min_per_size.try_into().unwrap())
+                                .max(floor)
                         });
                         (size, n)
                     })

@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::iter::Sum;
 
-use num::traits::{NumAssignRef, NumRef};
+use num::traits::{FromPrimitive, NumAssignRef, NumRef, ToPrimitive};
 use rand::distributions::uniform::SampleUniform;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -18,9 +18,8 @@ pub trait Counter:
     + SampleUniform
     + PartialOrd
     + for<'a> Sum<&'a Self>
-    + TryInto<u64, Error: std::fmt::Debug>
-    + TryFrom<u64, Error: std::fmt::Debug>
-    + TryFrom<usize, Error: std::fmt::Debug>
+    + ToPrimitive
+    + FromPrimitive
     + Serialize
     + DeserializeOwned
 {
@@ -38,9 +37,8 @@ impl<
         + SampleUniform
         + PartialOrd
         + for<'a> Sum<&'a Self>
-        + TryInto<u64, Error: std::fmt::Debug>
-        + TryFrom<u64, Error: std::fmt::Debug>
-        + TryFrom<usize, Error: std::fmt::Debug>
+        + ToPrimitive
+        + FromPrimitive
         + Serialize
         + DeserializeOwned,
 > Counter for T

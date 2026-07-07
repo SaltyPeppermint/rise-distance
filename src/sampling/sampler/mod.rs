@@ -40,7 +40,7 @@ where
         let Some(count) = self.size_histogram(canon_id).and_then(|h| h.get(&size)) else {
             return false;
         };
-        samples.try_into().is_ok_and(|s: C| count > &s)
+        C::from_u64(samples).is_some_and(|s| count > &s)
     }
 
     /// All sizes for which `id` has at least one extractable term under this
@@ -124,12 +124,7 @@ where
         let available = self
             .size_histogram(self.find(id))
             .and_then(|h| h.get(&size))
-            .map_or(0, |c| {
-                TryInto::<u64>::try_into(c.clone())
-                    .ok()
-                    .and_then(|c| usize::try_from(c).ok())
-                    .unwrap_or(requested)
-            });
+            .map_or(0, |c| c.to_usize().unwrap_or(requested));
         let target = requested.min(available);
         if target == 0 {
             return None;

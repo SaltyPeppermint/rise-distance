@@ -103,7 +103,7 @@ impl<C: Counter> PlainTermCount<C> {
             .unwrap()
             .values()
             .sum::<C>()
-            .try_into()
+            .to_u64()
             .unwrap();
 
         // Build (size, node_index) pairs so rayon can distribute work

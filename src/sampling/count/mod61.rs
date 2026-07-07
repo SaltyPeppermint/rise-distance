@@ -19,7 +19,7 @@ use std::ops::{
     Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign,
 };
 
-use num::traits::{Num, One, Zero};
+use num::traits::{FromPrimitive, Num, One, ToPrimitive, Zero};
 use rand::Rng;
 use rand::distributions::uniform::{SampleBorrow, SampleUniform, UniformInt, UniformSampler};
 use serde::{Deserialize, Serialize};
@@ -117,6 +117,30 @@ impl TryFrom<usize> for Mod61 {
 
     fn try_from(v: usize) -> Result<Self, Self::Error> {
         u64::try_from(v).map(Self::from)
+    }
+}
+
+impl ToPrimitive for Mod61 {
+    /// The residue is always `< P < i64::MAX`, so this never overflows.
+    fn to_i64(&self) -> Option<i64> {
+        i64::try_from(self.0).ok()
+    }
+
+    /// The residue is always `< P`, so it fits in `u64`.
+    fn to_u64(&self) -> Option<u64> {
+        Some(self.0)
+    }
+}
+
+impl FromPrimitive for Mod61 {
+    /// Reduces into the field, mirroring [`From<u64>`].
+    fn from_u64(v: u64) -> Option<Self> {
+        Some(Self::from(v))
+    }
+
+    /// Negative values have no field representation here; reduces otherwise.
+    fn from_i64(v: i64) -> Option<Self> {
+        u64::try_from(v).ok().map(Self::from)
     }
 }
 
