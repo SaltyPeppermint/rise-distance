@@ -203,18 +203,14 @@ def build_attempt_subsets(
 ) -> list[list]:
     """Precompute each attempt's guide subset for one seed/goal pair.
 
-    Returns a list of `attempts` subsets. The `smallest_*` and `with_replacement_*`
-    strategies draw each attempt independently (a single term, resp. `k` picks with
-    replacement), so their subsets never coordinate.
+    `smallest_*` yields a single term per attempt; `with_replacement_*` makes `k`
+    picks with replacement per attempt.
 
-    For `no_replacement_*` we lay out one flat sequence of `attempts * eff_k` guides
-    by shuffling the whole pool and concatenating full passes, then cutting it into
-    `eff_k`-sized slices, where `eff_k = min(k, len(pool))` keeps each leg
-    duplicate-free even when `k` exceeds the pool. Within a pass the picks are
-    distinct; reuse only happens once a pass boundary is crossed, i.e. exactly when
-    `attempts * eff_k > len(pool)`. Cutting the *assembled* sequence (rather than
-    each pass) guarantees every slice is a full `eff_k`, so no attempt falls below
-    the effective size.
+    `no_replacement_*` slices consecutive `eff_k`-sized legs (`eff_k = min(k, pool)`)
+    out of a shuffled pool, so a k's attempts are disjoint until the pool is
+    exhausted (`attempts * eff_k > len(pool)`), where a fresh pass is appended.
+    Cross-k reuse isn't handled here: each k is a separate WorkItem with its own
+    shuffle.
     """
     if strategy in SMALLEST_STRATEGIES:
         return [pool[:1] for _ in range(attempts)]
@@ -223,7 +219,8 @@ def build_attempt_subsets(
     if strategy.startswith("with_replacement"):
         return [[rng.choice(pool) for _ in range(k)] for _ in range(attempts)]
 
-    # no_replacement_*: build a length-(attempts*eff_k) sequence from shuffled passes.
+    # no_replacement_*: partition one (or more) shuffled passes into eff_k slices so
+    # attempts stay disjoint until the pool is exhausted.
     eff_k = min(k, len(pool))
     needed = attempts * eff_k
     sequence: list = []
@@ -367,9 +364,7 @@ def build_work_items(seed_records: list, strategy: str, k_values: list[int]) -> 
 def warn_pool_shortfall(items: list[WorkItem], strategy: str, attempts: int) -> None:
     """Warn once per (pool size, k) when no_replacement_* must cap or reuse.
 
-    Each leg draws eff_k = min(k, pool) distinct guides and a pair wants
-    attempts*eff_k of them; beyond len(pool) we reshuffle and reuse. Dedupe on
-    (pool size, k) since the shortfall is identical across pairs.
+    Deduped on (pool size, k) since the shortfall is identical across pairs.
     """
     if not (strategy in SAMPLING_STRATEGIES and strategy.startswith("no_replacement")):
         return
