@@ -5,6 +5,7 @@ mod weigher;
 
 use std::fmt::Display;
 use std::str::FromStr;
+use std::time::Instant;
 
 use egg::{Id, RecExpr};
 use hashbrown::HashMap;
@@ -136,6 +137,7 @@ where
         // and share it between all probe and exact runs.
         let matches = enumerate_matches(curr, result.prev());
 
+        let start = Instant::now();
         let probed = (0..=max_retries)
             .map(|i| start_size + i * retry_step)
             .find_map(|bound| {
@@ -164,6 +166,11 @@ where
             )
             .unwrap();
         }
+
+        eprintln!(
+            "AHHHHH FALLING BACK TO THE BRUTE FORCE WAY AFTER {} SECONDS",
+            start.elapsed().as_secs_f64()
+        );
 
         // Fallback
         (0..=max_retries)

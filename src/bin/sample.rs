@@ -246,7 +246,14 @@ fn draw_candidates<L: MyLanguage, N: MyAnalysis<L>>(
                 [args.samples_per_strategy as u64, strategy.seed_of()],
                 true,
             )
-            .unwrap_or_default(),
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "WARNING: strategy {} drew 0 candidates (empty novel frontier); \
+                     driver legs for this strategy will have no guides to pick from",
+                    strategy.name()
+                );
+                Vec::new()
+            }),
         Strategy::Smallest { novel } => vec![pc.smallest(pc.root(), novel)],
     }
 }

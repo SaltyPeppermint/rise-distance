@@ -253,4 +253,54 @@ mod tests {
 
         assert!(result.len() <= 6);
     }
+
+    #[test]
+    fn sample_batch_returns_partial_when_size_undersupplied() {
+        // Root Add([a-class, b-class]) has 2 * 3 = 6 distinct terms of size 3.
+        // Asking for far more than that must return the 6 that exist rather
+        // than collapsing the whole batch to None (the empty-pool bug).
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a1 = graph.add(sym("a1"));
+        let a2 = graph.add(sym("a2"));
+        graph.union(a1, a2);
+        let b1 = graph.add(sym("b1"));
+        let b2 = graph.add(sym("b2"));
+        let b3 = graph.add(sym("b3"));
+        graph.union(b1, b2);
+        graph.union(b1, b3);
+        let root = graph.add(Math::Add([a1, b1]));
+        graph.rebuild();
+
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
+
+        let result = sampler
+            .sample_batch_root(&[(3, 1000)], [1, 2])
+            .expect("undersupplied size should still yield its available terms");
+        assert_eq!(result.len(), 6, "should return exactly the 6 distinct terms");
+    }
+
+    #[test]
+    fn sample_batch_none_only_when_all_sizes_empty() {
+        // Root Ln(a) has exactly one term of size 2 and nothing at size 5.
+        // A batch mixing a satisfiable size with an empty one keeps the
+        // satisfiable one; a batch of only empty sizes returns None.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(sym("a"));
+        let root = graph.add(Math::Ln(a));
+        graph.rebuild();
+
+        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
+
+        let mixed = sampler
+            .sample_batch_root(&[(2, 5), (5, 5)], [1, 2])
+            .expect("a non-empty size keeps the batch alive");
+        assert_eq!(mixed.len(), 1);
+
+        assert!(
+            sampler.sample_batch_root(&[(5, 5)], [1, 2]).is_none(),
+            "a wholly empty frontier still returns None"
+        );
+    }
 }
