@@ -90,18 +90,27 @@ def plot_metric_boxplots(
     palette: Sequence[Any],
     n_goals: int | None = None,
     n_trials: int | None = None,
+    group_col: str = "strategy",
 ) -> None:
     n_k = len(k_values)
     n_cols = min(3, n_k)
     n_rows = math.ceil(n_k / n_cols)
+    # constrained layout (not tight_layout below): tight_layout produces a NaN
+    # axis geometry on this grid (sharey + deleted subplots + large-magnitude
+    # ticks, mpl 3.11), which then crashes savefig.
     fig, axes = plt.subplots(
-        n_rows, n_cols, figsize=(4 * n_cols, 5 * n_rows), squeeze=False, sharey=True
+        n_rows,
+        n_cols,
+        figsize=(4 * n_cols, 5 * n_rows),
+        squeeze=False,
+        sharey=True,
+        layout="constrained",
     )
     for ki, k in enumerate(k_values):
         ax = axes[ki // n_cols][ki % n_cols]
         box_data, tick_labels, colors = [], [], []
         for i, strat in enumerate(strat_names):
-            vals = df.filter((pl.col("k") == k) & (pl.col("strategy") == strat))[
+            vals = df.filter((pl.col("k") == k) & (pl.col(group_col) == strat))[
                 metric
             ].drop_nulls()
             if len(vals) > 0:
@@ -118,13 +127,15 @@ def plot_metric_boxplots(
         ax.set_title(f"k = {k}")
         ax.set_xticklabels(tick_labels, rotation=45, ha="right")
         ax.set_ylabel(ylabel if ki % n_cols == 0 else "")
+    # Remove (not just hide) unused slots so the shared-y layout ignores them.
     for ki in range(n_k, n_rows * n_cols):
-        axes[ki // n_cols][ki % n_cols].set_visible(False)
+        fig.delaxes(axes[ki // n_cols][ki % n_cols])
     finish_fig(
         fig,
         f"{ylabel} by strategy at each k",
         label,
         fontsize=13,
+        tight_layout=False,
         n_goals=n_goals,
         n_trials=n_trials,
     )

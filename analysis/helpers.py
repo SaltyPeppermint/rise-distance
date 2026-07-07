@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -161,6 +162,44 @@ def load_driver_run(run_dir: Path, adjust_guide_overhead: bool = True) -> pl.Dat
         .otherwise(None)
         .alias("total_time"),
     )
+
+
+def load_baseline(run_dir: Path) -> dict[str, float]:
+    """Load the unguided full-eqsat baseline for a `driver.py` run.
+
+    The run's `config.json` points (via `path`) at the seed-terms folder, whose
+    `terms.json` carries a per-seed `goal_egraph` block — the full eqsat on the
+    seed with no guides. We average those metrics over the successfully-measured
+    seeds (`Ok` payloads; `Err` seeds are skipped), mirroring the old
+    `metadata.json` baseline.
+
+    Returns a dict with keys: nodes, total_time, iters, classes, nodes_per_class.
+    """
+    config = json.loads((run_dir / "config.json").read_text())
+    # config's `path` is repo-relative; resolve it against the repo root (the
+    # parent of this file's `analysis/` directory).
+    repo_root = Path(__file__).parent / ".."
+    terms = json.loads((repo_root / config["path"] / "terms.json").read_text())
+
+    egraphs = [
+        payload["Ok"]["goal_egraph"]
+        for _size, inner in terms
+        for payload in inner.values()
+        if "Ok" in payload
+    ]
+    if not egraphs:
+        raise ValueError(f"No Ok seeds with a goal_egraph baseline in {config['path']}")
+
+    n = len(egraphs)
+    node_avg = sum(e["nodes"] for e in egraphs) / n
+    classes_avg = sum(e["classes"] for e in egraphs) / n
+    return {
+        "nodes": node_avg,
+        "total_time": sum(e["time"] for e in egraphs) / n,
+        "iters": sum(e["iters"] for e in egraphs) / n,
+        "classes": classes_avg,
+        "nodes_per_class": node_avg / classes_avg,
+    }
 
 
 def compute_goal_reach(df: pl.DataFrame) -> pl.DataFrame:
