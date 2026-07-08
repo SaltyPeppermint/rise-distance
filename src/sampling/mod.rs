@@ -63,7 +63,7 @@ where
             max_size,
             result.curr(),
             result.prev(),
-            PlainTermCount::new(max_size, result.curr()),
+            PlainTermCount::rooted(max_size, result.curr(), &[result.root()]),
             matches,
         );
 

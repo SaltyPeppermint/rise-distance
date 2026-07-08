@@ -20,9 +20,8 @@ use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 
 use super::mod61::Mod61;
-use crate::analysis::commutative_semigroup::{CommutativeSemigroupAnalysis, ExprCount};
 use crate::sampling::Counter;
-use crate::sampling::count::PlainTermCount;
+use crate::sampling::count::{PlainTermCount, count_terms};
 use crate::utils::UniqueQueue;
 
 /// Inline-allocated list of child class ids. Sized for the typical e-node
@@ -304,7 +303,7 @@ fn child_combinations(children: &[Id], cover: &MatchCover) -> Vec<ChildIds> {
 // ============================================================================
 
 /// Compute `joint[(c, pc)]` for every pair appearing in matches, via a
-/// bottom-up fixpoint similar to `PlainTermCount::new`.
+/// bottom-up worklist fixpoint over `(curr_class, prev_class)` pairs.
 fn compute_joint<C: Counter, L: Language, N: Analysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,
@@ -447,9 +446,10 @@ fn compute_pair_histogram<C: Counter, L: Language, N: Analysis<L>>(
 /// `max_size`, computed with cheap fingerprint arithmetic.
 ///
 /// Runs the same plain/joint counting pipeline as [`NovelTermCount::new`],
-/// but with [`Mod61`] residues instead of exact big integers, and derives
-/// novelty at the root only. Everything the sampler would need (suffix
-/// caches, per-class novel histograms) is skipped.
+/// but with [`Mod61`] residues instead of exact big integers, with the plain
+/// counts restricted to what `root` can reach, and deriving novelty at the
+/// root only. Everything the sampler would need (suffix caches, per-class
+/// novel histograms) is skipped.
 ///
 /// The fingerprint is one-sided: a nonzero residue proves a nonzero exact
 /// count, so every reported size really has a novel term. A size can only be
@@ -465,7 +465,7 @@ pub(crate) fn probe_novel_root_sizes<L: Language, N: Analysis<L>>(
 ) -> Vec<usize> {
     let root = curr.find(root);
     let plain: HashMap<Id, HashMap<usize, Mod61>> =
-        ExprCount::new(max_size).one_shot_analysis(curr);
+        count_terms(max_size, curr, Some(&[root])).data;
     let joint: JointTable<Mod61> = compute_joint(max_size, curr, matches);
 
     let Some(mut novel) = plain.get(&root).cloned() else {

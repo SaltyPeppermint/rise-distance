@@ -56,11 +56,14 @@ where
     /// under this sampler's constraints. Returned order is unspecified.
     fn enumerate_size(&self, id: Id, size: usize) -> Vec<RecExpr<OriginLang<L>>>;
 
+    /// Smallest size with at least one extractable term.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the class has no extractable terms under this sampler's
+    /// constraints.
     fn min_size(&self, id: Id) -> usize {
-        (0..)
-            .into_iter()
-            .find(|size| self.possible_size(id, *size, 1))
-            .unwrap()
+        self.term_sizes(id).into_iter().min().unwrap()
     }
 
     /// Returns a random (but stable) smallest term

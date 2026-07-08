@@ -9,10 +9,7 @@ use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressBar};
 use rayon::prelude::*;
 
-// use crate::graph::{Class, Graph};
-// use crate::ids::{EClassId, ExprChildId};
-use crate::analysis::commutative_semigroup::{CommutativeSemigroupAnalysis, ExprCount};
-use crate::sampling::count::{Counter, suffix_convolutions};
+use crate::sampling::count::{CountData, Counter, count_terms};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// Map from e-class ID to a map of (size -> count) (histogram).
@@ -21,50 +18,44 @@ pub struct PlainTermCount<C: Counter> {
     data: HashMap<Id, HashMap<usize, C>>,
     /// Per e-class, per node index: precomputed suffix convolution tables.
     /// `suffix_cache[eclass][node_idx][i]` = convolution of children `i..n`,
-    /// mapping budget -> count. Computed once at max budget (`max_size - 1`).
+    /// mapping budget -> count.
     suffix_cache: HashMap<Id, Vec<Vec<HashMap<usize, C>>>>,
 }
 
 impl<C: Counter> PlainTermCount<C> {
-    /// Run the term counting analysis on an e-graph.
+    /// Run the term counting analysis on an e-graph, counting every class.
     ///
     /// # Arguments
     /// * `max_size` - Maximum term size to count
     #[must_use]
-    pub fn new<L, N>(max_size: usize, graph: &EGraph<L, N>) -> PlainTermCount<C>
+    pub fn new<L, N>(max_size: usize, graph: &EGraph<L, N>) -> Self
     where
-        L: Language + Sync,
-        L::Discriminant: Sync,
-        N: Analysis<L> + Sync,
-        N::Data: Sync,
+        L: Language,
+        N: Analysis<L>,
     {
-        // The per-class (size -> count) histogram is exactly the `ExprCount`
-        // commutative-semigroup analysis with `limit = max_size`. Delegate the
-        // counting fixpoint to it; everything below (suffix cache, enumeration)
-        // is a consumer of `data`.
-        let data = ExprCount::new(max_size).one_shot_analysis(graph);
+        Self::from_counts(count_terms(max_size, graph, None))
+    }
 
-        let max_budget = max_size.saturating_sub(1);
-        // Build suffix convolution tables for all e-classes at the maximum budget.
-        let suffix_cache = data
-            .par_iter()
-            .map(|(&id, _)| {
-                let nodes = &graph[id].nodes;
-                let per_node = nodes
-                    .iter()
-                    .map(|n| {
-                        let histograms = n
-                            .children()
-                            .iter()
-                            .map(|&c_id| data.get(&graph.find(c_id)).cloned().unwrap_or_default())
-                            .collect::<Vec<_>>();
-                        suffix_convolutions(&histograms, max_budget)
-                    })
-                    .collect();
-                (id, per_node)
-            })
-            .collect();
-        PlainTermCount { data, suffix_cache }
+    /// Like [`new`](Self::new), but restricted to what extractions of size
+    /// <= `max_size` from `roots` can reach: classes unreachable from the
+    /// roots are absent, and every other class's histogram is capped at the
+    /// largest subterm size it can take in such an extraction. Root-driven
+    /// sampling, enumeration and histogram queries behave exactly as with
+    /// [`new`]; direct queries against deeper classes see the capped data.
+    #[must_use]
+    pub fn rooted<L, N>(max_size: usize, graph: &EGraph<L, N>, roots: &[Id]) -> Self
+    where
+        L: Language,
+        N: Analysis<L>,
+    {
+        Self::from_counts(count_terms(max_size, graph, Some(roots)))
+    }
+
+    fn from_counts(counts: CountData<C>) -> Self {
+        Self {
+            data: counts.data,
+            suffix_cache: counts.suffix,
+        }
     }
 
     /// Get the histogram for a child (size -> count). `None` means the child
@@ -97,26 +88,18 @@ impl<C: Counter> PlainTermCount<C> {
         progress: Option<ProgressBar>,
     ) -> Vec<RecExpr<OriginLang<L>>> {
         let canon_id = graph.find(id);
-        let sum = self
-            .data
-            .get(&canon_id)
-            .unwrap()
-            .values()
-            .sum::<C>()
-            .to_u64()
-            .unwrap();
-
-        // Build (size, node_index) pairs so rayon can distribute work
-        // across both sizes and nodes, not just sizes.
         let Some(histogram) = self.data.get(&canon_id) else {
             return Vec::new();
         };
+        let sum = histogram.values().sum::<C>().to_u64().unwrap();
         let eclass = &graph[canon_id];
         let nodes = &eclass.nodes;
         // let type_overhead = self.type_overhead(&canon_id);
 
         let cache = DashMap::new();
 
+        // Build (size, node_index) pairs so rayon can distribute work
+        // across both sizes and nodes, not just sizes.
         let work = (0..=max_size)
             .filter(|size| histogram.contains_key(size))
             .filter_map(|size| size.checked_sub(1)) //+ type_overhead))
