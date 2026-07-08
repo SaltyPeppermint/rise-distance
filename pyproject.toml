@@ -13,8 +13,6 @@ dependencies = [
     "accelerate",
     "tensorboard",
     "tqdm",
-    "flash-linear-attention",
-    "torch-tb-profiler",
     "diceware",
     "tyro",
     # "causal-conv1d",
@@ -26,7 +24,7 @@ dev = ["pre-commit>=4.5.1", "nbstripout>=0.9.1"]
 
 [[tool.uv.index]]
 name = "pytorch"
-url = "https://download.pytorch.org/whl/cu130"
+url = "https://download.pytorch.org/whl/cu132"
 # default = true
 
 [tool.ruff]
