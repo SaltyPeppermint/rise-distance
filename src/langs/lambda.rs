@@ -211,6 +211,9 @@ impl Applier<Lambda, LambdaAnalysis> for CaptureAvoid {
 mod tests {
     use super::*;
 
+    #[expect(unused_imports)]
+    use egg::Runner;
+
     egg::test_fn! {
         lambda_under, rules(),
         "(lam x (+ 4
