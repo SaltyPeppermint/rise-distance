@@ -129,6 +129,7 @@ where
         max_retries: usize,
         retry_step: usize,
         sizes: usize,
+        fallback: bool,
         log: &mut W,
     ) -> Result<(usize, PrecomputePackage<'a, C, L, N>), usize> {
         let curr = result.curr();
@@ -162,32 +163,38 @@ where
             // Only reachable through a fingerprint collision in the probe.
             writeln!(
                 log,
-                "exact analysis found fewer novel sizes than the probe (max_size={max_size}), falling back"
+                "exact analysis found fewer novel sizes than the probe (max_size={max_size})"
             )
             .unwrap();
         }
 
         eprintln!(
-            "AHHHHH FALLING BACK TO THE BRUTE FORCE WAY AFTER {} SECONDS",
+            "AFTER {} SECONDS NOTHIGN FOUND WITH CHEAP METHOD",
             start.elapsed().as_secs_f64()
         );
 
         // Fallback
-        (0..=max_retries)
-            .map(|i| start_size + i * retry_step)
-            .find_map(|size| {
-                if let Some(pp) = Self::exact_attempt(result, size, &matches, sizes) {
-                    Some((size, pp))
-                } else {
-                    writeln!(
-                        log,
-                        "goal precompute returned None (max_size={size}), retrying"
-                    )
-                    .unwrap();
-                    None
-                }
-            })
-            .ok_or(start_size + max_retries * retry_step)
+        if fallback {
+            eprintln!("Running expensive fallback");
+            (0..=max_retries)
+                .map(|i| start_size + i * retry_step)
+                .find_map(|size| {
+                    if let Some(pp) = Self::exact_attempt(result, size, &matches, sizes) {
+                        Some((size, pp))
+                    } else {
+                        writeln!(
+                            log,
+                            "goal precompute returned None (max_size={size}), retrying"
+                        )
+                        .unwrap();
+                        None
+                    }
+                })
+                .ok_or(start_size + max_retries * retry_step)
+        } else {
+            eprintln!("Fallback disabled");
+            Err(start_size + max_retries * retry_step)
+        }
     }
 
     /// Log the stats about the root into `out`.
@@ -515,9 +522,10 @@ mod tests {
 
         let result = EqsatResult::new_for_tests(prev, curr, apb);
         let mut log = String::new();
-        let (used_max_size, pp) =
-            PrecomputePackage::<BigUint, _, _>::backoff_precompute(&result, 3, 10, 2, 3, &mut log)
-                .expect("backoff_precompute should succeed");
+        let (used_max_size, pp) = PrecomputePackage::<BigUint, _, _>::backoff_precompute(
+            &result, 3, 10, 2, 3, false, &mut log,
+        )
+        .expect("backoff_precompute should succeed");
 
         assert_eq!(used_max_size, 9, "log:\n{log}");
         assert_eq!(pp.max_size, 9);
