@@ -2,12 +2,9 @@
 //!
 //! Counts the number of terms up to a given size that can be extracted from each e-class.
 
-use dashmap::DashMap;
-use egg::{Analysis, EGraph, Id};
-use egg::{Language, RecExpr};
+use egg::{Analysis, EGraph, Id, Language, RecExpr};
 use hashbrown::HashMap;
-use indicatif::{ParallelProgressIterator, ProgressBar};
-use rayon::prelude::*;
+use indicatif::{ProgressBar, ProgressIterator};
 
 use crate::sampling::count::{CountData, Counter, count_terms};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
@@ -92,30 +89,10 @@ impl<C: Counter> PlainTermCount<C> {
             return Vec::new();
         };
         let sum = histogram.values().sum::<C>().to_u64().unwrap();
-        let eclass = &graph[canon_id];
-        let nodes = &eclass.nodes;
-        // let type_overhead = self.type_overhead(&canon_id);
 
-        let cache = DashMap::new();
-
-        // Build (size, node_index) pairs so rayon can distribute work
-        // across both sizes and nodes, not just sizes.
-        let work = (0..=max_size)
-            .filter(|size| histogram.contains_key(size))
-            .filter_map(|size| size.checked_sub(1)) //+ type_overhead))
-            .flat_map(|budget| (0..nodes.len()).map(move |ni| (budget, ni)))
-            .collect::<Vec<_>>();
-
-        let iter = work.into_par_iter().flat_map(|(child_budget, ni)| {
-            let node = &nodes[ni];
-            let children = node.children();
-
-            self.enumerate_children(graph, children, child_budget, &cache)
-                .par_bridge()
-                .map(|child_combination| {
-                    stack_children(&child_combination, OriginLang::new(node.clone(), canon_id))
-                })
-        });
+        let mut cache = HashMap::new();
+        let iter = (1..=max_size)
+            .flat_map(|size| self.enumerate_class_inner(graph, canon_id, size, &mut cache));
 
         if let Some(pb) = progress {
             pb.set_length(sum);
@@ -135,8 +112,8 @@ impl<C: Counter> PlainTermCount<C> {
         id: Id,
         size: usize,
     ) -> Vec<RecExpr<OriginLang<L>>> {
-        let cache = DashMap::new();
-        self.enumerate_class_cached(graph, id, size, &cache)
+        let mut cache = HashMap::new();
+        self.enumerate_class_cached(graph, id, size, &mut cache)
     }
 
     /// Enumerate all terms of exactly `size` from an e-class, using a shared cache.
@@ -145,7 +122,7 @@ impl<C: Counter> PlainTermCount<C> {
         graph: &EGraph<L, N>,
         id: Id,
         size: usize,
-        cache: &DashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
+        cache: &mut HashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
     ) -> Vec<RecExpr<OriginLang<L>>> {
         let canon_id = graph.find(id);
         let key = (canon_id, size);
@@ -166,7 +143,7 @@ impl<C: Counter> PlainTermCount<C> {
         graph: &EGraph<L, N>,
         canon_id: Id,
         size: usize,
-        cache: &DashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
+        cache: &mut HashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
     ) -> Vec<RecExpr<OriginLang<L>>> {
         // Check if this class has any terms at this size
         let Some(histogram) = self.data.get(&canon_id) else {
@@ -210,8 +187,8 @@ impl<C: Counter> PlainTermCount<C> {
         graph: &EGraph<L, N>,
         children: &[Id],
         budget: usize,
-        cache: &DashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
-    ) -> impl Iterator<Item = Vec<RecExpr<OriginLang<L>>>> {
+        cache: &mut HashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
+    ) -> impl Iterator<Item = Vec<RecExpr<OriginLang<L>>>> + use<C, L, N> {
         // Accumulate via left-fold: start with the empty tuple at budget=`budget`,
         // then for each child, expand every (remaining_budget, partial_combo) by
         // enumerating that child at each feasible size.
@@ -242,7 +219,7 @@ impl<C: Counter> PlainTermCount<C> {
         child_id: Id,
         remaining: usize,
         partial: &[RecExpr<OriginLang<L>>],
-        cache: &DashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
+        cache: &mut HashMap<(Id, usize), Vec<RecExpr<OriginLang<L>>>>,
     ) -> Vec<(usize, Vec<RecExpr<OriginLang<L>>>)> {
         let canonical_child = graph.find(child_id);
         let Some(child_histogram) = self.data.get(&canonical_child) else {

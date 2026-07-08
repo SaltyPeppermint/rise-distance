@@ -10,7 +10,6 @@ crate-type = ["rlib"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-dashmap = "6"
 egg = { version = "0.11", features = ["serde-1", "lp"] }
 foldhash = "0.2"
 hashbrown = { version = "0.17", features = ["rayon", "serde"] }
