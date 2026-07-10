@@ -72,27 +72,27 @@ impl EqsatConfig {
         if self == other {
             return;
         }
-        println!("WARNING: args.json differs from the config goal recorded:");
+        eprintln!("WARNING: args.json differs from the config goal recorded:");
         if self.max_iters != other.max_iters {
-            println!(
+            eprintln!(
                 "  max_iters: this={} other={}",
                 self.max_iters, other.max_iters
             );
         }
         if self.max_nodes != other.max_nodes {
-            println!(
+            eprintln!(
                 "  max_nodes: this={} other={}",
                 self.max_nodes, other.max_nodes
             );
         }
         if self.max_time != other.max_time {
-            println!(
+            eprintln!(
                 "  max_time: this={} other={}",
                 self.max_time, other.max_time
             );
         }
         if self.backoff_scheduler != other.backoff_scheduler {
-            println!(
+            eprintln!(
                 "  backoff_scheduler: this={} other={}",
                 self.backoff_scheduler, other.backoff_scheduler
             );
@@ -340,7 +340,7 @@ where
     };
 
     let Some(mut prev) = prev else {
-        println!("Egraph never produced a distinct earlier state");
+        eprintln!("Egraph never produced a distinct earlier state");
         return None;
     };
 
@@ -450,7 +450,7 @@ where
 
     let Ok(mut r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules)))
     else {
-        println!("Panic caught verify_reachability for guides: {guides:?}");
+        eprintln!("Panic caught verify_reachability for guides: {guides:?}");
         return Err(GuideError::PanicWhileAttempt);
     };
     // let runner = runner.run(rules);

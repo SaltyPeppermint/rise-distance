@@ -256,7 +256,16 @@ def run_leg(
         raise RuntimeError(
             f"verify failed (code {proc.returncode}) for goal {goal!r}:\n{proc.stderr}"
         )
-    return json.loads(proc.stdout)
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as e:
+        # verify exited 0 but stdout wasn't the expected JSON, e.g. a stray
+        # diagnostic leaked onto the JSON channel. Surface stdout/stderr so the
+        # protocol violation is diagnosable instead of a bare decode error.
+        raise RuntimeError(
+            f"verify returned non-JSON stdout for goal {goal!r}: {e}\n"
+            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+        ) from e
 
 
 def make_row(item: WorkItem, strategy: str, attempt: int, guides: list) -> dict:
