@@ -9,7 +9,8 @@ The relevant code lives in:
 
 - [src/sampling/count/layered.rs](../src/sampling/count/layered.rs) — `count_terms`, `class_budgets`.
 - [src/sampling/count/plain.rs](../src/sampling/count/plain.rs) — `PlainTermCount::{new, rooted}`.
-- [src/sampling/count/novel.rs](../src/sampling/count/novel.rs) — the root-restricted `Mod61` probe.
+- [src/sampling/count/novel.rs](../src/sampling/count/novel.rs) — the exact,
+  root-restricted novel-size scan.
 - [src/analysis/semilattice/ast_size.rs](../src/analysis/semilattice/ast_size.rs) — the min-size analysis the budget pass reuses.
 
 ---
@@ -178,15 +179,11 @@ the graph a root cannot reach.
   already). The suffix cache is likewise trimmed to classes with terms.
 - `PrecomputePackage` builds its plain count with
   `PlainTermCount::rooted(max_size, curr, &[root])`, and
-  `probe_novel_root_sizes` runs its `Mod61` plain pass root-restricted as
-  well — the probe inside `backoff_precompute` gets the same speedup.
+  `find_novel_root_sizes` runs its exact plain pass root-restricted as well —
+  the scan inside `backoff_precompute` gets the same speedup.
   (`compute_joint` has since been stratified by size too, on the same
   generic `LayeredDp` kernel; see
   [incremental_probe.md](incremental_probe.md).)
-- For `Mod61`, entries whose *residue* is zero are now dropped eagerly
-  instead of at the end. Downstream products with them were `0 mod p`
-  anyway, so residues are unchanged; a dropped size is exactly the
-  documented one-sided fingerprint miss.
 - `Sampler::min_size` returned the smallest size with *more than one* term
   (`possible_size(id, size, 1)`) and spun forever when no size had two; it
   now returns the smallest size with any term, matching its docstring and

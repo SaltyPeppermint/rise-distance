@@ -17,9 +17,9 @@
 
 use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::{HashMap, HashSet};
+use num::BigUint;
 use smallvec::SmallVec;
 
-use super::mod61::Mod61;
 use crate::Counter;
 use crate::sampling::count::{LayeredDp, PlainTermCount, plain_dp};
 
@@ -336,30 +336,20 @@ fn joint_children_of<L: Language, N: Analysis<L>>(
 }
 
 // ============================================================================
-// Fingerprint probe.
+// Exact root-size scan.
 // ============================================================================
 
 /// The first `stop_after` sizes (ascending) at which `root` has at least one
-/// novel term, up to `max_size`, computed with cheap fingerprint arithmetic.
+/// novel term, up to `max_size`.
 ///
-/// Runs the same plain/joint counting pipeline as
-/// [`NovelTermCount::with_matches`],
-/// but with [`Mod61`] residues instead of exact big integers and with both
-/// DPs restricted to what `root` can reach. The two [`LayeredDp`]s advance
-/// in lockstep, one size layer at a time; after layer `s` the root's novelty
-/// `novel(s) = plain[root](s) - sum_pc joint[(root, pc)](s)` is final, so
-/// the probe stops as soon as `stop_after` novel sizes have been seen —
-/// nothing beyond the answer is ever computed (`docs/incremental_probe.md`).
-/// Everything the sampler would need (suffix caches, per-class novel
-/// histograms) is skipped.
-///
-/// The fingerprint is one-sided: a nonzero residue proves a nonzero exact
-/// count, so every reported size really has a novel term. A size can only be
-/// *missed* if its exact novel count is a nonzero multiple of `2^61 - 1`
-/// (probability on the order of `2^-61` per size), so callers must verify
-/// the exact analysis they run afterwards but can expect that verification
-/// to never fail in practice.
-pub fn probe_novel_root_sizes<L: Language, N: Analysis<L>>(
+/// This runs the same plain/joint recurrence as
+/// [`NovelTermCount::with_matches`] with exact [`BigUint`] counts, but
+/// restricts both DPs to what `root` can reach. The DPs advance in lockstep;
+/// after layer `s`,
+/// `plain[root](s) - sum_pc joint[(root, pc)](s)` is final. The scan can
+/// therefore stop at the requested number of sizes without computing any
+/// larger layers or sampler-only caches. See `docs/incremental_probe.md`.
+pub fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,
     root: Id,
@@ -367,7 +357,7 @@ pub fn probe_novel_root_sizes<L: Language, N: Analysis<L>>(
     stop_after: usize,
 ) -> Vec<usize> {
     let root = curr.find(root);
-    let mut plain: LayeredDp<Id, Mod61> = plain_dp(max_size, curr, Some(&[root]));
+    let mut plain: LayeredDp<Id, BigUint> = plain_dp(max_size, curr, Some(&[root]));
 
     // Each pair inherits its curr class's rooted budget: joint terms are
     // plain terms of that class, and the budget recurrence relaxes with
@@ -385,29 +375,27 @@ pub fn probe_novel_root_sizes<L: Language, N: Analysis<L>>(
         .copied()
         .filter(|&(c, _)| c == root)
         .collect::<Vec<_>>();
-    let mut joint: LayeredDp<(Id, Id), Mod61> = LayeredDp::new(children_of, budgets);
+    let mut joint: LayeredDp<(Id, Id), BigUint> = LayeredDp::new(children_of, budgets);
 
     let mut sizes = Vec::new();
     for _ in 0..max_size {
         let size = plain.step();
         joint.step();
 
-        // Final as of this layer. Entries with zero residue are absent from
-        // the histograms and read as 0; the congruence to the exact novel
-        // count (and hence one-sidedness) holds either way.
+        // Final as of this layer. Zero-count entries are absent and read as 0.
         let mut novel = plain
             .data()
             .get(&root)
             .and_then(|hist| hist.get(&size))
-            .copied()
-            .unwrap_or(Mod61::ZERO);
+            .cloned()
+            .unwrap_or(BigUint::ZERO);
         for pair in &root_pairs {
             if let Some(count) = joint.data().get(pair).and_then(|hist| hist.get(&size)) {
                 novel -= count;
             }
         }
 
-        if novel != Mod61::ZERO {
+        if novel != BigUint::ZERO {
             sizes.push(size);
             if sizes.len() >= stop_after {
                 break;
@@ -525,10 +513,9 @@ mod tests {
         assert_eq!(novel.data()[&root_canon][&2], BigUint::from(1u32));
     }
 
-    /// The probe must report, for every class taken as root, exactly the
-    /// sizes present in the exact novel histogram (no fingerprint can
-    /// collide at these tiny counts).
-    fn assert_probe_agrees(curr: &EGraph<Math, ()>, prev: &EGraph<Math, ()>, max_size: usize) {
+    /// The root-restricted scan must agree with the full novel histogram for
+    /// every class taken as root.
+    fn assert_size_scan_agrees(curr: &EGraph<Math, ()>, prev: &EGraph<Math, ()>, max_size: usize) {
         let plain = PlainTermCount::<BigUint>::new(max_size, curr);
         let novel = NovelTermCount::new(max_size, curr, prev, plain);
         let matches = enumerate_matches(curr, prev);
@@ -540,9 +527,9 @@ mod tests {
                 .map(|hist| hist.keys().copied().collect::<Vec<_>>())
                 .unwrap_or_default();
             expected.sort_unstable();
-            let probed = probe_novel_root_sizes(max_size, curr, class.id, &matches, usize::MAX);
+            let found = find_novel_root_sizes(max_size, curr, class.id, &matches, usize::MAX);
             assert_eq!(
-                probed, expected,
+                found, expected,
                 "novel sizes diverge for class {}",
                 class.id
             );
@@ -550,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_agrees_with_exact_novel_sizes() {
+    fn size_scan_agrees_with_novel_histogram() {
         let mut curr = EGraph::<Math, ()>::new(());
         let a = curr.add(sym("a"));
         let b = curr.add(sym("b"));
@@ -561,22 +548,22 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        assert_probe_agrees(&curr, &prev, 5);
+        assert_size_scan_agrees(&curr, &prev, 5);
     }
 
     #[test]
-    fn probe_agrees_when_nothing_is_novel() {
+    fn size_scan_agrees_when_nothing_is_novel() {
         let mut graph = EGraph::<Math, ()>::new(());
         let a = graph.add(sym("a"));
         let b = graph.add(sym("b"));
         graph.union(a, b);
         graph.rebuild();
 
-        assert_probe_agrees(&graph, &graph, 5);
+        assert_size_scan_agrees(&graph, &graph, 5);
     }
 
     #[test]
-    fn probe_agrees_on_cyclic_graph() {
+    fn size_scan_agrees_on_cyclic_graph() {
         // Unioning the root of (+ a b) with `a` creates a cycle, so novel
         // terms exist at unboundedly many sizes.
         let mut curr = EGraph::<Math, ()>::new(());
@@ -589,7 +576,7 @@ mod tests {
         curr.union(a, apb);
         curr.rebuild();
 
-        assert_probe_agrees(&curr, &prev, 11);
+        assert_size_scan_agrees(&curr, &prev, 11);
     }
 
     #[test]

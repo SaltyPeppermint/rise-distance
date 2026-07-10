@@ -183,7 +183,6 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
         args.max_retries,
         args.retry_step,
         args.sample_sizes,
-        false,
         log,
     )
     .map_err(|tried_max_size| {

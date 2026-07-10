@@ -1,5 +1,4 @@
 mod layered;
-mod mod61;
 mod novel;
 mod plain;
 
@@ -11,7 +10,7 @@ use crate::Counter;
 use layered::{CountData, LayeredDp, count_terms, plain_dp};
 
 pub use novel::{NodeMatch, NovelTermCount};
-pub use novel::{NodeMatches, enumerate_matches, probe_novel_root_sizes};
+pub use novel::{NodeMatches, enumerate_matches, find_novel_root_sizes};
 pub use plain::PlainTermCount;
 
 /// Convolve all child histograms into a single result (left-to-right).

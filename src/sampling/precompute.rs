@@ -1,12 +1,10 @@
-use std::time::Instant;
-
 use egg::{Id, RecExpr};
 use hashbrown::HashMap;
 
 use crate::Counter;
 use crate::eqsat::EqsatResult;
 use crate::sampling::count::{
-    NodeMatches, NovelTermCount, PlainTermCount, enumerate_matches, probe_novel_root_sizes,
+    NodeMatches, NovelTermCount, PlainTermCount, enumerate_matches, find_novel_root_sizes,
 };
 use crate::sampling::sampler::{CountWeigher, NaiveWeigher, NovelSampler, PlainSampler, Sampler};
 use crate::sampling::{SampleStrategy, TermSampleDist};
@@ -68,123 +66,78 @@ where
         })
     }
 
-    /// One exact precompute attempt: succeeds iff the root has at least
-    /// `sizes` distinct novel term sizes, clamping `max_size` to the
-    /// `sizes`-th smallest so we don't sample from too many sizes.
-    fn exact_attempt(
-        result: &'a EqsatResult<L, N>,
-        max_size: usize,
-        matches: &NodeMatches,
-        sizes: usize,
-    ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let mut pp = Self::precompute_with_matches(result, max_size, matches.clone())?;
-        if pp.root_histogram().keys().len() < sizes {
-            return None;
-        }
-        pp.max_size = **pp
-            .root_histogram()
-            .keys()
-            .collect::<Vec<_>>()
-            .select_nth_unstable(sizes - 1)
-            .1;
-        Some(pp)
-    }
-
     /// Like [`precompute`](Self::precompute), but searches for the smallest
     /// `max_size` that yields at least `sizes` distinct novel term sizes at
-    /// the root while running the expensive exact analysis only once.
+    /// the root.
     ///
-    /// The search runs on cheap fingerprint counts (`u64` arithmetic modulo
-    /// the prime `2^61 - 1`) in a single size-incremental pass: the counting
-    /// DPs advance one size layer at a time, the root's novelty at each size
-    /// is final as soon as its layer completes, and the pass stops at the
-    /// `sizes`-th novel size — which is exactly the `max_size` the single
-    /// exact run then uses, and the returned `usize`. `start_size`,
-    /// `max_retries` and `retry_step` only bound the search: the probe gives
-    /// up at `start_size + max_retries * retry_step` (they also still drive
-    /// the exact fallback schedule below). See `docs/incremental_probe.md`.
+    /// An exact, root-restricted counting pass advances one size layer at a
+    /// time and stops at the `sizes`-th novel size. That size is then used to
+    /// build the returned package, so no package data is computed above the
+    /// largest size that will be sampled. `start_size`, `max_retries`, and
+    /// `retry_step` only define the search cap
+    /// `start_size + max_retries * retry_step`; there is no retry schedule.
+    /// See `docs/incremental_probe.md`.
     ///
-    /// A nonzero fingerprint proves a nonzero exact count, so the probe can
-    /// only err by *missing* a size whose exact count is divisible by
-    /// `2^61 - 1` (probability on the order of `2^-61` per size). The exact
-    /// run is therefore re-verified, and on a mismatch (or if the probe
-    /// finds too few sizes) this falls back to the old exact backoff loop,
-    /// so the result is always exact.
+    /// The size scan uses `BigUint`, so it neither overflows nor has
+    /// probabilistic false negatives. Package counts use `C`; construction
+    /// is checked before success is returned.
     ///
     /// # Errors
     ///
-    /// Errors if no `max_size` up to the cap yields enough novel sizes. The
+    /// Errors if no `max_size` up to the cap yields enough novel sizes, or
+    /// if package construction with `C` does not retain those sizes. The
     /// error value is the cap (`start_size + max_retries * retry_step`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `sizes` is zero or writing to `log` fails.
     pub fn backoff_precompute<W: std::fmt::Write>(
         result: &'a EqsatResult<L, N>,
         start_size: usize,
         max_retries: usize,
         retry_step: usize,
         sizes: usize,
-        fallback: bool,
         log: &mut W,
-    ) -> Result<(usize, PrecomputePackage<'a, C, L, N>), usize> {
+    ) -> Result<(usize, Self), usize> {
+        assert!(sizes > 0, "sizes must be nonzero");
+
         let curr = result.curr();
         let root = curr.find(result.root());
-        // The match enumeration is independent of `max_size`; compute it once
-        // and share it between the probe and all exact runs.
+        // Match enumeration is independent of max_size and is shared by the
+        // size scan and package construction.
         let matches = enumerate_matches(curr, result.prev());
-
         let cap = start_size + max_retries * retry_step;
 
-        let start = Instant::now();
-        let novel_sizes = probe_novel_root_sizes(cap, curr, root, &matches, sizes);
-        let probed = if novel_sizes.len() >= sizes {
-            Some(novel_sizes[sizes - 1])
-        } else {
+        let novel_sizes = find_novel_root_sizes(cap, curr, root, &matches, sizes);
+        if novel_sizes.len() < sizes {
             writeln!(
                 log,
-                "probe found {found} of {sizes} novel sizes (max_size={cap})",
+                "found {found} of {sizes} novel sizes (max_size={cap})",
                 found = novel_sizes.len()
             )
             .unwrap();
-            None
-        };
+            return Err(cap);
+        }
+        let max_size = novel_sizes[sizes - 1];
 
-        if let Some(max_size) = probed {
-            if let Some(pp) = Self::exact_attempt(result, max_size, &matches, sizes) {
-                return Ok((max_size, pp));
-            }
-            // Only reachable through a fingerprint collision in the probe.
+        let Some(pp) = Self::precompute_with_matches(result, max_size, matches) else {
             writeln!(
                 log,
-                "exact analysis found fewer novel sizes than the probe (max_size={max_size})"
+                "package construction found no novel terms (max_size={max_size})"
             )
             .unwrap();
+            return Err(cap);
+        };
+        if pp.root_histogram().len() < sizes {
+            writeln!(
+                log,
+                "package construction found fewer than {sizes} novel sizes (max_size={max_size})"
+            )
+            .unwrap();
+            return Err(cap);
         }
 
-        eprintln!(
-            "AFTER {} SECONDS NOTHIGN FOUND WITH CHEAP METHOD",
-            start.elapsed().as_secs_f64()
-        );
-
-        // Fallback
-        if fallback {
-            eprintln!("Running expensive fallback");
-            (0..=max_retries)
-                .map(|i| start_size + i * retry_step)
-                .find_map(|size| {
-                    if let Some(pp) = Self::exact_attempt(result, size, &matches, sizes) {
-                        Some((size, pp))
-                    } else {
-                        writeln!(
-                            log,
-                            "goal precompute returned None (max_size={size}), retrying"
-                        )
-                        .unwrap();
-                        None
-                    }
-                })
-                .ok_or(cap)
-        } else {
-            eprintln!("Fallback disabled");
-            Err(cap)
-        }
+        Ok((max_size, pp))
     }
 
     /// Log the stats about the root into `out`.
@@ -297,10 +250,9 @@ mod tests {
 
         let result = EqsatResult::new_for_tests(prev, curr, apb);
         let mut log = String::new();
-        let (used_max_size, pp) = PrecomputePackage::<BigUint, _, _>::backoff_precompute(
-            &result, 3, 10, 2, 3, false, &mut log,
-        )
-        .expect("backoff_precompute should succeed");
+        let (used_max_size, pp) =
+            PrecomputePackage::<BigUint, _, _>::backoff_precompute(&result, 3, 10, 2, 3, &mut log)
+                .expect("backoff_precompute should succeed");
 
         assert_eq!(used_max_size, 9, "log:\n{log}");
         assert_eq!(pp.max_size, 9);

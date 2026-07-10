@@ -13,8 +13,8 @@
 //! same argument applies verbatim to the joint counts over
 //! `(curr_class, prev_class)` pairs, which reuse this kernel with matches as
 //! nodes (see `novel.rs` and `docs/incremental_probe.md`). Stepping one layer
-//! at a time also lets the fingerprint probe stop as soon as it has seen
-//! enough novel sizes at the root.
+//! at a time also lets the exact root-size scan stop as soon as it has seen
+//! enough novel sizes.
 //!
 //! When `roots` are given, the computation is further restricted to what
 //! extractions of size <= `limit` from a root can touch: only classes
