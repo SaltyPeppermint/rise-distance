@@ -9,12 +9,21 @@
 //! that re-convolved entire histograms every time a class on a cycle gained
 //! an entry, costing up to `limit` full recomputations per class.)
 //!
+//! The layer loop itself is generic over the key type ([`LayeredDp`]): the
+//! same argument applies verbatim to the joint counts over
+//! `(curr_class, prev_class)` pairs, which reuse this kernel with matches as
+//! nodes (see `novel.rs` and `docs/incremental_probe.md`). Stepping one layer
+//! at a time also lets the fingerprint probe stop as soon as it has seen
+//! enough novel sizes at the root.
+//!
 //! When `roots` are given, the computation is further restricted to what
 //! extractions of size <= `limit` from a root can touch: only classes
 //! reachable from the roots are counted, each capped at its *budget* — the
 //! largest size a subterm rooted at that class can take in any such
 //! extraction. Deep classes then carry a handful of histogram entries
 //! instead of ~`limit`, which shrinks every convolution touching them.
+
+use std::hash::Hash;
 
 use egg::{Analysis, AstSize, EGraph, Id, Language};
 use hashbrown::HashMap;
@@ -24,7 +33,7 @@ use crate::analysis::semilattice::SemiLatticeAnalysis;
 use crate::utils::UniqueQueue;
 
 /// Histograms and per-node suffix convolution tables from one counting run.
-pub(crate) struct CountData<C> {
+pub struct CountData<C> {
     /// Per canonical class: term-size histogram (size -> count of distinct
     /// terms). Classes without any term within their budget are absent.
     pub data: HashMap<Id, HashMap<usize, C>>,
@@ -42,11 +51,37 @@ pub(crate) struct CountData<C> {
 /// the module docs: classes unreachable from the roots are skipped and the
 /// rest are capped at their budget, which keeps histograms and suffix tables
 /// exact for every query a root-driven consumer can make.
-pub(crate) fn count_terms<C, L, N>(
+pub fn count_terms<C, L, N>(
     limit: usize,
     egraph: &EGraph<L, N>,
     roots: Option<&[Id]>,
 ) -> CountData<C>
+where
+    C: Counter,
+    L: Language,
+    N: Analysis<L>,
+{
+    let mut dp = plain_dp(limit, egraph, roots);
+    for _ in 0..limit {
+        dp.step();
+    }
+    let (data, mut suffix) = dp.into_parts();
+
+    // Suffix tables are only read for classes one can sample from, i.e.
+    // classes with a nonempty histogram.
+    suffix.retain(|id, _| data.contains_key(id));
+
+    CountData { data, suffix }
+}
+
+/// The plain-count instantiation of [`LayeredDp`]: keys are e-class ids,
+/// nodes are the class's e-nodes, budgets from `roots` as in
+/// [`count_terms`]. Not stepped yet — callers drive the layers themselves.
+pub fn plain_dp<C, L, N>(
+    limit: usize,
+    egraph: &EGraph<L, N>,
+    roots: Option<&[Id]>,
+) -> LayeredDp<Id, C>
 where
     C: Counter,
     L: Language,
@@ -76,39 +111,94 @@ where
         })
         .collect();
 
-    let mut suffix: HashMap<Id, Vec<Vec<HashMap<usize, C>>>> = children_of
-        .iter()
-        .map(|(&id, per_node)| {
-            let tables = per_node
-                .iter()
-                .map(|children| {
-                    let mut tables = vec![HashMap::new(); children.len() + 1];
-                    tables[children.len()].insert(0, C::one());
-                    tables
-                })
-                .collect();
-            (id, tables)
-        })
-        .collect();
+    LayeredDp::new(children_of, budgets)
+}
 
-    let mut data: HashMap<Id, HashMap<usize, C>> = HashMap::new();
+/// Per key: size -> count histogram.
+type Histograms<K, C> = HashMap<K, HashMap<usize, C>>;
 
-    for size in 1..=limit {
+/// Per key, per node: suffix convolution tables in the shape of
+/// [`suffix_convolutions`](super::suffix_convolutions).
+type SuffixTables<K, C> = HashMap<K, Vec<Vec<HashMap<usize, C>>>>;
+
+/// The size-layered counting kernel, generic over the key type: e-class ids
+/// for plain counts, `(curr_class, prev_class)` pairs for joint counts. Per
+/// key there is a list of *nodes* (e-nodes resp. matches), each a list of
+/// child keys; a key's count at `size` sums, over its nodes, the ways to
+/// fill the node's children with subterm sizes totalling `size - 1`.
+/// [`step`](Self::step) completes one size layer; every histogram entry at
+/// sizes <= the completed layer is final.
+pub struct LayeredDp<K, C> {
+    /// Per key, per node: canonical child keys, aligned with node order.
+    children_of: HashMap<K, Vec<Vec<K>>>,
+    /// Per key: the largest size worth computing. Keys of `children_of`
+    /// without a budget are skipped entirely.
+    budgets: HashMap<K, usize>,
+    /// Per budgeted key, per node: suffix tables, grown by one total per
+    /// layer.
+    suffix: SuffixTables<K, C>,
+    /// Per key: size -> count histogram. Zero counts are never stored.
+    data: Histograms<K, C>,
+    /// The last completed layer.
+    size: usize,
+}
+
+impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
+    /// `children_of` must contain every key of `budgets`; child keys missing
+    /// from `budgets` are treated as having no terms.
+    pub fn new(children_of: HashMap<K, Vec<Vec<K>>>, budgets: HashMap<K, usize>) -> Self {
+        let suffix = budgets
+            .keys()
+            .map(|&k| {
+                let tables = children_of[&k]
+                    .iter()
+                    .map(|children| {
+                        let mut tables = vec![HashMap::new(); children.len() + 1];
+                        tables[children.len()].insert(0, C::one());
+                        tables
+                    })
+                    .collect();
+                (k, tables)
+            })
+            .collect();
+
+        Self {
+            children_of,
+            budgets,
+            suffix,
+            data: HashMap::new(),
+            size: 0,
+        }
+    }
+
+    /// Complete the next size layer and return it. Once this returns `s`,
+    /// every `data` entry at sizes <= `s` is final.
+    pub fn step(&mut self) -> usize {
+        self.size += 1;
+        let size = self.size;
         // Children of a size-`size` term share this budget; it is also the
         // single new total the suffix tables gain this layer.
         let total = size - 1;
+
+        let Self {
+            children_of,
+            budgets,
+            suffix,
+            data,
+            ..
+        } = self;
 
         // Extend the suffix tables by `total`. Subterm sizes are >= 1, so
         // every part of `total` is <= size - 1: exactly the histogram
         // entries that already exist, and those are final. For the same
         // reason the `total` entry inserted into `tables[i + 1]` in this
         // very loop can never feed into `tables[i]`.
-        for (&id, &budget) in &budgets {
+        for (&k, &budget) in budgets.iter() {
             if size > budget {
                 continue;
             }
-            let per_node = suffix.get_mut(&id).unwrap();
-            for (children, tables) in children_of[&id].iter().zip(per_node.iter_mut()) {
+            let per_node = suffix.get_mut(&k).unwrap();
+            for (children, tables) in children_of[&k].iter().zip(per_node.iter_mut()) {
                 for i in (0..children.len()).rev() {
                     let Some(child_hist) = data.get(&children[i]) else {
                         continue;
@@ -122,27 +212,38 @@ where
             }
         }
 
-        // A class's count at `size` is the number of ways any of its nodes
+        // A key's count at `size` is the number of ways any of its nodes
         // fills its children with `total`.
-        for (&id, &budget) in &budgets {
+        for (&k, &budget) in budgets.iter() {
             if size > budget {
                 continue;
             }
-            let count = suffix[&id]
+            let count = suffix[&k]
                 .iter()
                 .filter_map(|tables| tables[0].get(&total))
                 .sum::<C>();
             if count != C::zero() {
-                data.entry(id).or_default().insert(size, count);
+                data.entry(k).or_default().insert(size, count);
             }
         }
+
+        size
     }
 
-    // Suffix tables are only read for classes one can sample from, i.e.
-    // classes with a nonempty histogram.
-    suffix.retain(|id, _| data.contains_key(id));
+    #[must_use]
+    pub const fn data(&self) -> &Histograms<K, C> {
+        &self.data
+    }
 
-    CountData { data, suffix }
+    #[must_use]
+    pub const fn budgets(&self) -> &HashMap<K, usize> {
+        &self.budgets
+    }
+
+    /// Consume the DP, returning the histograms and suffix tables.
+    pub fn into_parts(self) -> (Histograms<K, C>, SuffixTables<K, C>) {
+        (self.data, self.suffix)
+    }
 }
 
 /// The convolution of two histograms evaluated at exactly `total`:
@@ -364,7 +465,13 @@ mod tests {
                 let histograms = node
                     .children()
                     .iter()
-                    .map(|&c| result.data.get(&egraph.find(c)).cloned().unwrap_or_default())
+                    .map(|&c| {
+                        result
+                            .data
+                            .get(&egraph.find(c))
+                            .cloned()
+                            .unwrap_or_default()
+                    })
                     .collect::<Vec<_>>();
                 let expected = suffix_convolutions(&histograms, limit - 1);
                 assert_eq!(tables, &expected);

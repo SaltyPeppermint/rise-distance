@@ -21,8 +21,7 @@ use smallvec::SmallVec;
 
 use super::mod61::Mod61;
 use crate::sampling::Counter;
-use crate::sampling::count::{PlainTermCount, count_terms};
-use crate::utils::UniqueQueue;
+use crate::sampling::count::{LayeredDp, PlainTermCount, plain_dp};
 
 /// Inline-allocated list of child class ids. Sized for the typical e-node
 /// arity (0–2); higher-arity nodes spill to the heap transparently.
@@ -38,32 +37,22 @@ pub struct NodeMatch {
 }
 
 /// Per `(curr_class, node_idx)`: every match of that e-node in prev.
-pub(crate) type NodeMatches = HashMap<(Id, usize), Vec<NodeMatch>>;
+pub type NodeMatches = HashMap<(Id, usize), Vec<NodeMatch>>;
 
 /// Per curr class: the set of prev classes that share at least one extraction
 /// with it. Used internally during match enumeration; the exposed `cover`
 /// field on [`NovelTermCount`] is a `Vec<Id>`-valued variant derived from the
 /// joint table.
-pub(crate) type MatchCover = HashMap<Id, HashSet<Id>>;
+type MatchCover = HashMap<Id, HashSet<Id>>;
 
 /// Dedup key for match enumeration: `(curr_class, node_idx, prev_class,
 /// prev_children)`.
-pub(crate) type MatchKeys = HashSet<(Id, usize, Id, ChildIds)>;
-
-/// Reverse dependencies between `(curr_class, prev_class)` pairs during the
-/// joint-count fixpoint: a key `(c, pc)` maps to every pair whose histogram
-/// depends on `joint[(c, pc)]`.
-pub(crate) type PairDeps = HashMap<(Id, Id), HashSet<(Id, Id)>>;
-
-/// Matches grouped by `(curr_class, prev_class)` for the joint-count
-/// fixpoint. Each entry is the list of `(node_idx, match)` pairs whose
-/// `prev_class` equals the key's second component.
-pub(crate) type PairMatches<'a> = HashMap<(Id, Id), Vec<(usize, &'a NodeMatch)>>;
+type MatchKeys = HashSet<(Id, usize, Id, ChildIds)>;
 
 /// Per `(curr_class, prev_class)` pair: histogram of size -> count of
 /// extractions rooted at curr's class that are also extractable from prev's
 /// class.
-pub type JointTable<C> = HashMap<(Id, Id), HashMap<usize, C>>;
+type JointTable<C> = HashMap<(Id, Id), HashMap<usize, C>>;
 
 /// Joint extractability table + per-node prev matches + derived novel
 /// histograms.
@@ -222,7 +211,7 @@ fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
 ///
 /// The result is independent of any size limit and can be shared across
 /// several counting runs on the same egraph pair.
-pub(crate) fn enumerate_matches<L: Language, N: Analysis<L>>(
+pub fn enumerate_matches<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     prev: &EGraph<L, N>,
 ) -> NodeMatches {
@@ -299,157 +288,71 @@ fn child_combinations(children: &[Id], cover: &MatchCover) -> Vec<ChildIds> {
 }
 
 // ============================================================================
-// Phase 2: joint count fixpoint.
+// Phase 2: joint counts, layered by size.
 // ============================================================================
 
-/// Compute `joint[(c, pc)]` for every pair appearing in matches, via a
-/// bottom-up worklist fixpoint over `(curr_class, prev_class)` pairs.
+/// Compute `joint[(c, pc)]` for every pair appearing in matches, as a
+/// size-layered DP over `(curr_class, prev_class)` pairs: the matched e-node
+/// contributes 1 to a term's size, so a pair's count at `size` depends only
+/// on child-pair counts at sizes strictly below it — the same stratification
+/// [`count_terms`](super::count_terms) uses for the plain counts, and the
+/// same [`LayeredDp`] kernel (see `docs/incremental_probe.md`). Each
+/// `(pair, size)` cell is computed exactly once, even on cyclic e-graphs.
 fn compute_joint<C: Counter, L: Language, N: Analysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,
     matches: &NodeMatches,
 ) -> JointTable<C> {
-    // Collect all (c, pc) pairs we need to compute.
-    let pairs = matches
-        .iter()
-        .flat_map(|((c, _), ms)| ms.iter().map(|m| (*c, m.prev_class)))
-        .collect::<HashSet<_>>();
-
-    // Group matches by (curr_class, prev_class) for efficient per-pair update.
-    let mut by_pair = PairMatches::new();
-    for ((c, idx), ms) in matches {
-        for m in ms {
-            by_pair
-                .entry((*c, m.prev_class))
-                .or_default()
-                .push((*idx, m));
-        }
+    let children_of = joint_children_of(curr, matches);
+    let budgets = children_of.keys().map(|&pair| (pair, max_size)).collect();
+    let mut dp = LayeredDp::new(children_of, budgets);
+    for _ in 0..max_size {
+        dp.step();
     }
-
-    let mut joint = JointTable::new();
-
-    let mut pending = pairs.iter().copied().collect::<UniqueQueue<_>>();
-
-    // Reverse dependency: given (c, pc), which pairs depend on its histogram?
-    // A pair (c', pc') depends on (c, pc) iff some match of c' (with
-    // prev_class pc') has a child position whose curr class is c and prev
-    // class is pc. We need the actual node to know each child's curr class,
-    // so we iterate (class, node, match) tuples.
-    let mut deps = PairDeps::new();
-    for class in curr.classes() {
-        let c_prime = curr.find(class.id);
-        for (idx, node) in class.nodes.iter().enumerate() {
-            let Some(ms) = matches.get(&(c_prime, idx)) else {
-                continue;
-            };
-            for m in ms {
-                for (child, prev_child) in node.children().iter().zip(m.prev_children.iter()) {
-                    let cc = curr.find(*child);
-                    deps.entry((cc, *prev_child))
-                        .or_default()
-                        .insert((c_prime, m.prev_class));
-                }
-            }
-        }
-    }
-
-    while let Some((c, pc)) = pending.pop() {
-        let new_hist = compute_pair_histogram::<C, L, N>(
-            max_size,
-            curr,
-            c,
-            by_pair.get(&(c, pc)).map_or(&[][..], Vec::as_slice),
-            &joint,
-        );
-
-        let changed = match joint.get(&(c, pc)) {
-            None => !new_hist.is_empty(),
-            Some(v) => v != &new_hist,
-        };
-        if changed {
-            if new_hist.is_empty() {
-                joint.remove(&(c, pc));
-            } else {
-                joint.insert((c, pc), new_hist);
-            }
-            if let Some(dependents) = deps.get(&(c, pc)) {
-                pending.extend(dependents.iter().copied());
-            }
-        }
-    }
-
-    joint
+    dp.into_parts().0
 }
 
-/// Compute the histogram for a single `(c, pc)` pair from its matches.
-fn compute_pair_histogram<C: Counter, L: Language, N: Analysis<L>>(
-    max_size: usize,
+/// The joint DP's structure in [`LayeredDp`] shape: per `(curr_class,
+/// prev_class)` pair, one node per match with that prev class, holding the
+/// child pair keys `(curr_child, prev_child)` in slot order.
+type PairChildren = HashMap<(Id, Id), Vec<Vec<(Id, Id)>>>;
+
+fn joint_children_of<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
-    c: Id,
-    pair_matches: &[(usize, &NodeMatch)],
-    joint: &JointTable<C>,
-) -> HashMap<usize, C> {
-    let mut acc = HashMap::new();
-
-    let eclass = &curr[c];
-
-    for (idx, m) in pair_matches {
-        let node = &eclass.nodes[*idx];
-        let children = node.children();
-
-        let base = 1_usize;
-        if children.is_empty() {
-            if base <= max_size {
-                acc.entry(base)
-                    .and_modify(|x| *x += &C::one())
-                    .or_insert_with(C::one);
-            }
-            continue;
-        }
-
-        let Some(budget) = max_size.checked_sub(base) else {
-            continue;
-        };
-
-        // Build histograms for each child, looking up
-        // `joint[(curr.find(child_i), m.prev_children[i])]`.
-        let histograms = children
-            .iter()
-            .zip(m.prev_children.iter())
-            .map(|(child, prev_child)| {
-                let cc = curr.find(*child);
-                joint.get(&(cc, *prev_child)).cloned().unwrap_or_default()
-            })
-            .collect::<Vec<_>>();
-
-        if histograms.iter().any(HashMap::is_empty) {
-            continue;
-        }
-
-        let conv = super::convolve(&histograms, budget);
-        for (s, count) in conv {
-            let total = s + base;
-            acc.entry(total)
-                .and_modify(|x| *x += &count)
-                .or_insert(count);
+    matches: &NodeMatches,
+) -> PairChildren {
+    let mut out = PairChildren::new();
+    for ((c, idx), ms) in matches {
+        let node = &curr[*c].nodes[*idx];
+        for m in ms {
+            let child_pairs = node
+                .children()
+                .iter()
+                .zip(m.prev_children.iter())
+                .map(|(child, prev_child)| (curr.find(*child), *prev_child))
+                .collect();
+            out.entry((*c, m.prev_class)).or_default().push(child_pairs);
         }
     }
-
-    acc
+    out
 }
 
 // ============================================================================
 // Fingerprint probe.
 // ============================================================================
 
-/// The sizes (ascending) at which `root` has at least one novel term, up to
-/// `max_size`, computed with cheap fingerprint arithmetic.
+/// The first `stop_after` sizes (ascending) at which `root` has at least one
+/// novel term, up to `max_size`, computed with cheap fingerprint arithmetic.
 ///
 /// Runs the same plain/joint counting pipeline as [`NovelTermCount::new`],
-/// but with [`Mod61`] residues instead of exact big integers, with the plain
-/// counts restricted to what `root` can reach, and deriving novelty at the
-/// root only. Everything the sampler would need (suffix caches, per-class
-/// novel histograms) is skipped.
+/// but with [`Mod61`] residues instead of exact big integers and with both
+/// DPs restricted to what `root` can reach. The two [`LayeredDp`]s advance
+/// in lockstep, one size layer at a time; after layer `s` the root's novelty
+/// `novel(s) = plain[root](s) - sum_pc joint[(root, pc)](s)` is final, so
+/// the probe stops as soon as `stop_after` novel sizes have been seen —
+/// nothing beyond the answer is ever computed (`docs/incremental_probe.md`).
+/// Everything the sampler would need (suffix caches, per-class novel
+/// histograms) is skipped.
 ///
 /// The fingerprint is one-sided: a nonzero residue proves a nonzero exact
 /// count, so every reported size really has a novel term. A size can only be
@@ -457,39 +360,61 @@ fn compute_pair_histogram<C: Counter, L: Language, N: Analysis<L>>(
 /// (probability on the order of `2^-61` per size), so callers must verify
 /// the exact analysis they run afterwards but can expect that verification
 /// to never fail in practice.
-pub(crate) fn probe_novel_root_sizes<L: Language, N: Analysis<L>>(
+pub fn probe_novel_root_sizes<L: Language, N: Analysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,
     root: Id,
     matches: &NodeMatches,
+    stop_after: usize,
 ) -> Vec<usize> {
     let root = curr.find(root);
-    let plain: HashMap<Id, HashMap<usize, Mod61>> =
-        count_terms(max_size, curr, Some(&[root])).data;
-    let joint: JointTable<Mod61> = compute_joint(max_size, curr, matches);
+    let mut plain: LayeredDp<Id, Mod61> = plain_dp(max_size, curr, Some(&[root]));
 
-    let Some(mut novel) = plain.get(&root).cloned() else {
-        return Vec::new();
-    };
-    // novel[s] = plain[s] - sum_pc joint[(root, pc)][s]. Every joint
-    // extraction is also a plain extraction, so joint sizes always have a
-    // plain entry; a missing key would indicate a bug upstream.
-    for ((c, _), hist) in &joint {
-        if *c == root {
-            for (size, count) in hist {
-                if let Some(n) = novel.get_mut(size) {
-                    *n -= count;
-                }
+    // Each pair inherits its curr class's rooted budget: joint terms are
+    // plain terms of that class, and the budget recurrence relaxes with
+    // plain minima, which lower-bound joint subterm sizes too — so every
+    // cell a root query depends on stays within budget. Pairs of classes
+    // unreachable within `max_size` can never be depended on and are
+    // skipped entirely.
+    let children_of = joint_children_of(curr, matches);
+    let budgets: HashMap<(Id, Id), usize> = children_of
+        .keys()
+        .filter_map(|&(c, pc)| plain.budgets().get(&c).map(|&b| ((c, pc), b)))
+        .collect();
+    let root_pairs = budgets
+        .keys()
+        .copied()
+        .filter(|&(c, _)| c == root)
+        .collect::<Vec<_>>();
+    let mut joint: LayeredDp<(Id, Id), Mod61> = LayeredDp::new(children_of, budgets);
+
+    let mut sizes = Vec::new();
+    for _ in 0..max_size {
+        let size = plain.step();
+        joint.step();
+
+        // Final as of this layer. Entries with zero residue are absent from
+        // the histograms and read as 0; the congruence to the exact novel
+        // count (and hence one-sidedness) holds either way.
+        let mut novel = plain
+            .data()
+            .get(&root)
+            .and_then(|hist| hist.get(&size))
+            .copied()
+            .unwrap_or(Mod61::ZERO);
+        for pair in &root_pairs {
+            if let Some(count) = joint.data().get(pair).and_then(|hist| hist.get(&size)) {
+                novel -= count;
+            }
+        }
+
+        if novel != Mod61::ZERO {
+            sizes.push(size);
+            if sizes.len() >= stop_after {
+                break;
             }
         }
     }
-
-    let mut sizes = novel
-        .iter()
-        .filter(|&(_, count)| *count != Mod61::ZERO)
-        .map(|(&size, _)| size)
-        .collect::<Vec<_>>();
-    sizes.sort_unstable();
     sizes
 }
 
@@ -616,7 +541,7 @@ mod tests {
                 .map(|hist| hist.keys().copied().collect::<Vec<_>>())
                 .unwrap_or_default();
             expected.sort_unstable();
-            let probed = probe_novel_root_sizes(max_size, curr, class.id, &matches);
+            let probed = probe_novel_root_sizes(max_size, curr, class.id, &matches, usize::MAX);
             assert_eq!(
                 probed, expected,
                 "novel sizes diverge for class {}",

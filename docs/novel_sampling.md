@@ -92,7 +92,7 @@ function enumerate_matches(curr, prev):
 
 The implementation also builds `cover` from `joint` afterwards ([`build_cover`](src/count/novel.rs)) so the sampler can look it up by curr class.
 
-### Phase 2: Joint count fixpoint
+### Phase 2: Joint counts, layered by size
 
 Once matches are known, compute `joint(c, pc)(s)` bottom-up. The recurrence:
 
@@ -105,50 +105,16 @@ joint(c, pc)(s) =
 
 Where `c_i` is the i-th canonical curr child class of `n`. For zero-arity nodes the inner sum is `1` at `s = 1` (one extraction = the node itself).
 
-This is monotonically increasing and bounded by `plain`, so the fixpoint converges. The implementation uses a worklist keyed by `(c, pc)` pairs; when a pair's histogram changes, every pair `(c', pc')` whose recurrence references `(c, pc)` is re-queued.
-
-#### Pseudocode
-
-```
-function compute_joint(max_size, curr, matches):
-    pairs = { (c, m.prev_class) : (c, idx) -> ms in matches, m in ms }
-    by_pair[(c, pc)] = [ (idx, m) for (c, idx) -> ms in matches,
-                                       m in ms with m.prev_class = pc ]
-    deps[(c, pc)]    = { (c', pc') :
-                          some node at (c', _) has a match with prev_class = pc'
-                          and one of its child slots is (c, pc) }
-
-    joint   : Map<(curr_class, prev_class), Histogram> = empty
-    pending : UniqueQueue<(curr_class, prev_class)> = pairs
-
-    while (c, pc) = pending.pop():
-        new_hist = compute_pair_histogram(max_size, curr, c, pc,
-                                          by_pair[(c, pc)], joint)
-        if new_hist != joint[(c, pc)]:
-            if new_hist is empty: joint.remove((c, pc))
-            else:                 joint[(c, pc)] = new_hist
-            pending.extend(deps[(c, pc)])
-
-    return joint
-```
-
-```
-function compute_pair_histogram(max_size, curr, c, pc, pair_matches, joint):
-    acc : Histogram = empty
-    for (idx, m) in pair_matches:
-        n        = curr[c].nodes[idx]
-        children = canonical curr child class ids of n
-        if children is empty:
-            acc[1] += 1            // leaf match
-            continue
-        budget = max_size - 1
-        hists  = [ joint[(c_i, m.prev_children[i])]  for i in 0..k ]
-        if any hist is empty: continue
-        conv = convolve(hists, budget)
-        for (s, count) in conv:
-            acc[s + 1] += count
-    return acc
-```
+The matched e-node costs 1, so every child pair is evaluated at a size
+strictly below `s`: the recurrence is stratified by size exactly like the
+plain counts ([layered_counting.md](layered_counting.md) §2), and the
+implementation reuses the same generic layer-by-layer kernel (`LayeredDp`,
+one pass per size, each `(pair, size)` cell computed once — no fixpoint,
+even on cyclic e-graphs). `joint_children_of` translates the match table
+into the kernel's shape: key = `(c, pc)` pair, one node per match, child
+keys = `zip(n.children, m.prev_children)`. See
+[incremental_probe.md](incremental_probe.md) for the full argument (this
+replaced a worklist fixpoint over whole per-pair histograms).
 
 ### Phase 3: Derive `novel`
 
@@ -356,7 +322,7 @@ This is the inclusion-exclusion argument referenced in `sample_novel`: the parti
 
 ### Termination
 
-The match-enumeration fixpoint adds entries monotonically to a finite set (bounded by `(curr classes) × (node indices) × (prev classes) × (prev class tuples)`), so it terminates. The joint-count fixpoint adds counts monotonically, bounded above by `plain[c][s]`, so it terminates. Sampling is non-recursive in `(c, s)` past the first call: every recursive call has strictly smaller `s` (children get `s_i ≤ s - 1`).
+The match-enumeration fixpoint adds entries monotonically to a finite set (bounded by `(curr classes) × (node indices) × (prev classes) × (prev class tuples)`), so it terminates. The joint counts need no convergence argument: the layered DP runs exactly one pass per size, `1..=max_size`. Sampling is non-recursive in `(c, s)` past the first call: every recursive call has strictly smaller `s` (children get `s_i ≤ s - 1`).
 
 ---
 

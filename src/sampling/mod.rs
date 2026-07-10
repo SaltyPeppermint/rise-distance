@@ -106,23 +106,26 @@ where
     /// the root while running the expensive exact analysis only once.
     ///
     /// The search runs on cheap fingerprint counts (`u64` arithmetic modulo
-    /// the prime `2^61 - 1`) over the same bound schedule the exact loop
-    /// used before (`start_size + i * retry_step` for `i in 0..=max_retries`).
-    /// Once a probe finds `sizes` novel sizes at the root, the exact analysis
-    /// runs a single time with `max_size` set to the `sizes`-th smallest of
-    /// them; that value is also the returned `usize`.
+    /// the prime `2^61 - 1`) in a single size-incremental pass: the counting
+    /// DPs advance one size layer at a time, the root's novelty at each size
+    /// is final as soon as its layer completes, and the pass stops at the
+    /// `sizes`-th novel size — which is exactly the `max_size` the single
+    /// exact run then uses, and the returned `usize`. `start_size`,
+    /// `max_retries` and `retry_step` only bound the search: the probe gives
+    /// up at `start_size + max_retries * retry_step` (they also still drive
+    /// the exact fallback schedule below). See `docs/incremental_probe.md`.
     ///
     /// A nonzero fingerprint proves a nonzero exact count, so the probe can
     /// only err by *missing* a size whose exact count is divisible by
     /// `2^61 - 1` (probability on the order of `2^-61` per size). The exact
-    /// run is therefore re-verified, and on a mismatch (or if no probe
-    /// succeeds) this falls back to the old exact backoff loop, so the
-    /// result is always exact.
+    /// run is therefore re-verified, and on a mismatch (or if the probe
+    /// finds too few sizes) this falls back to the old exact backoff loop,
+    /// so the result is always exact.
     ///
     /// # Errors
     ///
-    /// Errors if every attempt up to and including `max_retries` fails. The error value is
-    /// the largest `max_size` that was tried (`start_size + max_retries * retry_step`).
+    /// Errors if no `max_size` up to the cap yields enough novel sizes. The
+    /// error value is the cap (`start_size + max_retries * retry_step`).
     pub fn backoff_precompute<W: std::fmt::Write>(
         result: &'a EqsatResult<L, N>,
         start_size: usize,
@@ -135,26 +138,24 @@ where
         let curr = result.curr();
         let root = curr.find(result.root());
         // The match enumeration is independent of `max_size`; compute it once
-        // and share it between all probe and exact runs.
+        // and share it between the probe and all exact runs.
         let matches = enumerate_matches(curr, result.prev());
 
+        let cap = start_size + max_retries * retry_step;
+
         let start = Instant::now();
-        let probed = (0..=max_retries)
-            .map(|i| start_size + i * retry_step)
-            .find_map(|bound| {
-                let novel_sizes = probe_novel_root_sizes(bound, curr, root, &matches);
-                if novel_sizes.len() >= sizes {
-                    Some(novel_sizes[sizes - 1])
-                } else {
-                    writeln!(
-                        log,
-                        "probe found {found} of {sizes} novel sizes (max_size={bound}), retrying",
-                        found = novel_sizes.len()
-                    )
-                    .unwrap();
-                    None
-                }
-            });
+        let novel_sizes = probe_novel_root_sizes(cap, curr, root, &matches, sizes);
+        let probed = if novel_sizes.len() >= sizes {
+            Some(novel_sizes[sizes - 1])
+        } else {
+            writeln!(
+                log,
+                "probe found {found} of {sizes} novel sizes (max_size={cap})",
+                found = novel_sizes.len()
+            )
+            .unwrap();
+            None
+        };
 
         if let Some(max_size) = probed {
             if let Some(pp) = Self::exact_attempt(result, max_size, &matches, sizes) {
@@ -190,10 +191,10 @@ where
                         None
                     }
                 })
-                .ok_or(start_size + max_retries * retry_step)
+                .ok_or(cap)
         } else {
             eprintln!("Fallback disabled");
-            Err(start_size + max_retries * retry_step)
+            Err(cap)
         }
     }
 

@@ -4,6 +4,11 @@ How `backoff_precompute` finds the smallest `max_size` with at least `sizes`
 distinct novel-term sizes at the root — while running the expensive exact
 counting analysis only once.
 
+> **Update:** the bound schedule described in §3 has since been replaced by a
+> single size-incremental probe that stops at the `sizes`-th novel size; see
+> [incremental_probe.md](incremental_probe.md). The fingerprint arguments
+> (§2, §4, §5) are unchanged and still load-bearing.
+
 The relevant code lives in:
 
 - [src/sampling/count/mod61.rs](../src/sampling/count/mod61.rs) — the `Mod61` fingerprint counter.

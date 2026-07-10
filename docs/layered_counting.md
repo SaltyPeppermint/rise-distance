@@ -179,10 +179,10 @@ the graph a root cannot reach.
 - `PrecomputePackage` builds its plain count with
   `PlainTermCount::rooted(max_size, curr, &[root])`, and
   `probe_novel_root_sizes` runs its `Mod61` plain pass root-restricted as
-  well — the probe inside `backoff_precompute`'s retry loop gets the same
-  speedup on every attempt. (`compute_joint` is still the old-style pair
-  fixpoint; it stratifies by size the same way if it becomes the next
-  bottleneck.)
+  well — the probe inside `backoff_precompute` gets the same speedup.
+  (`compute_joint` has since been stratified by size too, on the same
+  generic `LayeredDp` kernel; see
+  [incremental_probe.md](incremental_probe.md).)
 - For `Mod61`, entries whose *residue* is zero are now dropped eagerly
   instead of at the end. Downstream products with them were `0 mod p`
   anyway, so residues are unchanged; a dropped size is exactly the

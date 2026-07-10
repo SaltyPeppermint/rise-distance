@@ -8,14 +8,14 @@ use std::borrow::Borrow;
 use hashbrown::HashMap;
 
 use crate::sampling::Counter;
+use layered::{CountData, LayeredDp, count_terms, plain_dp};
 
-pub(crate) use layered::{CountData, count_terms};
 pub use novel::{NodeMatch, NovelTermCount};
-pub(crate) use novel::{NodeMatches, enumerate_matches, probe_novel_root_sizes};
+pub use novel::{NodeMatches, enumerate_matches, probe_novel_root_sizes};
 pub use plain::PlainTermCount;
 
 /// Convolve all child histograms into a single result (left-to-right).
-pub(crate) fn convolve<C: Counter, H: Borrow<HashMap<usize, C>>>(
+pub fn convolve<C: Counter, H: Borrow<HashMap<usize, C>>>(
     histograms: &[H],
     budget: usize,
 ) -> HashMap<usize, C> {
@@ -44,7 +44,7 @@ pub(crate) fn convolve<C: Counter, H: Borrow<HashMap<usize, C>>>(
 
 /// Convolve child histograms right-to-left, returning suffix intermediates.
 /// `suffix[i]` = convolution of children `i..n`, mapping budget -> count.
-pub(crate) fn suffix_convolutions<C: Counter, H: Borrow<HashMap<usize, C>>>(
+pub fn suffix_convolutions<C: Counter, H: Borrow<HashMap<usize, C>>>(
     histograms: &[H],
     budget: usize,
 ) -> Vec<HashMap<usize, C>> {
