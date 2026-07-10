@@ -44,7 +44,7 @@ One probe, layered by size, that stops itself:
    probe records novel sizes in ascending order and exits as soon as
    `stop_after` of them are found.
 
-4. **`src/sampling/mod.rs`** — `backoff_precompute` calls the probe once
+4. **`src/sampling/precompute.rs`** — `backoff_precompute` calls the probe once
    with `cap = start_size + max_retries * retry_step` and `stop_after =
    sizes`. The retry loop over bounds is gone; the smallest novel size is
    found at exactly its own layer, and the layer the probe stops at *is* the

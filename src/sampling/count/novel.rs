@@ -20,7 +20,7 @@ use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 
 use super::mod61::Mod61;
-use crate::sampling::Counter;
+use crate::Counter;
 use crate::sampling::count::{LayeredDp, PlainTermCount, plain_dp};
 
 /// Inline-allocated list of child class ids. Sized for the typical e-node
@@ -85,6 +85,9 @@ where
 }
 
 impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
+    /// Convenience constructor that enumerates the matches itself; the
+    /// production path goes through [`with_matches`](Self::with_matches).
+    #[cfg(test)]
     #[must_use]
     pub fn new(
         max_size: usize,
@@ -95,9 +98,9 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
         Self::with_matches(max_size, curr, prev, plain, enumerate_matches(curr, prev))
     }
 
-    /// Like [`new`](Self::new), but with the match enumeration precomputed by
-    /// the caller. The matches are independent of `max_size`, so callers that
-    /// run several analyses on the same egraph pair (see
+    /// Run the joint counting analysis, with the match enumeration
+    /// precomputed by the caller. The matches are independent of `max_size`,
+    /// so callers that run several analyses on the same egraph pair (see
     /// `PrecomputePackage::backoff_precompute`) can share one enumeration.
     #[must_use]
     pub(crate) fn with_matches(
@@ -142,11 +145,6 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
     #[must_use]
     pub const fn prev(&self) -> &'g EGraph<L, N> {
         self.prev
-    }
-
-    #[must_use]
-    pub const fn joint(&self) -> &JointTable<C> {
-        &self.joint
     }
 
     /// Joint histogram for a `(curr_class, prev_class)` pair. `None` if the
@@ -344,7 +342,8 @@ fn joint_children_of<L: Language, N: Analysis<L>>(
 /// The first `stop_after` sizes (ascending) at which `root` has at least one
 /// novel term, up to `max_size`, computed with cheap fingerprint arithmetic.
 ///
-/// Runs the same plain/joint counting pipeline as [`NovelTermCount::new`],
+/// Runs the same plain/joint counting pipeline as
+/// [`NovelTermCount::with_matches`],
 /// but with [`Mod61`] residues instead of exact big integers and with both
 /// DPs restricted to what `root` can reach. The two [`LayeredDp`]s advance
 /// in lockstep, one size layer at a time; after layer `s` the root's novelty

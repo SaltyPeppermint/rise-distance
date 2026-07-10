@@ -13,7 +13,7 @@ The relevant code lives in:
 
 - [src/sampling/count/mod61.rs](../src/sampling/count/mod61.rs) — the `Mod61` fingerprint counter.
 - [src/sampling/count/novel.rs](../src/sampling/count/novel.rs) — `probe_novel_root_sizes`, match-enumeration reuse.
-- [src/sampling/mod.rs](../src/sampling/mod.rs) — the rewritten `backoff_precompute`.
+- [src/sampling/precompute.rs](../src/sampling/precompute.rs) — the rewritten `backoff_precompute`.
 
 ---
 

@@ -5,11 +5,10 @@ use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
 // TODO: reenable zs_min_distance sampler
-// pub use zs_min_distance::ZSDistanceSampler;
 
 use crate::sampling::count::PlainTermCount;
-use crate::sampling::sampler::Sampler;
-use crate::sampling::{Counter, Weigher};
+use crate::sampling::sampler::{Sampler, Weigher};
+use crate::Counter;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 pub struct PlainSampler<'a, 'b, C, L, N, W>
@@ -65,10 +64,6 @@ where
 
     fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, C>> {
         self.term_count.data().get(&id)
-    }
-
-    fn enumerate_size(&self, id: Id, size: usize) -> Vec<RecExpr<OriginLang<L>>> {
-        self.term_count.enumerate_size(self.graph, id, size)
     }
 
     fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
@@ -127,7 +122,7 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::lower;
-    use crate::sampling::{CountWeigher, NaiveWeigher};
+    use crate::sampling::sampler::{CountWeigher, NaiveWeigher};
     use crate::test_utils::sym;
     use crate::utils::combined_rng;
 

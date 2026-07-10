@@ -1,5 +1,6 @@
 mod novel;
 mod plain;
+mod weigher;
 
 use egg::{Id, RecExpr};
 use foldhash::fast::FixedState;
@@ -8,16 +9,17 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use rayon::prelude::*;
 
-use crate::sampling::Counter;
+use crate::Counter;
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
 pub use novel::NovelSampler;
 pub use plain::PlainSampler;
+pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
 
 /// Common interface for samplers that draw size-targeted terms from an e-graph.
 ///
 /// `sample_batch` and `sample_batch_root` are provided as default implementations
-/// in terms of [`Sampler::sample`] and [`Sampler::possible_size`].
+/// in terms of [`Sampler::sample`].
 pub trait Sampler<C, L, N>: Sync
 where
     C: Counter,
@@ -35,6 +37,7 @@ where
 
     /// True iff at least `samples + 1` distinct terms of `size` are reachable
     /// from `id` under this sampler's constraints.
+    #[cfg(test)]
     fn possible_size(&self, id: Id, size: usize, samples: u64) -> bool {
         let canon_id = self.find(id);
         let Some(count) = self.size_histogram(canon_id).and_then(|h| h.get(&size)) else {
@@ -51,10 +54,6 @@ where
             .map(|h| h.keys().copied().collect())
             .unwrap_or_default()
     }
-
-    /// Enumerate every distinct term of exactly `size` reachable from `id`
-    /// under this sampler's constraints. Returned order is unspecified.
-    fn enumerate_size(&self, id: Id, size: usize) -> Vec<RecExpr<OriginLang<L>>>;
 
     /// Smallest size with at least one extractable term.
     ///
@@ -166,7 +165,7 @@ where
 }
 
 #[must_use]
-pub const fn powers_of_two<const N: usize>() -> [usize; N] {
+const fn powers_of_two<const N: usize>() -> [usize; N] {
     const { assert!(N <= usize::BITS as usize, "N exceeds usize bit width") };
     let mut out = [0usize; N];
     let mut i = 0;

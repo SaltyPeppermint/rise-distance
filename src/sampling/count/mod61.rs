@@ -1,6 +1,6 @@
 //! Fingerprint counter for cheap feasibility probes.
 //!
-//! [`Mod61`] is a drop-in [`Counter`](crate::sampling::Counter) that does all
+//! [`Mod61`] is a drop-in [`Counter`](crate::Counter) that does all
 //! arithmetic in the prime field `Z/(2^61 - 1)` instead of with exact big
 //! integers. Running a counting analysis with it computes the image of the
 //! exact count modulo the Mersenne prime `2^61 - 1`: a nonzero fingerprint
@@ -29,7 +29,7 @@ const P: u64 = (1 << 61) - 1;
 ///
 /// `Ord` compares residues, which is meaningless as an ordering on the
 /// underlying exact counts; it exists only to satisfy the
-/// [`Counter`](crate::sampling::Counter) bounds. The same goes for
+/// [`Counter`](crate::Counter) bounds. The same goes for
 /// division (exact field division) and uniform sampling.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,

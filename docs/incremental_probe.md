@@ -15,7 +15,7 @@ The relevant code lives in:
 - [src/sampling/count/novel.rs](../src/sampling/count/novel.rs) — the layered
   `compute_joint`, `joint_children_of`, and the incremental
   `probe_novel_root_sizes`.
-- [src/sampling/mod.rs](../src/sampling/mod.rs) — the simplified
+- [src/sampling/precompute.rs](../src/sampling/precompute.rs) — the simplified
   `backoff_precompute`.
 
 ---

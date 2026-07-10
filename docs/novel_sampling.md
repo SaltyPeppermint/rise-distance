@@ -4,8 +4,8 @@ End-to-end walkthrough of how the codebase samples terms from `curr` that are *n
 
 The relevant code lives in:
 
-- [src/count/novel.rs](src/count/novel.rs) — counting & match enumeration.
-- [src/sampling/novel.rs](src/sampling/novel.rs) — the sampler.
+- [src/sampling/count/novel.rs](../src/sampling/count/novel.rs) — counting & match enumeration.
+- [src/sampling/sampler/novel.rs](../src/sampling/sampler/novel.rs) — the sampler.
 
 ---
 
@@ -90,7 +90,7 @@ function enumerate_matches(curr, prev):
     return matches
 ```
 
-The implementation also builds `cover` from `joint` afterwards ([`build_cover`](src/count/novel.rs)) so the sampler can look it up by curr class.
+The implementation also builds `cover` from `joint` afterwards ([`build_cover`](../src/sampling/count/novel.rs)) so the sampler can look it up by curr class.
 
 ### Phase 2: Joint counts, layered by size
 
@@ -308,7 +308,7 @@ The chosen profile `(a_1, …, a_k)` and the IHs determine each `t_i`:
 - If `a_i = None`: by IH (N), `prev.lookup(t_i) = None`. But we just said `prev.lookup(t_i) = q_i`, a concrete prev class. Contradiction unless every `a_i ≠ None`.
 - If `a_i = Some(pc_i)`: by IH (A), `prev.lookup(t_i) = pc_i`. So `q_i = pc_i`.
 
-Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. The cartesian product loop in [`enumerate_matches`](src/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
+Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. The cartesian product loop in [`enumerate_matches`](../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
 
 (The `cover_of` exposed to the sampler is a subset of match enumeration's internal cover — `compute_joint` drops `(c, pc)` pairs whose histogram is empty within `max_size`. That's harmless here: any `q_i` reached by a real sampled child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `sample_novel` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
 
@@ -381,18 +381,18 @@ Nine profiles total. The single match `(R_prev, [A, B])` is completed by the pro
 
 Profiles with any `None` have count 0 because `novel_histogram(M)` is empty. The remaining profiles also have count 0 in this graph.
 
-So the sampler picks uniformly (under `CountWeigher`) from the three non-novel-via-prev terms `Add(a,a)`, `Add(b,a)`, `Add(b,b)` but never `Add(a,b)`. This is exactly what `sampling::novel::tests::novel_sample_union_diagonal` asserts.
+So the sampler picks uniformly (under `CountWeigher`) from the three non-novel-via-prev terms `Add(a,a)`, `Add(b,a)`, `Add(b,b)` but never `Add(a,b)`. This is exactly what `sampling::sampler::novel::tests::novel_sample_union_diagonal` asserts.
 
 ---
 
-## 5. Public API summary
+## 5. API summary
 
 ```rust
-// Counting (in src/count/novel.rs):
+// Counting (in src/sampling/count/novel.rs):
 let plain = PlainTermCount::<C>::new(max_size, &curr);
 let novel = NovelTermCount::new(max_size, &curr, &prev, &plain);
 
-// Sampling (in src/sampling/novel.rs):
+// Sampling (in src/sampling/sampler/novel.rs):
 let sampler = NovelSampler::new(&novel, root, weigher);
 
 if sampler.possible_size(root, size, /* samples */ 0) {
@@ -401,4 +401,10 @@ if sampler.possible_size(root, size, /* samples */ 0) {
 }
 ```
 
-`NovelSampler` implements the [`Sampler`](src/sampling/mod.rs) trait, so it gets `sample_batch` / `sample_batch_root` for free.
+`NovelSampler` implements the [`Sampler`](../src/sampling/sampler/mod.rs) trait, so it gets `sample_batch` / `sample_batch_root` for free.
+
+Note: the convenience entry points above (`PlainTermCount::new`, `NovelTermCount::new`,
+`Sampler::possible_size`) are compiled only under `#[cfg(test)]`. The production path is
+`PrecomputePackage` ([src/sampling/precompute.rs](../src/sampling/precompute.rs)), which
+builds the analysis via `PlainTermCount::rooted` / `NovelTermCount::with_matches` so one
+match enumeration is shared across repeated analyses of the same e-graph pair.

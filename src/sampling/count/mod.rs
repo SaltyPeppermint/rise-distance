@@ -7,7 +7,7 @@ use std::borrow::Borrow;
 
 use hashbrown::HashMap;
 
-use crate::sampling::Counter;
+use crate::Counter;
 use layered::{CountData, LayeredDp, count_terms, plain_dp};
 
 pub use novel::{NodeMatch, NovelTermCount};

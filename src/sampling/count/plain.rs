@@ -2,12 +2,18 @@
 //!
 //! Counts the number of terms up to a given size that can be extracted from each e-class.
 
-use egg::{Analysis, EGraph, Id, Language, RecExpr};
+#[cfg(test)]
+use egg::RecExpr;
+use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::HashMap;
+#[cfg(test)]
 use indicatif::{ProgressBar, ProgressIterator};
 
-use crate::sampling::count::{CountData, Counter, count_terms};
-use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
+use crate::Counter;
+use crate::sampling::count::{CountData, count_terms};
+use crate::{MyAnalysis, MyLanguage};
+#[cfg(test)]
+use crate::{OriginLang, stack_children};
 
 /// Map from e-class ID to a map of (size -> count) (histogram).
 #[derive(Debug, Clone)]
@@ -20,25 +26,12 @@ pub struct PlainTermCount<C: Counter> {
 }
 
 impl<C: Counter> PlainTermCount<C> {
-    /// Run the term counting analysis on an e-graph, counting every class.
-    ///
-    /// # Arguments
-    /// * `max_size` - Maximum term size to count
-    #[must_use]
-    pub fn new<L, N>(max_size: usize, graph: &EGraph<L, N>) -> Self
-    where
-        L: Language,
-        N: Analysis<L>,
-    {
-        Self::from_counts(count_terms(max_size, graph, None))
-    }
-
-    /// Like [`new`](Self::new), but restricted to what extractions of size
+    /// Run the term counting analysis restricted to what extractions of size
     /// <= `max_size` from `roots` can reach: classes unreachable from the
     /// roots are absent, and every other class's histogram is capped at the
     /// largest subterm size it can take in such an extraction. Root-driven
-    /// sampling, enumeration and histogram queries behave exactly as with
-    /// [`new`]; direct queries against deeper classes see the capped data.
+    /// sampling and histogram queries are unaffected by the restriction;
+    /// direct queries against deeper classes see the capped data.
     #[must_use]
     pub fn rooted<L, N>(max_size: usize, graph: &EGraph<L, N>, roots: &[Id]) -> Self
     where
@@ -74,6 +67,24 @@ impl<C: Counter> PlainTermCount<C> {
     pub const fn suffix_cache(&self) -> &HashMap<Id, Vec<Vec<HashMap<usize, C>>>> {
         &self.suffix_cache
     }
+}
+
+/// Test-only helpers: the unrestricted constructor and exhaustive term
+/// enumeration, used to cross-check the counting DP.
+#[cfg(test)]
+impl<C: Counter> PlainTermCount<C> {
+    /// Run the term counting analysis on an e-graph, counting every class.
+    ///
+    /// # Arguments
+    /// * `max_size` - Maximum term size to count
+    #[must_use]
+    pub fn new<L, N>(max_size: usize, graph: &EGraph<L, N>) -> Self
+    where
+        L: Language,
+        N: Analysis<L>,
+    {
+        Self::from_counts(count_terms(max_size, graph, None))
+    }
 
     /// Enumerate all terms from an e-class with sizes in `1..=max_size`.
     #[must_use]
@@ -100,20 +111,6 @@ impl<C: Counter> PlainTermCount<C> {
         } else {
             iter.collect()
         }
-    }
-
-    /// Enumerate all distinct terms of exactly `size` from an e-class.
-    /// The returned order is implementation-defined but stable for the same
-    /// `(self, graph, id, size)`.
-    #[must_use]
-    pub fn enumerate_size<L: MyLanguage, N: MyAnalysis<L>>(
-        &self,
-        graph: &EGraph<L, N>,
-        id: Id,
-        size: usize,
-    ) -> Vec<RecExpr<OriginLang<L>>> {
-        let mut cache = HashMap::new();
-        self.enumerate_class_cached(graph, id, size, &mut cache)
     }
 
     /// Enumerate all terms of exactly `size` from an e-class, using a shared cache.
