@@ -69,10 +69,23 @@ struct Args {
     /// Output run folder for logs and metadata (auto-generated if omitted).
     #[arg(short, long)]
     output: Option<String>,
+
+    /// Number of rayon worker threads (defaults to rayon's default; lower to
+    /// reduce memory pressure, since each seed's eqsat runs concurrently).
+    #[arg(long)]
+    parallelism: Option<usize>,
 }
 
 fn main() {
     let args = Args::parse();
+    // Each seed's eqsat clones its egraph and can use several GB, so cap the
+    // rayon pool to keep concurrent runs from exhausting memory.
+    if let Some(p) = args.parallelism {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(p)
+            .build_global()
+            .unwrap();
+    }
     let eqsat = read_folder_args(&args.path);
     let language = read_folder_language(&args.path);
 
