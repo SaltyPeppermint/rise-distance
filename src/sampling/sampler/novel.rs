@@ -6,9 +6,9 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
+use crate::Counter;
 use crate::sampling::count::{NodeMatch, NovelTermCount, convolve, suffix_convolutions};
 use crate::sampling::sampler::{Sampler, Weigher};
-use crate::Counter;
 use crate::{MyAnalysis, MyLanguage, OriginLang, lower, stack_children};
 
 /// Sampler that draws size-targeted terms which are *not* extractable from
@@ -366,8 +366,8 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::lower;
-    use crate::sampling::sampler::CountWeigher;
     use crate::sampling::count::PlainTermCount;
+    use crate::sampling::sampler::CountWeigher;
     use crate::test_utils::sym;
     use crate::utils::combined_rng;
 

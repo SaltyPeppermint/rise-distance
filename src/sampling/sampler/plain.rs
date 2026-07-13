@@ -6,9 +6,9 @@ use rand_chacha::ChaCha12Rng;
 
 // TODO: reenable zs_min_distance sampler
 
+use crate::Counter;
 use crate::sampling::count::PlainTermCount;
 use crate::sampling::sampler::{Sampler, Weigher};
-use crate::Counter;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 pub struct PlainSampler<'a, 'b, C, L, N, W>
@@ -272,7 +272,11 @@ mod tests {
         let result = sampler
             .sample_batch_root(&[(3, 1000)], [1, 2])
             .expect("undersupplied size should still yield its available terms");
-        assert_eq!(result.len(), 6, "should return exactly the 6 distinct terms");
+        assert_eq!(
+            result.len(),
+            6,
+            "should return exactly the 6 distinct terms"
+        );
     }
 
     #[test]
