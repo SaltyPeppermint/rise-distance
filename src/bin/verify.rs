@@ -7,14 +7,12 @@
 //! goal on stdin.
 
 use std::io::Read;
-use std::path::PathBuf;
 
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
 use serde::{Deserialize, Serialize};
 
-use rise_distance::cli::read_folder_args;
-use rise_distance::cli::sample::GuideExpr;
+use rise_distance::cli::{EqsatArgs, GuideExpr};
 use rise_distance::eqsat::{EqsatConfig, Goal, GuideError, verify_reachability};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -24,30 +22,32 @@ use rise_distance::{MyAnalysis, MyLanguage};
     about = "Run one search leg: union guides, saturate, report goal reachability",
     after_help = "\
 Reads a JSON `LegRequest` on stdin and prints a JSON `LegResult` on stdout.
-Example:
-  echo '{\"language\":\"math\",\"full_union\":true,\"goal\":\"(+ x 0)\",\"guides\":[...]}' \\
-    | verify --folder data/seed_terms/dusky-cramp
+`--language` and the eqsat limits come from argv. Example:
+  echo '{\"full_union\":true,\"goal\":\"(+ x 0)\",\"guides\":[...]}' \\
+    | verify --language math --max-iters 200 --max-nodes 1000000 --max-time 10 \\
+      --backoff-scheduler
 "
 )]
 struct Args {
-    /// Seed folder to read `args.json` (eqsat limits) from. Overridden by an
-    /// inline `eqsat` field in the request if present.
-    #[arg(short, long)]
-    folder: Option<PathBuf>,
+    /// Which language's rules to run under (from the folder's `args.json`).
+    #[arg(long)]
+    language: AvailableLanguages,
+
+    /// Use the experimental full-union add for the leg egraph.
+    #[arg(long)]
+    full_union: bool,
+
+    #[command(flatten)]
+    eqsat: EqsatArgs,
 }
 
 /// One leg request, read from stdin as JSON. `guides` are node lists so origins
 /// survive the round trip; `goal` is a lowered s-expression string.
 #[derive(Deserialize)]
 struct LegRequest {
-    language: AvailableLanguages,
-    full_union: bool,
     goal: String,
     /// Guide subset as raw JSON, parsed against the concrete language below.
     guides: serde_json::Value,
-    /// Optional inline eqsat limits; falls back to `--folder`'s `args.json`.
-    #[serde(default)]
-    eqsat: Option<EqsatConfig>,
 }
 
 /// One leg result, printed to stdout as JSON.
@@ -79,23 +79,17 @@ fn main() {
         .expect("read leg request from stdin");
     let request: LegRequest = serde_json::from_str(&buf).expect("parse leg request JSON");
 
-    let eqsat = request.eqsat.unwrap_or_else(|| {
-        let folder = args
-            .folder
-            .as_ref()
-            .expect("need --folder or an inline `eqsat` field in the request");
-        read_folder_args(folder)
-    });
+    let eqsat: EqsatConfig = args.eqsat.into();
 
-    let result = match request.language {
+    let result = match args.language {
         AvailableLanguages::Diospyros => {
-            run_leg::<_, ()>(&request, &eqsat, &diospyros::rules(false, false))
+            run_leg::<_, ()>(&request, &args, &eqsat, &diospyros::rules(false, false))
         }
         AvailableLanguages::Math => {
-            run_leg::<_, math::ConstantFold>(&request, &eqsat, &math::rules())
+            run_leg::<_, math::ConstantFold>(&request, &args, &eqsat, &math::rules())
         }
         AvailableLanguages::Prop => {
-            run_leg::<_, prop::ConstantFold>(&request, &eqsat, &prop::rules())
+            run_leg::<_, prop::ConstantFold>(&request, &args, &eqsat, &prop::rules())
         }
     };
 
@@ -105,6 +99,7 @@ fn main() {
 
 fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
     request: &LegRequest,
+    args: &Args,
     eqsat: &EqsatConfig,
     rules: &[Rewrite<L, N>],
 ) -> LegResult {
@@ -122,7 +117,7 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
         .unwrap_or_else(|e| panic!("Failed to parse goal '{}': {e}", request.goal));
     let goal = Goal::Expr(goal_expr);
 
-    match verify_reachability(&guides, &goal, rules, eqsat, request.full_union) {
+    match verify_reachability(&guides, &goal, rules, eqsat, args.full_union) {
         Ok((iterations, _target)) => {
             let last = iterations.last().expect("reached leg logged no iterations");
             LegResult {

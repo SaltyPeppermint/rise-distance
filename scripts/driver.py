@@ -1,10 +1,14 @@
 """Drive the guide search from Python.
 
-Replaces the "second half" of the old `guide` binary. The Rust `sample` binary
-produces a guide-candidate menu per seed (`samples.json`); this driver then runs
-the individual search legs (one `verify` subprocess each), resampling fresh
-guide subsets until it either reaches the goal or uses all `--attempts` for a
-seed/goal pair. All logging and data wrangling (parquet/JSON) live here.
+Replaces the "second half" of the old `guide` binary. The Rust `sample` and
+`verify` binaries touch no files: per-seed/per-leg inputs go in on stdin,
+`--language` and the eqsat limits on argv. This driver owns all file I/O: it
+reads `args.json` (for `--language`/the eqsat flags), flattens the goal-enriched
+`terms.json` into per-seed `sample` requests (capturing each guide-candidate
+menu from stdout), then runs the individual search legs (one `verify` subprocess
+each), resampling fresh guide subsets until it either reaches the goal or uses
+all `--attempts` for a seed/goal pair. All logging and data wrangling
+(parquet/JSON) live here.
 
 Example:
     cargo build --release --bin sample --bin verify
@@ -127,72 +131,116 @@ def pool_key(strategy: str) -> str:
     return strategy
 
 
-def count_seeds(args: Args) -> int:
-    """Count the seeds to fan out over, honouring `--take-first`.
+def language_eqsat_flags(path: Path) -> list[str]:
+    """Read `args.json` and build the `--language`/eqsat CLI flags `sample` and
+    `verify` take. The four eqsat values live at the top level of `args.json`;
+    `--backoff-scheduler` is a presence flag, added only when true.
+    """
+    cfg = json.loads((path / "args.json").read_text())
+    flags = [
+        "--language", str(cfg["language"]),
+        "--max-iters", str(cfg["max_iters"]),
+        "--max-nodes", str(cfg["max_nodes"]),
+        "--max-time", str(cfg["max_time"]),
+    ]
+    if cfg["backoff_scheduler"]:
+        flags.append("--backoff-scheduler")
+    return flags
 
-    `terms.json` is a list of `[size, {seed: payload}]` groups; the seed count is
-    the total across all groups. We only need the count, not the payloads, since
-    `sample` processes one seed per `--seed-index`.
+
+def sample_request_from_payload(seed: str, ok: dict) -> dict:
+    """Pull the per-seed replay inputs `sample` needs out of one `Ok`
+    GoalGenMetadata. `language`/eqsat are passed on argv, not per seed, so only
+    the per-seed fields go in the stdin `SampleRequest`: `guide_iters` (from
+    `guide_egraph.iters`), `max_size`, and `goals`.
+    """
+    return {
+        "seed": seed,
+        "guide_iters": ok["guide_egraph"]["iters"],
+        "max_size": ok["max_size"],
+        "goals": ok["goals"],
+    }
+
+
+def flatten_enriched_seeds(args: Args) -> list[dict]:
+    """Flatten the goal-enriched `terms.json` into per-seed `sample` requests.
+
+    `terms.json` is a list of `[size, {seed: payload}]` groups, each payload a
+    `Result`-shaped `{"Ok": GoalGenMetadata}` / `{"Err": msg}`. `sample` only
+    needs a handful of fields off each `Ok`; we build one request dict per seed
+    here so the Rust side does no `terms.json` parsing. `Err` seeds (goal stage
+    failed) are dropped. Groups in file order, terms sorted for a deterministic
+    `--take-first`.
     """
     groups = json.loads((args.path / "terms.json").read_text())
-    total = sum(len(inner) for _size, inner in groups)
+    requests: list[dict] = []
+    for _size, terms_map in groups:
+        for seed in sorted(terms_map):
+            ok = terms_map[seed].get("Ok")
+            if ok is None:
+                continue  # Err seed: goal stage failed, nothing to replay.
+            requests.append(sample_request_from_payload(seed, ok))
     if args.take_first is not None:
-        total = min(total, args.take_first)
-    return total
+        requests = requests[: args.take_first]
+    return requests
 
 
-def run_sample_shard(args: Args, seed_index: int, shard_out: Path) -> Path:
-    """Run `sample` for a single seed, writing `samples.json` into `shard_out`.
+def run_sample_shard(args: Args, base_flags: list[str], request: dict) -> list:
+    """Run `sample` for a single seed and return its parsed record list.
 
-    Each shard gets its own directory so parallel runs don't collide. Output is
-    captured rather than streamed, and only surfaced on failure.
+    `sample` touches no files: the per-seed replay inputs go in on stdin as a
+    `SampleRequest`, and `--language`/the eqsat flags on argv; it prints a
+    one-element `[SeedSamples]` array to stdout (empty on an internal failure),
+    logs to stderr. We capture stdout and parse it; stderr is surfaced only on a
+    nonzero exit.
     """
     cmd = [
         str(args.sample_binary),
-        str(args.path),
-        "--output",
-        str(shard_out),
+        *base_flags,
         "--samples-per-strategy",
         str(args.samples_per_strategy),
-        "--seed-index",
-        str(seed_index),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, input=json.dumps(request), capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"sample failed (code {proc.returncode}) for seed index {seed_index}:\n"
-            f"{proc.stdout}\n{proc.stderr}"
+            f"sample failed (code {proc.returncode}) for seed {request['seed']!r}:\n{proc.stderr}"
         )
-    return shard_out / "samples.json"
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"sample returned non-JSON stdout for seed {request['seed']!r}: {e}\n"
+            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+        ) from e
 
 
 def run_sample(args: Args, sample_out: Path) -> Path:
     """Sample the guide menu in parallel, one `sample` subprocess per seed.
 
-    Merges each shard's `samples.json` into a single `samples.json` under
-    `sample_out`, in seed order so the output is deterministic regardless of
-    completion order.
+    Captures each subprocess's stdout, merges the records in seed order (so the
+    output is deterministic regardless of completion order), and writes a single
+    `samples.json` under `sample_out` for provenance.
     """
-    n_seeds = count_seeds(args)
+    requests = flatten_enriched_seeds(args)
     sample_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
+    base_flags = language_eqsat_flags(args.path)
     print(
-        f"Sampling guide menu for {n_seeds} seed(s) -> {sample_out} ({jobs} workers)",
+        f"Sampling guide menu for {len(requests)} seed(s) -> {sample_out} ({jobs} workers)",
         file=sys.stderr,
     )
 
-    # index -> records, filled as shards finish; merged in seed order below.
+    # index -> records, filled as subprocesses finish; merged in seed order below.
     shard_records: dict[int, list] = {}
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = {
-            pool_exec.submit(run_sample_shard, args, i, sample_out / f"seed_{i:04d}"): i
-            for i in range(n_seeds)
+            pool_exec.submit(run_sample_shard, args, base_flags, req): i
+            for i, req in enumerate(requests)
         }
         for fut in tqdm(as_completed(futures), total=len(futures), desc="sampling", unit="seed"):
-            i = futures[fut]
-            shard_records[i] = json.loads(fut.result().read_text())
+            shard_records[futures[fut]] = fut.result()
 
-    merged = [rec for i in range(n_seeds) for rec in shard_records[i]]
+    merged = [rec for i in range(len(requests)) for rec in shard_records[i]]
     merged_path = sample_out / "samples.json"
     merged_path.write_text(json.dumps(merged))
     return merged_path
@@ -233,19 +281,24 @@ def build_attempt_subsets(
 
 def run_leg(
     args: Args,
-    language: str,
+    base_flags: list[str],
     goal: str,
     guides: list,
 ) -> dict:
-    """Run one `verify` subprocess and return the parsed `LegResult`."""
+    """Run one `verify` subprocess and return the parsed `LegResult`.
+
+    `verify` touches no files: the per-leg `goal`/`guides` go in on stdin, and
+    `--language`/`--full-union`/the eqsat flags on argv.
+    """
     request = {
-        "language": language,
-        "full_union": args.full_union,
         "goal": goal,
         "guides": guides,
     }
+    cmd = [str(args.verify_binary), *base_flags]
+    if args.full_union:
+        cmd.append("--full-union")
     proc = subprocess.run(
-        [str(args.verify_binary), "--folder", str(args.path)],
+        cmd,
         input=json.dumps(request),
         capture_output=True,
         text=True,
@@ -289,7 +342,7 @@ def make_row(item: WorkItem, strategy: str, attempt: int, guides: list) -> dict:
     }
 
 
-def run_pair(args: Args, language: str, item: WorkItem) -> list[dict]:
+def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     """Run one seed/goal pair's attempt loop and return its result rows.
 
     Attempts are sequential and early-stop on the first reach. Runs in a worker
@@ -305,7 +358,7 @@ def run_pair(args: Args, language: str, item: WorkItem) -> list[dict]:
             row["stop_reason"] = "empty_pool"
             rows.append(row)
             return rows
-        result = run_leg(args, language, item.goal, guides)
+        result = run_leg(args, base_flags, item.goal, guides)
         row["reached"] = result["reached"]
         row["panic"] = result.get("panic", False)
         for field in LEG_RESULT_FIELDS:
@@ -396,11 +449,11 @@ def warn_pool_shortfall(items: list[WorkItem], strategy: str, attempts: int) -> 
             )
 
 
-def run_all_pairs(args: Args, language: str, items: list[WorkItem]) -> list[dict]:
+def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> list[dict]:
     """Run every work item's attempt loop concurrently and collect result rows."""
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=args.jobs or os.cpu_count() or 1) as pool_exec:
-        futures = [pool_exec.submit(run_pair, args, language, item) for item in items]
+        futures = [pool_exec.submit(run_pair, args, base_flags, item) for item in items]
         for fut in tqdm(as_completed(futures), total=len(futures), desc="legs", unit="pair×k"):
             rows.extend(fut.result())
     return rows
@@ -443,7 +496,7 @@ def main() -> int:
         return 2
 
     k_values = [1] if args.strategy in SMALLEST_STRATEGIES else args.k
-    language = json.loads((args.path / "args.json").read_text())["language"]
+    base_flags = language_eqsat_flags(args.path)
     out = resolve_output_dir(args)
 
     print("RUNNING SAMPLING")
@@ -455,7 +508,7 @@ def main() -> int:
     warn_pool_shortfall(items, args.strategy, args.attempts)
 
     print("STARTING PAIRS")
-    rows = run_all_pairs(args, language, items)
+    rows = run_all_pairs(args, base_flags, items)
 
     report_results(args, out, rows)
     return 0

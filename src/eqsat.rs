@@ -61,44 +61,6 @@ pub struct EqsatConfig {
 }
 
 impl EqsatConfig {
-    /// Warn if the `EqsatConfig` `guide` is running under differs from the one
-    /// `goal` recorded in the seed payload. Catches accidental drift in
-    /// `args.json` between the two stages. The replay egraph would no longer
-    /// match the assumptions baked into the stored `guide_iters`, goals, and
-    /// frontier histogram, so downstream results are not comparable to a fresh
-    /// `goal` run under the new config.
-    #[expect(clippy::float_cmp, reason = "configured values, not computed")]
-    pub fn warn_on_config_drift(&self, other: &EqsatConfig) {
-        if self == other {
-            return;
-        }
-        eprintln!("WARNING: args.json differs from the config goal recorded:");
-        if self.max_iters != other.max_iters {
-            eprintln!(
-                "  max_iters: this={} other={}",
-                self.max_iters, other.max_iters
-            );
-        }
-        if self.max_nodes != other.max_nodes {
-            eprintln!(
-                "  max_nodes: this={} other={}",
-                self.max_nodes, other.max_nodes
-            );
-        }
-        if self.max_time != other.max_time {
-            eprintln!(
-                "  max_time: this={} other={}",
-                self.max_time, other.max_time
-            );
-        }
-        if self.backoff_scheduler != other.backoff_scheduler {
-            eprintln!(
-                "  backoff_scheduler: this={} other={}",
-                self.backoff_scheduler, other.backoff_scheduler
-            );
-        }
-    }
-
     /// Build a [`Runner`] configured with this config's limits and scheduler.
     #[must_use]
     pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> Runner<L, N, D>

@@ -1,59 +1,57 @@
-//! Produce the guide-candidate menu for each seed/goal pair.
+//! Produce the guide-candidate menu for one seed/goal pair.
 //!
-//! This is the "first half" of the old `guide` binary: for every enriched seed
-//! it replays the guide-phase eqsat, builds a [`PrecomputePackage`], and samples
-//! the six-strategy guide menu. The individual search legs (the second half) are
-//! now driven by `driver.py`, which feeds chosen guide subsets to `verify`.
+//! This is the "first half" of the old `guide` binary: it replays the
+//! guide-phase eqsat for one seed, builds a [`PrecomputePackage`], and samples
+//! the four-strategy guide menu. The individual search legs (the second half)
+//! are driven by `driver.py`, which feeds chosen guide subsets to `verify`.
+//!
+//! A stdin/stdout filter that touches no files: `driver.py` owns all file I/O.
+//! It reads `args.json` (for `--language` and the eqsat flags, both on argv) and
+//! the goal-enriched `terms.json`, then passes this binary a single seed's
+//! per-seed replay inputs (`seed`, `guide_iters`, `max_size`, `goals`) as a JSON
+//! request on stdin. The `SeedSamples` record is printed as a one-element JSON
+//! array to stdout (empty array on failure); all logging goes to stderr.
 
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::BufWriter;
-use std::path::{Path, PathBuf};
+use std::io::Read;
 
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
-use serde::Serialize;
+use serde::Deserialize;
 use time::OffsetDateTime;
 
-use rise_distance::cli::sample::{
-    GoalGenMetadata, GuideExpr, SeedSamples, Strategy, read_enriched_terms,
-};
-use rise_distance::cli::{get_run_folder, read_folder_args, read_folder_language, write_config};
+use rise_distance::cli::{EqsatArgs, GuideExpr, SeedSamples, Strategy};
 use rise_distance::eqsat::{EqsatConfig, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::sampling::{PrecomputePackage, TermSampleDist};
 use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
 
-#[derive(Parser, Serialize)]
+#[derive(Parser)]
 #[command(
-    about = "Sample the guide-candidate menu per seed/goal pair (feeds driver.py)",
+    about = "Sample the guide-candidate menu for one seed/goal pair (feeds driver.py)",
     after_help = "\
+Reads a JSON `SampleRequest` on stdin (per-seed replay inputs) and prints a
+one-element `[SeedSamples]` array to stdout (empty on failure); logs go to
+stderr. `--language` and the eqsat limits come from argv. `driver.py` parses
+terms.json and fans these out.
 Example:
-  # Pre-generate goals first:
-  goal data/seed_terms/dusky-cramp --goals 10
-  # Then sample the guide menu for one seed (driver.py fans these out):
-  sample --seed-index 0 data/seed_terms/dusky-cramp
+  echo '{\"seed\":\"(+ x 0)\",\"guide_iters\":38,\"max_size\":24,\"goals\":[...]}' \\
+    | sample --language math --max-iters 200 --max-nodes 1000000 --max-time 10 \\
+      --backoff-scheduler
 "
 )]
 struct Args {
-    /// Folder containing `terms.json` (enriched by `goal`) and `args.json`.
-    path: PathBuf,
+    /// Which language's rules to run under (from the folder's `args.json`).
+    #[arg(long)]
+    language: AvailableLanguages,
+
+    #[command(flatten)]
+    eqsat: EqsatArgs,
 
     /// How to distribute the guide sample budget across sizes.
     #[arg(long, default_value_t = TermSampleDist::GREEDY)]
     size_distribution: TermSampleDist,
-
-    /// Output folder (generated if omitted).
-    #[arg(short, long)]
-    output: Option<String>,
-
-    /// Which seed to sample, as a 0-based index into the flattened seed list
-    /// (see `read_enriched_terms` for the ordering). Exactly one seed is
-    /// processed per invocation; `driver.py` fans these out across parallel
-    /// subprocesses, one per seed.
-    #[arg(long)]
-    seed_index: usize,
 
     /// How many guide candidates to draw per sampling strategy. The menu must be
     /// large enough for the driver to pick its widest `k` and to reshuffle
@@ -75,113 +73,102 @@ struct Args {
     sample_sizes: usize,
 }
 
-fn main() {
-    let args = Args::parse();
-    let eqsat = read_folder_args(&args.path);
-    let language = read_folder_language(&args.path);
-
-    let prefix = format!("iters-{}", eqsat.max_iters);
-    let run_folder = get_run_folder(args.output.as_deref(), "guide_samples", &prefix);
-
-    println!("Starting at {}", OffsetDateTime::now_local().unwrap());
-    println!("Run folder: {}", run_folder.to_string_lossy());
-    println!("Input folder: {}", args.path.display());
-    println!("Language: {language:?}");
-    println!("Distribution: {}", args.size_distribution);
-
-    let samples_path = run_folder.join("samples.json");
-    let count = match language {
-        AvailableLanguages::Diospyros => main_inner::<_, ()>(
-            &args,
-            &eqsat,
-            &diospyros::rules(false, false),
-            &samples_path,
-        ),
-        AvailableLanguages::Math => {
-            main_inner::<_, math::ConstantFold>(&args, &eqsat, &math::rules(), &samples_path)
-        }
-        AvailableLanguages::Prop => {
-            main_inner::<_, prop::ConstantFold>(&args, &eqsat, &prop::rules(), &samples_path)
-        }
-    };
-    write_config(&run_folder, &args);
-
-    println!(
-        "\nWrote {count} seed record(s) to {}",
-        samples_path.display()
-    );
-    println!("Finished at {}", OffsetDateTime::now_local().unwrap());
+/// One seed's replay inputs, read from stdin as JSON. These are exactly the
+/// fields `sample` used to pull out of the goal-enriched `terms.json`; the
+/// driver now parses that file and passes them here.
+#[derive(Deserialize)]
+struct SampleRequest {
+    /// The seed s-expression to replay the guide phase from.
+    seed: String,
+    /// Guide-phase iteration count recorded by `goal`; the replay runs to
+    /// exactly this many iters.
+    guide_iters: usize,
+    /// `max_size` recorded by `goal`, copied straight onto the output record.
+    max_size: usize,
+    /// Lowered goal s-expressions recorded by `goal`, passed through to output.
+    goals: Vec<String>,
 }
 
-/// Sample every seed for one concrete language and write the `SeedSamples`
-/// records to `samples_path`. Returns how many records were written. The output
-/// is written here (rather than returned) because the `SeedSamples<L>` type is
-/// language-specific and the caller's `match` arms can't unify on it.
-fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
-    args: &Args,
-    eqsat: &EqsatConfig,
-    rules: &[Rewrite<L, N>],
-    samples_path: &Path,
-) -> usize {
-    let seeds = read_enriched_terms::<BigUint>(&args.path);
-    let i = args.seed_index;
-    let (seed_str, payload) = seeds.get(i).unwrap_or_else(|| {
-        panic!(
-            "--seed-index {i} out of range (folder has {} seeds)",
-            seeds.len()
-        )
-    });
-    println!("Processing seed {i} of {} total", seeds.len());
+fn main() {
+    let args = Args::parse();
 
-    let mut out = Vec::new();
-    match payload {
-        Err(e) => {
-            println!("\n=== Seed {i} : {seed_str} SKIPPED (failed in goal stage with {e}) ===");
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .expect("read sample request from stdin");
+    let request: SampleRequest = serde_json::from_str(&buf).expect("parse sample request JSON");
+
+    eprintln!("Starting at {}", OffsetDateTime::now_local().unwrap());
+    eprintln!("Language: {:?}", args.language);
+    eprintln!("Distribution: {}", args.size_distribution);
+    eprintln!("Seed: {}", request.seed);
+
+    match args.language {
+        AvailableLanguages::Diospyros => {
+            main_inner::<_, ()>(&args, &request, &diospyros::rules(false, false));
         }
-        Ok(ok) => {
-            println!(
-                "\n=== Seed {i}: {seed_str} (max_size={}, guide_iters={}) ===",
-                ok.max_size, ok.guide_egraph.iters
-            );
-            match sample_seed(args, eqsat, seed_str, ok, rules) {
-                Ok(record) => out.push(record),
-                Err(e) => println!("ERROR OCCURRED:\n{e}"),
-            }
-            println!("Finished seed at {}", OffsetDateTime::now_local().unwrap());
+        AvailableLanguages::Math => {
+            main_inner::<_, math::ConstantFold>(&args, &request, &math::rules());
+        }
+        AvailableLanguages::Prop => {
+            main_inner::<_, prop::ConstantFold>(&args, &request, &prop::rules());
         }
     }
 
-    let file = File::create(samples_path).expect("create samples.json");
-    serde_json::to_writer(BufWriter::new(file), &out).expect("write samples.json");
-    out.len()
+    eprintln!("Finished at {}", OffsetDateTime::now_local().unwrap());
+}
+
+/// Sample the requested seed for one concrete language and print the
+/// `SeedSamples` record as a one-element JSON array to stdout (empty array on
+/// failure). The output is emitted here (rather than returned) because the
+/// `SeedSamples<L>` type is language-specific and the caller's `match` arms
+/// can't unify on it; the JSON bytes are type-erased on the wire.
+fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
+    args: &Args,
+    request: &SampleRequest,
+    rules: &[Rewrite<L, N>],
+) {
+    eprintln!(
+        "\n=== Seed: {} (max_size={}, guide_iters={}) ===",
+        request.seed, request.max_size, request.guide_iters
+    );
+
+    let mut out = Vec::new();
+    match sample_seed(args, request, rules) {
+        Ok(record) => out.push(record),
+        Err(e) => eprintln!("ERROR OCCURRED:\n{e}"),
+    }
+    eprintln!("Finished seed at {}", OffsetDateTime::now_local().unwrap());
+
+    serde_json::to_writer(std::io::stdout(), &out).expect("write samples JSON");
+    println!();
 }
 
 fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
-    eqsat: &EqsatConfig,
-    seed_str: &str,
-    payload: &GoalGenMetadata<BigUint>,
+    request: &SampleRequest,
     rules: &[Rewrite<L, N>],
 ) -> Result<SeedSamples<L>, String> {
-    let seed_expr = seed_str
+    let seed_expr = request
+        .seed
         .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse seed '{seed_str}': {e}"));
+        .unwrap_or_else(|e| panic!("Failed to parse seed '{}': {e}", request.seed));
 
-    // Replay the guide phase with the recorded iteration count.
+    // Replay the guide phase with the recorded iteration count, under the same
+    // eqsat config `goal` ran so the replay matches the stored `guide_iters`.
     let replay_config = EqsatConfig {
-        max_iters: payload.guide_egraph.iters,
-        ..*eqsat
+        max_iters: request.guide_iters,
+        ..args.eqsat.into()
     };
-    eqsat.warn_on_config_drift(&payload.eqsat_config);
 
     let result = run_eqsat(&seed_expr, rules.iter(), &replay_config).ok_or("Eqsat failed")?;
-    println!("Guide replay stop reason: {:?}", result.stop_reason());
+    eprintln!("Guide replay stop reason: {:?}", result.stop_reason());
 
     let guide_nodes = result.curr().total_number_of_nodes();
     let guide_classes = result.curr().classes().len();
     let guide_iters = result.data().len();
     let guide_time = result.data().iter().map(|i| i.total_time).sum();
-    println!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
+    eprintln!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
 
     let mut root_log = String::new();
 
@@ -200,9 +187,9 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
             args.max_retries, tried_max_size
         )
     })?;
-    println!("PC computation succeeded with max_size {max_size}!");
+    eprintln!("PC computation succeeded with max_size {max_size}!");
     pc.log_root(&mut root_log);
-    print!("{root_log}");
+    eprint!("{root_log}");
 
     let mut candidates = BTreeMap::new();
     for strategy in Strategy::ALL {
@@ -214,10 +201,10 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     }
 
     Ok(SeedSamples {
-        seed: seed_str.to_owned(),
-        goals: payload.goals.clone(),
+        seed: request.seed.clone(),
+        goals: request.goals.clone(),
         candidates,
-        max_size: payload.max_size,
+        max_size: request.max_size,
         guide_nodes,
         guide_classes,
         guide_iters,

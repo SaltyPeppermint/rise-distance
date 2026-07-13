@@ -1,12 +1,14 @@
-//! Shared types and helpers for the `sample` / `verify` split of the guide
-//! experiment. `sample` replays the guide-phase eqsat, samples the six-strategy
-//! guide-candidate menu, and writes it as `samples.json`; `driver.py` then feeds
-//! chosen subsets back to `verify` one leg at a time.
+//! Shared CLI + wire types for the `goal` / `sample` / `verify` split of the
+//! guide experiment. The three binaries touch no files: the Python drivers
+//! (`goal_driver.py` / `driver.py`) own all I/O, passing eqsat limits and
+//! language on argv ([`EqsatArgs`]) and per-seed/per-leg data as the JSON
+//! records defined here. `goal` records [`GoalGenMetadata`] into `terms.json`;
+//! `sample` emits [`SeedSamples`] (guide menus of [`GuideExpr`], one pool per
+//! [`Strategy`]); `driver.py` feeds chosen subsets back to `verify`.
 
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::path::Path;
 
+use clap::Args;
 use egg::RecExpr;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
@@ -16,7 +18,40 @@ use crate::eqsat::{EqsatConfig, EqsatMetadata};
 use crate::sampling::SampleStrategy;
 use crate::{MyLanguage, OriginLang};
 
-/// The six guide-sampling strategies. Sampling variants always draw novel
+/// Eqsat resource limits shared by the `goal` / `sample` / `verify` binaries as
+/// CLI flags. The Python drivers read these four values out of the folder's
+/// `args.json` and forward them on argv, so the binaries never touch a file.
+#[derive(Args, Clone, Copy)]
+pub struct EqsatArgs {
+    /// Maximum eqsat iterations.
+    #[arg(long)]
+    pub max_iters: usize,
+
+    /// Maximum eqsat egraph nodes.
+    #[arg(long)]
+    pub max_nodes: usize,
+
+    /// Maximum eqsat wall-clock seconds.
+    #[arg(long)]
+    pub max_time: f64,
+
+    /// Use the backoff scheduler instead of the simple one.
+    #[arg(long)]
+    pub backoff_scheduler: bool,
+}
+
+impl From<EqsatArgs> for EqsatConfig {
+    fn from(a: EqsatArgs) -> Self {
+        Self {
+            max_iters: a.max_iters,
+            max_nodes: a.max_nodes,
+            max_time: a.max_time,
+            backoff_scheduler: a.backoff_scheduler,
+        }
+    }
+}
+
+/// The four guide-sampling strategies. Sampling variants always draw novel
 /// terms; only `Smallest` exposes the novel/overall choice. Mirrors the enum
 /// that used to live in `guide.rs`.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -26,7 +61,7 @@ pub enum Strategy {
 }
 
 impl Strategy {
-    /// All six strategies, in the order `guide.rs` used.
+    /// All four strategies, in the order `guide.rs` used.
     pub const ALL: [Strategy; 4] = [
         Strategy::Sample(SampleStrategy::Count),
         Strategy::Sample(SampleStrategy::Naive),
@@ -81,10 +116,10 @@ impl<L: MyLanguage> GuideExpr<L> {
     }
 }
 
-/// A per-seed sampling record written to `samples.json`. Carries the goal menu
-/// (lowered s-expression strings, as stored by `goal`) and, per strategy, the
-/// guide candidates Python may restart with, plus enough replay metadata for
-/// Python's logging.
+/// A per-seed sampling record `sample` prints to stdout (which `driver.py`
+/// collects into `samples.json`). Carries the goal menu (lowered s-expression
+/// strings, as stored by `goal`) and, per strategy, the guide candidates Python
+/// may restart with, plus enough replay metadata for Python's logging.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(bound = "L: MyLanguage")]
 pub struct SeedSamples<L: MyLanguage> {
@@ -104,49 +139,14 @@ pub struct SeedSamples<L: MyLanguage> {
     pub stop_reason: String,
 }
 
-/// Read enriched `terms.json`. Returns a flat list in deterministic order
-/// (groups in JSON order, terms within each group sorted alphabetically) so
-/// `--take-first` is stable across runs. Lifted verbatim from `guide.rs`.
-///
-/// # Panics
-///
-/// Panics if `terms.json` is missing or was not enriched by `goal` first.
-#[must_use]
-pub fn read_enriched_terms<C: Counter>(folder: &Path) -> Vec<(String, EnrichedSeed<C>)> {
-    let path = folder.join("terms.json");
-    let file =
-        File::open(&path).unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
-
-    // Read directly into a typed schema. Going via `serde_json::Value` first
-    // would force HashMap<usize, _> keys through string → usize conversion
-    // that `from_value` doesn't do. The inner map is a BTreeMap so its
-    // iteration order is deterministic; a HashMap here would make
-    // `--take-first` pick a different subset each run.
-    let groups: Vec<(usize, BTreeMap<String, EnrichedSeed<C>>)> = serde_json::from_reader(file)
-        .unwrap_or_else(|e| {
-            panic!(
-                "Failed to parse {}: {e}. Did you run `goal` on this folder first?",
-                path.display()
-            )
-        });
-
-    groups
-        .into_iter()
-        .flat_map(|(_size, inner)| inner)
-        .collect()
-}
-
-/// Per-seed payload written by `goal` and consumed by `sample`. Stored as the
-/// value slot in `terms.json` (one entry per seed s-expression). Serializes via
-/// `Result`'s `{"Ok": ..}` / `{"Err": ..}` shape.
-pub type EnrichedSeed<C> = Result<GoalGenMetadata<C>, String>;
-
+/// Per-seed payload written by `goal` into the value slot of `terms.json` (one
+/// entry per seed s-expression). Serializes via `Result`'s `{"Ok": ..}` /
+/// `{"Err": ..}` shape (`goal` returns a `Result<GoalGenMetadata, String>`).
+/// `driver.py` parses the enriched `terms.json` and feeds each `Ok` seed's
+/// replay inputs to `sample` on stdin.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(bound(serialize = "C: Counter", deserialize = "C: Counter"))]
 pub struct GoalGenMetadata<C: Counter> {
-    /// Snapshot of the `EqsatConfig` that `goal` ran under. `guide` compares
-    /// this against its current `args.json` to detect config drift.
-    pub eqsat_config: EqsatConfig,
     pub max_size: usize,
     pub goals: Vec<String>,
     /// Histogram of novel root extractions by size. Keys are size-as-string
