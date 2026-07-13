@@ -53,6 +53,12 @@ struct Args {
     #[arg(long)]
     take_first: Option<usize>,
 
+    /// Skip seeds whose heap measurement (`peak_memory_bytes`, the third
+    /// element of each `terms.json` record) is missing or `-1` (measurement
+    /// failed). Off by default, so every seed is processed.
+    #[arg(long, default_value_t = true)]
+    skip_unmeasured: bool,
+
     /// How much to grow `max_size` on each precompute retry.
     #[arg(long, default_value_t = 5)]
     retry_step: usize,
@@ -110,7 +116,19 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(
     eqsat: &EqsatConfig,
     rules: &[Rewrite<L, N>],
 ) {
-    let seeds = parse_seeds::<L>(SeedInput::JSON(args.path.join("terms.json")));
+    let all_seeds = parse_seeds::<L>(SeedInput::JSON(args.path.join("terms.json")), false);
+    let total_seeds = all_seeds.len();
+    let seeds: Vec<_> = if args.skip_unmeasured {
+        parse_seeds::<L>(SeedInput::JSON(args.path.join("terms.json")), true)
+    } else {
+        all_seeds
+    };
+    if args.skip_unmeasured {
+        println!(
+            "Skipping {} unmeasured seed(s) (peak_memory_bytes missing or -1)",
+            total_seeds - seeds.len()
+        );
+    }
     let take_n = args.take_first.unwrap_or(seeds.len()).min(seeds.len());
     println!("Distribution: {}", args.size_distribution);
     println!("Seeds to process: {} (of {} total)", take_n, seeds.len());
@@ -308,11 +326,19 @@ pub enum SeedInput {
 
 /// Parse a `SeedInput` into a list of `(seed_string, parsed_expr, max_size)` triples.
 ///
+/// When `skip_unmeasured` is set, seeds whose `peak_memory_bytes` (the third
+/// element of the `terms.json` record `[attempts, validation, peak]`) is
+/// missing or `-1` are dropped. It has no effect on a single-term input, which
+/// carries no measurement.
+///
 /// # Panics
 ///
 /// Panics on malformed seed expressions or unreadable JSON files.
 #[must_use]
-pub fn parse_seeds<L: MyLanguage>(input: SeedInput) -> Vec<(String, RecExpr<L>, usize)> {
+pub fn parse_seeds<L: MyLanguage>(
+    input: SeedInput,
+    skip_unmeasured: bool,
+) -> Vec<(String, RecExpr<L>, usize)> {
     match input {
         SeedInput::Single { term, max_size } => {
             let expr = term
@@ -339,8 +365,9 @@ pub fn parse_seeds<L: MyLanguage>(input: SeedInput) -> Vec<(String, RecExpr<L>, 
                     pair[1]
                         .as_object()
                         .expect("Expected term object as second element")
-                        .keys()
-                        .map(move |term| {
+                        .iter()
+                        .filter(move |(_, record)| !skip_unmeasured || is_measured(record))
+                        .map(move |(term, _)| {
                             let expr = term
                                 .parse::<RecExpr<L>>()
                                 .unwrap_or_else(|e| panic!("Failed to parse seed '{term}': {e}"));
@@ -350,4 +377,15 @@ pub fn parse_seeds<L: MyLanguage>(input: SeedInput) -> Vec<(String, RecExpr<L>, 
                 .collect()
         }
     }
+}
+
+/// True iff the seed `record` (`[attempts, validation, peak_memory_bytes]`)
+/// carries a successful heap measurement — a third element present and not the
+/// `-1` failure sentinel.
+fn is_measured(record: &serde_json::Value) -> bool {
+    record
+        .as_array()
+        .and_then(|r| r.get(2))
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|peak| peak >= 0)
 }
