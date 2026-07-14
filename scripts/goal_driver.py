@@ -15,8 +15,6 @@ Example:
         --goals 10 --jobs 8
 """
 
-from __future__ import annotations
-
 import dataclasses
 import json
 import os
@@ -83,10 +81,14 @@ def language_eqsat_flags(path: Path) -> list[str]:
     """
     cfg = json.loads((path / "args.json").read_text())
     flags = [
-        "--language", str(cfg["language"]),
-        "--max-iters", str(cfg["max_iters"]),
-        "--max-nodes", str(cfg["max_nodes"]),
-        "--max-time", str(cfg["max_time"]),
+        "--language",
+        str(cfg["language"]),
+        "--max-iters",
+        str(cfg["max_iters"]),
+        "--max-nodes",
+        str(cfg["max_nodes"]),
+        "--max-time",
+        str(cfg["max_time"]),
     ]
     if cfg["backoff_scheduler"]:
         flags.append("--backoff-scheduler")
@@ -97,8 +99,10 @@ def is_measured(record: object) -> bool:
     """A record `[attempts, validation, peak]` is measured iff its third element
     is present and not the -1 failure sentinel."""
     return (
-        isinstance(record, list) and len(record) > 2
-        and isinstance(record[2], int) and record[2] >= 0
+        isinstance(record, list)
+        and len(record) > 2
+        and isinstance(record[2], int)
+        and record[2] >= 0
     )
 
 
@@ -191,9 +195,7 @@ def write_enriched_terms(path: Path, enriched: dict[str, object]) -> int:
     groups = json.loads(path.read_text())
     out_groups = []
     for size, terms_map in groups:
-        new_inner = {
-            term: enriched[term] for term in terms_map if term in enriched
-        }
+        new_inner = {term: enriched[term] for term in terms_map if term in enriched}
         if new_inner:
             out_groups.append([size, new_inner])
 
@@ -218,8 +220,7 @@ def main() -> int:
 
     if not args.goal_binary.exists():
         print(
-            f"Binary not found: {args.goal_binary}. "
-            "Build with `cargo build --release --bin goal`.",
+            f"Binary not found: {args.goal_binary}. Build with `cargo build --release --bin goal`.",
             file=sys.stderr,
         )
         return 2

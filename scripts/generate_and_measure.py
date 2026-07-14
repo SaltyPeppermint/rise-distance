@@ -18,8 +18,6 @@ directory is created (collision-retry against existing siblings). The output
 into the directory.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import json
 import os
@@ -204,7 +202,7 @@ def main() -> int:
                 timeout=timeout,
             )
             return int(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else -1
-        except (subprocess.TimeoutExpired, ValueError, IndexError):
+        except subprocess.TimeoutExpired, ValueError, IndexError:
             return -1
 
     # big_collector is [[size, {term_str: [attempts, validation_result]}], ...].

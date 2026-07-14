@@ -17,8 +17,6 @@ Example:
         --strategy no_replacement_count --full-union
 """
 
-from __future__ import annotations
-
 import dataclasses
 import json
 import os
@@ -138,10 +136,14 @@ def language_eqsat_flags(path: Path) -> list[str]:
     """
     cfg = json.loads((path / "args.json").read_text())
     flags = [
-        "--language", str(cfg["language"]),
-        "--max-iters", str(cfg["max_iters"]),
-        "--max-nodes", str(cfg["max_nodes"]),
-        "--max-time", str(cfg["max_time"]),
+        "--language",
+        str(cfg["language"]),
+        "--max-iters",
+        str(cfg["max_iters"]),
+        "--max-nodes",
+        str(cfg["max_nodes"]),
+        "--max-time",
+        str(cfg["max_time"]),
     ]
     if cfg["backoff_scheduler"]:
         flags.append("--backoff-scheduler")
