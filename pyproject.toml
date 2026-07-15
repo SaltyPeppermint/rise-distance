@@ -29,3 +29,7 @@ url = "https://download.pytorch.org/whl/cu132"
 
 [tool.ruff]
 line-length = 100
+src = [".", "analysis", "ranker", "scripts"]
+
+[tool.ty.environment]
+extra-paths = ["analysis", "ranker", "scripts"]
