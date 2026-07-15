@@ -84,8 +84,11 @@ def band_vs_k(
     group_by: Sequence[str] = (),
     group_reduce: str = "min",
     overlay_by: str | None = None,
+    columns: int = 3,
 ) -> alt.Chart:
-    """Median line + 25-75 IQR band of `value` vs k, one column per metric.
+    """Median line + 25-75 IQR band of `value` vs k, one facet per metric.
+
+    Metric facets wrap after `columns` per row (default 3).
 
     `df` is long with columns `mode`, `k`, `metric`, and `value`. Callers that
     start from the wide tidy frame melt the relevant `r_<metric>`/cost columns
@@ -180,7 +183,7 @@ def band_vs_k(
 
     return (
         alt.layer(*layers, data=data)
-        .facet(column=alt.Column("metric:N", title=None, sort=list(metrics)))
+        .facet(facet=alt.Facet("metric:N", title=None, sort=list(metrics)), columns=columns)
         .properties(title=_title(title, meta))
         .resolve_scale(y="independent")
     )
@@ -269,8 +272,10 @@ def cost_boxplots(df: pl.DataFrame, meta: dict, metrics: Sequence[str]) -> alt.C
     )
 
 
-def reach_heatmap(gr: pl.DataFrame, meta: dict) -> alt.Chart:
+def reach_heatmap(gr: pl.DataFrame, meta: dict, columns: int = 3) -> alt.Chart:
     """Goal × k reachability heatmap, faceted by mode (hardest goals at top).
+
+    Mode facets wrap after `columns` per row (default 3).
 
     Goals are ranked per mode by mean reach_rate, and that rank is the y position.
     Hundreds of goals in a few hundred pixels means each row is sub-pixel, so an
@@ -308,6 +313,6 @@ def reach_heatmap(gr: pl.DataFrame, meta: dict) -> alt.Chart:
             tooltip=["mode:N", "goal:N", "k:O", alt.Tooltip("reach_rate:Q", format=".0%")],
         )
         .properties(width=180, height=420)
-        .facet(column=alt.Column("mode:N", title=None))
+        .facet(facet=alt.Facet("mode:N", title=None), columns=columns)
         .properties(title=_title("Goal-level reachability heatmap", meta))
     )
