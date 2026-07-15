@@ -6,8 +6,10 @@ import polars as pl
 
 
 def find_latest_run(pattern: str = "run", subdir: str = "guide_driver") -> Path:
-    """Find the most recently modified run directory matching `pattern` under
-    `data/<subdir>` (defaults to `guide_driver`, where `driver.py` writes)."""
+    """Return the newest run directory matching `pattern` under `data/<subdir>`.
+
+    `subdir` defaults to `guide_driver`, where `driver.py` writes.
+    """
     data_dir = Path(__file__).parent / ".." / "data" / subdir
     candidates = sorted(
         [f for f in data_dir.iterdir() if f.is_dir() and pattern in f.name],
@@ -18,36 +20,23 @@ def find_latest_run(pattern: str = "run", subdir: str = "guide_driver") -> Path:
     return candidates[-1]
 
 
-STOP_REASON_CATEGORIES = ("Saturated", "IterationLimit", "NodeLimit", "TimeLimit", "Other")
-
-
-def stop_reason_category(s: str | None) -> str | None:
-    """Map a StopReason debug string (e.g. 'IterationLimit(30)', 'Saturated') to its variant name."""
-    if s is None:
-        return None
-    for cat in STOP_REASON_CATEGORIES:
-        if s.startswith(cat):
-            return cat
-    return "Other"
-
-
 def load_driver_run(run_dir: Path, adjust_guide_overhead: bool = True) -> pl.DataFrame:
     """Load a `driver.py` run's `results.parquet` into a flat DataFrame.
 
-    The parquet is already one row per leg with columns::
+    The parquet is one row per leg with columns::
 
         seed, goal, strategy, k, attempt, reached, gave_up, iters,
         nodes, classes, total_applied, total_time, stop_reason, panic,
         guide_nodes, guide_classes, guide_time
 
-    When `adjust_guide_overhead` is set, the per-leg cost is folded together with
-    the guide-phase replay it built on (mirrors the old `load_top_k`):
+    With `adjust_guide_overhead`, each leg's cost includes the guide-phase
+    replay it built on:
 
       - nodes   = max(leg_nodes, guide_nodes)
       - classes = max(leg_classes, guide_classes)
       - total_time += guide_time
 
-    Null cost columns (unreached / empty-pool / panic legs) are left null.
+    Null cost columns (unreached, empty-pool, or panic legs) stay null.
     """
     df = pl.read_parquet(run_dir / "results.parquet")
     if not adjust_guide_overhead:
@@ -69,51 +58,65 @@ def load_driver_run(run_dir: Path, adjust_guide_overhead: bool = True) -> pl.Dat
     )
 
 
-def load_baseline(run_dir: Path) -> dict[str, float]:
-    """Load the unguided full-eqsat baseline for a `driver.py` run.
+def load_baseline_per_seed(run_dir: Path) -> dict[str, dict[str, float]]:
+    """Load the unguided full-eqsat baseline for each seed of a `driver.py` run.
 
     The run's `config.json` points (via `path`) at the seed-terms folder, whose
-    `terms.json` carries a per-seed `goal_egraph` block — the full eqsat on the
-    seed with no guides. We average those metrics over the successfully-measured
-    seeds (`Ok` payloads; `Err` seeds are skipped), mirroring the old
-    `metadata.json` baseline.
+    `terms.json` carries a per-seed `goal_egraph` block: the full eqsat on the
+    seed with no guides. This keeps the per-seed grain, so each guided leg can be
+    compared against its own seed's unguided cost (all goals under a seed share
+    that seed's baseline). `Err` seeds are skipped.
 
-    Returns a dict with keys: nodes, total_time, iters, classes, nodes_per_class.
+    Returns ``{seed_term: {nodes, total_time, iters, classes, nodes_per_class}}``.
+    The seed key matches the `seed` column of `load_driver_run`.
     """
     config = json.loads((run_dir / "config.json").read_text())
-    # config's `path` is repo-relative; resolve it against the repo root (the
-    # parent of this file's `analysis/` directory).
+    # config's `path` is repo-relative; resolve it against the repo root.
     repo_root = Path(__file__).parent / ".."
     terms = json.loads((repo_root / config["path"] / "terms.json").read_text())
 
-    egraphs = [
-        payload["Ok"]["goal_egraph"]
-        for _size, inner in terms
-        for payload in inner.values()
-        if "Ok" in payload
-    ]
-    if not egraphs:
+    per_seed: dict[str, dict[str, float]] = {}
+    for _size, inner in terms:
+        for seed, payload in inner.items():
+            if "Ok" not in payload:
+                continue
+            e = payload["Ok"]["goal_egraph"]
+            per_seed[seed] = {
+                "nodes": e["nodes"],
+                "total_time": e["time"],
+                "iters": e["iters"],
+                "classes": e["classes"],
+                "nodes_per_class": e["nodes"] / e["classes"],
+            }
+    if not per_seed:
         raise ValueError(f"No Ok seeds with a goal_egraph baseline in {config['path']}")
+    return per_seed
 
-    n = len(egraphs)
-    node_avg = sum(e["nodes"] for e in egraphs) / n
-    classes_avg = sum(e["classes"] for e in egraphs) / n
-    return {
-        "nodes": node_avg,
-        "total_time": sum(e["time"] for e in egraphs) / n,
-        "iters": sum(e["iters"] for e in egraphs) / n,
-        "classes": classes_avg,
-        "nodes_per_class": node_avg / classes_avg,
-    }
+
+def load_baseline(run_dir: Path) -> dict[str, float]:
+    """Load the unguided full-eqsat baseline for a `driver.py` run, averaged over
+    seeds.
+
+    Scalar wrapper over `load_baseline_per_seed`: averages each metric over the
+    measured seeds. For baseline comparisons, prefer the per-seed version, since
+    averaging the guided cost and its reference separately drops the seed-level
+    pairing.
+
+    Returns a dict with keys: nodes, total_time, iters, classes, nodes_per_class.
+    """
+    per_seed = load_baseline_per_seed(run_dir)
+    metrics = next(iter(per_seed.values())).keys()
+    n = len(per_seed)
+    return {m: sum(b[m] for b in per_seed.values()) / n for m in metrics}
 
 
 def compute_goal_reach(df: pl.DataFrame) -> pl.DataFrame:
-    """Per-goal×k reachability aggregation.
+    """Per-goal x k reachability aggregation.
 
     `driver.py` re-samples on failure rather than emitting sampling-failure
     trials, so the only "couldn't sample" case is an empty candidate pool
     (`stop_reason == "empty_pool"`). `cond_reach_rate` excludes those legs from
-    the denominator: "given we could sample k guides, did we reach the goal?"
+    the denominator: given we could sample k guides, did we reach the goal?
     """
     empty_pool = pl.col("stop_reason") == "empty_pool"
     return (
@@ -149,31 +152,44 @@ def compute_goal_reach_matrix(df: pl.DataFrame, k_values: list[int]) -> tuple[li
     return goal_order, matrix
 
 
-def compute_war_agg(df: pl.DataFrame, baseline: dict[str, float], metrics: list[str]) -> list[dict]:
-    """Compute WAR (baseline - guided) rows per k for each metric.
+def compute_best_ratio_per_goal(
+    df: pl.DataFrame,
+    per_seed_baseline: dict[str, dict[str, float]],
+    metrics: list[str],
+) -> pl.DataFrame:
+    """Per-goal best-guide cost relative to that goal's own seed baseline.
 
-    Returns a list of dicts with keys: k, plus for each metric
-    '{metric}_war' (mean) and 'best_{metric}_war' (per-seed best, then averaged).
+    For a given goal at a given k, how much did the best of all sampled guides
+    improve over the unguided baseline? For every reached leg we form
+    ``ratio = metric / seed_baseline[metric]`` (joined on `seed`), then per
+    (goal, k) keep the minimum ratio: the single best guide for that goal.
+    ``ratio < 1`` means the best guide beats unguided; ``1`` is break-even.
+
+    Returns a long DataFrame with one row per (goal, k, metric) and columns
+    ``goal, k, metric, best_ratio``. The plot handles cross-goal summarisation
+    (median + IQR). Legs whose seed lacks an Ok baseline, or whose metric is
+    null, are dropped before the per-goal min, so a goal's best comes only from
+    guides that reached it.
     """
-    agg = (
-        df.group_by("k")
-        .agg([pl.col(m).mean().alias(f"mean_{m}") for m in metrics])
-        .sort("k")
-        .drop_nulls([f"mean_{m}" for m in metrics])
-    )
-    best_agg = (
-        df.group_by("k", "seed")
-        .agg([pl.col(m).min().alias(f"seed_best_{m}") for m in metrics])
-        .group_by("k")
-        .agg([pl.col(f"seed_best_{m}").mean().alias(f"best_{m}") for m in metrics])
-        .sort("k")
-        .drop_nulls([f"best_{m}" for m in metrics])
-    )
-    rows = []
-    for row, best_row in zip(agg.iter_rows(named=True), best_agg.iter_rows(named=True)):
-        entry: dict = {"k": row["k"]}
-        for m in metrics:
-            entry[f"{m}_war"] = baseline[m] - row[f"mean_{m}"]
-            entry[f"best_{m}_war"] = baseline[m] - best_row[f"best_{m}"]
-        rows.append(entry)
-    return rows
+    parts = []
+    for m in metrics:
+        base = pl.DataFrame(
+            {
+                "seed": list(per_seed_baseline.keys()),
+                "_base": [b[m] for b in per_seed_baseline.values()],
+            }
+        )
+        part = (
+            df.join(base, on="seed", how="inner")
+            .filter(pl.col(m).is_not_null() & (pl.col("_base") > 0))
+            .with_columns((pl.col(m) / pl.col("_base")).alias("ratio"))
+            .group_by("goal", "k")
+            .agg(pl.col("ratio").min().alias("best_ratio"))
+            .with_columns(pl.lit(m).alias("metric"))
+        )
+        parts.append(part)
+    if not parts:
+        return pl.DataFrame(
+            schema={"goal": pl.Utf8, "k": pl.Int64, "metric": pl.Utf8, "best_ratio": pl.Float64}
+        )
+    return pl.concat(parts).select("goal", "k", "metric", "best_ratio")
