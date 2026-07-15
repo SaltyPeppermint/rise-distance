@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -11,6 +12,9 @@ from transformers import (
     AutoTokenizer,
     PreTrainedTokenizerFast,
 )
+
+if TYPE_CHECKING:
+    import polars as pl
 
 
 class GuideRanker(nn.Module):
@@ -56,6 +60,21 @@ class GuideRanker(nn.Module):
         batch_idx = torch.arange(hidden.size(0), device=hidden.device)
         pooled = hidden[batch_idx, seq_lengths]
         return self.head(pooled.float())
+
+
+def load_guide_eval(path: Path) -> "pl.DataFrame":
+    """Load a guide-eval CSV file into a DataFrame.
+
+    Returns a DataFrame with columns:
+        goal, guide, zs_distance, structural_overlap, structural_zs_sum,
+        zs_rank, structural_rank, reached, iterations_to_reach
+    """
+    import polars as pl
+
+    df = pl.read_csv(path)
+    # Derive 'reached' from iterations_to_reach (null = not reached)
+    df = df.with_columns(pl.col("iterations_to_reach").is_not_null().alias("reached"))
+    return df
 
 
 def format_input(goal: str, guide: str) -> str:
