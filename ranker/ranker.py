@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import torch
 import torch.nn as nn
@@ -81,8 +81,11 @@ def format_input(goal: str, guide: str) -> str:
     return f"Goal: {goal}\nGuide: {guide}"
 
 
-def load_tokenizer(model_name: str) -> PreTrainedTokenizerFast:  # pyright: ignore[reportReturnType]
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+def load_tokenizer(model_name: str) -> PreTrainedTokenizerFast:
+    tokenizer = cast(
+        PreTrainedTokenizerFast,
+        AutoTokenizer.from_pretrained(model_name, trust_remote_code=True),
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     return tokenizer

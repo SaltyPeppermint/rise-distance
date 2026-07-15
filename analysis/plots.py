@@ -73,8 +73,8 @@ def plot_mean_with_best_dotted(
 
 
 def split_modes(
-    sampling_modes: list[tuple[str, str, bool]],
-) -> tuple[list[tuple[int, str, str, bool]], list[tuple[int, str, str, bool]]]:
+    sampling_modes: list[tuple[str, Path, bool]],
+) -> tuple[list[tuple[int, str, Path, bool]], list[tuple[int, str, Path, bool]]]:
     multi = [(i, n, p, s) for i, (n, p, s) in enumerate(sampling_modes) if not s]
     single = [(i, n, p, s) for i, (n, p, s) in enumerate(sampling_modes) if s]
     return multi, single
