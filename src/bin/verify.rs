@@ -3,14 +3,14 @@
 //!
 //! Stateless one-shot wrapper over [`verify_reachability`] — no guide egraph
 //! replay, no precompute. `driver.py` spawns this once per leg, passing the
-//! guide subset (as serialized [`GuideExpr`] node lists, origins intact) and the
-//! goal on stdin.
+//! guide subset (as serialized [`GuideExpr`] node lists, origins intact) on
+//! stdin and the goal on argv.
 
 use std::io::Read;
 
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use rise_distance::cli::GuideExpr;
 use rise_distance::eqsat::{EqsatConfig, Goal, GuideError, verify_reachability};
@@ -21,11 +21,11 @@ use rise_distance::{MyAnalysis, MyLanguage};
 #[command(
     about = "Run one search leg: union guides, saturate, report goal reachability",
     after_help = "\
-Reads a JSON `LegRequest` on stdin and prints a JSON `LegResult` on stdout.
-`--language` and the eqsat limits come from argv. Example:
-  echo '{\"full_union\":true,\"goal\":\"(+ x 0)\",\"guides\":[...]}' \\
-    | verify --language math --max-iters 200 --max-nodes 1000000 --max-time 10 \\
-      --backoff-scheduler
+Reads the guide subset as a JSON array on stdin and prints a JSON `LegResult`
+on stdout. `--goal`, `--language`, and the eqsat limits come from argv. Example:
+  echo '[...]' \\
+    | verify --language math --goal '(+ x 0)' --max-iters 200 \\
+      --max-nodes 1000000 --max-time 10 --backoff-scheduler
 "
 )]
 struct Args {
@@ -33,21 +33,16 @@ struct Args {
     #[arg(long)]
     language: AvailableLanguages,
 
-    /// Use the experimental full-union add for the leg egraph.
+    /// The goal as a lowered s-expression string.
+    #[arg(long)]
+    goal: String,
+
+    /// Use the full-union add for the leg egraph.
     #[arg(long)]
     full_union: bool,
 
     #[command(flatten)]
     eqsat: EqsatConfig,
-}
-
-/// One leg request, read from stdin as JSON. `guides` are node lists so origins
-/// survive the round trip; `goal` is a lowered s-expression string.
-#[derive(Deserialize)]
-struct LegRequest {
-    goal: String,
-    /// Guide subset as raw JSON, parsed against the concrete language below.
-    guides: serde_json::Value,
 }
 
 /// One leg result, printed to stdout as JSON.
@@ -73,23 +68,22 @@ struct LegResult {
 fn main() {
     let args = Args::parse();
 
-    let mut buf = String::new();
+    // Guides come in on stdin as a JSON array of serialized `GuideExpr` node
+    // lists; they're parsed against the concrete language inside `run_leg`.
+    let mut guides_json = String::new();
     std::io::stdin()
-        .read_to_string(&mut buf)
-        .expect("read leg request from stdin");
-    let request: LegRequest = serde_json::from_str(&buf).expect("parse leg request JSON");
-
-    let eqsat = args.eqsat;
+        .read_to_string(&mut guides_json)
+        .expect("read guides from stdin");
 
     let result = match args.language {
         AvailableLanguages::Diospyros => {
-            run_leg::<_, ()>(&request, &args, &eqsat, &diospyros::rules(false, false))
+            run_leg::<_, ()>(&guides_json, &args, &diospyros::rules(false, false))
         }
         AvailableLanguages::Math => {
-            run_leg::<_, math::ConstantFold>(&request, &args, &eqsat, &math::rules())
+            run_leg::<_, math::ConstantFold>(&guides_json, &args, &math::rules())
         }
         AvailableLanguages::Prop => {
-            run_leg::<_, prop::ConstantFold>(&request, &args, &eqsat, &prop::rules())
+            run_leg::<_, prop::ConstantFold>(&guides_json, &args, &prop::rules())
         }
     };
 
@@ -98,26 +92,25 @@ fn main() {
 }
 
 fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
-    request: &LegRequest,
+    guides_json: &str,
     args: &Args,
-    eqsat: &EqsatConfig,
     rules: &[Rewrite<L, N>],
 ) -> LegResult {
     let guide_exprs: Vec<GuideExpr<L>> =
-        serde_json::from_value(request.guides.clone()).expect("parse guide node lists");
+        serde_json::from_str(guides_json).expect("parse guide node lists");
     assert!(!guide_exprs.is_empty(), "leg needs at least one guide");
     let guides: Vec<RecExpr<_>> = guide_exprs
         .into_iter()
         .map(GuideExpr::into_recexpr)
         .collect();
 
-    let goal_expr = request
+    let goal_expr = args
         .goal
         .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse goal '{}': {e}", request.goal));
+        .unwrap_or_else(|e| panic!("Failed to parse goal '{}': {e}", args.goal));
     let goal = Goal::Expr(goal_expr);
 
-    match verify_reachability(&guides, &goal, rules, eqsat, args.full_union) {
+    match verify_reachability(&guides, &goal, rules, &args.eqsat, args.full_union) {
         Ok((iterations, _target)) => {
             let last = iterations.last().expect("reached leg logged no iterations");
             LegResult {

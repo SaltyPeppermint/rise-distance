@@ -2,7 +2,8 @@
 
 Replaces the "second half" of the old `guide` binary. The Rust `sample` and
 `verify` binaries touch no files: `sample` takes everything on argv, `verify`
-takes per-leg inputs on stdin plus `--language`/eqsat limits on argv. This
+takes the per-leg guides on stdin plus `--goal`/`--language`/eqsat limits on
+argv. This
 driver owns all file I/O: it reads `args.json` (language, eqsat limits, and the
 optional guide-replay `stop_*` overrides), flattens the goal-enriched
 `terms.json` into per-seed specs, runs one `sample` subprocess per seed
@@ -338,19 +339,15 @@ def run_leg(
 ) -> dict:
     """Run one `verify` subprocess and return the parsed `LegResult`.
 
-    `verify` touches no files: the per-leg `goal`/`guides` go in on stdin, and
-    `--language`/`--full-union`/the eqsat flags on argv.
+    `verify` touches no files: the per-leg `guides` go in on stdin, and
+    `--goal`/`--language`/`--full-union`/the eqsat flags on argv.
     """
-    request = {
-        "goal": goal,
-        "guides": guides,
-    }
-    cmd = [str(args.verify_binary), *base_flags]
+    cmd = [str(args.verify_binary), *base_flags, "--goal", goal]
     if args.full_union:
         cmd.append("--full-union")
     proc = subprocess.run(
         cmd,
-        input=json.dumps(request),
+        input=json.dumps(guides),
         capture_output=True,
         text=True,
     )
