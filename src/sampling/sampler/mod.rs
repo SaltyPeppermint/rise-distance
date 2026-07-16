@@ -7,7 +7,6 @@ use foldhash::fast::FixedState;
 use hashbrown::{HashMap, HashSet};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
-use rayon::prelude::*;
 
 use crate::Counter;
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
@@ -20,7 +19,7 @@ pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
 ///
 /// `sample_batch` and `sample_batch_root` are provided as default implementations
 /// in terms of [`Sampler::sample`].
-pub trait Sampler<C, L, N>: Sync
+pub trait Sampler<C, L, N>
 where
     C: Counter,
     L: MyLanguage,
@@ -91,16 +90,16 @@ where
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let terms = samples_per_size
-            .par_iter()
-            .flat_map(|&(size, samples)| self.sample_size(id, size, samples, seed))
+            .iter()
+            .filter_map(|&(size, samples)| self.sample_size(id, size, samples, seed))
             .flatten()
             .collect::<Vec<_>>();
         (!terms.is_empty()).then_some(terms)
     }
 
-    /// Draw up to `samples` distinct terms of exactly `size` from `id`, doubling
-    /// the oversample factor up to 2^5 to hit the target. A size holds a fixed
-    /// number of distinct terms; if that is below `samples` no amount of
+    /// Draw up to `samples` distinct terms of exactly `size` from `id`,
+    /// oversampling up to a factor of 2^5 to hit the target. A size holds a
+    /// fixed number of distinct terms; if that is below `samples` no amount of
     /// oversampling can reach the target, so the draw is capped at the size's
     /// known distinct-term count (from the histogram) and returns everything it
     /// finds instead of failing.
@@ -120,32 +119,27 @@ where
         // Never chase more distinct terms than the size actually has: the
         // histogram count is exact, so cap the target at `min(requested,
         // available)`. Without this, a size with fewer distinct terms than
-        // `requested` would spin through every oversample factor and still fail.
-        // A count that overflows `u64`/`usize` far exceeds any `requested`, so
-        // saturate to `requested` there rather than capping low.
-        let available = self
-            .size_histogram(self.find(id))
-            .and_then(|h| h.get(&size))
-            .map_or(0, |c| c.to_usize().unwrap_or(requested));
-        let target = requested.min(available);
+        // `requested` would draw through the whole oversample budget and still
+        // fail. A count that overflows `u64`/`usize` far exceeds any
+        // `requested`, so saturate to `requested` there rather than capping low.
+        let count = self.size_histogram(self.find(id))?.get(&size)?;
+        let target = requested.min(count.to_usize().unwrap_or(requested));
         if target == 0 {
             return None;
         }
+
+        // Deterministic draw stream: index `s` always seeds the same RNG, so
+        // for a fixed seed the result is reproducible. Stop as soon as `target`
+        // distinct terms have been seen; give up after the oversample budget.
         let mut drawn = HashSet::with_hasher(FixedState::default());
-        let mut prev_end = 0;
-        for oversample in powers_of_two::<6>() {
-            let end = samples * oversample as u64;
-            drawn.par_extend((prev_end..end).into_par_iter().map(|s| {
-                let mut rng = utils::combined_rng([size as u64, s, seed[0], seed[1]]);
-                self.sample(id, size, &mut rng)
-            }));
+        for s in 0..samples * MAX_OVERSAMPLE {
+            let mut rng = utils::combined_rng([size as u64, s, seed[0], seed[1]]);
+            drawn.insert(self.sample(id, size, &mut rng));
             if drawn.len() >= target {
                 let mut v = drawn.into_iter().collect::<Vec<_>>();
                 v.sort_unstable();
-                v.truncate(target);
                 return Some(v);
             }
-            prev_end = end;
         }
         None
     }
@@ -164,14 +158,5 @@ where
     }
 }
 
-#[must_use]
-const fn powers_of_two<const N: usize>() -> [usize; N] {
-    const { assert!(N <= usize::BITS as usize, "N exceeds usize bit width") };
-    let mut out = [0usize; N];
-    let mut i = 0;
-    while i < N {
-        out[i] = 1 << i;
-        i += 1;
-    }
-    out
-}
+/// Cap on how many draws `sample_size` attempts per requested sample.
+const MAX_OVERSAMPLE: u64 = 32;

@@ -1,6 +1,6 @@
 use crate::Counter;
 
-pub trait Weigher<C: Counter>: Sync + Send {
+pub trait Weigher<C: Counter> {
     fn node_weight(&self, count: &C) -> C;
     fn child_weight(&self, child_count: &C, rest_count: &C) -> C;
 }
