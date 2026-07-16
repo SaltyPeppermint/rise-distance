@@ -10,7 +10,7 @@ pub mod search;
 pub mod sketch;
 #[cfg(test)]
 pub mod test_utils;
-pub(crate) mod utils;
+pub mod utils;
 mod zs;
 
 pub use counter::Counter;

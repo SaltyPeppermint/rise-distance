@@ -4,14 +4,17 @@ Replaces the internal rayon parallelism of the old `goal` binary. The Rust
 `goal` binary touches no files: it processes one seed per invocation
 (`--seed <expr>`, with `--language` and the eqsat limits also on argv) and
 prints that seed's `{"Ok":..}`/`{"Err":..}` payload to stdout. This driver owns
-all file I/O: it reads `args.json` (for `language` and the eqsat config),
-flattens/filters the `terms.json` seed list, fans the invocations out across
-seeds, captures each payload, and merges them back into `terms.json` in place,
-preserving the `[size, {term: payload}]` grouping.
+all file I/O: it reads `generation_args.json` (for `language` and the eqsat
+config), flattens/filters the `terms.json` seed list, fans the invocations out
+across seeds, captures each payload, and writes the enriched copy to
+`goal_terms.json` next to it (same `[size, {term: payload}]` grouping;
+`terms.json` is never modified). A `goal_args.json` sidecar records the eqsat
+config the goals were generated under (top-level, read by `guided_search.py`) plus
+this run's CLI args under `driver_args`.
 
 Example:
     cargo build --release --bin goal
-    uv run scripts/goal_driver.py data/seed_terms/dusky-cramp \\
+    uv run scripts/generate_goals.py data/seed_terms/dusky-cramp \\
         --goals 10 --jobs 8
 """
 
@@ -32,12 +35,13 @@ from tqdm import tqdm
 class Args:
     # I/O
     path: tyro.conf.Positional[Path]
-    """Seed folder with `terms.json` and `args.json`. `terms.json` is rewritten
-    in place with the enriched per-seed goal data."""
+    """Seed folder with `terms.json` and `generation_args.json`. The enriched
+    per-seed goal data is written to `goal_terms.json` in the same folder,
+    alongside a `goal_args.json` sidecar."""
 
-    output: Path | None = None
-    """Run folder for the `config.json` provenance sidecar. Auto-created under
-    `data/goal_driver/` if omitted."""
+    force: bool = False
+    """Overwrite existing `goal_terms.json`/`goal_args.json` in the seed
+    folder instead of refusing."""
 
     goal_binary: Path = Path("target/release/goal")
 
@@ -74,14 +78,25 @@ class Args:
     each seed's eqsat can use several GB."""
 
 
-def language_eqsat_flags(path: Path) -> list[str]:
-    """Read `args.json` and build the `--language`/eqsat CLI flags every binary
-    takes. The four required eqsat values live at the top level; `--max-memory`
-    (from the optional `max_memory` key, an RSS ceiling in bytes) is added only
-    when present; `--backoff-scheduler` is a presence flag, added only when
-    true.
-    """
-    cfg = json.loads((path / "args.json").read_text())
+def eqsat_config(path: Path) -> dict:
+    """Read the language/eqsat config out of `generation_args.json`: the four
+    required eqsat values live at the top level; `max_memory` (an RSS ceiling
+    in bytes) is optional and `None` when absent."""
+    cfg = json.loads((path / "generation_args.json").read_text())
+    return {
+        "language": cfg["language"],
+        "max_iters": cfg["max_iters"],
+        "max_nodes": cfg["max_nodes"],
+        "max_time": cfg["max_time"],
+        "max_memory": cfg.get("max_memory"),
+        "backoff_scheduler": cfg["backoff_scheduler"],
+    }
+
+
+def language_eqsat_flags(cfg: dict) -> list[str]:
+    """Build the `--language`/eqsat CLI flags every binary takes from an
+    `eqsat_config` dict. `--max-memory` is added only when set;
+    `--backoff-scheduler` is a presence flag, added only when true."""
     flags = [
         "--language",
         str(cfg["language"]),
@@ -92,7 +107,7 @@ def language_eqsat_flags(path: Path) -> list[str]:
         "--max-time",
         str(cfg["max_time"]),
     ]
-    if cfg.get("max_memory") is not None:
+    if cfg["max_memory"] is not None:
         flags += ["--max-memory", str(cfg["max_memory"])]
     if cfg["backoff_scheduler"]:
         flags.append("--backoff-scheduler")
@@ -169,14 +184,13 @@ def run_goal_shard(args: Args, base_flags: list[str], seed: str) -> object:
         ) from e
 
 
-def run_all_seeds(args: Args, seeds: list[str]) -> dict[str, object]:
+def run_all_seeds(args: Args, base_flags: list[str], seeds: list[str]) -> dict[str, object]:
     """Run one `goal` subprocess per seed and collect `{seed_str: payload}`.
 
     Seed strings are unique, so keying each captured payload by its seed builds
     the enriched map directly.
     """
     jobs = args.jobs or os.cpu_count() or 1
-    base_flags = language_eqsat_flags(args.path)
     print(
         f"Generating goals for {len(seeds)} seed(s) ({jobs} workers)",
         file=sys.stderr,
@@ -190,33 +204,21 @@ def run_all_seeds(args: Args, seeds: list[str]) -> dict[str, object]:
     return enriched
 
 
-def write_enriched_terms(path: Path, enriched: dict[str, object]) -> int:
-    """Rewrite `terms.json` in place, replacing each seed's record with its
-    enriched payload. Preserves the `[size, {term: payload}]` grouping; seeds
-    absent from `enriched` (e.g. dropped by `--take-first`) are omitted, and
-    groups left empty are dropped, matching the old Rust `write_enriched_terms`.
+def write_enriched_terms(src: Path, dst: Path, enriched: dict[str, object]) -> int:
+    """Write the enriched copy of `src` (the seed `terms.json`) to `dst`,
+    replacing each seed's record with its enriched payload. Preserves the
+    `[size, {term: payload}]` grouping; seeds absent from `enriched` (e.g.
+    dropped by `--take-first`) are omitted, and groups left empty are dropped.
     """
-    groups = json.loads(path.read_text())
+    groups = json.loads(src.read_text())
     out_groups = []
     for size, terms_map in groups:
         new_inner = {term: enriched[term] for term in terms_map if term in enriched}
         if new_inner:
             out_groups.append([size, new_inner])
 
-    path.write_text(json.dumps(out_groups, indent=2))
+    dst.write_text(json.dumps(out_groups, indent=2))
     return sum(len(inner) for _size, inner in out_groups)
-
-
-def resolve_output_dir(args: Args) -> Path:
-    """Resolve (and create) the run folder, auto-numbering `run.N` if unset."""
-    out = args.output
-    if out is None:
-        base = Path("data/goal_driver")
-        base.mkdir(parents=True, exist_ok=True)
-        existing = [int(p.suffix[1:]) for p in base.glob("run.*") if p.suffix[1:].isdigit()]
-        out = base / f"run.{max(existing, default=0) + 1}"
-    out.mkdir(parents=True, exist_ok=True)
-    return out
 
 
 def main() -> int:
@@ -229,19 +231,39 @@ def main() -> int:
         )
         return 2
 
+    goal_terms_path = args.path / "goal_terms.json"
+    goal_args_path = args.path / "goal_args.json"
+    if not args.force:
+        existing = [p for p in (goal_terms_path, goal_args_path) if p.exists()]
+        if existing:
+            print(
+                f"Refusing to overwrite {', '.join(str(p) for p in existing)}; "
+                "pass --force to allow it.",
+                file=sys.stderr,
+            )
+            return 2
+
     seeds = flatten_seeds(args)
     if not seeds:
         print("No seeds to process after filtering.", file=sys.stderr)
         return 0
 
-    out = resolve_output_dir(args)
-    (out / "config.json").write_text(json.dumps(dataclasses.asdict(args), indent=2, default=str))
+    cfg = eqsat_config(args.path)
+    # goal_args.json carries the eqsat config the goals were generated under
+    # (top-level, where guided_search.py reads it) plus this run's CLI args under
+    # `driver_args`, so downstream stages never reach back into
+    # generation_args.json.
+    goal_args_path.write_text(
+        json.dumps(
+            {**cfg, "driver_args": dataclasses.asdict(args)}, indent=2, default=str
+        )
+    )
 
-    enriched = run_all_seeds(args, seeds)
+    enriched = run_all_seeds(args, language_eqsat_flags(cfg), seeds)
 
-    written = write_enriched_terms(args.path / "terms.json", enriched)
+    written = write_enriched_terms(args.path / "terms.json", goal_terms_path, enriched)
     print(
-        f"\nWrote {written} enriched seed(s) to {args.path / 'terms.json'}",
+        f"\nWrote {written} enriched seed(s) to {goal_terms_path}",
         file=sys.stderr,
     )
     return 0

@@ -4,18 +4,26 @@ Replaces the "second half" of the old `guide` binary. The Rust `sample` and
 `verify` binaries touch no files: `sample` takes everything on argv, `verify`
 takes the per-leg guides on stdin plus `--goal`/`--language`/eqsat limits on
 argv. This
-driver owns all file I/O: it reads `args.json` (language, eqsat limits, and the
-optional guide-replay `stop_*` overrides), flattens the goal-enriched
-`terms.json` into per-seed specs, runs one `sample` subprocess per seed
-(splicing the seed's goals back onto the output, since `sample` no longer
-echoes them), then runs the search legs (one `verify` subprocess each),
-resampling fresh guide subsets until it either reaches the goal or uses all
-`--attempts` for a seed/goal pair. All logging and data wrangling
-(parquet/JSON) live here.
+driver owns all file I/O: it reads `goal_args.json` (language and the
+search-phase eqsat limits), flattens the goal-enriched `goal_terms.json` into
+per-seed specs, runs one `sample` subprocess per seed (splicing the seed's
+goals back onto the output, since `sample` no longer echoes them), then runs
+the search legs (one `verify` subprocess each), resampling fresh guide subsets
+until it either reaches the goal or uses all `--attempts` for a seed/goal pair.
+All logging and data wrangling (parquet/JSON) live here.
+
+The guide replay runs under an explicit budget given on the CLI: at least one
+of `--stop-iters`/`--stop-nodes`/`--stop-time`/`--stop-memory` is required;
+unset dimensions fall back to the search-phase (brute-force) limits from
+`goal_args.json`, and the replay ends at whichever limit trips first. The point
+is to ask "how much can still be solved under a tighter budget than the
+brute-force full eqsat by breaking the search into guided legs". The leg search
+itself keeps the search-phase limits.
 
 Example:
     cargo build --release --bin sample --bin verify
-    uv run scripts/driver.py data/seed_terms/dusky-cramp \\
+    uv run scripts/guided_search.py data/seed_terms/dusky-cramp \\
+        --stop-memory 4G \\
         --attempts 5 --k 1 2 5 10 50 100 \\
         --strategy no_replacement_count --full-union
 """
@@ -61,14 +69,26 @@ LEG_RESULT_FIELDS = (
 class Args:
     # I/O
     path: tyro.conf.Positional[Path]
-    """Seed folder with `terms.json` (enriched by `goal`) and `args.json`."""
+    """Seed folder with `goal_terms.json` and `goal_args.json` (both written
+    by `generate_goals.py`)."""
 
     output: Path | None = None
     """Run folder for `results.parquet`/`results.json`. Auto-created under
-    `data/guide_driver/` if omitted."""
+    `data/guided_search/` if omitted."""
 
     sample_binary: Path = Path("target/release/sample")
     verify_binary: Path = Path("target/release/verify")
+
+    # guide-replay budget: at least one must be given; the replay ends at
+    # whichever given budget trips first, unset ones are effectively unlimited.
+    stop_iters: int | None = None
+    """Guide-replay iteration budget."""
+    stop_nodes: int | None = None
+    """Guide-replay egraph-node budget."""
+    stop_time: float | None = None
+    """Guide-replay wall-clock budget in seconds."""
+    stop_memory: str | None = None
+    """Guide-replay RSS budget (e.g. `4G`)."""
 
     # search policy
     attempts: int = 5
@@ -133,12 +153,12 @@ def pool_key(strategy: str) -> str:
 
 
 def eqsat_limits(path: Path) -> dict:
-    """Read the search-phase eqsat limits out of `args.json`.
+    """Read the search-phase eqsat limits out of `goal_args.json`.
 
     The four required values live at the top level; `max_memory` (RSS ceiling
     in bytes) is optional and `None` when absent.
     """
-    cfg = json.loads((path / "args.json").read_text())
+    cfg = json.loads((path / "goal_args.json").read_text())
     return {
         "max_iters": cfg["max_iters"],
         "max_nodes": cfg["max_nodes"],
@@ -148,23 +168,33 @@ def eqsat_limits(path: Path) -> dict:
     }
 
 
-def replay_limits(path: Path) -> dict:
-    """Compute the effective guide-replay limits for `sample`: the search-phase
-    limits overridden by the optional `stop_*` keys in `args.json`
-    (`stop_time`/`stop_nodes`/`stop_memory`, the latter in bytes). Only the
-    guide replay uses these, not the leg search. The per-seed `max_iters`
-    override is applied in `run_sample_shard`.
+def parse_size(s: str) -> int:
+    """Parse a human byte size like `4G` into bytes."""
+    s = s.strip().upper()
+    mult = 1
+    for suf, m in (("K", 1024), ("M", 1024**2), ("G", 1024**3), ("T", 1024**4)):
+        if s.endswith(suf):
+            mult = m
+            s = s[:-1]
+            break
+    return int(float(s) * mult)
+
+
+def replay_limits(args: Args, path: Path) -> dict:
+    """Build the guide-replay limits for `sample`: the search-phase
+    (brute-force) limits from `goal_args.json`, with each given `--stop-*`
+    budget overriding its dimension. The replay ends at whichever limit trips
+    first.
     """
-    cfg = json.loads((path / "args.json").read_text())
     limits = eqsat_limits(path)
-    for stop_key, max_key in (
-        ("stop_time", "max_time"),
-        ("stop_nodes", "max_nodes"),
-        ("stop_memory", "max_memory"),
-    ):
-        value = cfg.get(stop_key)
-        if value is not None:
-            limits[max_key] = value
+    if args.stop_iters is not None:
+        limits["max_iters"] = args.stop_iters
+    if args.stop_nodes is not None:
+        limits["max_nodes"] = args.stop_nodes
+    if args.stop_time is not None:
+        limits["max_time"] = args.stop_time
+    if args.stop_memory is not None:
+        limits["max_memory"] = parse_size(args.stop_memory)
     return limits
 
 
@@ -189,39 +219,38 @@ def limit_flags(limits: dict) -> list[str]:
 
 
 def language_flag(path: Path) -> list[str]:
-    """Build the `--language` flag from `args.json`."""
-    cfg = json.loads((path / "args.json").read_text())
+    """Build the `--language` flag from `goal_args.json`."""
+    cfg = json.loads((path / "goal_args.json").read_text())
     return ["--language", str(cfg["language"])]
 
 
 @dataclass
 class SeedSpec:
-    """One seed's inputs from the goal-enriched `terms.json`: `seed` and
-    `guide_iters` go to `sample` on argv; `goals` stays Python-side and is
-    merged back onto `sample`'s output record."""
+    """One seed's inputs from the goal-enriched `goal_terms.json`: `seed` goes
+    to `sample` on argv; `goals` stays Python-side and is merged back onto
+    `sample`'s output record."""
 
     seed: str
-    guide_iters: int
     goals: list[str]
 
 
 def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
-    """Flatten the goal-enriched `terms.json` into per-seed specs.
+    """Flatten the goal-enriched `goal_terms.json` into per-seed specs.
 
-    `terms.json` is a list of `[size, {seed: payload}]` groups, each payload a
-    `Result`-shaped `{"Ok": GoalGenMetadata}` / `{"Err": msg}`. We pull the seed,
-    its recorded `guide_iters` (`guide_egraph.iters`), and its goals off each
-    `Ok`. `Err` seeds (goal stage failed) are dropped. Groups in file order,
-    terms sorted for a deterministic `--take-first`.
+    `goal_terms.json` is a list of `[size, {seed: payload}]` groups, each
+    payload a `Result`-shaped `{"Ok": GoalGenMetadata}` / `{"Err": msg}`. We
+    pull the seed and its goals off each `Ok`. `Err` seeds (goal stage failed)
+    are dropped. Groups in file order, terms sorted for a deterministic
+    `--take-first`.
     """
-    groups = json.loads((args.path / "terms.json").read_text())
+    groups = json.loads((args.path / "goal_terms.json").read_text())
     specs: list[SeedSpec] = []
     for _size, terms_map in groups:
         for seed in sorted(terms_map):
             ok = terms_map[seed].get("Ok")
             if ok is None:
                 continue  # Err seed: goal stage failed, nothing to replay.
-            specs.append(SeedSpec(seed, ok["guide_egraph"]["iters"], ok["goals"]))
+            specs.append(SeedSpec(seed, ok["goals"]))
     if args.take_first is not None:
         specs = specs[: args.take_first]
     return specs
@@ -230,17 +259,17 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
 def run_sample_shard(args: Args, base_flags: list[str], limits: dict, spec: SeedSpec) -> list:
     """Run `sample` for a single seed and return its parsed record list.
 
-    Everything goes on argv: `--seed`, `--language`, and `limits` (the folder's
-    `replay_limits`) with `max_iters` set to the seed's recorded `guide_iters`.
-    `sample` prints a one-element `[SeedSamples]` array to stdout (empty on an
-    internal failure) and logs to stderr, which is surfaced only on a nonzero
-    exit. The spec's `goals` are spliced back onto each record here, since
-    `sample` no longer echoes them.
+    Everything goes on argv: `--seed`, `--language`, and `limits` (the
+    `--stop-*` replay budget from `replay_limits`). `sample` prints a
+    one-element `[SeedSamples]` array to stdout (empty on an internal failure)
+    and logs to stderr, which is surfaced only on a nonzero exit. The spec's
+    `goals` are spliced back onto each record here, since `sample` no longer
+    echoes them.
     """
     cmd = [
         str(args.sample_binary),
         *base_flags,
-        *limit_flags({**limits, "max_iters": spec.guide_iters}),
+        *limit_flags(limits),
         "--seed",
         spec.seed,
         "--samples-per-strategy",
@@ -273,10 +302,10 @@ def run_sample(args: Args, sample_out: Path) -> Path:
     specs = flatten_enriched_seeds(args)
     sample_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
-    # sample gets the effective guide-replay limits (per-seed guide_iters
-    # spliced in per shard); verify keeps the plain search-phase limits.
+    # sample gets the --stop-* replay budget; verify keeps the plain
+    # search-phase limits.
     sample_flags = language_flag(args.path)
-    limits = replay_limits(args.path)
+    limits = replay_limits(args, args.path)
     print(
         f"Sampling guide menu for {len(specs)} seed(s) -> {sample_out} ({jobs} workers)",
         file=sys.stderr,
@@ -422,13 +451,21 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
 
 
 def check_preconditions(args: Args) -> str | None:
-    """Validate `--strategy` and that both binaries exist.
+    """Validate `--strategy`, that a replay budget was given, and that both
+    binaries exist.
 
     Returns an error message for the caller to print (exit 2), or `None` when
     everything checks out.
     """
     if args.strategy not in ALL_STRATEGIES:
         return f"Unknown --strategy {args.strategy!r}; choose one of {ALL_STRATEGIES}"
+    if all(
+        v is None for v in (args.stop_iters, args.stop_nodes, args.stop_time, args.stop_memory)
+    ):
+        return (
+            "No guide-replay budget given; pass at least one of "
+            "--stop-iters/--stop-nodes/--stop-time/--stop-memory."
+        )
     for binary in (args.sample_binary, args.verify_binary):
         if not binary.exists():
             return (
@@ -442,7 +479,7 @@ def resolve_output_dir(args: Args) -> Path:
     """Resolve (and create) the run folder, auto-numbering `run.N` if unset."""
     out = args.output
     if out is None:
-        base = Path("data/guide_driver")
+        base = Path("data/guided_search")
         base.mkdir(parents=True, exist_ok=True)
         existing = [int(p.suffix[1:]) for p in base.glob("run.*") if p.suffix[1:].isdigit()]
         out = base / f"run.{max(existing, default=0) + 1}"
@@ -464,6 +501,7 @@ def build_work_items(seed_records: list, strategy: str, k_values: list[int]) -> 
             "guide_nodes": record["guide_nodes"],
             "guide_classes": record["guide_classes"],
             "guide_time": record["guide_time"],
+            "guide_memory": record["guide_memory"],
         }
         for goal in record["goals"]:
             for k in k_values:

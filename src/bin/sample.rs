@@ -3,12 +3,12 @@
 //! This is the "first half" of the old `guide` binary: it replays the
 //! guide-phase eqsat for one seed, builds a [`PrecomputePackage`], and samples
 //! the four-strategy guide menu. The individual search legs (the second half)
-//! are driven by `driver.py`, which feeds chosen guide subsets to `verify`.
+//! are driven by `guided_search.py`, which feeds chosen guide subsets to `verify`.
 //!
-//! Touches no files and reads no stdin: everything comes on argv. `driver.py`
+//! Touches no files and reads no stdin: everything comes on argv. `guided_search.py`
 //! owns all file I/O — it computes the effective replay limits (search-phase
-//! eqsat limits overridden by any `stop_*` keys and the recorded
-//! `guide_egraph.iters`) and invokes this binary once per seed; the replay ends
+//! eqsat limits overridden by its `--stop-*` budget flags) and invokes this
+//! binary once per seed; the replay ends
 //! at whichever limit trips first. The recorded goals and `max_size` stay
 //! Python-side (they were only ever echoed back here), so `SeedSamples` is pure
 //! sampling output. It is printed as a one-element JSON array to stdout (empty
@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
+use rise_distance::utils::peak_rss_bytes;
 use time::OffsetDateTime;
 
 use rise_distance::cli::{GuideExpr, SeedSamples, Strategy};
@@ -29,14 +30,13 @@ use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
 
 #[derive(Parser)]
 #[command(
-    about = "Sample the guide-candidate menu for one seed (feeds driver.py)",
+    about = "Sample the guide-candidate menu for one seed (feeds guided_search.py)",
     after_help = "\
 Reads nothing on stdin: `--seed`, `--language`, and the replay's eqsat limits
 come from argv. Prints a one-element `[SeedSamples]` array to stdout (empty on
-failure); logs go to stderr. `driver.py` fans out one invocation per seed,
-passing the effective replay limits (search-phase limits overridden by any
-`stop_*` keys, `--max-iters` set to the recorded `guide_egraph.iters`); the
-replay ends at whichever limit trips first.
+failure); logs go to stderr. `guided_search.py` fans out one invocation per seed,
+passing the effective replay limits (search-phase limits overridden by its
+`--stop-*` budget flags); the replay ends at whichever limit trips first.
 Example:
   sample --language math --seed '(+ x 0)' \\
     --max-iters 38 --max-nodes 1000000 --max-time 10 \\
@@ -44,7 +44,7 @@ Example:
 "
 )]
 struct Args {
-    /// Which language's rules to run under (from the folder's `args.json`).
+    /// Which language's rules to run under (from the folder's `goal_args.json`).
     #[arg(long)]
     language: AvailableLanguages,
 
@@ -141,11 +141,17 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let result = run_eqsat(&seed_expr, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
     eprintln!("Guide replay stop reason: {:?}", result.stop_reason());
 
+    // Sample peak RSS immediately after the replay, before the precompute and
+    // sampling below can raise the high-water mark past the replay's.
+    let guide_memory = peak_rss_bytes();
     let guide_nodes = result.curr().total_number_of_nodes();
     let guide_classes = result.curr().classes().len();
     let guide_iters = result.data().len();
     let guide_time = result.data().iter().map(|i| i.total_time).sum();
-    eprintln!("Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes");
+    eprintln!(
+        "Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes, \
+         {guide_memory} peak RSS bytes"
+    );
 
     let mut root_log = String::new();
 
@@ -184,6 +190,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
         guide_classes,
         guide_iters,
         guide_time,
+        guide_memory,
         stop_reason: format!("{:?}", result.stop_reason()),
     })
 }

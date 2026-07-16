@@ -15,8 +15,8 @@ output), `peak_memory_bytes` is -1.
 
 If `--path` is omitted, a fresh `data/seed_terms/<adjective>-<noun>/`
 directory is created (collision-retry against existing siblings). The output
-`terms.json` and a sidecar `args.json` recording all CLI args are written
-into the directory.
+`terms.json` and a sidecar `generation_args.json` recording all CLI args are
+written into the directory.
 """
 
 import dataclasses
@@ -69,8 +69,8 @@ def generate_unique_dir(parent: Path, max_attempts: int = 100) -> Path:
 class Args:
     # I/O
     path: Path | None = None
-    """Output directory. Will contain `terms.json` and `args.json`. If
-    omitted, a fresh `data/seed_terms/<adjective>-<noun>/` is created."""
+    """Output directory. Will contain `terms.json` and `generation_args.json`.
+    If omitted, a fresh `data/seed_terms/<adjective>-<noun>/` is created."""
 
     generate_binary: Path = Path("target/release/generate")
     measure_binary: Path = Path("target/release/measure-size")
@@ -106,7 +106,7 @@ def main() -> int:
         "\n"
         "Example:\n"
         "    cargo build --release --bin generate --bin measure-size\n"
-        "    uv run scripts/generate_and_measure.py \\\n"
+        "    uv run scripts/generate_seeds.py \\\n"
         "        --total-samples 1000 --min-size 10 --max-size 50 \\\n"
         "        --distribution uniform --language math --seed 42 --rlimit-as 8G \\\n"
         "        --max-iters 50 --max-nodes 100000 --max-time 10 \\\n"
@@ -121,7 +121,7 @@ def main() -> int:
         args.path.mkdir(parents=True, exist_ok=True)
 
     terms_path = args.path / "terms.json"
-    args_path = args.path / "args.json"
+    args_path = args.path / "generation_args.json"
 
     rlimit_as_bytes = parse_size(args.rlimit_as)
 

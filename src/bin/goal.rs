@@ -4,10 +4,11 @@
 //! `--seed <expr>` along with `--language` and the eqsat limits. The seed's
 //! [`GoalGenMetadata`] (or the error string), as a `Result`-shaped `{"Ok": ..}`
 //! / `{"Err": ..}` payload, is printed as JSON to stdout; all human-readable
-//! logging goes to stderr. `scripts/goal_driver.py` owns all file I/O: it reads
-//! `args.json` (for `--language` and the eqsat flags), flattens/filters
-//! `terms.json`, fans these invocations out one per seed, keys each payload by
-//! its seed, and merges them back into `terms.json`.
+//! logging goes to stderr. `scripts/generate_goals.py` owns all file I/O: it reads
+//! `generation_args.json` (for `--language` and the eqsat flags),
+//! flattens/filters `terms.json`, fans these invocations out one per seed,
+//! keys each payload by its seed, and writes the enriched copy to
+//! `goal_terms.json`.
 
 use std::fmt::Write as _;
 use std::time::Instant;
@@ -25,22 +26,22 @@ use rise_distance::{MyAnalysis, MyLanguage, eqsat};
 
 #[derive(Parser)]
 #[command(
-    about = "Generate goal terms for one seed (feeds scripts/goal_driver.py)",
+    about = "Generate goal terms for one seed (feeds scripts/generate_goals.py)",
     after_help = "\
 Prints one seed's `{\"Ok\":..}`/`{\"Err\":..}` payload as JSON to stdout; logs
-go to stderr. `scripts/goal_driver.py` fans these out and merges into terms.json.
+go to stderr. `scripts/generate_goals.py` fans these out and writes goal_terms.json.
 Example:
   goal --seed '(+ x 0)' --language math --max-iters 200 --max-nodes 1000000 \\
     --max-time 10 --backoff-scheduler   # -> payload JSON on stdout
 "
 )]
 struct Args {
-    /// The seed s-expression to generate goals from. `scripts/goal_driver.py`
+    /// The seed s-expression to generate goals from. `scripts/generate_goals.py`
     /// reads and flattens `terms.json` and passes one seed per invocation.
     #[arg(long)]
     seed: String,
 
-    /// Which language's rules to run under (from the folder's `args.json`).
+    /// Which language's rules to run under (from the folder's `generation_args.json`).
     #[arg(long)]
     language: AvailableLanguages,
 

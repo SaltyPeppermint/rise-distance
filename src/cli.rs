@@ -1,10 +1,10 @@
 //! Shared wire types for the `goal` / `sample` / `verify` split of the guide
 //! experiment. The three binaries touch no files: the Python drivers
-//! (`goal_driver.py` / `driver.py`) own all I/O, passing eqsat limits and
+//! (`generate_goals.py` / `guided_search.py`) own all I/O, passing eqsat limits and
 //! language on argv (via [`crate::eqsat::EqsatConfig`], the shared clap flag
 //! group) and per-seed/per-leg data as the JSON records defined here. `goal`
-//! records [`GoalGenMetadata`] into `terms.json`; `sample` emits [`SeedSamples`]
-//! (guide menus of [`GuideExpr`], one pool per [`Strategy`]); `driver.py` feeds
+//! records [`GoalGenMetadata`] into `goal_terms.json`; `sample` emits [`SeedSamples`]
+//! (guide menus of [`GuideExpr`], one pool per [`Strategy`]); `guided_search.py` feeds
 //! chosen subsets back to `verify`.
 
 use std::collections::BTreeMap;
@@ -83,11 +83,11 @@ impl<L: MyLanguage> GuideExpr<L> {
     }
 }
 
-/// A per-seed sampling record `sample` prints to stdout (which `driver.py`
+/// A per-seed sampling record `sample` prints to stdout (which `guided_search.py`
 /// collects into `samples.json`). Carries, per strategy, the guide candidates
 /// Python may restart with, plus replay metadata for Python's logging. The
 /// goals and `max_size` are not here: the driver keeps them Python-side (from
-/// `terms.json`) and re-associates by seed.
+/// `goal_terms.json`) and re-associates by seed.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(bound = "L: MyLanguage")]
 pub struct SeedSamples<L: MyLanguage> {
@@ -101,14 +101,18 @@ pub struct SeedSamples<L: MyLanguage> {
     /// Total wall-clock time (seconds) of the guide-phase replay, so the driver
     /// can add the guide overhead to each leg's `total_time`.
     pub guide_time: f64,
+    /// Peak process RSS in bytes (`VmHWM`) sampled right after the replay.
+    /// The replay is the first heavy phase of `sample`, so this is its peak —
+    /// the number a `--stop-memory` budget is measured against.
+    pub guide_memory: u64,
     pub stop_reason: String,
 }
 
-/// Per-seed payload written by `goal` into the value slot of `terms.json` (one
+/// Per-seed payload written by `goal` into the value slot of `goal_terms.json` (one
 /// entry per seed s-expression). Serializes via `Result`'s `{"Ok": ..}` /
 /// `{"Err": ..}` shape (`goal` returns a `Result<GoalGenMetadata, String>`).
-/// `driver.py` parses the enriched `terms.json` and pulls each `Ok` seed's
-/// replay inputs from it.
+/// `guided_search.py` parses the enriched `goal_terms.json` and pulls each `Ok` seed's
+/// goals from it (the replay budget comes from its own `--stop-*` flags).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(bound(serialize = "C: Counter", deserialize = "C: Counter"))]
 pub struct GoalGenMetadata<C: Counter> {

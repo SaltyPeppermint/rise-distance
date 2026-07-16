@@ -1,16 +1,16 @@
 """Measure how extraction cost evolves per iteration of eqsat on each seed term.
 
 Spawns the `measure-cost` Rust binary once per term in a seed-terms
-`terms.json` (as produced by `scripts/generate_and_measure.py`). The
+`terms.json` (as produced by `scripts/generate_seeds.py`). The
 binary runs eqsat and prints a JSON object on stdout with two
 per-iteration arrays: `monotonic` (cost-function name -> cheapest
 extracted cost) and `novelty` (cost-function name -> whether the ILP
 extract changed since the previous iteration).
 
 Egg limits (`--max-iters`, `--max-nodes`, `--max-time`,
-`--backoff-scheduler`) are read from the sibling `args.json` so that
-the cost trajectory is measured under the same conditions used to
-generate and validate the terms.
+`--backoff-scheduler`) are read from the sibling `generation_args.json`
+so that the cost trajectory is measured under the same conditions used
+to generate and validate the terms.
 
 The result is written to `<input_dir>/cost_evolution.json` with shape
 `{term: {"monotonic": [{costfn: value, ...}, ...],
@@ -41,7 +41,7 @@ def main() -> int:
         type=Path,
         required=True,
         help="Seed-terms JSON (e.g. data/seed_terms/foo-bar/terms.json). "
-        "Its sibling `args.json` is read for the egg limits.",
+        "Its sibling `generation_args.json` is read for the egg limits.",
     )
     parser.add_argument("--binary", type=Path, default=Path("target/release/measure-cost"))
     parser.add_argument(
@@ -62,9 +62,9 @@ def main() -> int:
         )
         return 2
 
-    args_path = args.path.parent / "args.json"
+    args_path = args.path.parent / "generation_args.json"
     if not args_path.exists():
-        print(f"args.json not found alongside {args.path}", file=sys.stderr)
+        print(f"generation_args.json not found alongside {args.path}", file=sys.stderr)
         return 2
 
     with args_path.open("r") as f:

@@ -2,7 +2,7 @@
 //! whether the goal became reachable within the eqsat limits.
 //!
 //! Stateless one-shot wrapper over [`verify_reachability`] — no guide egraph
-//! replay, no precompute. `driver.py` spawns this once per leg, passing the
+//! replay, no precompute. `guided_search.py` spawns this once per leg, passing the
 //! guide subset (as serialized [`GuideExpr`] node lists, origins intact) on
 //! stdin and the goal on argv.
 
@@ -29,7 +29,7 @@ on stdout. `--goal`, `--language`, and the eqsat limits come from argv. Example:
 "
 )]
 struct Args {
-    /// Which language's rules to run under (from the folder's `args.json`).
+    /// Which language's rules to run under (from the folder's `goal_args.json`).
     #[arg(long)]
     language: AvailableLanguages,
 

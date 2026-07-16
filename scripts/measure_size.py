@@ -1,7 +1,7 @@
 """Measure peak resident set size of running eqsat on each seed term.
 
 Spawns the `measure-size` Rust binary once per term in a seed-terms
-`terms.json` (as produced by `scripts/generate_and_measure.py`). The
+`terms.json` (as produced by `scripts/generate_seeds.py`). The
 binary reads its own peak RSS from `/proc/self/status` (VmHWM) at exit
 and prints the value (bytes) on stdout -> this matches what htop
 reports. A virtual-memory cap is enforced inside the binary via

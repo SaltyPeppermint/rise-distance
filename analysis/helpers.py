@@ -1,6 +1,6 @@
 """Data loading and tidy-frame shaping for the guide-selection analysis.
 
-`driver.py` writes one `results.parquet` per run (a run == one strategy/config).
+`guided_search.py` writes one `results.parquet` per run (a run == one strategy/config).
 This module loads a set of runs into a single **tidy long DataFrame** — one row
 per leg, tagged with its display `mode`, with the per-seed unguided baseline and
 the metric/baseline `ratio` already attached. The Altair specs in `plots.py`
@@ -36,7 +36,7 @@ METRICS = ["iters", "nodes", "classes", "nodes_per_class", "total_time"]
 SINGLE_POINT_STRATEGIES = {"smallest_overall", "smallest_novel"}
 
 
-def find_latest_run(pattern: str = "run", subdir: str = "guide_driver") -> Path:
+def find_latest_run(pattern: str = "run", subdir: str = "guided_search") -> Path:
     """Return the newest run directory matching `pattern` under `data/<subdir>`."""
     data_dir = Path(__file__).parent / ".." / "data" / subdir
     candidates = sorted(
@@ -74,14 +74,14 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
     """Per-seed unguided full-eqsat baseline for a run, as a joinable frame.
 
     The run's `config.json` points (via `path`) at the seed-terms folder, whose
-    `terms.json` carries a per-seed `goal_egraph` block: full eqsat on the seed
-    with no guides. Every goal under a seed shares that seed's baseline, so a
-    guided leg can be compared against its own seed's unguided cost. `Err` seeds
-    are skipped. Columns: seed, base_<metric> for each METRIC.
+    `goal_terms.json` carries a per-seed `goal_egraph` block: full eqsat on the
+    seed with no guides. Every goal under a seed shares that seed's baseline, so
+    a guided leg can be compared against its own seed's unguided cost. `Err`
+    seeds are skipped. Columns: seed, base_<metric> for each METRIC.
     """
     config = json.loads((run_dir / "config.json").read_text())
     repo_root = Path(__file__).parent / ".."
-    terms = json.loads((repo_root / config["path"] / "terms.json").read_text())
+    terms = json.loads((repo_root / config["path"] / "goal_terms.json").read_text())
 
     rows = []
     for _size, inner in terms:

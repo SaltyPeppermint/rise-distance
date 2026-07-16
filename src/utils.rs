@@ -54,6 +54,7 @@ impl<T: Eq + Hash + Clone> UniqueQueue<T> {
     }
 }
 
+#[must_use]
 pub fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
     const { assert!(N >= 1 && N <= 4, "must provide 1 to 4 u64 values") };
 
@@ -145,4 +146,36 @@ pub fn stack_children<L: Language>(children: &[RecExpr<L>], root: L) -> RecExpr<
 #[must_use]
 pub fn id0() -> Id {
     Id::from(0)
+}
+
+/// Current process RSS in bytes via the `memory-stats` crate. `None` if the
+/// platform reader is unavailable (the memory limit is then not enforced).
+#[must_use]
+pub fn process_rss_bytes() -> Option<u64> {
+    memory_stats::memory_stats().map(|s| s.physical_mem as u64)
+}
+
+/// Peak resident set size of this process in bytes, read from
+/// `/proc/self/status` (`VmHWM`). Matches what htop reports and the RSS the
+/// `--max-memory` hook budgets against.
+///
+/// # Panics
+///
+/// Panics if `/proc/self/status` is unreadable or its `VmHWM` line is missing
+/// or malformed.
+#[must_use]
+pub fn peak_rss_bytes() -> u64 {
+    let status =
+        std::fs::read_to_string("/proc/self/status").expect("failed to read /proc/self/status");
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmHWM:") {
+            let kb: u64 = rest
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .expect("malformed VmHWM line");
+            return kb * 1024;
+        }
+    }
+    panic!("VmHWM not found in /proc/self/status");
 }

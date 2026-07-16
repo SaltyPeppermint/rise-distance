@@ -2,6 +2,7 @@ use clap::Parser;
 use egg::{RecExpr, Rewrite};
 
 use rise_distance::langs::diospyros::VecLang;
+use rise_distance::utils::peak_rss_bytes;
 use rlimit::{Resource, setrlimit};
 
 use rise_distance::eqsat::EqsatConfig;
@@ -70,22 +71,4 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
     let runner = args.eqsat.build_runner::<_, _, ()>(&expr).run(rules);
 
     drop(runner);
-}
-
-/// Peak resident set size of this process in bytes, read from
-/// `/proc/self/status` (`VmHWM`). Matches what htop reports.
-fn peak_rss_bytes() -> u64 {
-    let status =
-        std::fs::read_to_string("/proc/self/status").expect("failed to read /proc/self/status");
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmHWM:") {
-            let kb: u64 = rest
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse().ok())
-                .expect("malformed VmHWM line");
-            return kb * 1024;
-        }
-    }
-    panic!("VmHWM not found in /proc/self/status");
 }

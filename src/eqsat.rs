@@ -9,11 +9,10 @@ use serde::{Deserialize, Serialize};
 use strum::Display;
 use thiserror::Error;
 
-use crate::{
-    langs::{MyAnalysis, MyLanguage},
-    origin::{OriginLang, lower},
-    sketch::{self, Sketch},
-};
+use crate::langs::{MyAnalysis, MyLanguage};
+use crate::origin::{OriginLang, lower};
+use crate::sketch::{self, Sketch};
+use crate::utils::process_rss_bytes;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EqsatMetadata {
@@ -53,8 +52,9 @@ impl EqsatMetadata {
 
 /// Eqsat resource limits and scheduler choice. Doubles as the shared clap flag
 /// group (`--max-*` / `--backoff-scheduler`) for the `goal` / `sample` /
-/// `verify` binaries; the Python drivers read the values out of `args.json`
-/// and forward them on argv. Non-CLI users construct it literally — the clap
+/// `verify` binaries; the Python drivers read the values out of the
+/// `generation_args.json` / `goal_args.json` sidecars and forward them on
+/// argv. Non-CLI users construct it literally — the clap
 /// attributes are inert there.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, clap::Args)]
 pub struct EqsatConfig {
@@ -245,12 +245,6 @@ where
 /// return `Some`. Lower than this means we don't have enough distinct egraph
 /// states for a meaningful guide/goal split.
 const MIN_ITERS: usize = 3;
-
-/// Current process RSS in bytes via the `memory-stats` crate. `None` if the
-/// platform reader is unavailable (the memory limit is then not enforced).
-fn process_rss_bytes() -> Option<u64> {
-    memory_stats::memory_stats().map(|s| s.physical_mem as u64)
-}
 
 /// Per-iteration hook enforcing the RSS ceiling (egg has no native memory
 /// limit): returning `Err` stops the run and egg records it as
