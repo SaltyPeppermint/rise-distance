@@ -16,7 +16,7 @@ exit, RLIMIT kill, timeout, unparseable output), the value is -1.
 Example:
     cargo build --release --bin measure-size
     uv run scripts/measure_size.py --path data/seed_terms/foo-bar/terms.json \\
-        --language math --max-memory 8G --max-time 30
+        --language math --rlimit-as 8G --max-time 30
 """
 
 import argparse
@@ -54,10 +54,10 @@ def main() -> int:
         help="Language the terms are drawn from (e.g. math, prop).",
     )
     parser.add_argument(
-        "--max-memory",
+        "--rlimit-as",
         type=parse_size,
         required=True,
-        help="Per-term virtual-memory cap (e.g. 8G). Backstop only.",
+        help="Per-term virtual-memory cap (e.g. 8G), enforced via RLIMIT_AS. Backstop only.",
     )
     parser.add_argument("--max-iters", type=int, default=11)
     parser.add_argument("--max-nodes", type=int, default=100_000)
@@ -90,8 +90,8 @@ def main() -> int:
         str(args.max_nodes),
         "--max-time",
         str(args.max_time),
-        "--max-memory",
-        str(args.max_memory),
+        "--rlimit-as",
+        str(args.rlimit_as),
     ]
     if args.backoff_scheduler:
         cmd_base.append("--backoff-scheduler")

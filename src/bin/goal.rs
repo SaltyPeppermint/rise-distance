@@ -16,7 +16,7 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 
-use rise_distance::cli::{EqsatArgs, GoalGenMetadata};
+use rise_distance::cli::GoalGenMetadata;
 use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::lower;
@@ -45,7 +45,7 @@ struct Args {
     language: AvailableLanguages,
 
     #[command(flatten)]
-    eqsat: EqsatArgs,
+    eqsat: EqsatConfig,
 
     /// Number of goal terms to sample per seed.
     #[arg(long, default_value_t = 10)]
@@ -68,7 +68,8 @@ struct Args {
     #[arg(long, default_value_t = 20)]
     max_retries: usize,
 
-    /// How many sizes need to be present in the precomputed histogram of root
+    /// How many novel sizes the precompute must find (the size scan stops at
+    /// the `sample_sizes`-th one).
     #[arg(long, default_value_t = 5)]
     sample_sizes: usize,
 }
@@ -93,7 +94,7 @@ fn main() {
 }
 
 fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
-    let eqsat: EqsatConfig = args.eqsat.into();
+    let eqsat = args.eqsat;
     let seed_expr = args
         .seed
         .parse::<RecExpr<L>>()

@@ -1,55 +1,22 @@
-//! Shared CLI + wire types for the `goal` / `sample` / `verify` split of the
-//! guide experiment. The three binaries touch no files: the Python drivers
+//! Shared wire types for the `goal` / `sample` / `verify` split of the guide
+//! experiment. The three binaries touch no files: the Python drivers
 //! (`goal_driver.py` / `driver.py`) own all I/O, passing eqsat limits and
-//! language on argv ([`EqsatArgs`]) and per-seed/per-leg data as the JSON
-//! records defined here. `goal` records [`GoalGenMetadata`] into `terms.json`;
-//! `sample` emits [`SeedSamples`] (guide menus of [`GuideExpr`], one pool per
-//! [`Strategy`]); `driver.py` feeds chosen subsets back to `verify`.
+//! language on argv (via [`crate::eqsat::EqsatConfig`], the shared clap flag
+//! group) and per-seed/per-leg data as the JSON records defined here. `goal`
+//! records [`GoalGenMetadata`] into `terms.json`; `sample` emits [`SeedSamples`]
+//! (guide menus of [`GuideExpr`], one pool per [`Strategy`]); `driver.py` feeds
+//! chosen subsets back to `verify`.
 
 use std::collections::BTreeMap;
 
-use clap::Args;
 use egg::RecExpr;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::Counter;
-use crate::eqsat::{EqsatConfig, EqsatMetadata};
+use crate::eqsat::EqsatMetadata;
 use crate::sampling::SampleStrategy;
 use crate::{MyLanguage, OriginLang};
-
-/// Eqsat resource limits shared by the `goal` / `sample` / `verify` binaries as
-/// CLI flags. The Python drivers read these four values out of the folder's
-/// `args.json` and forward them on argv, so the binaries never touch a file.
-#[derive(Args, Clone, Copy)]
-pub struct EqsatArgs {
-    /// Maximum eqsat iterations.
-    #[arg(long)]
-    pub max_iters: usize,
-
-    /// Maximum eqsat egraph nodes.
-    #[arg(long)]
-    pub max_nodes: usize,
-
-    /// Maximum eqsat wall-clock seconds.
-    #[arg(long)]
-    pub max_time: f64,
-
-    /// Use the backoff scheduler instead of the simple one.
-    #[arg(long)]
-    pub backoff_scheduler: bool,
-}
-
-impl From<EqsatArgs> for EqsatConfig {
-    fn from(a: EqsatArgs) -> Self {
-        Self {
-            max_iters: a.max_iters,
-            max_nodes: a.max_nodes,
-            max_time: a.max_time,
-            backoff_scheduler: a.backoff_scheduler,
-        }
-    }
-}
 
 /// The four guide-sampling strategies. Sampling variants always draw novel
 /// terms; only `Smallest` exposes the novel/overall choice. Mirrors the enum
@@ -117,19 +84,17 @@ impl<L: MyLanguage> GuideExpr<L> {
 }
 
 /// A per-seed sampling record `sample` prints to stdout (which `driver.py`
-/// collects into `samples.json`). Carries the goal menu (lowered s-expression
-/// strings, as stored by `goal`) and, per strategy, the guide candidates Python
-/// may restart with, plus enough replay metadata for Python's logging.
+/// collects into `samples.json`). Carries, per strategy, the guide candidates
+/// Python may restart with, plus replay metadata for Python's logging. The
+/// goals and `max_size` are not here: the driver keeps them Python-side (from
+/// `terms.json`) and re-associates by seed.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(bound = "L: MyLanguage")]
 pub struct SeedSamples<L: MyLanguage> {
     pub seed: String,
-    /// Lowered goal s-expressions (parse straight into `RecExpr<L>` in `verify`).
-    pub goals: Vec<String>,
     /// Guide candidates keyed by [`Strategy::name`]. Sampling strategies hold up
     /// to `samples_per_strategy` terms; `Smallest` holds exactly one.
     pub candidates: BTreeMap<String, Vec<GuideExpr<L>>>,
-    pub max_size: usize,
     pub guide_nodes: usize,
     pub guide_classes: usize,
     pub guide_iters: usize,
@@ -142,8 +107,8 @@ pub struct SeedSamples<L: MyLanguage> {
 /// Per-seed payload written by `goal` into the value slot of `terms.json` (one
 /// entry per seed s-expression). Serializes via `Result`'s `{"Ok": ..}` /
 /// `{"Err": ..}` shape (`goal` returns a `Result<GoalGenMetadata, String>`).
-/// `driver.py` parses the enriched `terms.json` and feeds each `Ok` seed's
-/// replay inputs to `sample` on stdin.
+/// `driver.py` parses the enriched `terms.json` and pulls each `Ok` seed's
+/// replay inputs from it.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(bound(serialize = "C: Counter", deserialize = "C: Counter"))]
 pub struct GoalGenMetadata<C: Counter> {

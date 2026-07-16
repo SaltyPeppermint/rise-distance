@@ -12,7 +12,7 @@ use clap::Parser;
 use egg::{RecExpr, Rewrite};
 use serde::{Deserialize, Serialize};
 
-use rise_distance::cli::{EqsatArgs, GuideExpr};
+use rise_distance::cli::GuideExpr;
 use rise_distance::eqsat::{EqsatConfig, Goal, GuideError, verify_reachability};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -38,7 +38,7 @@ struct Args {
     full_union: bool,
 
     #[command(flatten)]
-    eqsat: EqsatArgs,
+    eqsat: EqsatConfig,
 }
 
 /// One leg request, read from stdin as JSON. `guides` are node lists so origins
@@ -79,7 +79,7 @@ fn main() {
         .expect("read leg request from stdin");
     let request: LegRequest = serde_json::from_str(&buf).expect("parse leg request JSON");
 
-    let eqsat: EqsatConfig = args.eqsat.into();
+    let eqsat = args.eqsat;
 
     let result = match args.language {
         AvailableLanguages::Diospyros => {

@@ -73,6 +73,7 @@ def main() -> int:
     max_iters = int(run_args["max_iters"])
     max_nodes = int(run_args["max_nodes"])
     max_time = float(run_args["max_time"])
+    max_memory = run_args.get("max_memory")  # optional RSS ceiling in bytes
     backoff = bool(run_args.get("backoff_scheduler", False))
     language = str(run_args["language"])
 
@@ -94,6 +95,8 @@ def main() -> int:
         "--max-time",
         str(max_time),
     ]
+    if max_memory is not None:
+        cmd_base += ["--max-memory", str(max_memory)]
     if backoff:
         cmd_base.append("--backoff-scheduler")
 

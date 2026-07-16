@@ -4,7 +4,8 @@ Shells out to `target/release/generate` to produce a nested JSON of terms
 grouped by size, then to `target/release/measure-size` once per term to
 record peak resident set size (VmHWM, matching htop). The peak is appended
 to each inner term record. Egg limits (`--max-iters`, `--max-nodes`,
-`--max-time`, `--backoff-scheduler`) are forwarded to both binaries.
+`--max-time`, `--backoff-scheduler`) are forwarded to both binaries;
+`--rlimit-as` (virtual-memory backstop) only to `measure-size`.
 
 The `terms.json` payload has shape
 `[[size, {term: [attempts, validation_result, peak_memory_bytes]}], ...]`.
@@ -85,8 +86,9 @@ class Args:
     retry_limit: int = 10000
     parallelism: int | None = None
 
-    # measure-only; per-term virtual-memory cap (e.g. "8G"). Backstop only.
-    max_memory: str = tyro.MISSING
+    # measure-only; per-term virtual-memory cap (e.g. "8G"), enforced via
+    # RLIMIT_AS in measure-size. Backstop only.
+    rlimit_as: str = tyro.MISSING
 
     # measure-only; number of concurrent measure-size processes. Defaults
     # to 1 because parallel runs compete for RAM and can perturb peak RSS.
@@ -106,7 +108,7 @@ def main() -> int:
         "    cargo build --release --bin generate --bin measure-size\n"
         "    uv run scripts/generate_and_measure.py \\\n"
         "        --total-samples 1000 --min-size 10 --max-size 50 \\\n"
-        "        --distribution uniform --language math --seed 42 --max-memory 8G \\\n"
+        "        --distribution uniform --language math --seed 42 --rlimit-as 8G \\\n"
         "        --max-iters 50 --max-nodes 100000 --max-time 10 \\\n"
         "        --backoff-scheduler --measure_parallelism 10"
     )
@@ -121,7 +123,7 @@ def main() -> int:
     terms_path = args.path / "terms.json"
     args_path = args.path / "args.json"
 
-    max_memory_bytes = parse_size(args.max_memory)
+    rlimit_as_bytes = parse_size(args.rlimit_as)
 
     with args_path.open("w") as f:
         json.dump(dataclasses.asdict(args), f, indent=2, default=str)
@@ -187,8 +189,8 @@ def main() -> int:
         str(args.max_nodes),
         "--max-time",
         str(args.max_time),
-        "--max-memory",
-        str(max_memory_bytes),
+        "--rlimit-as",
+        str(rlimit_as_bytes),
     ]
     if args.backoff_scheduler:
         measure_base.append("--backoff-scheduler")

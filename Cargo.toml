@@ -31,6 +31,7 @@ thiserror = "2"
 rlimit = "0.11"
 time = { version = "0.3", features = ["macros", "local-offset"] }
 assert_approx_eq = "1"
+memory-stats = "1.2.0"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

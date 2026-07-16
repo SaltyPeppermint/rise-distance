@@ -132,6 +132,7 @@ where
         max_iters: args.cut_iters,
         max_nodes: args.max_nodes,
         max_time: args.max_time,
+        max_memory: None,
         backoff_scheduler: false,
     };
 
@@ -227,6 +228,7 @@ where
         max_iters: args.max_iters,
         max_nodes: args.max_nodes,
         max_time: args.max_time,
+        max_memory: None,
         backoff_scheduler: false,
     };
 

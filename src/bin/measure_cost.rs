@@ -20,21 +20,8 @@ struct Args {
     #[arg(long)]
     term: String,
 
-    /// Iter limit for the runner
-    #[arg(long, default_value_t = 11)]
-    max_iters: usize,
-
-    /// Node limit for the runner
-    #[arg(long, default_value_t = 100_000)]
-    max_nodes: usize,
-
-    /// Time limit for the runner (seconds)
-    #[arg(long, default_value_t = 1.0)]
-    max_time: f64,
-
-    /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
-    #[arg(long, default_value_t = false)]
-    backoff_scheduler: bool,
+    #[command(flatten)]
+    eqsat: EqsatConfig,
 
     /// Language to sample terms from
     #[arg(long)]
@@ -128,13 +115,8 @@ where
     CostThisRound<L>: IterationData<L, N>,
 {
     eprintln!("Now running {expr}");
-    let config = EqsatConfig {
-        max_iters: args.max_iters,
-        max_nodes: args.max_nodes,
-        max_time: args.max_time,
-        backoff_scheduler: args.backoff_scheduler,
-    };
-    let runner = config
+    let runner = args
+        .eqsat
         .build_runner::<_, _, CostThisRound<L>>(expr)
         .run(rules);
 

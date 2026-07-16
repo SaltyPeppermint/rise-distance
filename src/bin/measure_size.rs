@@ -22,33 +22,31 @@ struct Args {
     #[arg(long)]
     language: AvailableLanguages,
 
-    /// Iter limit for the runner
-    #[arg(long, default_value_t = 11)]
-    max_iters: usize,
-
-    /// Node limit for the runner
-    #[arg(long, default_value_t = 100_000)]
-    max_nodes: usize,
-
-    /// Time limit for the runner (seconds)
-    #[arg(long, default_value_t = 1.0)]
-    max_time: f64,
+    #[command(flatten)]
+    eqsat: EqsatConfig,
 
     /// Hard cap on virtual address space (bytes), enforced via `RLIMIT_AS`.
-    /// Allocators reserve more virtual memory than they commit, so set
-    /// this generously vs. the real RSS budget.
+    /// Allocators reserve more virtual memory than they commit, so set this
+    /// generously vs. the real RSS budget (unlike `--max-memory`, which is the
+    /// graceful RSS ceiling; this one kills allocations outright).
     #[arg(long)]
-    max_memory: Option<u64>,
-
-    /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
-    #[arg(long, default_value_t = false)]
-    backoff_scheduler: bool,
+    rlimit_as: Option<u64>,
 }
 
 fn main() {
     let args = Args::parse();
 
-    if let Some(cap) = args.max_memory {
+    // The RLIMIT_AS backstop caps virtual address space, which always exceeds
+    // RSS: a cap at or below the graceful `--max-memory` ceiling would kill the
+    // process before the RSS hook ever trips.
+    if let (Some(rlimit), Some(rss_limit)) = (args.rlimit_as, args.eqsat.max_memory) {
+        assert!(
+            rlimit > rss_limit,
+            "--rlimit-as ({rlimit}) must exceed --max-memory ({rss_limit}), \
+             or the hard RLIMIT_AS kill preempts the graceful RSS stop"
+        );
+    }
+    if let Some(cap) = args.rlimit_as {
         setrlimit(Resource::AS, cap, cap).expect("setrlimit RLIMIT_AS failed");
     }
 
@@ -69,13 +67,7 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
         .parse()
         .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
 
-    let config = EqsatConfig {
-        max_iters: args.max_iters,
-        max_nodes: args.max_nodes,
-        max_time: args.max_time,
-        backoff_scheduler: args.backoff_scheduler,
-    };
-    let runner = config.build_runner::<_, _, ()>(&expr).run(rules);
+    let runner = args.eqsat.build_runner::<_, _, ()>(&expr).run(rules);
 
     drop(runner);
 }

@@ -1,13 +1,15 @@
 """Drive the guide search from Python.
 
 Replaces the "second half" of the old `guide` binary. The Rust `sample` and
-`verify` binaries touch no files: per-seed/per-leg inputs go in on stdin,
-`--language` and the eqsat limits on argv. This driver owns all file I/O: it
-reads `args.json` (for `--language`/the eqsat flags), flattens the goal-enriched
-`terms.json` into per-seed `sample` requests (capturing each guide-candidate
-menu from stdout), then runs the individual search legs (one `verify` subprocess
-each), resampling fresh guide subsets until it either reaches the goal or uses
-all `--attempts` for a seed/goal pair. All logging and data wrangling
+`verify` binaries touch no files: `sample` takes everything on argv, `verify`
+takes per-leg inputs on stdin plus `--language`/eqsat limits on argv. This
+driver owns all file I/O: it reads `args.json` (language, eqsat limits, and the
+optional guide-replay `stop_*` overrides), flattens the goal-enriched
+`terms.json` into per-seed specs, runs one `sample` subprocess per seed
+(splicing the seed's goals back onto the output, since `sample` no longer
+echoes them), then runs the search legs (one `verify` subprocess each),
+resampling fresh guide subsets until it either reaches the goal or uses all
+`--attempts` for a seed/goal pair. All logging and data wrangling
 (parquet/JSON) live here.
 
 Example:
@@ -129,91 +131,135 @@ def pool_key(strategy: str) -> str:
     return strategy
 
 
-def language_eqsat_flags(path: Path) -> list[str]:
-    """Read `args.json` and build the `--language`/eqsat CLI flags `sample` and
-    `verify` take. The four eqsat values live at the top level of `args.json`;
-    `--backoff-scheduler` is a presence flag, added only when true.
+def eqsat_limits(path: Path) -> dict:
+    """Read the search-phase eqsat limits out of `args.json`.
+
+    The four required values live at the top level; `max_memory` (RSS ceiling
+    in bytes) is optional and `None` when absent.
     """
     cfg = json.loads((path / "args.json").read_text())
+    return {
+        "max_iters": cfg["max_iters"],
+        "max_nodes": cfg["max_nodes"],
+        "max_time": cfg["max_time"],
+        "max_memory": cfg.get("max_memory"),
+        "backoff_scheduler": cfg["backoff_scheduler"],
+    }
+
+
+def replay_limits(path: Path) -> dict:
+    """Compute the effective guide-replay limits for `sample`: the search-phase
+    limits overridden by the optional `stop_*` keys in `args.json`
+    (`stop_time`/`stop_nodes`/`stop_memory`, the latter in bytes). Only the
+    guide replay uses these, not the leg search. The per-seed `max_iters`
+    override is applied in `run_sample_shard`.
+    """
+    cfg = json.loads((path / "args.json").read_text())
+    limits = eqsat_limits(path)
+    for stop_key, max_key in (
+        ("stop_time", "max_time"),
+        ("stop_nodes", "max_nodes"),
+        ("stop_memory", "max_memory"),
+    ):
+        value = cfg.get(stop_key)
+        if value is not None:
+            limits[max_key] = value
+    return limits
+
+
+def limit_flags(limits: dict) -> list[str]:
+    """Turn an eqsat-limit dict into the `--max-*` CLI flags `sample` and
+    `verify` take. `--max-memory` is added only when set;
+    `--backoff-scheduler` is a presence flag, added only when true.
+    """
     flags = [
-        "--language",
-        str(cfg["language"]),
         "--max-iters",
-        str(cfg["max_iters"]),
+        str(limits["max_iters"]),
         "--max-nodes",
-        str(cfg["max_nodes"]),
+        str(limits["max_nodes"]),
         "--max-time",
-        str(cfg["max_time"]),
+        str(limits["max_time"]),
     ]
-    if cfg["backoff_scheduler"]:
+    if limits["max_memory"] is not None:
+        flags += ["--max-memory", str(limits["max_memory"])]
+    if limits["backoff_scheduler"]:
         flags.append("--backoff-scheduler")
     return flags
 
 
-def sample_request_from_payload(seed: str, ok: dict) -> dict:
-    """Pull the per-seed replay inputs `sample` needs out of one `Ok`
-    GoalGenMetadata. `language`/eqsat are passed on argv, not per seed, so only
-    the per-seed fields go in the stdin `SampleRequest`: `guide_iters` (from
-    `guide_egraph.iters`), `max_size`, and `goals`.
-    """
-    return {
-        "seed": seed,
-        "guide_iters": ok["guide_egraph"]["iters"],
-        "max_size": ok["max_size"],
-        "goals": ok["goals"],
-    }
+def language_flag(path: Path) -> list[str]:
+    """Build the `--language` flag from `args.json`."""
+    cfg = json.loads((path / "args.json").read_text())
+    return ["--language", str(cfg["language"])]
 
 
-def flatten_enriched_seeds(args: Args) -> list[dict]:
-    """Flatten the goal-enriched `terms.json` into per-seed `sample` requests.
+@dataclass
+class SeedSpec:
+    """One seed's inputs from the goal-enriched `terms.json`: `seed` and
+    `guide_iters` go to `sample` on argv; `goals` stays Python-side and is
+    merged back onto `sample`'s output record."""
+
+    seed: str
+    guide_iters: int
+    goals: list[str]
+
+
+def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
+    """Flatten the goal-enriched `terms.json` into per-seed specs.
 
     `terms.json` is a list of `[size, {seed: payload}]` groups, each payload a
-    `Result`-shaped `{"Ok": GoalGenMetadata}` / `{"Err": msg}`. `sample` only
-    needs a handful of fields off each `Ok`; we build one request dict per seed
-    here so the Rust side does no `terms.json` parsing. `Err` seeds (goal stage
-    failed) are dropped. Groups in file order, terms sorted for a deterministic
-    `--take-first`.
+    `Result`-shaped `{"Ok": GoalGenMetadata}` / `{"Err": msg}`. We pull the seed,
+    its recorded `guide_iters` (`guide_egraph.iters`), and its goals off each
+    `Ok`. `Err` seeds (goal stage failed) are dropped. Groups in file order,
+    terms sorted for a deterministic `--take-first`.
     """
     groups = json.loads((args.path / "terms.json").read_text())
-    requests: list[dict] = []
+    specs: list[SeedSpec] = []
     for _size, terms_map in groups:
         for seed in sorted(terms_map):
             ok = terms_map[seed].get("Ok")
             if ok is None:
                 continue  # Err seed: goal stage failed, nothing to replay.
-            requests.append(sample_request_from_payload(seed, ok))
+            specs.append(SeedSpec(seed, ok["guide_egraph"]["iters"], ok["goals"]))
     if args.take_first is not None:
-        requests = requests[: args.take_first]
-    return requests
+        specs = specs[: args.take_first]
+    return specs
 
 
-def run_sample_shard(args: Args, base_flags: list[str], request: dict) -> list:
+def run_sample_shard(args: Args, base_flags: list[str], limits: dict, spec: SeedSpec) -> list:
     """Run `sample` for a single seed and return its parsed record list.
 
-    `sample` touches no files: the per-seed replay inputs go in on stdin as a
-    `SampleRequest`, and `--language`/the eqsat flags on argv; it prints a
-    one-element `[SeedSamples]` array to stdout (empty on an internal failure),
-    logs to stderr. We capture stdout and parse it; stderr is surfaced only on a
-    nonzero exit.
+    Everything goes on argv: `--seed`, `--language`, and `limits` (the folder's
+    `replay_limits`) with `max_iters` set to the seed's recorded `guide_iters`.
+    `sample` prints a one-element `[SeedSamples]` array to stdout (empty on an
+    internal failure) and logs to stderr, which is surfaced only on a nonzero
+    exit. The spec's `goals` are spliced back onto each record here, since
+    `sample` no longer echoes them.
     """
     cmd = [
         str(args.sample_binary),
         *base_flags,
+        *limit_flags({**limits, "max_iters": spec.guide_iters}),
+        "--seed",
+        spec.seed,
         "--samples-per-strategy",
         str(args.samples_per_strategy),
     ]
-    proc = subprocess.run(cmd, input=json.dumps(request), capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"sample failed (code {proc.returncode}) for seed {request['seed']!r}:\n{proc.stderr}"
+            f"sample failed (code {proc.returncode}) for seed {spec.seed!r}:\n{proc.stderr}"
         )
     try:
-        return json.loads(proc.stdout)
+        records = json.loads(proc.stdout)
     except json.JSONDecodeError as e:
         raise RuntimeError(
-            f"sample returned non-JSON stdout for seed {request['seed']!r}: {e}\n"
+            f"sample returned non-JSON stdout for seed {spec.seed!r}: {e}\n"
             f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
         ) from e
+    for record in records:
+        record["goals"] = spec.goals
+    return records
 
 
 def run_sample(args: Args, sample_out: Path) -> Path:
@@ -223,12 +269,15 @@ def run_sample(args: Args, sample_out: Path) -> Path:
     output is deterministic regardless of completion order), and writes a single
     `samples.json` under `sample_out` for provenance.
     """
-    requests = flatten_enriched_seeds(args)
+    specs = flatten_enriched_seeds(args)
     sample_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
-    base_flags = language_eqsat_flags(args.path)
+    # sample gets the effective guide-replay limits (per-seed guide_iters
+    # spliced in per shard); verify keeps the plain search-phase limits.
+    sample_flags = language_flag(args.path)
+    limits = replay_limits(args.path)
     print(
-        f"Sampling guide menu for {len(requests)} seed(s) -> {sample_out} ({jobs} workers)",
+        f"Sampling guide menu for {len(specs)} seed(s) -> {sample_out} ({jobs} workers)",
         file=sys.stderr,
     )
 
@@ -236,13 +285,13 @@ def run_sample(args: Args, sample_out: Path) -> Path:
     shard_records: dict[int, list] = {}
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = {
-            pool_exec.submit(run_sample_shard, args, base_flags, req): i
-            for i, req in enumerate(requests)
+            pool_exec.submit(run_sample_shard, args, sample_flags, limits, spec): i
+            for i, spec in enumerate(specs)
         }
         for fut in tqdm(as_completed(futures), total=len(futures), desc="sampling", unit="seed"):
             shard_records[futures[fut]] = fut.result()
 
-    merged = [rec for i in range(len(requests)) for rec in shard_records[i]]
+    merged = [rec for i in range(len(specs)) for rec in shard_records[i]]
     merged_path = sample_out / "samples.json"
     merged_path.write_text(json.dumps(merged))
     return merged_path
@@ -498,7 +547,7 @@ def main() -> int:
         return 2
 
     k_values = [1] if args.strategy in SMALLEST_STRATEGIES else args.k
-    base_flags = language_eqsat_flags(args.path)
+    base_flags = language_flag(args.path) + limit_flags(eqsat_limits(args.path))
     out = resolve_output_dir(args)
 
     print("RUNNING SAMPLING")

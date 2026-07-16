@@ -76,8 +76,10 @@ class Args:
 
 def language_eqsat_flags(path: Path) -> list[str]:
     """Read `args.json` and build the `--language`/eqsat CLI flags every binary
-    takes. The four eqsat values live at the top level of `args.json`;
-    `--backoff-scheduler` is a presence flag, added only when true.
+    takes. The four required eqsat values live at the top level; `--max-memory`
+    (from the optional `max_memory` key, an RSS ceiling in bytes) is added only
+    when present; `--backoff-scheduler` is a presence flag, added only when
+    true.
     """
     cfg = json.loads((path / "args.json").read_text())
     flags = [
@@ -90,6 +92,8 @@ def language_eqsat_flags(path: Path) -> list[str]:
         "--max-time",
         str(cfg["max_time"]),
     ]
+    if cfg.get("max_memory") is not None:
+        flags += ["--max-memory", str(cfg["max_memory"])]
     if cfg["backoff_scheduler"]:
         flags.append("--backoff-scheduler")
     return flags

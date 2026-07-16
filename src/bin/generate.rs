@@ -22,21 +22,16 @@ use rise_distance::{MyAnalysis, MyLanguage};
 #[command(
     about = "Generate random math terms and write them to a JSON file",
     after_help = "\
+The --max-* eqsat limits bound each term's validity check, not the whole run.
 Examples:
   # Generate 1000 uniform samples between size 5 and 50
-  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution uniform --seed 42 --path output.json
+  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution uniform \\
+    --seed 42 --path output.json --max-iters 11 --max-nodes 100000 --max-time 1
 
-  # Generate with a normal distribution (default sigma=2.6)
-  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution normal --seed 42 --path output.json
-
-  # Generate with a normal distribution and custom sigma
-  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution normal:3.0 --seed 42 --path output.json
-
-  # Adjust retry limit and Boltzmann tolerance
-  generate --total-samples 500 --min-size 10 --max-size 30 --distribution uniform --seed 1 --path out.json --tolerance 2 --retry-limit 5000
-
-  # Use the BackoffScheduler with custom egg limits
-  cargo run --release --bin generate -- --total-samples 1000 --min-size 10 --max-size 50 --distribution uniform --seed 42 --path output_new.json --max-iters 50 --max-nodes 100000 --max-time 10 --backoff-scheduler
+  # Normal distribution with custom sigma, backoff scheduler, custom limits
+  generate --total-samples 1000 --min-size 5 --max-size 50 --distribution normal:3.0 \\
+    --seed 42 --path output.json --max-iters 50 --max-nodes 100000 --max-time 10 \\
+    --backoff-scheduler
 "
 )]
 struct Args {
@@ -76,25 +71,14 @@ struct Args {
     #[arg(long)]
     path: PathBuf,
 
-    /// Maximum egg iterations per term
-    #[arg(long, default_value_t = 11)]
-    max_iters: usize,
-
-    /// Maximum egraph nodes per term
-    #[arg(long, default_value_t = 100_000)]
-    max_nodes: usize,
-
-    /// Maximum runtime in seconds per term
-    #[arg(long, default_value_t = 1.0)]
-    max_time: f64,
+    /// Eqsat limits for each term's validity check (bound each per-term run,
+    /// not the whole generation).
+    #[command(flatten)]
+    eqsat: EqsatConfig,
 
     /// Number of rayon worker threads (defaults to rayon's default; lower to reduce memory pressure)
     #[arg(long)]
     parallelism: Option<usize>,
-
-    /// Use egg's `BackoffScheduler` instead of the `SimpleScheduler`
-    #[arg(long, default_value_t = false)]
-    backoff_scheduler: bool,
 }
 
 fn main() {
@@ -112,13 +96,6 @@ fn main() {
         .distribution
         .samples_per_size(&sizes, args.total_samples);
 
-    let validity_config = EqsatConfig {
-        max_iters: args.max_iters,
-        max_nodes: args.max_nodes,
-        max_time: args.max_time,
-        backoff_scheduler: args.backoff_scheduler,
-    };
-
     // Derive one RNG per size by advancing the root RNG sequentially, making it deterministic and ordered.
     let mut root_rng = ChaCha12Rng::seed_from_u64(args.seed);
     let mut sized_rngs = samples_per_size
@@ -135,13 +112,13 @@ fn main() {
         AvailableLanguages::Diospyros => unimplemented!("Dios has no sampler"),
         AvailableLanguages::Math => run_language::<math::MathSampler, math::ConstantFold>(
             &args,
-            &validity_config,
+            &args.eqsat,
             sized_rngs,
             &math::rules(),
         ),
         AvailableLanguages::Prop => run_language::<prop::PropSampler, prop::ConstantFold>(
             &args,
-            &validity_config,
+            &args.eqsat,
             sized_rngs,
             &prop::rules(),
         ),

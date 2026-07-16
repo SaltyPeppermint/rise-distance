@@ -51,17 +51,39 @@ impl EqsatMetadata {
     }
 }
 
-/// Eqsat resource limits and scheduler choice.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+/// Eqsat resource limits and scheduler choice. Doubles as the shared clap flag
+/// group (`--max-*` / `--backoff-scheduler`) for the `goal` / `sample` /
+/// `verify` binaries; the Python drivers read the values out of `args.json`
+/// and forward them on argv. Non-CLI users construct it literally — the clap
+/// attributes are inert there.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, clap::Args)]
 pub struct EqsatConfig {
+    /// Maximum eqsat iterations.
+    #[arg(long)]
     pub max_iters: usize,
+
+    /// Maximum eqsat egraph nodes.
+    #[arg(long)]
     pub max_nodes: usize,
+
+    /// Maximum eqsat wall-clock seconds.
+    #[arg(long)]
     pub max_time: f64,
+
+    /// Process RSS ceiling in bytes, enforced by a per-iteration hook (egg has
+    /// no native memory limit). `None` (flag unset) = unbounded.
+    #[serde(default)]
+    #[arg(long)]
+    pub max_memory: Option<u64>,
+
+    /// Use the backoff scheduler instead of the simple one.
+    #[arg(long)]
     pub backoff_scheduler: bool,
 }
 
 impl EqsatConfig {
-    /// Build a [`Runner`] configured with this config's limits and scheduler.
+    /// Build a [`Runner`] configured with this config's limits (including the
+    /// RSS hook when `max_memory` is set) and scheduler.
     #[must_use]
     pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> Runner<L, N, D>
     where
@@ -73,7 +95,8 @@ impl EqsatConfig {
             .with_expr(expr)
             .with_iter_limit(self.max_iters)
             .with_node_limit(self.max_nodes)
-            .with_time_limit(Duration::from_secs_f64(self.max_time));
+            .with_time_limit(Duration::from_secs_f64(self.max_time))
+            .with_hook(memory_limit_hook(self.max_memory));
         if self.backoff_scheduler {
             runner.with_scheduler(BackoffScheduler::default())
         } else {
@@ -223,6 +246,33 @@ where
 /// states for a meaningful guide/goal split.
 const MIN_ITERS: usize = 3;
 
+/// Current process RSS in bytes via the `memory-stats` crate. `None` if the
+/// platform reader is unavailable (the memory limit is then not enforced).
+fn process_rss_bytes() -> Option<u64> {
+    memory_stats::memory_stats().map(|s| s.physical_mem as u64)
+}
+
+/// Per-iteration hook enforcing the RSS ceiling (egg has no native memory
+/// limit): returning `Err` stops the run and egg records it as
+/// `StopReason::Other`. A no-op when `max_memory` is `None`.
+fn memory_limit_hook<L, N, D>(
+    max_memory: Option<u64>,
+) -> impl FnMut(&mut Runner<L, N, D>) -> Result<(), String> + 'static
+where
+    L: Language,
+    N: Analysis<L>,
+    D: IterationData<L, N>,
+{
+    move |_runner| {
+        if let (Some(limit), Some(rss)) = (max_memory, process_rss_bytes())
+            && rss > limit
+        {
+            return Err(format!("memory limit exceeded ({rss} > {limit} bytes)"));
+        }
+        Ok(())
+    }
+}
+
 /// Run equality saturation up to `config.max_iters` iterations and return the
 /// final egraph (`curr`) together with the last meaningfully different
 /// earlier egraph (`prev`).
@@ -268,7 +318,8 @@ where
                 s.distinct = Some(runner.egraph.clone());
             }
             Ok(())
-        });
+        })
+        .with_hook(memory_limit_hook(config.max_memory));
 
     runner = if config.backoff_scheduler {
         runner.with_scheduler(BackoffScheduler::default())
@@ -515,4 +566,18 @@ where
 {
     a.number_of_classes() == b.number_of_classes()
         && a.total_number_of_nodes() == b.total_number_of_nodes()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rss_is_plausible() {
+        use super::process_rss_bytes;
+
+        // The reader must succeed and report a plausible RSS (at least a
+        // page, well under a terabyte).
+        let rss = process_rss_bytes().expect("memory-stats should read RSS on this platform");
+        assert!(rss >= 4096, "RSS {rss} implausibly small");
+        assert!(rss < 1 << 40, "RSS {rss} implausibly large");
+    }
 }
