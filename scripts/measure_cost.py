@@ -33,6 +33,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from common import eqsat_limits, exit_if_missing, limit_flags
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -54,13 +56,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not args.binary.exists():
-        print(
-            f"Binary not found: {args.binary}. "
-            f"Build with `cargo build --release --bin measure-cost`.",
-            file=sys.stderr,
-        )
-        return 2
+    exit_if_missing(args.binary)
 
     args_path = args.path.parent / "generation_args.json"
     if not args_path.exists():
@@ -70,35 +66,19 @@ def main() -> int:
     with args_path.open("r") as f:
         run_args = json.load(f)
 
-    max_iters = int(run_args["max_iters"])
-    max_nodes = int(run_args["max_nodes"])
-    max_time = float(run_args["max_time"])
-    max_memory = run_args.get("max_memory")  # optional RSS ceiling in bytes
-    backoff = bool(run_args.get("backoff_scheduler", False))
-    language = str(run_args["language"])
-
     with args.path.open("r") as f:
         big_collector = json.load(f)
 
     # big_collector is [[size, {term: [attempts, validation, peak_memory_bytes]}], ...]
     all_terms = [term for _size, terms_map in big_collector for term in terms_map]
 
-    timeout = max(1, int(max_time * 40) + 5)
+    timeout = max(1, int(float(run_args["max_time"]) * 40) + 5)
     cmd_base = [
         str(args.binary),
         "--language",
-        language,
-        "--max-iters",
-        str(max_iters),
-        "--max-nodes",
-        str(max_nodes),
-        "--max-time",
-        str(max_time),
+        str(run_args["language"]),
+        *limit_flags(eqsat_limits(run_args)),
     ]
-    if max_memory is not None:
-        cmd_base += ["--max-memory", str(max_memory)]
-    if backoff:
-        cmd_base.append("--backoff-scheduler")
 
     def measure_one(term: str) -> dict:
         proc = subprocess.run(

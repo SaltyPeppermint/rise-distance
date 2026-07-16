@@ -33,16 +33,7 @@ import tyro
 from diceware.wordlist import WordList, get_wordlists_dir
 from tqdm import tqdm
 
-
-def parse_size(s: str) -> int:
-    s = s.strip().upper()
-    mult = 1
-    for suf, m in (("K", 1024), ("M", 1024**2), ("G", 1024**3), ("T", 1024**4)):
-        if s.endswith(suf):
-            mult = m
-            s = s[:-1]
-            break
-    return int(float(s) * mult)
+from common import exit_if_missing, parse_size
 
 
 def _load_wordlist(name: str) -> list[str]:
@@ -98,7 +89,9 @@ class Args:
     max_iters: int = 11
     max_nodes: int = 100_000
     max_time: float = 1.0
-    backoff_scheduler: bool = False
+    backoff_scheduler: bool = True
+    """Use egg's BackoffScheduler (pass --no-backoff-scheduler for the
+    SimpleScheduler)."""
 
 
 def main() -> int:
@@ -110,7 +103,7 @@ def main() -> int:
         "        --total-samples 1000 --min-size 10 --max-size 50 \\\n"
         "        --distribution uniform --language math --seed 42 --rlimit-as 8G \\\n"
         "        --max-iters 50 --max-nodes 100000 --max-time 10 \\\n"
-        "        --backoff-scheduler --measure_parallelism 10"
+        "        --measure_parallelism 10"
     )
     args = tyro.cli(Args, description=description)
 
@@ -128,14 +121,7 @@ def main() -> int:
     with args_path.open("w") as f:
         json.dump(dataclasses.asdict(args), f, indent=2, default=str)
 
-    for binary in (args.generate_binary, args.measure_binary):
-        if not binary.exists():
-            print(
-                f"Binary not found: {binary}. "
-                f"Build with `cargo build --release --bin generate --bin measure-size`.",
-                file=sys.stderr,
-            )
-            return 2
+    exit_if_missing(args.generate_binary, args.measure_binary)
 
     gen_cmd = [
         str(args.generate_binary),

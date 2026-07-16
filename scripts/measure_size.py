@@ -27,16 +27,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-
-def parse_size(s: str) -> int:
-    s = s.strip().upper()
-    mult = 1
-    for suf, m in (("K", 1024), ("M", 1024**2), ("G", 1024**3), ("T", 1024**4)):
-        if s.endswith(suf):
-            mult = m
-            s = s[:-1]
-            break
-    return int(float(s) * mult)
+from common import exit_if_missing, parse_size
 
 
 def main() -> int:
@@ -64,17 +55,13 @@ def main() -> int:
     parser.add_argument("--max-time", type=float, default=1.0)
     parser.add_argument(
         "--backoff-scheduler",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Use egg's BackoffScheduler instead of the SimpleScheduler.",
     )
     args = parser.parse_args()
 
-    if not args.binary.exists():
-        print(
-            f"Binary not found: {args.binary}. Build with `cargo build --release --bin measure-size`.",
-            file=sys.stderr,
-        )
-        return 2
+    exit_if_missing(args.binary)
 
     with args.path.open("r") as f:
         big_collector = json.load(f)

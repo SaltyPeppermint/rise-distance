@@ -1,7 +1,6 @@
 """Drive goal-term generation from Python.
 
-Replaces the internal rayon parallelism of the old `goal` binary. The Rust
-`goal` binary touches no files: it processes one seed per invocation
+The Rust `goal` binary touches no files: it processes one seed per invocation
 (`--seed <expr>`, with `--language` and the eqsat limits also on argv) and
 prints that seed's `{"Ok":..}`/`{"Err":..}` payload to stdout. This driver owns
 all file I/O: it reads `generation_args.json` (for `language` and the eqsat
@@ -9,8 +8,8 @@ config), flattens/filters the `terms.json` seed list, fans the invocations out
 across seeds, captures each payload, and writes the enriched copy to
 `goal_terms.json` next to it (same `[size, {term: payload}]` grouping;
 `terms.json` is never modified). A `goal_args.json` sidecar records the eqsat
-config the goals were generated under (top-level, read by `guided_search.py`) plus
-this run's CLI args under `driver_args`.
+config the goals were generated under (top-level, read by `guided_search.py`)
+plus this run's CLI args under `driver_args`.
 
 Example:
     cargo build --release --bin goal
@@ -21,7 +20,6 @@ Example:
 import dataclasses
 import json
 import os
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -29,6 +27,8 @@ from pathlib import Path
 
 import tyro
 from tqdm import tqdm
+
+from common import eqsat_limits, exit_if_missing, language_eqsat_flags, run_json_subprocess
 
 
 @dataclass
@@ -79,45 +79,9 @@ class Args:
     each seed's eqsat can use several GB."""
 
 
-def eqsat_config(path: Path) -> dict:
-    """Read the language/eqsat config out of `generation_args.json`: the four
-    required eqsat values live at the top level; `max_memory` (an RSS ceiling
-    in bytes) is optional and `None` when absent."""
-    cfg = json.loads((path / "generation_args.json").read_text())
-    return {
-        "language": cfg["language"],
-        "max_iters": cfg["max_iters"],
-        "max_nodes": cfg["max_nodes"],
-        "max_time": cfg["max_time"],
-        "max_memory": cfg.get("max_memory"),
-        "backoff_scheduler": cfg["backoff_scheduler"],
-    }
-
-
-def language_eqsat_flags(cfg: dict) -> list[str]:
-    """Build the `--language`/eqsat CLI flags every binary takes from an
-    `eqsat_config` dict. `--max-memory` is added only when set;
-    `--backoff-scheduler` is a presence flag, added only when true."""
-    flags = [
-        "--language",
-        str(cfg["language"]),
-        "--max-iters",
-        str(cfg["max_iters"]),
-        "--max-nodes",
-        str(cfg["max_nodes"]),
-        "--max-time",
-        str(cfg["max_time"]),
-    ]
-    if cfg["max_memory"] is not None:
-        flags += ["--max-memory", str(cfg["max_memory"])]
-    if cfg["backoff_scheduler"]:
-        flags.append("--backoff-scheduler")
-    return flags
-
-
 def is_measured(record: object) -> bool:
-    """A record `[attempts, validation, peak]` is measured iff its third element
-    is present and not the -1 failure sentinel."""
+    """True iff the record's `peak_memory_bytes` is present and not the -1
+    failure sentinel."""
     return (
         isinstance(record, list)
         and len(record) > 2
@@ -145,13 +109,7 @@ def flatten_seeds(args: Args) -> list[str]:
 
 
 def run_goal_shard(args: Args, base_flags: list[str], seed: str) -> object:
-    """Run `goal` for a single seed and return its parsed payload.
-
-    `goal` touches no files: it takes `--seed`/`--language`/the eqsat flags on
-    argv and prints one seed's `{"Ok":..}`/`{"Err":..}` payload to stdout (logs
-    to stderr). We capture stdout and parse it; stderr is surfaced only on
-    failure.
-    """
+    """Run `goal` for a single seed and return its parsed stdout payload."""
     cmd = [
         str(args.goal_binary),
         "--seed",
@@ -170,27 +128,11 @@ def run_goal_shard(args: Args, base_flags: list[str], seed: str) -> object:
         cmd += ["--size-distribution", args.size_distribution]
     if args.goal_sample_strategy is not None:
         cmd += ["--goal-sample-strategy", args.goal_sample_strategy]
-
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"goal failed (code {proc.returncode}) for seed {seed!r}:\n{proc.stderr}"
-        )
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(
-            f"goal returned non-JSON stdout for seed {seed!r}: {e}\n"
-            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
-        ) from e
+    return run_json_subprocess(cmd, what=f"goal for seed {seed!r}")
 
 
 def run_all_seeds(args: Args, base_flags: list[str], seeds: list[str]) -> dict[str, object]:
-    """Run one `goal` subprocess per seed and collect `{seed_str: payload}`.
-
-    Seed strings are unique, so keying each captured payload by its seed builds
-    the enriched map directly.
-    """
+    """Run one `goal` subprocess per seed and collect `{seed_str: payload}`."""
     jobs = args.jobs or os.cpu_count() or 1
     print(
         f"Generating goals for {len(seeds)} seed(s) ({jobs} workers)",
@@ -225,12 +167,7 @@ def write_enriched_terms(src: Path, dst: Path, enriched: dict[str, object]) -> i
 def main() -> int:
     args = tyro.cli(Args, description=__doc__)
 
-    if not args.goal_binary.exists():
-        print(
-            f"Binary not found: {args.goal_binary}. Build with `cargo build --release --bin goal`.",
-            file=sys.stderr,
-        )
-        return 2
+    exit_if_missing(args.goal_binary)
 
     goal_terms_path = args.path / "goal_terms.json"
     goal_args_path = args.path / "goal_args.json"
@@ -249,15 +186,14 @@ def main() -> int:
         print("No seeds to process after filtering.", file=sys.stderr)
         return 0
 
-    cfg = eqsat_config(args.path)
+    raw_cfg = json.loads((args.path / "generation_args.json").read_text())
+    cfg = {"language": raw_cfg["language"], **eqsat_limits(raw_cfg)}
     # goal_args.json carries the eqsat config the goals were generated under
     # (top-level, where guided_search.py reads it) plus this run's CLI args under
     # `driver_args`, so downstream stages never reach back into
     # generation_args.json.
     goal_args_path.write_text(
-        json.dumps(
-            {**cfg, "driver_args": dataclasses.asdict(args)}, indent=2, default=str
-        )
+        json.dumps({**cfg, "driver_args": dataclasses.asdict(args)}, indent=2, default=str)
     )
 
     enriched = run_all_seeds(args, language_eqsat_flags(cfg), seeds)

@@ -1,16 +1,14 @@
 """Drive the guide search from Python.
 
-Replaces the "second half" of the old `guide` binary. The Rust `sample` and
-`verify` binaries touch no files: `sample` takes everything on argv, `verify`
-takes the per-leg guides on stdin plus `--goal`/`--language`/eqsat limits on
-argv. This
-driver owns all file I/O: it reads `goal_args.json` (language and the
-search-phase eqsat limits), flattens the goal-enriched `goal_terms.json` into
-per-seed specs, runs one `sample` subprocess per seed (splicing the seed's
-goals back onto the output, since `sample` no longer echoes them), then runs
-the search legs (one `verify` subprocess each), resampling fresh guide subsets
-until it either reaches the goal or uses all `--attempts` for a seed/goal pair.
-All logging and data wrangling (parquet/JSON) live here.
+The Rust `sample` and `verify` binaries touch no files: `sample` takes
+everything on argv, `verify` takes the per-leg guides on stdin plus
+`--goal`/`--language`/eqsat limits on argv. This driver owns all file I/O: it
+reads `goal_args.json` (language and the search-phase eqsat limits), flattens
+the goal-enriched `goal_terms.json` into per-seed specs, runs one `sample`
+subprocess per seed, then runs the search legs (one `verify` subprocess each),
+resampling fresh guide subsets until it either reaches the goal or uses all
+`--attempts` for a seed/goal pair. All logging and data wrangling
+(parquet/JSON) live here.
 
 The guide replay runs under an explicit budget given on the CLI: at least one
 of `--stop-iters`/`--stop-nodes`/`--stop-time`/`--stop-memory` is required;
@@ -32,27 +30,36 @@ import dataclasses
 import json
 import os
 import random
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, get_args
 
 import polars as pl
 import tyro
 from tqdm import tqdm
 
+from common import (
+    eqsat_limits,
+    exit_if_missing,
+    limit_flags,
+    parse_size,
+    run_json_subprocess,
+)
+
 # Strategy names emitted by `sample` (see Strategy::name in src/cli/sample.rs).
 # The `with_replacement_*` pools are re-drawn *with* replacement across a leg's
 # `k` picks; everything else is drawn without replacement.
-SAMPLING_STRATEGIES = (
+SamplingStrategy = Literal[
     "no_replacement_count",
     "no_replacement_naive",
     "with_replacement_count",
     "with_replacement_naive",
-)
-SMALLEST_STRATEGIES = ("smallest_novel", "smallest_overall")
-ALL_STRATEGIES = SAMPLING_STRATEGIES + SMALLEST_STRATEGIES
+]
+SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
+Strategy = Literal[SamplingStrategy, SmallestStrategy]
+SMALLEST_STRATEGIES = get_args(SmallestStrategy)
 
 # Fields copied straight out of a `verify` LegResult onto a result row.
 LEG_RESULT_FIELDS = (
@@ -95,8 +102,8 @@ class Args:
     """How many legs to try per (seed, goal, k), each with a freshly resampled
     guide subset. Counts the first try, so `attempts=1` means a single leg with
     no resampling. Stops early on the first reach; gives up after the last."""
-    strategy: str = "no_replacement_count"
-    """Which candidate pool to restart with. One of: """ + ", ".join(ALL_STRATEGIES)  # pyright: ignore[reportUnusedExpression]
+    strategy: Strategy = "no_replacement_count"
+    """Which candidate pool to restart with."""
     k: list[int] = dataclasses.field(default_factory=lambda: [1, 2, 5, 10, 50, 100])
     """Guide-set sizes to sweep: each seed/goal pair is tried independently at
     every `k` (its own attempt loop), reproducing the old reach-rate-vs-k curve.
@@ -157,41 +164,13 @@ def pool_key(strategy: str) -> str:
     return strategy
 
 
-def eqsat_limits(path: Path) -> dict:
-    """Read the search-phase eqsat limits out of `goal_args.json`.
-
-    The four required values live at the top level; `max_memory` (RSS ceiling
-    in bytes) is optional and `None` when absent.
-    """
-    cfg = json.loads((path / "goal_args.json").read_text())
-    return {
-        "max_iters": cfg["max_iters"],
-        "max_nodes": cfg["max_nodes"],
-        "max_time": cfg["max_time"],
-        "max_memory": cfg.get("max_memory"),
-        "backoff_scheduler": cfg["backoff_scheduler"],
-    }
-
-
-def parse_size(s: str) -> int:
-    """Parse a human byte size like `4G` into bytes."""
-    s = s.strip().upper()
-    mult = 1
-    for suf, m in (("K", 1024), ("M", 1024**2), ("G", 1024**3), ("T", 1024**4)):
-        if s.endswith(suf):
-            mult = m
-            s = s[:-1]
-            break
-    return int(float(s) * mult)
-
-
-def replay_limits(args: Args, path: Path) -> dict:
+def replay_limits(args: Args, cfg: dict) -> dict:
     """Build the guide-replay limits for `sample`: the search-phase
     (brute-force) limits from `goal_args.json`, with each given `--stop-*`
     budget overriding its dimension. The replay ends at whichever limit trips
     first.
     """
-    limits = eqsat_limits(path)
+    limits = eqsat_limits(cfg)
     if args.stop_iters is not None:
         limits["max_iters"] = args.stop_iters
     if args.stop_nodes is not None:
@@ -203,37 +182,10 @@ def replay_limits(args: Args, path: Path) -> dict:
     return limits
 
 
-def limit_flags(limits: dict) -> list[str]:
-    """Turn an eqsat-limit dict into the `--max-*` CLI flags `sample` and
-    `verify` take. `--max-memory` is added only when set;
-    `--backoff-scheduler` is a presence flag, added only when true.
-    """
-    flags = [
-        "--max-iters",
-        str(limits["max_iters"]),
-        "--max-nodes",
-        str(limits["max_nodes"]),
-        "--max-time",
-        str(limits["max_time"]),
-    ]
-    if limits["max_memory"] is not None:
-        flags += ["--max-memory", str(limits["max_memory"])]
-    if limits["backoff_scheduler"]:
-        flags.append("--backoff-scheduler")
-    return flags
-
-
-def language_flag(path: Path) -> list[str]:
-    """Build the `--language` flag from `goal_args.json`."""
-    cfg = json.loads((path / "goal_args.json").read_text())
-    return ["--language", str(cfg["language"])]
-
-
 @dataclass
 class SeedSpec:
-    """One seed's inputs from the goal-enriched `goal_terms.json`: `seed` goes
-    to `sample` on argv; `goals` stays Python-side and is merged back onto
-    `sample`'s output record."""
+    """One seed's `sample` input (`seed`) and its goals, merged back onto the
+    output record Python-side."""
 
     seed: str
     goals: list[str]
@@ -266,14 +218,12 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
 
 
 def run_sample_shard(args: Args, base_flags: list[str], limits: dict, spec: SeedSpec) -> list:
-    """Run `sample` for a single seed and return its parsed record list.
+    """Run `sample` for a single seed and return its parsed record list, with
+    the spec's `goals` spliced back onto each record.
 
     Everything goes on argv: `--seed`, `--language`, and `limits` (the
     `--stop-*` replay budget from `replay_limits`). `sample` prints a
-    one-element `[SeedSamples]` array to stdout (empty on an internal failure)
-    and logs to stderr, which is surfaced only on a nonzero exit. The spec's
-    `goals` are spliced back onto each record here, since `sample` no longer
-    echoes them.
+    one-element `[SeedSamples]` array to stdout (empty on an internal failure).
     """
     cmd = [
         str(args.sample_binary),
@@ -284,24 +234,13 @@ def run_sample_shard(args: Args, base_flags: list[str], limits: dict, spec: Seed
         "--samples-per-strategy",
         str(args.samples_per_strategy),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"sample failed (code {proc.returncode}) for seed {spec.seed!r}:\n{proc.stderr}"
-        )
-    try:
-        records = json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(
-            f"sample returned non-JSON stdout for seed {spec.seed!r}: {e}\n"
-            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
-        ) from e
+    records = run_json_subprocess(cmd, what=f"sample for seed {spec.seed!r}")
     for record in records:
         record["goals"] = spec.goals
     return records
 
 
-def run_sample(args: Args, sample_out: Path) -> Path:
+def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     """Sample the guide menu in parallel, one `sample` subprocess per seed.
 
     Captures each subprocess's stdout, merges the records in seed order (so the
@@ -313,8 +252,8 @@ def run_sample(args: Args, sample_out: Path) -> Path:
     jobs = args.jobs or os.cpu_count() or 1
     # sample gets the --stop-* replay budget; verify keeps the plain
     # search-phase limits.
-    sample_flags = language_flag(args.path)
-    limits = replay_limits(args, args.path)
+    sample_flags = ["--language", str(cfg["language"])]
+    limits = replay_limits(args, cfg)
     print(
         f"Sampling guide menu for {len(specs)} seed(s) -> {sample_out} ({jobs} workers)",
         file=sys.stderr,
@@ -378,54 +317,14 @@ def run_leg(
     """Run one `verify` subprocess and return the parsed `LegResult`.
 
     `verify` touches no files: the per-leg `guides` go in on stdin, and
-    `--goal`/`--language`/`--full-union`/the eqsat flags on argv.
+    `--goal`/`--language`/`--full-union`/the eqsat flags on argv. A
+    panic-guarded leg still exits 0 with `panic: true`; a nonzero exit means
+    the process itself failed (bad request, parse error, ...) and raises.
     """
     cmd = [str(args.verify_binary), *base_flags, "--goal", goal]
     if args.full_union:
         cmd.append("--full-union")
-    proc = subprocess.run(
-        cmd,
-        input=json.dumps(guides),
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        # A panic-guarded leg still exits 0 with `panic: true`; a nonzero code
-        # means the process itself failed (bad request, parse error, ...).
-        raise RuntimeError(
-            f"verify failed (code {proc.returncode}) for goal {goal!r}:\n{proc.stderr}"
-        )
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        # verify exited 0 but stdout wasn't the expected JSON, e.g. a stray
-        # diagnostic leaked onto the JSON channel. Surface stdout/stderr so the
-        # protocol violation is diagnosable instead of a bare decode error.
-        raise RuntimeError(
-            f"verify returned non-JSON stdout for goal {goal!r}: {e}\n"
-            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
-        ) from e
-
-
-def make_row(item: WorkItem, strategy: str, attempt: int, guides: list) -> dict:
-    """Build a result row for one attempt, pre-filled with empty leg metrics.
-
-    `run_pair` overwrites the metric fields once the leg returns (or leaves them
-    as-is for an empty pool). Note `k` is the *effective* subset size, not the
-    requested one, so a capped leg reports what it actually ran.
-    """
-    return {
-        "seed": item.seed,
-        "goal": item.goal,
-        "strategy": strategy,
-        "k": len(guides),
-        "attempt": attempt,
-        "reached": False,
-        "gave_up": False,
-        "panic": False,
-        **{field: None for field in LEG_RESULT_FIELDS},
-        **item.guide_meta,
-    }
+    return run_json_subprocess(cmd, what=f"verify for goal {goal!r}", input=json.dumps(guides))
 
 
 def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
@@ -433,13 +332,25 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
 
     Attempts are sequential and early-stop on the first reach. Runs in a worker
     thread over no shared state; marks its last row `gave_up` if every attempt
-    failed.
+    failed. Each row's `k` is the *effective* subset size, not the requested
+    one, so a capped leg reports what it actually ran.
     """
     rng = random.Random(f"{args.rng_seed}:{item.seed}:{item.goal}")
     attempt_subsets = build_attempt_subsets(item.pool, args.strategy, item.k, args.attempts, rng)
     rows: list[dict] = []
     for attempt, guides in enumerate(attempt_subsets):
-        row = make_row(item, args.strategy, attempt, guides)
+        row = {
+            "seed": item.seed,
+            "goal": item.goal,
+            "strategy": args.strategy,
+            "k": len(guides),
+            "attempt": attempt,
+            "reached": False,
+            "gave_up": False,
+            "panic": False,
+            **{field: None for field in LEG_RESULT_FIELDS},
+            **item.guide_meta,
+        }
         if not guides:
             row["stop_reason"] = "empty_pool"
             rows.append(row)
@@ -457,31 +368,6 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     if rows:
         rows[-1]["gave_up"] = True
     return rows
-
-
-def check_preconditions(args: Args) -> str | None:
-    """Validate `--strategy`, that a replay budget was given, and that both
-    binaries exist.
-
-    Returns an error message for the caller to print (exit 2), or `None` when
-    everything checks out.
-    """
-    if args.strategy not in ALL_STRATEGIES:
-        return f"Unknown --strategy {args.strategy!r}; choose one of {ALL_STRATEGIES}"
-    if all(
-        v is None for v in (args.stop_iters, args.stop_nodes, args.stop_time, args.stop_memory)
-    ):
-        return (
-            "No guide-replay budget given; pass at least one of "
-            "--stop-iters/--stop-nodes/--stop-time/--stop-memory."
-        )
-    for binary in (args.sample_binary, args.verify_binary):
-        if not binary.exists():
-            return (
-                f"Binary not found: {binary}. "
-                "Build with `cargo build --release --bin sample --bin verify`."
-            )
-    return None
 
 
 def resolve_output_dir(args: Args) -> Path:
@@ -523,7 +409,7 @@ def warn_pool_shortfall(items: list[WorkItem], strategy: str, attempts: int) -> 
 
     Deduped on (pool size, k) since the shortfall is identical across pairs.
     """
-    if not (strategy in SAMPLING_STRATEGIES and strategy.startswith("no_replacement")):
+    if not strategy.startswith("no_replacement"):
         return
     combos = {(len(item.pool), item.k) for item in items}
     for pool_size, k in sorted(combos):
@@ -585,17 +471,22 @@ def report_results(args: Args, out: Path, rows: list[dict]) -> None:
 def main() -> int:
     args = tyro.cli(Args, description=__doc__)
 
-    error = check_preconditions(args)
-    if error is not None:
-        print(error, file=sys.stderr)
+    if all(v is None for v in (args.stop_iters, args.stop_nodes, args.stop_time, args.stop_memory)):
+        print(
+            "No guide-replay budget given; pass at least one of "
+            "--stop-iters/--stop-nodes/--stop-time/--stop-memory.",
+            file=sys.stderr,
+        )
         return 2
+    exit_if_missing(args.sample_binary, args.verify_binary)
 
+    cfg = json.loads((args.path / "goal_args.json").read_text())
     k_values = [1] if args.strategy in SMALLEST_STRATEGIES else args.k
-    base_flags = language_flag(args.path) + limit_flags(eqsat_limits(args.path))
+    base_flags = ["--language", str(cfg["language"]), *limit_flags(eqsat_limits(cfg))]
     out = resolve_output_dir(args)
 
     print("RUNNING SAMPLING")
-    samples_path = run_sample(args, out / "sample_run")
+    samples_path = run_sample(args, cfg, out / "sample_run")
     print("SAMPLING FINISHED")
     seed_records = json.loads(samples_path.read_text())
 
