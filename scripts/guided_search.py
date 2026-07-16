@@ -108,10 +108,15 @@ class Args:
     samples_per_strategy: int = 10000
     """Menu size per sampling strategy (passed to `sample`)."""
 
-    take_first: int | None = None
-    """Only process the first N seeds."""
+    seeds: int | None = None
+    """Only process the first N seed terms (sorted order, so stable across
+    runs). All seeds if omitted."""
 
-    seed: int = 0
+    goals: int | None = None
+    """Only use the first N goals per seed term (file order, so stable across
+    runs). All goals if omitted."""
+
+    rng_seed: int = 0
     """RNG seed for subset selection (offset per attempt)."""
 
     jobs: int | None = None
@@ -241,7 +246,7 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
     payload a `Result`-shaped `{"Ok": GoalGenMetadata}` / `{"Err": msg}`. We
     pull the seed and its goals off each `Ok`. `Err` seeds (goal stage failed)
     are dropped. Groups in file order, terms sorted for a deterministic
-    `--take-first`.
+    `--seeds`; `--goals` keeps each seed's first N goals in file order.
     """
     groups = json.loads((args.path / "goal_terms.json").read_text())
     specs: list[SeedSpec] = []
@@ -250,9 +255,13 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
             ok = terms_map[seed].get("Ok")
             if ok is None:
                 continue  # Err seed: goal stage failed, nothing to replay.
-            specs.append(SeedSpec(seed, ok["goals"]))
-    if args.take_first is not None:
-        specs = specs[: args.take_first]
+            goals = ok["goals"]
+            if args.goals is not None:
+                # First N in file order: deterministic across runs.
+                goals = goals[: args.goals]
+            specs.append(SeedSpec(seed, goals))
+    if args.seeds is not None:
+        specs = specs[: args.seeds]
     return specs
 
 
@@ -426,7 +435,7 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     thread over no shared state; marks its last row `gave_up` if every attempt
     failed.
     """
-    rng = random.Random(f"{args.seed}:{item.seed}:{item.goal}")
+    rng = random.Random(f"{args.rng_seed}:{item.seed}:{item.goal}")
     attempt_subsets = build_attempt_subsets(item.pool, args.strategy, item.k, args.attempts, rng)
     rows: list[dict] = []
     for attempt, guides in enumerate(attempt_subsets):

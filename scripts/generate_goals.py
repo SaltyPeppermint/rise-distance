@@ -69,8 +69,9 @@ class Args:
     """How many sizes need to be present in the precomputed root histogram."""
 
     # fan-out
-    take_first: int | None = None
-    """Only process the first N seeds."""
+    seeds: int | None = None
+    """Only process the first N seed terms (sorted order, so stable across
+    runs). All seeds if omitted."""
 
     jobs: int | None = None
     """Max concurrent `goal` subprocesses (one seed each). Defaults to
@@ -129,7 +130,7 @@ def flatten_seeds(args: Args) -> list[str]:
     """Flatten `terms.json` into the list of seed s-expressions to process.
 
     Groups in file order; terms sorted within each group for deterministic
-    `--take-first`; then the `skip_unmeasured` filter.
+    `--seeds`; then the `skip_unmeasured` filter.
     """
     groups = json.loads((args.path / "terms.json").read_text())
     seeds: list[str] = []
@@ -138,8 +139,8 @@ def flatten_seeds(args: Args) -> list[str]:
             if args.skip_unmeasured and not is_measured(terms_map[term]):
                 continue
             seeds.append(term)
-    if args.take_first is not None:
-        seeds = seeds[: args.take_first]
+    if args.seeds is not None:
+        seeds = seeds[: args.seeds]
     return seeds
 
 
@@ -208,7 +209,7 @@ def write_enriched_terms(src: Path, dst: Path, enriched: dict[str, object]) -> i
     """Write the enriched copy of `src` (the seed `terms.json`) to `dst`,
     replacing each seed's record with its enriched payload. Preserves the
     `[size, {term: payload}]` grouping; seeds absent from `enriched` (e.g.
-    dropped by `--take-first`) are omitted, and groups left empty are dropped.
+    dropped by `--seeds`) are omitted, and groups left empty are dropped.
     """
     groups = json.loads(src.read_text())
     out_groups = []
