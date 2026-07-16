@@ -33,7 +33,7 @@ import tyro
 from diceware.wordlist import WordList, get_wordlists_dir
 from tqdm import tqdm
 
-from common import exit_if_missing, parse_size
+from common import exit_if_missing, parse_size, subprocess_timeout
 
 
 def _load_wordlist(name: str) -> list[str]:
@@ -118,10 +118,10 @@ def main() -> int:
 
     rlimit_as_bytes = parse_size(args.rlimit_as)
 
+    exit_if_missing(args.generate_binary, args.measure_binary)
+
     with args_path.open("w") as f:
         json.dump(dataclasses.asdict(args), f, indent=2, default=str)
-
-    exit_if_missing(args.generate_binary, args.measure_binary)
 
     gen_cmd = [
         str(args.generate_binary),
@@ -164,7 +164,7 @@ def main() -> int:
     with terms_path.open("r") as f:
         big_collector = json.load(f)
 
-    timeout = max(1, int(args.max_time * 4) + 5)
+    timeout = subprocess_timeout(args.max_time)
     measure_base = [
         str(args.measure_binary),
         "--language",

@@ -33,7 +33,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from common import eqsat_limits, exit_if_missing, limit_flags
+from common import eqsat_limits, exit_if_missing, limit_flags, subprocess_timeout
 
 
 def main() -> int:
@@ -72,7 +72,7 @@ def main() -> int:
     # big_collector is [[size, {term: [attempts, validation, peak_memory_bytes]}], ...]
     all_terms = [term for _size, terms_map in big_collector for term in terms_map]
 
-    timeout = max(1, int(float(run_args["max_time"]) * 40) + 5)
+    timeout = subprocess_timeout(float(run_args["max_time"]))
     cmd_base = [
         str(args.binary),
         "--language",

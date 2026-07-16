@@ -20,6 +20,12 @@ def parse_size(s: str) -> int:
     return int(float(s) * mult)
 
 
+def subprocess_timeout(max_time: float) -> int:
+    """Per-term subprocess timeout: eqsat's `max_time` plus slack for
+    non-eqsat overhead (startup, serialization)."""
+    return max(1, int(max_time * 4) + 5)
+
+
 def check_binaries(*binaries: Path) -> str | None:
     """Return an error message if any binary is missing, else `None`."""
     missing = [b for b in binaries if not b.exists()]

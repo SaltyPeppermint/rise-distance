@@ -27,7 +27,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from common import exit_if_missing, parse_size
+from common import exit_if_missing, parse_size, subprocess_timeout
 
 
 def main() -> int:
@@ -66,7 +66,7 @@ def main() -> int:
     with args.path.open("r") as f:
         big_collector = json.load(f)
 
-    timeout = max(1, int(args.max_time * 4) + 5)
+    timeout = subprocess_timeout(args.max_time)
     cmd_base = [
         str(args.binary),
         "--language",

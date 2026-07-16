@@ -432,6 +432,7 @@ def warn_pool_shortfall(items: list[WorkItem], strategy: str, attempts: int) -> 
 
 def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> list[dict]:
     """Run every work item's attempt loop concurrently and collect result rows."""
+    print(f"Running legs for {len(items)} (seed, goal, k) item(s)", file=sys.stderr)
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=args.jobs or os.cpu_count() or 1) as pool_exec:
         futures = [pool_exec.submit(run_pair, args, base_flags, item) for item in items]
@@ -485,15 +486,12 @@ def main() -> int:
     base_flags = ["--language", str(cfg["language"]), *limit_flags(eqsat_limits(cfg))]
     out = resolve_output_dir(args)
 
-    print("RUNNING SAMPLING")
     samples_path = run_sample(args, cfg, out / "sample_run")
-    print("SAMPLING FINISHED")
     seed_records = json.loads(samples_path.read_text())
 
     items = build_work_items(seed_records, args.strategy, k_values)
     warn_pool_shortfall(items, args.strategy, args.attempts)
 
-    print("STARTING PAIRS")
     rows = run_all_pairs(args, base_flags, items)
 
     report_results(args, out, rows)
