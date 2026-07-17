@@ -12,7 +12,7 @@ use rand_chacha::ChaCha12Rng;
 use rise_distance::sampling::Distribution;
 use serde::Serialize;
 
-use rise_distance::eqsat::EqsatConfig;
+use rise_distance::eqsat::{EqsatConfig, HEAP_TRIM_AVAILABLE, trim_heap};
 use rise_distance::generator::BoltzmannSampler;
 use rise_distance::langs::{AvailableLanguages, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -78,6 +78,18 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+
+    // The `--max-memory` gate compares absolute process RSS against the target,
+    // which is only meaningful if we can hand freed pages back to the OS between
+    // terms (`trim_heap`). Off glibc that trim is a no-op, so leftover pages
+    // from earlier terms would pollute later RSS readings and silently corrupt
+    // the gate. Refuse to run rather than produce wrong results.
+    assert!(
+        args.eqsat.max_memory.is_none() || HEAP_TRIM_AVAILABLE,
+        "--max-memory needs heap trimming (glibc's malloc_trim), which is \
+         unavailable on this target (non-glibc allocator). Build against glibc \
+         to use the memory ceiling, or omit --max-memory."
+    );
 
     let sizes = (args.min_size..=args.max_size).collect::<Vec<_>>();
     let samples_per_size = args
@@ -236,19 +248,36 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     };
     let stop_time = start.elapsed().as_secs_f64();
 
-    let stop_reason = r.stop_reason.clone()?;
-
-    // A term is "hard enough" to keep if eqsat was cut off by a resource
-    // limit rather than saturating. The memory ceiling is enforced by our own
-    // per-iteration hook, which egg surfaces as `StopReason::Other` carrying
-    // the `memory_limit_hook` message (see `eqsat::memory_limit_hook`).
-    let hit_limit = matches!(
-        stop_reason,
-        StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
-    ) || matches!(&stop_reason, StopReason::Other(s) if s.contains("memory limit exceeded"));
-
-    if hit_limit {
-        return Some(ValidationResult {
+    // We keep a term only if it can grow an egraph to the `--max-memory`
+    // target: the per-term RSS hook stops the run once absolute process RSS
+    // crosses that ceiling, which egg surfaces as `StopReason::Other` carrying
+    // the `memory_limit_hook` message (see `eqsat::memory_limit_hook`). Every
+    // other stop reason means the term saturated or hit a safety backstop
+    // (iteration/node/time) *before* reaching the target, so it is too easy and
+    // we reject it.
+    //
+    // Extract everything we need up front, then drop the runner and trim the
+    // heap *before* returning: every attempt (accepted or rejected) builds a
+    // fresh egraph, and glibc retains those freed pages, so without trimming a
+    // later attempt's RSS would be polluted by earlier ones and the absolute
+    // ceiling would misfire. Trimming here keeps each attempt's RSS baseline
+    // clean.
+    let result = (|| {
+        let stop_reason = r.stop_reason.clone()?;
+        // Accept a term if its run was cut off by any resource limit. In
+        // practice the iteration/node/time limits are set so high that only the
+        // `--max-memory` ceiling fires (surfaced as `StopReason::Other` with the
+        // `memory_limit_hook` message), but hitting any of them still means the
+        // term is hard enough to keep. Only saturation (the term simplifies away
+        // before exhausting any budget) is rejected.
+        let hit_limit = matches!(
+            stop_reason,
+            StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
+        ) || matches!(&stop_reason, StopReason::Other(s) if s.contains("memory limit exceeded"));
+        if !hit_limit {
+            return None;
+        }
+        Some(ValidationResult {
             stop_reason,
             stop_nodes: r.egraph.nodes().len(),
             stop_classes: r.egraph.classes().len(),
@@ -257,7 +286,10 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
             last_classes: r.iterations.last()?.egraph_classes,
             last_time: r.iterations.last()?.total_time,
             iterations: r.iterations.len(),
-        });
-    }
-    None
+        })
+    })();
+
+    drop(r);
+    trim_heap();
+    result
 }

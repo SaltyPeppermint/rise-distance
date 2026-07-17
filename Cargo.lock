@@ -650,6 +650,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indicatif",
  "lexpr",
+ "libc",
  "memory-stats",
  "num",
  "ordered-float",
