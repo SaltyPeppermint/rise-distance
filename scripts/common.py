@@ -71,6 +71,25 @@ def run_json_subprocess(
         ) from e
 
 
+#: Sentinel written as a term's measurement when `measure-size` fails to
+#: produce a usable `{"peak", "iterations"}` object (nonzero exit, RLIMIT
+#: kill, timeout, or unparseable output). `peak == -1` marks the failure.
+MEASURE_FAILURE: dict = {"peak": -1, "iterations": []}
+
+
+def measure_term(cmd: list[str], *, timeout: float) -> dict:
+    """Run a `measure-size`-style command, returning the `{"peak", "iterations"}`
+    JSON object parsed from the last line of stdout, or a fresh copy of
+    `MEASURE_FAILURE` on any error (nonzero exit, timeout, unparseable output)."""
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if proc.returncode != 0:
+            return dict(MEASURE_FAILURE)
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    except (subprocess.TimeoutExpired, ValueError, IndexError, json.JSONDecodeError):
+        return dict(MEASURE_FAILURE)
+
+
 def eqsat_limits(cfg: dict) -> dict:
     """Extract the eqsat limits from a raw config dict (`generation_args.json`
     / `goal_args.json`). `max_memory` (RSS ceiling in bytes) is optional."""

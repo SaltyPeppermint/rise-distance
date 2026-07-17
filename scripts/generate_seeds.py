@@ -7,11 +7,14 @@ to each inner term record. Egg limits (`--max-iters`, `--max-nodes`,
 `--max-time`, `--backoff-scheduler`) are forwarded to both binaries;
 `--rlimit-as` (virtual-memory backstop) only to `measure-size`.
 
-The `terms.json` payload has shape
-`[[size, {term: [attempts, validation_result, peak_memory_bytes]}], ...]`.
+`measure-size` emits a JSON object `{"peak": <VmHWM bytes>, "iterations":
+[<egg per-iteration stats, each with an `rss` field>, ...]}`. The whole
+object is stored as the 3rd entry of each inner term record, so the
+`terms.json` payload has shape
+`[[size, {term: [attempts, validation_result, {peak, iterations}]}], ...]`.
 
 On any per-term failure (non-zero exit, RLIMIT kill, timeout, unparseable
-output), `peak_memory_bytes` is -1.
+output), the 3rd entry is `{"peak": -1, "iterations": []}`.
 
 If `--path` is omitted, a fresh `data/seed_terms/<adjective>-<noun>/`
 directory is created (collision-retry against existing siblings). The output
@@ -33,7 +36,7 @@ import tyro
 from diceware.wordlist import WordList, get_wordlists_dir
 from tqdm import tqdm
 
-from common import exit_if_missing, parse_size, subprocess_timeout
+from common import MEASURE_FAILURE, exit_if_missing, measure_term, parse_size, subprocess_timeout
 
 
 def _load_wordlist(name: str) -> list[str]:
@@ -181,35 +184,26 @@ def main() -> int:
     if args.backoff_scheduler:
         measure_base.append("--backoff-scheduler")
 
-    def measure_one(term: str) -> int:
-        try:
-            proc = subprocess.run(
-                [*measure_base, "--term", term],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            return int(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else -1
-        except subprocess.TimeoutExpired, ValueError, IndexError:
-            return -1
+    def measure_one(term: str) -> dict:
+        return measure_term([*measure_base, "--term", term], timeout=timeout)
 
     # big_collector is [[size, {term_str: [attempts, validation_result]}], ...].
     # Collect (size_idx, term_str) refs in a flat list, measure in parallel,
-    # then write the peak_memory_bytes back into each inner record in place.
+    # then append the `{peak, iterations}` object to each inner record in place.
     flat: list[tuple[int, str]] = [
         (size_idx, term)
         for size_idx, (_size, terms_map) in enumerate(big_collector)
         for term in terms_map
     ]
-    measurements: list[int] = [-1] * len(flat)
+    measurements: list[dict] = [dict(MEASURE_FAILURE) for _ in flat]
     workers = max(1, args.measure_parallelism)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(measure_one, t): i for i, (_, t) in enumerate(flat)}
         for fut in tqdm(as_completed(futures), total=len(futures), desc="terms"):
             measurements[futures[fut]] = fut.result()
 
-    for (size_idx, term), peak in zip(flat, measurements):
-        big_collector[size_idx][1][term].append(peak)
+    for (size_idx, term), stats in zip(flat, measurements):
+        big_collector[size_idx][1][term].append(stats)
 
     with terms_path.open("w") as f:
         json.dump(big_collector, f)

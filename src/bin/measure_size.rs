@@ -1,8 +1,9 @@
 use clap::Parser;
-use egg::{RecExpr, Rewrite};
+use egg::{Analysis, Iteration, IterationData, Language, RecExpr, Rewrite, Runner};
+use serde::Serialize;
 
 use rise_distance::langs::diospyros::VecLang;
-use rise_distance::utils::peak_rss_bytes;
+use rise_distance::utils::{peak_rss_bytes, process_rss_bytes};
 use rlimit::{Resource, setrlimit};
 
 use rise_distance::eqsat::EqsatConfig;
@@ -13,7 +14,7 @@ use rise_distance::langs::prop::{self, Prop};
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]
-#[command(about = "Run eqsat on a single term and print peak RSS in bytes.")]
+#[command(about = "Run eqsat on a single term and print per-iteration stats and peak RSS as JSON.")]
 struct Args {
     /// Term to run eqsat on (s-expression).
     #[arg(long)]
@@ -34,6 +35,34 @@ struct Args {
     rlimit_as: Option<u64>,
 }
 
+/// Per-iteration annotation egg stores in each [`Iteration`]'s `data` slot.
+/// egg calls [`IterationData::make`] once at the *start* of every iteration
+/// (before search/apply), so `rss` is the process RSS (bytes) at that point,
+/// aligned with egg's own start-of-iteration `egraph_nodes`/`egraph_classes`.
+/// `None` if the platform RSS reader is unavailable.
+#[derive(Serialize)]
+struct RssData {
+    rss: Option<u64>,
+}
+
+impl<L: Language, N: Analysis<L>> IterationData<L, N> for RssData {
+    fn make(_runner: &Runner<L, N, Self>) -> Self {
+        Self {
+            rss: process_rss_bytes(),
+        }
+    }
+}
+
+/// The whole stdout payload: the process peak RSS (`VmHWM`, matching htop) and
+/// egg's per-iteration stats, each carrying its start-of-iteration `rss` in the
+/// flattened `data` slot.
+#[derive(Serialize)]
+struct Output {
+    /// Peak resident set size of the whole process (`VmHWM`), in bytes.
+    peak: u64,
+    iterations: Vec<Iteration<RssData>>,
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -51,24 +80,33 @@ fn main() {
         setrlimit(Resource::AS, cap, cap).expect("setrlimit RLIMIT_AS failed");
     }
 
-    match args.language {
+    let output = match args.language {
         AvailableLanguages::Diospyros => {
-            run::<VecLang, ()>(&args, &diospyros::rules(false, false));
+            run::<VecLang, ()>(&args, &diospyros::rules(false, false))
         }
         AvailableLanguages::Math => run::<Math, math::ConstantFold>(&args, &math::silly_rules()),
         AvailableLanguages::Prop => run::<Prop, prop::ConstantFold>(&args, &prop::rules()),
-    }
+    };
 
-    println!("{}", peak_rss_bytes());
+    // Print the payload as a single JSON object (the whole stdout).
+    println!(
+        "{}",
+        serde_json::to_string(&output).expect("serializing measure-size output failed")
+    );
 }
 
-fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
+fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) -> Output {
     let expr: RecExpr<L> = args
         .term
         .parse()
         .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
 
-    let runner = args.eqsat.build_runner::<_, _, ()>(&expr).run(rules);
+    // `RssData` in the `D` slot makes egg sample RSS at each iteration start and
+    // stash it in `Iteration::data` for us — no hook or shared cell needed.
+    let runner = args.eqsat.build_runner::<_, _, RssData>(&expr).run(rules);
 
-    drop(runner);
+    Output {
+        peak: peak_rss_bytes(),
+        iterations: runner.iterations,
+    }
 }

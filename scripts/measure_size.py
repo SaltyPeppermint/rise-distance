@@ -1,17 +1,20 @@
-"""Measure peak resident set size of running eqsat on each seed term.
+"""Measure per-iteration eqsat stats and peak RSS on each seed term.
 
 Spawns the `measure-size` Rust binary once per term in a seed-terms
-`terms.json` (as produced by `scripts/generate_seeds.py`). The
-binary reads its own peak RSS from `/proc/self/status` (VmHWM) at exit
-and prints the value (bytes) on stdout -> this matches what htop
-reports. A virtual-memory cap is enforced inside the binary via
-RLIMIT_AS as a safety net against runaways.
+`terms.json` (as produced by `scripts/generate_seeds.py`). The binary
+runs eqsat and prints a JSON object `{"peak": <VmHWM bytes>,
+"iterations": [<egg per-iteration stats, each with an `rss` field>,
+...]}` on stdout; `peak` is the process high-water mark read from
+`/proc/self/status`, matching what htop reports. A virtual-memory cap is
+enforced inside the binary via RLIMIT_AS as a safety net against
+runaways.
 
 The seed-terms file has shape
-`[[size, {term: [attempts, validation, peak_memory_bytes?]}], ...]`.
-The measured peak is written back in place as the 3rd entry of each
-inner list, overwriting any existing value. On any failure (non-zero
-exit, RLIMIT kill, timeout, unparseable output), the value is -1.
+`[[size, {term: [attempts, validation, {peak, iterations}?]}], ...]`.
+The measured `{peak, iterations}` object is written back in place as the
+3rd entry of each inner list, overwriting any existing value. On any
+failure (non-zero exit, RLIMIT kill, timeout, unparseable output), the
+value is `{"peak": -1, "iterations": []}`.
 
 Example:
     cargo build --release --bin measure-size
@@ -21,13 +24,12 @@ Example:
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 from tqdm import tqdm
 
-from common import exit_if_missing, parse_size, subprocess_timeout
+from common import exit_if_missing, measure_term, parse_size, subprocess_timeout
 
 
 def main() -> int:
@@ -90,22 +92,13 @@ def main() -> int:
     ]
 
     for size_idx, term in tqdm(flat, desc="terms"):
-        try:
-            proc = subprocess.run(
-                [*cmd_base, "--term", term],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            peak = int(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else -1
-        except subprocess.TimeoutExpired, ValueError, IndexError:
-            peak = -1
+        stats = measure_term([*cmd_base, "--term", term], timeout=timeout)
 
         entry = big_collector[size_idx][1][term]
         if len(entry) >= 3:
-            entry[2] = peak
+            entry[2] = stats
         else:
-            entry.append(peak)
+            entry.append(stats)
 
     with args.path.open("w") as f:
         json.dump(big_collector, f)

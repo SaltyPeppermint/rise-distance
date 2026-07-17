@@ -80,14 +80,15 @@ class Args:
 
 
 def is_measured(record: object) -> bool:
-    """True iff the record's `peak_memory_bytes` is present and not the -1
-    failure sentinel."""
-    return (
-        isinstance(record, list)
-        and len(record) > 2
-        and isinstance(record[2], int)
-        and record[2] >= 0
-    )
+    """True iff the record's measurement (`record[2]`, a `{"peak", "iterations"}`
+    object) is present and its `peak` is not the -1 failure sentinel."""
+    if not (isinstance(record, list) and len(record) > 2):
+        return False
+    measurement = record[2]
+    if not isinstance(measurement, dict):
+        return False
+    peak = measurement.get("peak")
+    return isinstance(peak, int) and peak >= 0
 
 
 def flatten_seeds(args: Args) -> list[str]:
