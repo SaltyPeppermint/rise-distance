@@ -13,10 +13,8 @@ use serde::{Deserialize, Serialize};
 pub trait MyLanguage:
     Serialize
     + for<'de> Deserialize<'de>
-    + Send
-    + Sync
     + Display
-    + Language<Discriminant: Send + Sync>
+    + Language
     + FromOp<Error: Display>
     + 'static
 {
@@ -25,10 +23,8 @@ pub trait MyLanguage:
 impl<
     L: Serialize
         + for<'de> Deserialize<'de>
-        + Send
-        + Sync
         + Display
-        + Language<Discriminant: Send + Sync>
+        + Language
         + FromOp<Error: Display>
         + 'static,
 > MyLanguage for L
@@ -39,10 +35,8 @@ impl<
 pub trait MyAnalysis<L: MyLanguage>:
     Serialize
     + for<'de> Deserialize<'de>
-    + Send
-    + Sync
     + std::fmt::Debug
-    + Analysis<L, Data: Send + Sync + Clone + Eq + Default>
+    + Analysis<L, Data: Clone + Eq + Default>
     + Default
     + Clone
     + 'static
@@ -52,10 +46,8 @@ pub trait MyAnalysis<L: MyLanguage>:
 impl<
     N: Serialize
         + for<'de> Deserialize<'de>
-        + Send
-        + Sync
         + std::fmt::Debug
-        + Analysis<L, Data: Send + Sync + Clone + Eq + Default>
+        + Analysis<L, Data: Clone + Eq + Default>
         + Default
         + Clone
         + 'static,

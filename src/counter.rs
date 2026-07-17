@@ -8,8 +8,6 @@ use serde::de::DeserializeOwned;
 
 pub trait Counter:
     Clone
-    + Send
-    + Sync
     + NumRef
     + NumAssignRef
     + Default
@@ -27,8 +25,6 @@ pub trait Counter:
 
 impl<
     T: Clone
-        + Send
-        + Sync
         + NumRef
         + NumAssignRef
         + Default

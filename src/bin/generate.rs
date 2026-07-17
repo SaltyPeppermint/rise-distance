@@ -6,10 +6,9 @@ use std::time::Instant;
 use clap::Parser;
 use egg::{RecExpr, Rewrite, StopReason};
 use hashbrown::{HashMap, hash_map::Entry};
-use indicatif::{ParallelProgressIterator, ProgressStyle};
+use indicatif::{ProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
-use rayon::prelude::*;
 use rise_distance::sampling::Distribution;
 use serde::Serialize;
 
@@ -75,21 +74,10 @@ struct Args {
     /// not the whole generation).
     #[command(flatten)]
     eqsat: EqsatConfig,
-
-    /// Number of rayon worker threads (defaults to rayon's default; lower to reduce memory pressure)
-    #[arg(long)]
-    parallelism: Option<usize>,
 }
 
 fn main() {
     let args = Args::parse();
-    // set parallelism not too high or else memory-out
-    if let Some(p) = args.parallelism {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(p)
-            .build_global()
-            .unwrap();
-    }
 
     let sizes = (args.min_size..=args.max_size).collect::<Vec<_>>();
     let samples_per_size = args
@@ -147,9 +135,9 @@ fn run_language<S, N>(
     rules: &[Rewrite<S::Lang, N>],
 ) -> Vec<SizeBucket>
 where
-    S: BoltzmannSampler + Send + Sync,
+    S: BoltzmannSampler,
     S::Lang: 'static,
-    N: MyAnalysis<S::Lang> + Default + Send + Sync,
+    N: MyAnalysis<S::Lang> + Default,
 {
     let style = ProgressStyle::with_template(
         "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} sizes ({eta})",
@@ -158,7 +146,7 @@ where
     .progress_chars("=>-");
 
     sized_rngs
-        .into_par_iter()
+        .into_iter()
         .map(|(size, n, mut rng)| {
             let collector = collect_for_size::<S, N>(
                 size,

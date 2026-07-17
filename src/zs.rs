@@ -1,12 +1,10 @@
 use std::fmt::{self, Display};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use egg::{Id, Language, RecExpr};
-use rayon::prelude::*;
 
 use crate::{MyLanguage, OriginLang, id0};
 
-/// Core Zhang-Shasha minimum distance search over a parallel iterator of candidate trees.
+/// Core Zhang-Shasha minimum distance search over an iterator of candidate trees.
 ///
 /// Applies size-difference and Euler-string lower-bound pruning before computing
 /// the full edit distance.
@@ -18,35 +16,32 @@ pub fn find_min_zs<L, CF, I>(
 where
     L: MyLanguage,
     CF: EditCosts<L>,
-    I: ParallelIterator<Item = RecExpr<L>>,
+    I: Iterator<Item = RecExpr<L>>,
 {
     let ref_flat: FlatTree<L> = reference.into();
 
     let ref_size = ref_flat.size();
     let ref_pp = PreprocessedTree::new(&ref_flat);
-    let running_best = AtomicUsize::new(usize::MAX);
 
-    candidates
-        .map(|candidate| {
+    candidates.fold(
+        (None, ZSStats::default()),
+        |(best, stats), candidate| {
             let candidate_flat: FlatTree<L> = (&candidate).into();
-            let best = running_best.load(Ordering::Relaxed);
+            let running = best.as_ref().map_or(usize::MAX, |v: &(_, usize)| v.1);
 
-            if candidate_flat.size().abs_diff(ref_size) > best {
-                return (None, ZSStats::size_pruned());
+            if candidate_flat.size().abs_diff(ref_size) > running {
+                return (best, stats + ZSStats::size_pruned());
             }
 
             let distance = tree_distance_with_ref(&candidate_flat, &ref_pp, costs);
-            running_best.fetch_min(distance, Ordering::Relaxed);
+            let best = [best, Some((candidate, distance))]
+                .into_iter()
+                .flatten()
+                .min_by_key(|v| v.1);
 
-            (Some((candidate, distance)), ZSStats::compared())
-        })
-        .reduce(
-            || (None, ZSStats::default()),
-            |a, b| {
-                let best = [a.0, b.0].into_iter().flatten().min_by_key(|v| v.1);
-                (best, a.1 + b.1)
-            },
-        )
+            (best, stats + ZSStats::compared())
+        },
+    )
 }
 
 /// Statistics from filtered extraction
@@ -190,7 +185,7 @@ impl<'a, L: Language> PreprocessedTree<'a, L> {
 }
 
 /// Cost functions for tree edit operations.
-pub trait EditCosts<L>: Send + Sync {
+pub trait EditCosts<L> {
     /// Cost of deleting a node.
     fn delete(&self, label: &L) -> usize;
 

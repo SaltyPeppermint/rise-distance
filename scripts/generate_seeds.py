@@ -4,8 +4,8 @@ Shells out to `target/release/generate` to produce a nested JSON of terms
 grouped by size, then to `target/release/measure-size` once per term to
 record peak resident set size (VmHWM, matching htop). The peak is appended
 to each inner term record. Egg limits (`--max-iters`, `--max-nodes`,
-`--max-time`, `--backoff-scheduler`) are forwarded to both binaries;
-`--rlimit-as` (virtual-memory backstop) only to `measure-size`.
+`--max-time`, `--max-memory`, `--backoff-scheduler`) are forwarded to both
+binaries; `--rlimit-as` (virtual-memory backstop) only to `measure-size`.
 
 `measure-size` emits a JSON object `{"peak": <VmHWM bytes>, "iterations":
 [<egg per-iteration stats, each with an `rss` field>, ...]}`. The whole
@@ -78,20 +78,21 @@ class Args:
     seed: int = tyro.MISSING
     tolerance: int = 1
     retry_limit: int = 10000
-    parallelism: int | None = None
+    # measure-only; number of concurrent measure-size processes. Defaults
+    # to 1 because parallel runs compete for RAM and can perturb peak RSS.
+    parallelism: int = 1
 
     # measure-only; per-term virtual-memory cap (e.g. "8G"), enforced via
     # RLIMIT_AS in measure-size. Backstop only.
     rlimit_as: str = tyro.MISSING
 
-    # measure-only; number of concurrent measure-size processes. Defaults
-    # to 1 because parallel runs compete for RAM and can perturb peak RSS.
-    measure_parallelism: int = 1
-
     # shared egg args
     max_iters: int = 11
     max_nodes: int = 100_000
     max_time: float = 1.0
+    max_memory: str | None = None
+    """Graceful process RSS ceiling (e.g. "8G"), enforced by egg's per-iteration
+    hook in both binaries. Unset = unbounded. Must be below `--rlimit-as`."""
     backoff_scheduler: bool = True
     """Use egg's BackoffScheduler (pass --no-backoff-scheduler for the
     SimpleScheduler)."""
@@ -120,6 +121,15 @@ def main() -> int:
     args_path = args.path / "generation_args.json"
 
     rlimit_as_bytes = parse_size(args.rlimit_as)
+    max_memory_bytes = parse_size(args.max_memory) if args.max_memory is not None else None
+    if max_memory_bytes is not None and max_memory_bytes >= rlimit_as_bytes:
+        print(
+            f"--max-memory ({max_memory_bytes}) must be below --rlimit-as "
+            f"({rlimit_as_bytes}), or the hard RLIMIT_AS kill preempts the "
+            "graceful RSS stop",
+            file=sys.stderr,
+        )
+        return 1
 
     exit_if_missing(args.generate_binary, args.measure_binary)
 
@@ -153,8 +163,9 @@ def main() -> int:
         "--max-time",
         str(args.max_time),
     ]
-    if args.parallelism is not None:
-        gen_cmd += ["--parallelism", str(args.parallelism)]
+
+    if max_memory_bytes is not None:
+        gen_cmd += ["--max-memory", str(max_memory_bytes)]
     if args.backoff_scheduler:
         gen_cmd.append("--backoff-scheduler")
 
@@ -181,6 +192,8 @@ def main() -> int:
         "--rlimit-as",
         str(rlimit_as_bytes),
     ]
+    if max_memory_bytes is not None:
+        measure_base += ["--max-memory", str(max_memory_bytes)]
     if args.backoff_scheduler:
         measure_base.append("--backoff-scheduler")
 
@@ -196,7 +209,7 @@ def main() -> int:
         for term in terms_map
     ]
     measurements: list[dict] = [dict(MEASURE_FAILURE) for _ in flat]
-    workers = max(1, args.measure_parallelism)
+    workers = max(1, args.parallelism)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(measure_one, t): i for i, (_, t) in enumerate(flat)}
         for fut in tqdm(as_completed(futures), total=len(futures), desc="terms"):
