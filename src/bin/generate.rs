@@ -238,10 +238,16 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
 
     let stop_reason = r.stop_reason.clone()?;
 
-    if matches!(
+    // A term is "hard enough" to keep if eqsat was cut off by a resource
+    // limit rather than saturating. The memory ceiling is enforced by our own
+    // per-iteration hook, which egg surfaces as `StopReason::Other` carrying
+    // the `memory_limit_hook` message (see `eqsat::memory_limit_hook`).
+    let hit_limit = matches!(
         stop_reason,
         StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
-    ) {
+    ) || matches!(&stop_reason, StopReason::Other(s) if s.contains("memory limit exceeded"));
+
+    if hit_limit {
         return Some(ValidationResult {
             stop_reason,
             stop_nodes: r.egraph.nodes().len(),
