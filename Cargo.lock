@@ -694,7 +694,6 @@ dependencies = [
  "assert_approx_eq",
  "clap",
  "egg",
- "foldhash 0.2.0",
  "hashbrown 0.17.1",
  "indicatif",
  "lexpr",

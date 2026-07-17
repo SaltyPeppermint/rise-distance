@@ -3,7 +3,6 @@ mod plain;
 mod weigher;
 
 use egg::{Id, RecExpr};
-use foldhash::fast::FixedState;
 use hashbrown::{HashMap, HashSet};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
@@ -128,20 +127,25 @@ where
             return None;
         }
 
-        // Deterministic draw stream: index `s` always seeds the same RNG, so
-        // for a fixed seed the result is reproducible. Stop as soon as `target`
-        // distinct terms have been seen; give up after the oversample budget.
-        let mut drawn = HashSet::with_hasher(FixedState::default());
-        for s in 0..samples * MAX_OVERSAMPLE {
-            let mut rng = utils::combined_rng([size as u64, s, seed[0], seed[1]]);
+        // Deterministic draw stream: `size` and `seed` seed a single RNG, so
+        // for a fixed seed the result set is reproducible (and distinct sizes
+        // never share a stream). Draw with replacement into a set until either
+        // `target` distinct terms are seen or the oversample budget runs out;
+        // return whatever was collected rather than failing on a short draw.
+        let mut rng = utils::combined_rng([size as u64, seed[0], seed[1]]);
+        let mut drawn = HashSet::new();
+        let mut budget = samples * MAX_OVERSAMPLE;
+        while drawn.len() < target && budget > 0 {
             drawn.insert(self.sample(id, size, &mut rng));
-            if drawn.len() >= target {
-                let mut v = drawn.into_iter().collect::<Vec<_>>();
-                v.sort_unstable();
-                return Some(v);
-            }
+            budget -= 1;
         }
-        None
+
+        if drawn.is_empty() {
+            return None;
+        }
+        let mut v = drawn.into_iter().collect::<Vec<_>>();
+        v.sort_unstable();
+        Some(v)
     }
 
     /// Sample exactly n number of terms for each size from the root
