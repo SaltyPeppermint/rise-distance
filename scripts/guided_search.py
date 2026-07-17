@@ -61,15 +61,21 @@ SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
 Strategy = Literal[SamplingStrategy, SmallestStrategy]
 SMALLEST_STRATEGIES = get_args(SmallestStrategy)
 
-# Fields copied straight out of a `verify` LegResult onto a result row.
-LEG_RESULT_FIELDS = (
-    "iters",
-    "nodes",
-    "classes",
-    "total_applied",
-    "total_time",
-    "stop_reason",
-)
+# Fields copied straight out of a `verify` LegResult onto a result row, with the
+# polars dtype to pin for each. `verify` omits these on an unreached leg
+# (`skip_serializing_if`), so they land as None; an unreached-heavy prefix would
+# otherwise make polars infer Null and reject the first real value. Pinning the
+# dtypes makes the schema independent of row order (and of runs that reach
+# nothing).
+LEG_RESULT_DTYPES = {
+    "iters": pl.Int64,
+    "nodes": pl.Int64,
+    "classes": pl.Int64,
+    "total_applied": pl.Int64,
+    "total_time": pl.Float64,
+    "stop_reason": pl.String,
+}
+LEG_RESULT_FIELDS = tuple(LEG_RESULT_DTYPES)
 
 
 @dataclass
@@ -443,7 +449,7 @@ def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> l
 
 def report_results(args: Args, out: Path, rows: list[dict]) -> None:
     """Write results/config to `out` and print the reach-rate summary."""
-    df = pl.DataFrame(rows)
+    df = pl.DataFrame(rows, schema_overrides=LEG_RESULT_DTYPES)
     df.write_parquet(out / "results.parquet")
     (out / "results.json").write_text(json.dumps(rows, indent=2))
     (out / "config.json").write_text(json.dumps(dataclasses.asdict(args), indent=2, default=str))
