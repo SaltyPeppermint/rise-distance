@@ -54,8 +54,7 @@ impl EqsatMetadata {
 /// group (`--max-*` / `--backoff-scheduler`) for the `goal` / `sample` /
 /// `verify` binaries; the Python drivers read the values out of the
 /// `generation_args.json` / `goal_args.json` sidecars and forward them on
-/// argv. Non-CLI users construct it literally — the clap
-/// attributes are inert there.
+/// argv.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, clap::Args)]
 pub struct EqsatConfig {
     /// Maximum eqsat iterations.
@@ -291,23 +290,25 @@ pub const HEAP_TRIM_AVAILABLE: bool = cfg!(target_env = "gnu");
 /// can. Call this *after* a term's [`Runner`] (and its egraph) has been
 /// dropped, before measuring or running the next term.
 ///
-/// No-op when [`HEAP_TRIM_AVAILABLE`] is false (any non-glibc target): there is
-/// no portable equivalent, so callers that depend on it must gate on that
-/// constant instead of calling this blindly.
+/// If [`HEAP_TRIM_AVAILABLE`] is false (any non-glibc target): Panic!
+#[expect(clippy::missing_panics_doc)]
 pub fn trim_heap() {
-    #[cfg(target_env = "gnu")]
-    // SAFETY: `malloc_trim` is a thread-safe glibc entry point that only
-    // releases unused heap pages; it has no preconditions on our state.
-    unsafe {
-        libc::malloc_trim(0);
+    if HEAP_TRIM_AVAILABLE {
+        // SAFETY: `malloc_trim` is a thread-safe glibc entry point that only
+        // releases unused heap pages; it has no preconditions on our state.
+        unsafe {
+            libc::malloc_trim(0);
+        }
+    } else {
+        panic!("THIS IS NOT ALLOWED IT WORKS ONLY ON GNULIBC LINUX")
     }
 }
 
-/// Run equality saturation up to `config.max_iters` iterations and return the
+/// Run equality saturation up to `config` maximums and return the
 /// final egraph (`curr`) together with the last meaningfully different
 /// earlier egraph (`prev`).
 ///
-/// Returns `None` if fewer than [`MIN_ITERS`] iterations completed or if the
+/// Returns `None` if fewer than 3 iterations completed or if the
 /// runner never produced a distinct earlier egraph (e.g. saturated with no
 /// effective changes).
 ///
