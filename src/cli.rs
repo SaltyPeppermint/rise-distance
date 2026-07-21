@@ -125,4 +125,8 @@ pub struct GoalGenMetadata<C: Counter> {
     pub stop_reason: String,
     pub guide_egraph: EqsatMetadata,
     pub goal_egraph: EqsatMetadata,
+    /// Peak process RSS (bytes) of the combined run. Unlike the node/class/time
+    /// metadata, RSS is a process-wide high-water mark and can't be split into
+    /// `guide_egraph`/`goal_egraph` halves, so it's the whole-run peak.
+    pub base_memory: u64,
 }

@@ -15,6 +15,7 @@ use serde::Serialize;
 use rise_distance::cli::GuideExpr;
 use rise_distance::eqsat::{EqsatConfig, Goal, GuideError, verify_reachability};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
+use rise_distance::utils::peak_rss_bytes;
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]
@@ -59,6 +60,9 @@ struct LegResult {
     total_applied: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total_time: Option<f64>,
+    /// Peak process RSS (bytes), sampled after `verify_reachability` returns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stop_reason: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -125,6 +129,7 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
                         .sum(),
                 ),
                 total_time: Some(iterations.iter().map(|i| i.total_time).sum()),
+                memory: Some(peak_rss_bytes()),
                 stop_reason: None,
                 panic: false,
             }
@@ -136,6 +141,7 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
             classes: None,
             total_applied: None,
             total_time: None,
+            memory: None,
             stop_reason: Some(format!("{stop:?}")),
             panic: false,
         },
@@ -146,6 +152,7 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
             classes: None,
             total_applied: None,
             total_time: None,
+            memory: None,
             stop_reason: None,
             panic: true,
         },

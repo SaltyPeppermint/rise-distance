@@ -14,11 +14,13 @@ Column glossary for the tidy frame (`load_runs`):
     k            number of guides
     reached      bool: did this leg reach the goal
     stop_reason  "empty_pool" when the candidate pool was empty
-    iters, nodes, classes, nodes_per_class, total_time
-                 leg cost (nodes/classes/time include the guide-egraph overhead)
-    base_nodes, base_classes, base_iters, base_total_time, base_nodes_per_class
-                 that seed's full unguided eqsat cost
-    r_nodes, r_classes, r_iters, r_total_time, r_nodes_per_class
+    iters, nodes, classes, nodes_per_class, total_time, memory
+                 leg cost (nodes/classes/time/memory include the guide-egraph
+                 overhead; memory is peak process RSS, folded as max(leg, guide))
+    base_nodes, base_classes, base_iters, base_total_time, base_nodes_per_class,
+    base_memory  that seed's full unguided eqsat cost (base_memory = whole-run
+                 peak RSS)
+    r_nodes, r_classes, r_iters, r_total_time, r_nodes_per_class, r_memory
                  metric / baseline (paired per seed); null where the metric is null
 """
 
@@ -29,7 +31,7 @@ import polars as pl
 
 # Cost metrics carried through the plots. `nodes_per_class` is computed but not
 # plotted by default; add it to a plot's metric list to surface it.
-METRICS = ["iters", "nodes", "classes", "nodes_per_class", "total_time"]
+METRICS = ["iters", "nodes", "classes", "nodes_per_class", "total_time", "memory"]
 
 # smallest_* strategies emit a single k=1 point per goal (no k sweep). The plots
 # draw them as standalone markers rather than lines/bands.
@@ -51,10 +53,10 @@ def find_latest_run(pattern: str = "run", subdir: str = "guided_search") -> Path
 def _load_leg_frame(run_dir: Path) -> pl.DataFrame:
     """One run's `results.parquet`, with guide-egraph overhead folded into cost.
 
-    nodes/classes become ``max(leg, guide)`` and total_time gains guide_time, so
-    each leg's cost includes the guide phase it built on. Null cost columns
-    (unreached / empty-pool / panic legs) stay null. Empty-pool legs (k=0, no
-    real guide set) are dropped.
+    nodes/classes/memory become ``max(leg, guide)`` and total_time gains
+    guide_time, so each leg's cost includes the guide phase it built on. Null
+    cost columns (unreached / empty-pool / panic legs) stay null. Empty-pool legs
+    (k=0, no real guide set) are dropped.
     """
     df = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
     return df.with_columns(
@@ -67,6 +69,9 @@ def _load_leg_frame(run_dir: Path) -> pl.DataFrame:
         pl.when(pl.col("total_time").is_not_null())
         .then(pl.col("total_time") + pl.col("guide_time"))
         .alias("total_time"),
+        pl.when(pl.col("memory").is_not_null())
+        .then(pl.max_horizontal("memory", "guide_memory"))
+        .alias("memory"),
     ).with_columns((pl.col("nodes") / pl.col("classes")).alias("nodes_per_class"))
 
 
@@ -88,7 +93,8 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
         for seed, payload in inner.items():
             if "Ok" not in payload:
                 continue
-            e = payload["Ok"]["goal_egraph"]
+            ok = payload["Ok"]
+            e = ok["goal_egraph"]
             rows.append(
                 {
                     "seed": seed,
@@ -97,6 +103,8 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
                     "base_classes": e["classes"],
                     "base_nodes_per_class": e["nodes"] / e["classes"],
                     "base_total_time": e["time"],
+                    # Whole-run peak RSS: on the payload, not inside goal_egraph.
+                    "base_memory": ok["base_memory"],
                 }
             )
     if not rows:

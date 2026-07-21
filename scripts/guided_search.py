@@ -73,6 +73,7 @@ LEG_RESULT_DTYPES = {
     "classes": pl.Int64,
     "total_applied": pl.Int64,
     "total_time": pl.Float64,
+    "memory": pl.Int64,
     "stop_reason": pl.String,
 }
 LEG_RESULT_FIELDS = tuple(LEG_RESULT_DTYPES)
