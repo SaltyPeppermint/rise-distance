@@ -4,7 +4,6 @@ use serde::Serialize;
 
 use rise_distance::langs::diospyros::VecLang;
 use rise_distance::utils::live_heap_bytes;
-use rlimit::{Resource, setrlimit};
 
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::AvailableLanguages;
@@ -14,7 +13,9 @@ use rise_distance::langs::prop::{self, Prop};
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]
-#[command(about = "Run eqsat on a single term and print per-iteration stats and peak RSS as JSON.")]
+#[command(
+    about = "Run eqsat on a single term and print per-iteration stats and live-heap use as JSON."
+)]
 struct Args {
     /// Term to run eqsat on (s-expression).
     #[arg(long)]
@@ -26,13 +27,6 @@ struct Args {
 
     #[command(flatten)]
     eqsat: EqsatConfig,
-
-    /// Hard cap on virtual address space (bytes), enforced via `RLIMIT_AS`.
-    /// Allocators reserve more virtual memory than they commit, so set this
-    /// generously vs. the real RSS budget (unlike `--max-memory`, which is the
-    /// graceful RSS ceiling; this one kills allocations outright).
-    #[arg(long)]
-    rlimit_as: Option<u64>,
 }
 
 /// Per-iteration annotation egg stores in each [`Iteration`]'s `data` slot.
@@ -62,20 +56,6 @@ struct Output {
 
 fn main() {
     let args = Args::parse();
-
-    // The RLIMIT_AS backstop caps virtual address space, which always exceeds
-    // RSS: a cap at or below the graceful `--max-memory` ceiling would kill the
-    // process before the RSS hook ever trips.
-    if let (Some(rlimit), Some(rss_limit)) = (args.rlimit_as, args.eqsat.max_memory) {
-        assert!(
-            rlimit > rss_limit,
-            "--rlimit-as ({rlimit}) must exceed --max-memory ({rss_limit}), \
-             or the hard RLIMIT_AS kill preempts the graceful RSS stop"
-        );
-    }
-    if let Some(cap) = args.rlimit_as {
-        setrlimit(Resource::AS, cap, cap).expect("setrlimit RLIMIT_AS failed");
-    }
 
     let output = match args.language {
         AvailableLanguages::Diospyros => {

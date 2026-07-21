@@ -1,20 +1,20 @@
-"""Generate random math terms and measure peak RSS of eqsat on each.
+"""Generate random math terms and measure eqsat live-heap use on each.
 
 Shells out to `target/release/generate` to produce a nested JSON of terms
 grouped by size, then to `target/release/measure-size` once per term to
-record peak resident set size (VmHWM, matching htop). The peak is appended
-to each inner term record. Egg limits (`--max-iters`, `--max-nodes`,
+record per-iteration eqsat stats and live-heap bytes. The measurement is
+appended to each inner term record. Egg limits (`--max-iters`, `--max-nodes`,
 `--max-time`, `--max-memory`, `--backoff-scheduler`) are forwarded to both
-binaries; `--rlimit-as` (virtual-memory backstop) only to `measure-size`.
+binaries.
 
-`measure-size` emits a JSON object `{"peak": <VmHWM bytes>, "iterations":
-[<egg per-iteration stats, each with an `rss` field>, ...]}`. The whole
-object is stored as the 3rd entry of each inner term record, so the
-`terms.json` payload has shape
-`[[size, {term: [attempts, validation_result, {peak, iterations}]}], ...]`.
+`measure-size` emits a JSON object `{"iterations": [<egg per-iteration
+stats, each with an `allocated` field>, ...]}` (`allocated` = jemalloc
+`stats.allocated` live-heap bytes). The whole object is stored as the 3rd
+entry of each inner term record, so the `terms.json` payload has shape
+`[[size, {term: [attempts, validation_result, {iterations}]}], ...]`.
 
-On any per-term failure (non-zero exit, RLIMIT kill, timeout, unparseable
-output), the 3rd entry is `{"peak": -1, "iterations": []}`.
+On any per-term failure (non-zero exit, timeout, unparseable output), the
+3rd entry is `{"iterations": []}`.
 
 If `--path` is omitted, a fresh `data/seed_terms/<adjective>-<noun>/`
 directory is created (collision-retry against existing siblings). The output
@@ -79,20 +79,17 @@ class Args:
     tolerance: int = 1
     retry_limit: int = 10000
     # measure-only; number of concurrent measure-size processes. Defaults
-    # to 1 because parallel runs compete for RAM and can perturb peak RSS.
+    # to 1 because parallel runs compete for RAM and can perturb the
+    # live-heap readings.
     parallelism: int = 1
-
-    # measure-only; per-term virtual-memory cap (e.g. "8G"), enforced via
-    # RLIMIT_AS in measure-size. Backstop only.
-    rlimit_as: str = tyro.MISSING
 
     # shared egg args
     max_iters: int = 11
     max_nodes: int = 100_000
     max_time: float = 1.0
     max_memory: str | None = None
-    """Graceful process RSS ceiling (e.g. "8G"), enforced by egg's per-iteration
-    hook in both binaries. Unset = unbounded. Must be below `--rlimit-as`."""
+    """Graceful live-heap ceiling (jemalloc `stats.allocated`, e.g. "8G"),
+    enforced by egg's per-iteration hook in both binaries. Unset = unbounded."""
     backoff_scheduler: bool = True
     """Use egg's BackoffScheduler (pass --no-backoff-scheduler for the
     SimpleScheduler)."""
@@ -105,7 +102,7 @@ def main() -> int:
         "    cargo build --release --bin generate --bin measure-size\n"
         "    uv run scripts/generate_seeds.py \\\n"
         "        --total-samples 1000 --min-size 10 --max-size 50 \\\n"
-        "        --distribution uniform --language math --seed 42 --rlimit-as 8G \\\n"
+        "        --distribution uniform --language math --seed 42 \\\n"
         "        --max-iters 50 --max-nodes 100000 --max-time 10 \\\n"
         "        --measure_parallelism 10"
     )
@@ -120,16 +117,7 @@ def main() -> int:
     terms_path = args.path / "terms.json"
     args_path = args.path / "generation_args.json"
 
-    rlimit_as_bytes = parse_size(args.rlimit_as)
     max_memory_bytes = parse_size(args.max_memory) if args.max_memory is not None else None
-    if max_memory_bytes is not None and max_memory_bytes >= rlimit_as_bytes:
-        print(
-            f"--max-memory ({max_memory_bytes}) must be below --rlimit-as "
-            f"({rlimit_as_bytes}), or the hard RLIMIT_AS kill preempts the "
-            "graceful RSS stop",
-            file=sys.stderr,
-        )
-        return 1
 
     exit_if_missing(args.generate_binary, args.measure_binary)
 
@@ -189,8 +177,6 @@ def main() -> int:
         str(args.max_nodes),
         "--max-time",
         str(args.max_time),
-        "--rlimit-as",
-        str(rlimit_as_bytes),
     ]
     if max_memory_bytes is not None:
         measure_base += ["--max-memory", str(max_memory_bytes)]
@@ -202,7 +188,7 @@ def main() -> int:
 
     # big_collector is [[size, {term_str: [attempts, validation_result]}], ...].
     # Collect (size_idx, term_str) refs in a flat list, measure in parallel,
-    # then append the `{peak, iterations}` object to each inner record in place.
+    # then append the `{iterations}` object to each inner record in place.
     flat: list[tuple[int, str]] = [
         (size_idx, term)
         for size_idx, (_size, terms_map) in enumerate(big_collector)

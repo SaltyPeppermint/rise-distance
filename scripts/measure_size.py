@@ -1,25 +1,24 @@
-"""Measure per-iteration eqsat stats and peak RSS on each seed term.
+"""Measure per-iteration eqsat stats and live-heap use on each seed term.
 
 Spawns the `measure-size` Rust binary once per term in a seed-terms
 `terms.json` (as produced by `scripts/generate_seeds.py`). The binary
-runs eqsat and prints a JSON object `{"peak": <VmHWM bytes>,
-"iterations": [<egg per-iteration stats, each with an `rss` field>,
-...]}` on stdout; `peak` is the process high-water mark read from
-`/proc/self/status`, matching what htop reports. A virtual-memory cap is
-enforced inside the binary via RLIMIT_AS as a safety net against
-runaways.
+runs eqsat and prints a JSON object `{"iterations": [<egg per-iteration
+stats, each with an `allocated` field>, ...]}` on stdout; `allocated` is
+jemalloc's live-heap bytes (`stats.allocated`) sampled at the start of
+each iteration. Memory is bounded by egg's graceful `--max-memory`
+per-iteration hook.
 
 The seed-terms file has shape
-`[[size, {term: [attempts, validation, {peak, iterations}?]}], ...]`.
-The measured `{peak, iterations}` object is written back in place as the
-3rd entry of each inner list, overwriting any existing value. On any
-failure (non-zero exit, RLIMIT kill, timeout, unparseable output), the
-value is `{"peak": -1, "iterations": []}`.
+`[[size, {term: [attempts, validation, {iterations}?]}], ...]`.
+The measured `{iterations}` object is written back in place as the 3rd
+entry of each inner list, overwriting any existing value. On any failure
+(non-zero exit, timeout, unparseable output), the value is
+`{"iterations": []}`.
 
 Example:
     cargo build --release --bin measure-size
     uv run scripts/measure_size.py --path data/seed_terms/foo-bar/terms.json \\
-        --language math --rlimit-as 8G --max-time 30
+        --language math --max-time 30
 """
 
 import argparse
@@ -29,7 +28,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from common import exit_if_missing, measure_term, parse_size, subprocess_timeout
+from common import exit_if_missing, measure_term, subprocess_timeout
 
 
 def main() -> int:
@@ -45,12 +44,6 @@ def main() -> int:
         "--language",
         required=True,
         help="Language the terms are drawn from (e.g. math, prop).",
-    )
-    parser.add_argument(
-        "--rlimit-as",
-        type=parse_size,
-        required=True,
-        help="Per-term virtual-memory cap (e.g. 8G), enforced via RLIMIT_AS. Backstop only.",
     )
     parser.add_argument("--max-iters", type=int, default=11)
     parser.add_argument("--max-nodes", type=int, default=100_000)
@@ -79,8 +72,6 @@ def main() -> int:
         str(args.max_nodes),
         "--max-time",
         str(args.max_time),
-        "--rlimit-as",
-        str(args.rlimit_as),
     ]
     if args.backoff_scheduler:
         cmd_base.append("--backoff-scheduler")

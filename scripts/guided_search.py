@@ -102,7 +102,7 @@ class Args:
     stop_time: float | None = None
     """Guide-replay wall-clock budget in seconds."""
     stop_memory: str | None = None
-    """Guide-replay RSS budget (e.g. `4G`)."""
+    """Guide-replay live-heap budget (jemalloc `stats.allocated`, e.g. `4G`)."""
 
     # search policy
     attempts: int = 5

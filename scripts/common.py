@@ -72,13 +72,14 @@ def run_json_subprocess(
 
 
 #: Sentinel written as a term's measurement when `measure-size` fails to
-#: produce a usable `{"peak", "iterations"}` object (nonzero exit, RLIMIT
-#: kill, timeout, or unparseable output). `peak == -1` marks the failure.
-MEASURE_FAILURE: dict = {"peak": -1, "iterations": []}
+#: produce a usable `{"iterations"}` object (nonzero exit, timeout, or
+#: unparseable output). Empty `iterations` marks the failure; a successful
+#: run always logs at least one iteration.
+MEASURE_FAILURE: dict = {"iterations": []}
 
 
 def measure_term(cmd: list[str], *, timeout: float) -> dict:
-    """Run a `measure-size`-style command, returning the `{"peak", "iterations"}`
+    """Run a `measure-size`-style command, returning the `{"iterations"}`
     JSON object parsed from the last line of stdout, or a fresh copy of
     `MEASURE_FAILURE` on any error (nonzero exit, timeout, unparseable output)."""
     try:
@@ -92,8 +93,9 @@ def measure_term(cmd: list[str], *, timeout: float) -> dict:
 
 def eqsat_limits(cfg: dict) -> dict:
     """Extract the eqsat limits from a raw config dict (`generation_args.json`
-    / `goal_args.json`). `max_memory` is an optional RSS ceiling, accepted as a
-    human size string (e.g. `"1G"`) or a raw byte count, normalized to bytes."""
+    / `goal_args.json`). `max_memory` is an optional live-heap ceiling (jemalloc
+    `stats.allocated`), accepted as a human size string (e.g. `"1G"`) or a raw
+    byte count, normalized to bytes."""
     max_memory = cfg.get("max_memory")
     if isinstance(max_memory, str):
         max_memory = parse_size(max_memory)

@@ -69,7 +69,7 @@ def main() -> int:
     with args.path.open("r") as f:
         big_collector = json.load(f)
 
-    # big_collector is [[size, {term: [attempts, validation, {peak, iterations}]}], ...]
+    # big_collector is [[size, {term: [attempts, validation, {iterations}]}], ...]
     all_terms = [term for _size, terms_map in big_collector for term in terms_map]
 
     timeout = subprocess_timeout(float(run_args["max_time"]))

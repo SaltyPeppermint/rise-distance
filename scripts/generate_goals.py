@@ -56,8 +56,8 @@ class Args:
     """How to sample the GOAL terms (forwarded if set)."""
 
     skip_unmeasured: bool = True
-    """Skip seeds whose `peak_memory_bytes` is missing or -1 (measurement
-    failed)."""
+    """Skip seeds whose measurement is missing or empty (measurement failed:
+    `measure-size` logged no iterations)."""
 
     retry_step: int = 5
     """How much to grow `max_size` on each precompute retry."""
@@ -80,15 +80,16 @@ class Args:
 
 
 def is_measured(record: object) -> bool:
-    """True iff the record's measurement (`record[2]`, a `{"peak", "iterations"}`
-    object) is present and its `peak` is not the -1 failure sentinel."""
+    """True iff the record's measurement (`record[2]`, an `{"iterations"}`
+    object) is present and non-empty. A successful `measure-size` run always
+    logs at least one iteration; the failure sentinel is an empty list."""
     if not (isinstance(record, list) and len(record) > 2):
         return False
     measurement = record[2]
     if not isinstance(measurement, dict):
         return False
-    peak = measurement.get("peak")
-    return isinstance(peak, int) and peak >= 0
+    iterations = measurement.get("iterations")
+    return isinstance(iterations, list) and len(iterations) > 0
 
 
 def flatten_seeds(args: Args) -> list[str]:
