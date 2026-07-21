@@ -16,10 +16,11 @@ Column glossary for the tidy frame (`load_runs`):
     stop_reason  "empty_pool" when the candidate pool was empty
     iters, nodes, classes, nodes_per_class, total_time, memory
                  leg cost (nodes/classes/time/memory include the guide-egraph
-                 overhead; memory is peak process RSS, folded as max(leg, guide))
+                 overhead; memory is jemalloc live-heap bytes (stats.allocated),
+                 folded as max(leg, guide))
     base_nodes, base_classes, base_iters, base_total_time, base_nodes_per_class,
-    base_memory  that seed's full unguided eqsat cost (base_memory = whole-run
-                 peak RSS)
+    base_memory  that seed's full unguided eqsat cost (base_memory = live-heap
+                 bytes sampled right after the unguided run)
     r_nodes, r_classes, r_iters, r_total_time, r_nodes_per_class, r_memory
                  metric / baseline (paired per seed); null where the metric is null
 """
@@ -54,9 +55,11 @@ def _load_leg_frame(run_dir: Path) -> pl.DataFrame:
     """One run's `results.parquet`, with guide-egraph overhead folded into cost.
 
     nodes/classes/memory become ``max(leg, guide)`` and total_time gains
-    guide_time, so each leg's cost includes the guide phase it built on. Null
-    cost columns (unreached / empty-pool / panic legs) stay null. Empty-pool legs
-    (k=0, no real guide set) are dropped.
+    guide_time, so each leg's cost includes the guide phase it built on. For
+    memory (jemalloc live-heap bytes, a point-in-time reading) the max is the
+    heavier of the two phases' footprints. Null cost columns (unreached /
+    empty-pool / panic legs) stay null. Empty-pool legs (k=0, no real guide set)
+    are dropped.
     """
     df = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
     return df.with_columns(
@@ -103,7 +106,8 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
                     "base_classes": e["classes"],
                     "base_nodes_per_class": e["nodes"] / e["classes"],
                     "base_total_time": e["time"],
-                    # Whole-run peak RSS: on the payload, not inside goal_egraph.
+                    # Live-heap bytes (jemalloc stats.allocated): on the payload,
+                    # not inside goal_egraph.
                     "base_memory": ok["base_memory"],
                 }
             )
