@@ -12,7 +12,7 @@ use thiserror::Error;
 use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::{OriginLang, lower};
 use crate::sketch::{self, Sketch};
-use crate::utils::process_rss_bytes;
+use crate::utils::live_heap_bytes;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EqsatMetadata {
@@ -69,8 +69,9 @@ pub struct EqsatConfig {
     #[arg(long)]
     pub max_time: f64,
 
-    /// Process RSS ceiling in bytes, enforced by a per-iteration hook (egg has
-    /// no native memory limit). `None` (flag unset) = unbounded.
+    /// Live-heap ceiling in bytes (jemalloc `stats.allocated`), enforced by a
+    /// per-iteration hook (egg has no native memory limit). `None` (flag unset)
+    /// = unbounded.
     #[serde(default)]
     #[arg(long)]
     pub max_memory: Option<u64>,
@@ -82,7 +83,7 @@ pub struct EqsatConfig {
 
 impl EqsatConfig {
     /// Build a [`Runner`] configured with this config's limits (including the
-    /// RSS hook when `max_memory` is set) and scheduler.
+    /// live-heap hook when `max_memory` is set) and scheduler.
     #[must_use]
     pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> Runner<L, N, D>
     where
@@ -245,14 +246,14 @@ where
 /// states for a meaningful guide/goal split.
 const MIN_ITERS: usize = 3;
 
-/// Per-iteration hook enforcing the RSS ceiling (egg has no native memory
+/// Per-iteration hook enforcing the live-heap ceiling (egg has no native memory
 /// limit): returning `Err` stops the run and egg records it as
 /// `StopReason::Other`. A no-op when `max_memory` is `None`.
 ///
-/// The ceiling is compared against **absolute process RSS**. For this to
-/// measure the current term's egraph footprint rather than leftover allocator
-/// pages from previous terms, callers must return freed pages to the OS between
-/// terms (see [`trim_heap`]) so each run starts from a clean baseline.
+/// The ceiling is compared against jemalloc's live-heap bytes
+/// ([`live_heap_bytes`]), which drops immediately when a term's egraph is freed.
+/// No between-term heap purge is needed for the reading to reflect only the
+/// current term's footprint.
 fn memory_limit_hook<L, N, D>(
     max_memory: Option<u64>,
 ) -> impl FnMut(&mut Runner<L, N, D>) -> Result<(), String> + 'static
@@ -262,45 +263,13 @@ where
     D: IterationData<L, N>,
 {
     move |_runner| {
-        if let (Some(limit), Some(rss)) = (max_memory, process_rss_bytes())
-            && rss > limit
-        {
-            return Err(format!("memory limit exceeded ({rss} > {limit} bytes)"));
+        if let Some(limit) = max_memory {
+            let live = live_heap_bytes();
+            if live > limit {
+                return Err(format!("memory limit exceeded ({live} > {limit} bytes)"));
+            }
         }
         Ok(())
-    }
-}
-
-/// Whether [`trim_heap`] can actually return freed pages to the OS on this
-/// build. True only with the glibc allocator, which exposes `malloc_trim`.
-///
-/// The absolute-RSS memory ceiling ([`memory_limit_hook`]) is only trustworthy
-/// when this is true: without a working trim, freed pages from previous terms
-/// stay resident and pollute later RSS readings. Callers that rely on the
-/// ceiling (e.g. `--max-memory`) should refuse to run when this is false rather
-/// than silently produce wrong results.
-pub const HEAP_TRIM_AVAILABLE: bool = cfg!(target_env = "gnu");
-
-/// Return heap pages freed by dropped allocations to the OS so subsequent RSS
-/// readings reflect only live memory.
-///
-/// The glibc allocator keeps freed pages on its own free lists rather than
-/// handing them back, so after a large egraph is dropped process RSS stays near
-/// its high-water mark. `malloc_trim` forces the arenas to release what they
-/// can. Call this *after* a term's [`Runner`] (and its egraph) has been
-/// dropped, before measuring or running the next term.
-///
-/// If [`HEAP_TRIM_AVAILABLE`] is false (any non-glibc target): Panic!
-#[expect(clippy::missing_panics_doc)]
-pub fn trim_heap() {
-    if HEAP_TRIM_AVAILABLE {
-        // SAFETY: `malloc_trim` is a thread-safe glibc entry point that only
-        // releases unused heap pages; it has no preconditions on our state.
-        unsafe {
-            libc::malloc_trim(0);
-        }
-    } else {
-        panic!("THIS IS NOT ALLOWED IT WORKS ONLY ON GNULIBC LINUX")
     }
 }
 
@@ -601,52 +570,39 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// `live_heap_bytes` must track live allocations: a large touched buffer
+    /// shows up while alive and is gone once freed. This is the property the
+    /// per-term memory ceiling relies on (no `malloc_trim` purge needed). Only
+    /// meaningful when jemalloc is the active allocator; the test crate installs
+    /// it as its global allocator.
     #[test]
-    fn rss_is_plausible() {
-        use super::process_rss_bytes;
-
-        // The reader must succeed and report a plausible RSS (at least a
-        // page, well under a terabyte).
-        let rss = process_rss_bytes().expect("memory-stats should read RSS on this platform");
-        assert!(rss >= 4096, "RSS {rss} implausibly small");
-        assert!(rss < 1 << 40, "RSS {rss} implausibly large");
-    }
-
-    /// `trim_heap` must actually hand freed pages back to the OS: after
-    /// touching and dropping a large buffer, RSS should fall back close to
-    /// where it started once trimmed. Guards the assumption the per-term
-    /// memory ceiling relies on. glibc-only (elsewhere `trim_heap` is a no-op).
-    #[cfg(target_env = "gnu")]
-    #[test]
-    fn trim_heap_releases_pages() {
-        use super::{process_rss_bytes, trim_heap};
+    fn live_heap_tracks_allocations() {
+        use super::live_heap_bytes;
 
         const BYTES: usize = 512 * 1024 * 1024; // 512 MiB
 
-        let before = process_rss_bytes().expect("read RSS");
+        let before = live_heap_bytes();
 
-        // Touch every page so the pages are actually resident, then drop it.
+        // Touch every page so the allocation is real, then drop it.
         let mut buf = vec![0u8; BYTES];
         for i in (0..BYTES).step_by(4096) {
             buf[i] = 1;
         }
         std::hint::black_box(&buf);
-        let peak = process_rss_bytes().expect("read RSS");
+        let peak = live_heap_bytes();
         drop(buf);
 
-        trim_heap();
-        let after = process_rss_bytes().expect("read RSS");
+        let after = live_heap_bytes();
 
-        // The buffer clearly showed up in RSS...
+        // The buffer clearly showed up in the live-heap reading...
         assert!(
             peak >= before + BYTES as u64 / 2,
-            "RSS did not grow with the buffer: before {before}, peak {peak}"
+            "live heap did not grow with the buffer: before {before}, peak {peak}"
         );
-        // ...and trimming released most of it (allow generous slack for arena
-        // fragmentation and other allocations).
+        // ...and dropping it released most of it (allow slack for other allocs).
         assert!(
             after < peak - BYTES as u64 / 2,
-            "trim_heap did not release the freed pages: peak {peak}, after {after}"
+            "live heap did not drop after free: peak {peak}, after {after}"
         );
     }
 }

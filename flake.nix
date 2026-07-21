@@ -43,6 +43,16 @@
       in
       {
         devShells.default = pkgs.mkShell {
+          # tikv-jemalloc-sys builds vendored jemalloc from C at -O0 (debug) with
+          # -Werror. Nix's cc-wrapper injects -D_FORTIFY_SOURCE via the `fortify`
+          # hardening flags, and glibc's features.h then warns that _FORTIFY_SOURCE
+          # needs optimization, which -Werror turns fatal and configure aborts on.
+          # Disabling fortify here lets that build through.
+          hardeningDisable = [
+            "fortify"
+            "fortify3"
+          ];
+
           nativeBuildInputs = [
             toolchain
           ]

@@ -101,9 +101,8 @@ pub struct SeedSamples<L: MyLanguage> {
     /// Total wall-clock time (seconds) of the guide-phase replay, so the driver
     /// can add the guide overhead to each leg's `total_time`.
     pub guide_time: f64,
-    /// Peak process RSS in bytes (`VmHWM`) sampled right after the replay.
-    /// The replay is the first heavy phase of `sample`, so this is its peak —
-    /// the number a `--stop-memory` budget is measured against.
+    /// Live-heap bytes (jemalloc `stats.allocated`) sampled right after the
+    /// replay — the number a `--stop-memory` budget is measured against.
     pub guide_memory: u64,
     pub stop_reason: String,
 }
@@ -125,8 +124,8 @@ pub struct GoalGenMetadata<C: Counter> {
     pub stop_reason: String,
     pub guide_egraph: EqsatMetadata,
     pub goal_egraph: EqsatMetadata,
-    /// Peak process RSS (bytes) of the combined run. Unlike the node/class/time
-    /// metadata, RSS is a process-wide high-water mark and can't be split into
-    /// `guide_egraph`/`goal_egraph` halves, so it's the whole-run peak.
+    /// Live-heap bytes (jemalloc `stats.allocated`) sampled right after the
+    /// eqsat. A single point-in-time process-wide reading, so it can't be split
+    /// into `guide_egraph`/`goal_egraph` halves.
     pub base_memory: u64,
 }

@@ -22,7 +22,7 @@ use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::lower;
 use rise_distance::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
-use rise_distance::utils::peak_rss_bytes;
+use rise_distance::utils::live_heap_bytes;
 use rise_distance::{MyAnalysis, MyLanguage, eqsat};
 
 #[derive(Parser)]
@@ -130,9 +130,9 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
         return Err("big eqsat failed".to_owned());
     };
 
-    // Sample peak RSS right after the eqsat, before precompute below can raise
-    // the high-water mark.
-    let base_memory = peak_rss_bytes();
+    // Sample live-heap bytes right after the eqsat, before precompute below
+    // allocates further.
+    let base_memory = live_heap_bytes();
 
     let stop_reason = format!("{:?}", result.stop_reason());
     let SplitMetadata { guide, goal } = result.split_metadata();

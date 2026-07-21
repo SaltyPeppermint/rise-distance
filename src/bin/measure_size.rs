@@ -3,7 +3,7 @@ use egg::{Analysis, Iteration, IterationData, Language, RecExpr, Rewrite, Runner
 use serde::Serialize;
 
 use rise_distance::langs::diospyros::VecLang;
-use rise_distance::utils::{peak_rss_bytes, process_rss_bytes};
+use rise_distance::utils::live_heap_bytes;
 use rlimit::{Resource, setrlimit};
 
 use rise_distance::eqsat::EqsatConfig;
@@ -37,30 +37,27 @@ struct Args {
 
 /// Per-iteration annotation egg stores in each [`Iteration`]'s `data` slot.
 /// egg calls [`IterationData::make`] once at the *start* of every iteration
-/// (before search/apply), so `rss` is the process RSS (bytes) at that point,
-/// aligned with egg's own start-of-iteration `egraph_nodes`/`egraph_classes`.
-/// `None` if the platform RSS reader is unavailable.
+/// (before search/apply), so `allocated` is jemalloc's live-heap bytes at that
+/// point, aligned with egg's own start-of-iteration
+/// `egraph_nodes`/`egraph_classes`.
 #[derive(Serialize)]
-struct RssData {
-    rss: Option<u64>,
+struct HeapData {
+    allocated: u64,
 }
 
-impl<L: Language, N: Analysis<L>> IterationData<L, N> for RssData {
+impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
     fn make(_runner: &Runner<L, N, Self>) -> Self {
         Self {
-            rss: process_rss_bytes(),
+            allocated: live_heap_bytes(),
         }
     }
 }
 
-/// The whole stdout payload: the process peak RSS (`VmHWM`, matching htop) and
-/// egg's per-iteration stats, each carrying its start-of-iteration `rss` in the
-/// flattened `data` slot.
+/// The whole stdout payload: egg's per-iteration stats, each carrying its
+/// start-of-iteration live-heap bytes in the flattened `data` slot.
 #[derive(Serialize)]
 struct Output {
-    /// Peak resident set size of the whole process (`VmHWM`), in bytes.
-    peak: u64,
-    iterations: Vec<Iteration<RssData>>,
+    iterations: Vec<Iteration<HeapData>>,
 }
 
 fn main() {
@@ -101,12 +98,12 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) ->
         .parse()
         .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
 
-    // `RssData` in the `D` slot makes egg sample RSS at each iteration start and
-    // stash it in `Iteration::data` for us — no hook or shared cell needed.
-    let runner = args.eqsat.build_runner::<_, _, RssData>(&expr).run(rules);
+    // `HeapData` in the `D` slot makes egg sample live-heap bytes at each
+    // iteration start and stash it in `Iteration::data` — no hook or shared cell
+    // needed.
+    let runner = args.eqsat.build_runner::<_, _, HeapData>(&expr).run(rules);
 
     Output {
-        peak: peak_rss_bytes(),
         iterations: runner.iterations,
     }
 }

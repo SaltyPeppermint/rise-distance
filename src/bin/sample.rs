@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
-use rise_distance::utils::peak_rss_bytes;
+use rise_distance::utils::live_heap_bytes;
 use time::OffsetDateTime;
 
 use rise_distance::cli::{GuideExpr, SeedSamples, Strategy};
@@ -141,16 +141,16 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let result = run_eqsat(&seed_expr, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
     eprintln!("Guide replay stop reason: {:?}", result.stop_reason());
 
-    // Sample peak RSS immediately after the replay, before the precompute and
-    // sampling below can raise the high-water mark past the replay's.
-    let guide_memory = peak_rss_bytes();
+    // Sample live-heap bytes immediately after the replay, before the
+    // precompute and sampling below allocate further.
+    let guide_memory = live_heap_bytes();
     let guide_nodes = result.curr().total_number_of_nodes();
     let guide_classes = result.curr().classes().len();
     let guide_iters = result.data().len();
     let guide_time = result.data().iter().map(|i| i.total_time).sum();
     eprintln!(
         "Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes, \
-         {guide_memory} peak RSS bytes"
+         {guide_memory} live-heap bytes"
     );
 
     let mut root_log = String::new();

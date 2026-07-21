@@ -148,34 +148,24 @@ pub fn id0() -> Id {
     Id::from(0)
 }
 
-/// Current process RSS in bytes via the `memory-stats` crate. `None` if the
-/// platform reader is unavailable (the memory limit is then not enforced).
-#[must_use]
-pub fn process_rss_bytes() -> Option<u64> {
-    memory_stats::memory_stats().map(|s| s.physical_mem as u64)
-}
-
-/// Peak resident set size of this process in bytes, read from
-/// `/proc/self/status` (`VmHWM`). Matches what htop reports and the RSS the
-/// `--max-memory` hook budgets against.
+/// Bytes in live (allocated-but-not-yet-freed) heap allocations, as reported by
+/// jemalloc's `stats.allocated`. Unlike RSS this drops immediately when memory
+/// is freed — no `malloc_trim`-style purge is needed to get a clean reading — so
+/// it measures the current term's actual footprint rather than leftover
+/// allocator pages. Requires the jemalloc global allocator to be installed in
+/// the calling binary (`#[global_allocator]`).
+///
+/// This is a point-in-time reading; jemalloc keeps no high-water mark for
+/// `allocated`, so there is no peak variant.
 ///
 /// # Panics
 ///
-/// Panics if `/proc/self/status` is unreadable or its `VmHWM` line is missing
-/// or malformed.
+/// Panics if the jemalloc ctl epoch cannot be advanced or `stats.allocated`
+/// cannot be read (both indicate jemalloc is not the active allocator).
 #[must_use]
-pub fn peak_rss_bytes() -> u64 {
-    let status =
-        std::fs::read_to_string("/proc/self/status").expect("failed to read /proc/self/status");
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmHWM:") {
-            let kb: u64 = rest
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse().ok())
-                .expect("malformed VmHWM line");
-            return kb * 1024;
-        }
-    }
-    panic!("VmHWM not found in /proc/self/status");
+pub fn live_heap_bytes() -> u64 {
+    use tikv_jemalloc_ctl::{epoch, stats};
+    // Stats are cached per epoch; advance it so the read reflects current state.
+    epoch::advance().expect("failed to advance jemalloc epoch");
+    stats::allocated::read().expect("failed to read jemalloc allocated stat") as u64
 }
