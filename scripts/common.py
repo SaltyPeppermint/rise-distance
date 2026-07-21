@@ -92,12 +92,16 @@ def measure_term(cmd: list[str], *, timeout: float) -> dict:
 
 def eqsat_limits(cfg: dict) -> dict:
     """Extract the eqsat limits from a raw config dict (`generation_args.json`
-    / `goal_args.json`). `max_memory` (RSS ceiling in bytes) is optional."""
+    / `goal_args.json`). `max_memory` is an optional RSS ceiling, accepted as a
+    human size string (e.g. `"1G"`) or a raw byte count, normalized to bytes."""
+    max_memory = cfg.get("max_memory")
+    if isinstance(max_memory, str):
+        max_memory = parse_size(max_memory)
     return {
         "max_iters": cfg["max_iters"],
         "max_nodes": cfg["max_nodes"],
         "max_time": cfg["max_time"],
-        "max_memory": cfg.get("max_memory"),
+        "max_memory": max_memory,
         "backoff_scheduler": bool(cfg.get("backoff_scheduler", True)),
     }
 
