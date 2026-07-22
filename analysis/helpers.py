@@ -8,13 +8,13 @@ consume that frame directly, so the notebook stays a handful of declarative
 calls.
 
 Every run now uses a single guide-set size `k` (see `guided_search.py`), so `k`
-is a per-run constant, not a swept axis. It is folded into each mode's display
-name (``"<name> (k=<k>)"``) and reported in the subtitle; the plots put the
-individual seed/goal *pairs* on the x-axis instead.
+is a per-run constant, not a swept axis. Each mode's display name is derived
+from its replay-versus-baseline limit differences, attempt count, and `k`; the
+plots put the individual seed/goal *pairs* on the x-axis instead.
 
 Column glossary for the tidy frame (`load_runs`):
 
-    mode         display name of the run (overlaid series), with " (k=<k>)" appended
+    mode         derived display name of the run (overlaid series)
     seed, goal   the eqsat seed term and the goal term
     pair         "<seed>│<goal>", the per-experiment identifier used as x
     k            number of guides (constant within a run)
@@ -38,9 +38,23 @@ Column glossary for the tidy frame (`load_runs`):
 
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import polars as pl
+
+
+@dataclass(frozen=True)
+class Run:
+    """A resolved guided-search run with an analysis-derived display label."""
+
+    pattern: str
+    directory: Path
+    label: str
+    k: int
+    attempts: int
+    strategy: str
+    limits: dict[str, dict[str, float]]
 
 
 def find_latest_run(pattern: str = "run", subdir: str = "guided_search") -> Path:
@@ -121,17 +135,16 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def load_runs(runs: list[tuple[str, str]]) -> tuple[pl.DataFrame, dict]:
+def load_runs(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     """Load and stack the given runs into one tidy long DataFrame.
 
-    `runs` is a list of ``(display_name, run-dir pattern)``. Each run uses a
-    single guide-set size `k`, which is folded into the display `mode` as
-    ``"<name> (k=<k>)"`` so overlaying runs at different k's stays legible.
+    `runs` comes from `resolve_runs`, which derives each display label from the
+    replay/baseline limit difference, attempt count, and guide-set size `k`.
     Returns ``(df, meta)`` where `df` is the tidy frame described in the module
     docstring and `meta` carries plot-annotation info::
 
         meta = {
-            "modes":    [display names (with " (k=<k>)"), in order],
+            "modes":    [derived display names, in order],
             "k":        {mode -> its single k},
             "n_goals":  int,                   # max distinct goals across modes
             "n_trials": int,                   # configured `attempts` (max)
@@ -139,8 +152,8 @@ def load_runs(runs: list[tuple[str, str]]) -> tuple[pl.DataFrame, dict]:
     """
     frames, modes, k_by_mode = [], [], {}
     n_goals = n_trials = 0
-    for name, pattern in runs:
-        run_dir = find_latest_run(pattern)
+    for run in runs:
+        run_dir = run.directory
         config = json.loads((run_dir / "config.json").read_text())
 
         legs = _load_leg_frame(run_dir)
@@ -148,7 +161,9 @@ def load_runs(runs: list[tuple[str, str]]) -> tuple[pl.DataFrame, dict]:
         if len(ks) != 1:
             raise ValueError(f"{run_dir.name}: expected a single k, found {sorted(ks)}")
         k = ks[0]
-        label = f"{name} (k={k})"
+        if k != run.k:
+            raise ValueError(f"{run_dir.name}: resolved k={run.k}, found k={k}")
+        label = run.label
 
         base = _baseline_frame(run_dir)
         df = legs.join(base, on="seed", how="left").with_columns(
@@ -188,6 +203,96 @@ LIMIT_KEYS = {
     "memory": "max_memory",
 }
 
+LIMIT_LABELS = {
+    "iters": "iters",
+    "nodes": "nodes",
+    "total_time": "time",
+    "memory": "memory",
+}
+
+
+def _compact_number(value: float) -> str:
+    """Format a config value compactly without hiding meaningful precision."""
+    for scale, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "k")):
+        scaled = value / scale
+        if value >= scale and scaled.is_integer():
+            return f"{int(scaled)}{suffix}"
+    return f"{value:g}"
+
+
+def _format_limit(metric: str, value: float | None) -> str:
+    if value is None:
+        return "unlimited"
+    if metric == "memory":
+        for scale, suffix in ((1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB")):
+            scaled = value / scale
+            if value >= scale and scaled.is_integer():
+                return f"{int(scaled)}{suffix}"
+    formatted = _compact_number(float(value))
+    return f"{formatted}s" if metric == "total_time" else formatted
+
+
+def _derived_label(
+    limits: dict[str, dict[str, float]], attempts: int, k: int
+) -> str:
+    """Describe only replay limits that differ from the unguided baseline."""
+    replay = limits["leg"]
+    baseline = limits["baseline"]
+    differences = [
+        f"{LIMIT_LABELS[metric]} {_format_limit(metric, replay.get(metric))} vs "
+        f"{_format_limit(metric, baseline.get(metric))}"
+        for metric in LIMIT_KEYS
+        if replay.get(metric) != baseline.get(metric)
+    ]
+    limit_part = ", ".join(differences) if differences else "baseline limits"
+    return f"{limit_part} · attempts={_compact_number(float(attempts))} · k={k}"
+
+
+def resolve_runs(patterns: Sequence[str]) -> list[Run]:
+    """Resolve run patterns and derive concise, collision-safe plot labels.
+
+    Labels show guide/leg limits versus the unguided baseline, but only for
+    dimensions whose effective limits differ. Strategy and directory provenance
+    are appended only when the analytical labels would otherwise collide.
+    """
+    runs = []
+    for pattern in patterns:
+        run_dir = find_latest_run(pattern)
+        config = json.loads((run_dir / "config.json").read_text())
+        legs = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
+        ks = legs["k"].unique().to_list()
+        if len(ks) != 1:
+            raise ValueError(f"{run_dir.name}: expected a single k, found {sorted(ks)}")
+        k = ks[0]
+        limits = _governing_limits(run_dir)
+        runs.append(
+            Run(
+                pattern=pattern,
+                directory=run_dir,
+                label=_derived_label(limits, config["attempts"], k),
+                k=k,
+                attempts=config["attempts"],
+                strategy=config["strategy"],
+                limits=limits,
+            )
+        )
+
+    labels = [run.label for run in runs]
+    for label in set(labels):
+        indexes = [i for i, candidate in enumerate(labels) if candidate == label]
+        if len(indexes) < 2:
+            continue
+        strategy_labels = [f"{runs[i].label} · {runs[i].strategy}" for i in indexes]
+        unique_by_strategy = len(set(strategy_labels)) == len(strategy_labels)
+        for i, strategy_label in zip(indexes, strategy_labels, strict=True):
+            suffix = (
+                strategy_label
+                if unique_by_strategy
+                else f"{strategy_label} · {runs[i].directory.name}"
+            )
+            runs[i] = replace(runs[i], label=suffix)
+    return runs
+
 
 def _governing_limits(run_dir: Path) -> dict[str, dict[str, float]]:
     """The eqsat limits each egraph family actually ran under, per run.
@@ -223,18 +328,15 @@ def _governing_limits(run_dir: Path) -> dict[str, dict[str, float]]:
     }
 
 
-def _limits_by_mode(runs: list[tuple[str, str]]) -> dict[str, dict[str, dict[str, float]]]:
+def _limits_by_mode(runs: Sequence[Run]) -> dict[str, dict[str, dict[str, float]]]:
     """``mode -> {egraph -> {dimension -> limit}}`` for the given runs.
 
-    Mirrors how `load_runs` labels a mode (``"<name> (k=<k>)"``) so the returned
-    keys line up with the tidy frame's `mode` column.
+    Uses the same resolved labels and limits as `load_runs`, so its keys line up
+    exactly with the tidy frame's `mode` column.
     """
     out: dict[str, dict[str, dict[str, float]]] = {}
-    for name, pattern in runs:
-        run_dir = find_latest_run(pattern)
-        legs = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
-        k = legs["k"].unique().to_list()[0]
-        out[f"{name} (k={k})"] = _governing_limits(run_dir)
+    for run in runs:
+        out[run.label] = run.limits
     return out
 
 
@@ -245,7 +347,7 @@ SERIES_EGRAPH = {"leg": "leg", "baseline": "baseline", "guide": "guide"}
 
 
 def series_limit_frame(
-    runs: list[tuple[str, str]],
+    runs: Sequence[Run],
     metrics: Sequence[str],
     series: Sequence[str] = ("leg", "baseline", "guide"),
 ) -> pl.DataFrame:
