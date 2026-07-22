@@ -167,7 +167,7 @@ def abs_pair_strip(
     )
 
 
-def rel_pair_strip(
+def rel_cost_ecdf(
     df: pl.DataFrame,
     meta: dict,
     *,
@@ -177,11 +177,11 @@ def rel_pair_strip(
     group_by: Sequence[str] = ("seed", "goal"),
     group_reduce: str = "median",
 ) -> alt.Chart:
-    """Plot leg and guide cost divided by each pair's unguided baseline.
+    """Plot ECDFs of leg and guide cost relative to the unguided baseline.
 
-    Pairs share the rank of their leg ratio. The baseline becomes a dashed
-    ``y = 1`` rule; values below it are cheaper than unguided. The y scale is
-    logarithmic.
+    Each curve gives the cumulative share of seed/goal pairs at or below a
+    relative-cost ratio. The baseline becomes a dashed ``x = 1`` rule; values
+    left of it are cheaper than unguided. The x scale is logarithmic.
     """
     # Divide leg/guide by the pair's baseline (per mode/metric/pair): pivot the
     # series to columns, ratio, then melt back to the leg/guide series.
@@ -206,17 +206,14 @@ def rel_pair_strip(
         .filter(pl.col("value") > 0)
         .group_by("mode", "metric", "series", *group_by)
         .agg(getattr(pl.col("value"), group_reduce)().alias("v"))
+        .with_columns(
+            (
+                pl.col("v").rank("max").over("mode", "metric", "series")
+                / pl.len().over("mode", "metric", "series")
+            ).alias("cdf")
+        )
     )
-    # Rank pairs by the LEG ratio within each (mode, metric); share that rank with
-    # the guide series so both line up on x.
-    leg_rank = (
-        per_pair.filter(pl.col("series") == "leg")
-        .with_columns((pl.col("v").rank("ordinal").over("mode", "metric") - 1).alias("rank"))
-        .select("mode", "metric", *group_by, "rank")
-    )
-    per_pair = per_pair.join(leg_rank, on=["mode", "metric", *group_by], how="left")
 
-    scale = alt.Scale(type="log")
     color = alt.Color(
         "series:N",
         scale=alt.Scale(
@@ -227,35 +224,42 @@ def rel_pair_strip(
     )
     modes = [m for m in meta["modes"] if m in per_pair["mode"].unique().to_list()]
 
-    # Points carry the facet keys (mode/metric); the reference is a data-free
-    # `datum` rule at y=1 so it draws once in *every* facet cell without adding a
+    # Curves carry the facet keys (mode/metric); the reference is a data-free
+    # `datum` rule at x=1 so it draws once in *every* facet cell without adding a
     # null-keyed row (which would spawn its own null mode/metric facet). The
     # shared dataset is handed to `.facet(data=...)` so the layer stays facetable.
-    points = (
+    curves = (
         alt.Chart()
-        .mark_circle(size=18, opacity=0.55)
+        .mark_line(interpolate="step-after", strokeWidth=2)
         .encode(
-            x=_pair_x(),
-            y=alt.Y("v:Q", title=y_title, scale=scale),
+            x=alt.X("v:Q", title="cost / baseline (log)", scale=alt.Scale(type="log")),
+            y=alt.Y(
+                "cdf:Q",
+                title=y_title,
+                scale=alt.Scale(domain=[0, 1]),
+                axis=alt.Axis(format="%"),
+            ),
             color=color,
+            order=alt.Order("v:Q"),
             tooltip=[
                 "mode:N",
                 "series:N",
                 "metric:N",
                 *[f"{g}:N" for g in group_by],
                 alt.Tooltip("v:Q", format=".3g"),
+                alt.Tooltip("cdf:Q", title="cumulative share", format=".1%"),
             ],
         )
     )
     ref = (
         alt.Chart()
         .mark_rule(strokeDash=[4, 4], color="#7a7a77", opacity=0.8)
-        .encode(y=alt.Y("datum:Q", scale=scale))
+        .encode(x=alt.X("datum:Q", scale=alt.Scale(type="log")))
         .transform_calculate(datum="1")
     )
 
     return (
-        alt.layer(points, ref)
+        alt.layer(curves, ref)
         .properties(width=260, height=200)
         .facet(
             row=alt.Row("mode:N", title=None, sort=modes),
@@ -263,7 +267,7 @@ def rel_pair_strip(
             data=per_pair,
         )
         .properties(title=_title(title, meta))
-        .resolve_scale(y="independent", x="independent")
+        .resolve_scale(x="independent")
     )
 
 
