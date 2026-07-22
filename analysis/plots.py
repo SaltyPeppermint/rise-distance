@@ -75,7 +75,11 @@ def _title(title: str, meta: dict) -> alt.TitleParams:
 
 # Fixed hues for the series overlay, so each keeps its color independent of how
 # many modes are present.
-SERIES_COLORS = {"leg": PALETTE[0], "baseline": PALETTE[5], "guide": PALETTE[1]}  # blue/orange/green
+SERIES_COLORS = {
+    "leg": PALETTE[0],
+    "baseline": PALETTE[5],
+    "guide": PALETTE[1],
+}  # blue/orange/green
 
 
 def abs_pair_strip(
@@ -227,11 +231,7 @@ def rel_pair_strip(
         "mode",
         "metric",
         *group_by,
-        *[
-            (pl.col(s) / pl.col("baseline")).alias(s)
-            for s in ("leg", "guide")
-            if s in wide.columns
-        ],
+        *[(pl.col(s) / pl.col("baseline")).alias(s) for s in ("leg", "guide") if s in wide.columns],
     ).unpivot(
         index=["mode", "metric", *group_by],
         variable_name="series",
@@ -268,17 +268,21 @@ def rel_pair_strip(
     # `datum` rule at y=1 so it draws once in *every* facet cell without adding a
     # null-keyed row (which would spawn its own null mode/metric facet). The
     # shared dataset is handed to `.facet(data=...)` so the layer stays facetable.
-    points = alt.Chart().mark_circle(size=18, opacity=0.55).encode(
-        x=_pair_x(),
-        y=alt.Y("v:Q", title=y_title, scale=scale),
-        color=color,
-        tooltip=[
-            "mode:N",
-            "series:N",
-            "metric:N",
-            *[f"{g}:N" for g in group_by],
-            alt.Tooltip("v:Q", format=".3g"),
-        ],
+    points = (
+        alt.Chart()
+        .mark_circle(size=18, opacity=0.55)
+        .encode(
+            x=_pair_x(),
+            y=alt.Y("v:Q", title=y_title, scale=scale),
+            color=color,
+            tooltip=[
+                "mode:N",
+                "series:N",
+                "metric:N",
+                *[f"{g}:N" for g in group_by],
+                alt.Tooltip("v:Q", format=".3g"),
+            ],
+        )
     )
     # Single dashed y=1 reference: parity with the unguided baseline.
     ref = (
@@ -311,27 +315,79 @@ def baseline_vs_soft_limits(
     """Unguided baseline cost per pair against the guided leg's soft limits.
 
     A pair is ``never reached`` when none of its attempts in that mode reached
-    the goal. Baseline cost is constant per seed, but is repeated for each goal
-    so reachability remains a seed/goal-pair property. Never-reached pairs occupy
-    the left block and reached pairs the right block; each block is independently
-    sorted by baseline value and separated by a vertical rule. Red points make
-    never-reached pairs stand out against the subdued successful pairs. Dashed
-    horizontal rules show the limit that governed the guided legs, not the looser
-    limit used to collect the baseline.
+    the goal. Never-reached pairs occupy the left block and reached pairs the
+    right block; each block is independently sorted by baseline value and
+    separated by a vertical rule. Color identifies how the guided attempts
+    ended (node limit, saturation, another limit, or a mixture), while reached
+    pairs stay gray.
+
+    Egg's node limit is checked against the hash-cons memo size, whereas the
+    stored baseline ``nodes`` value is the smaller post-rebuild canonical node
+    count. For the metric matching the baseline's stop reason, use the numeric
+    value carried by ``NodeLimit(N)`` / ``TimeLimit(T)`` /
+    ``IterationLimit(I)`` (or the memory-hook message), making the point directly
+    comparable to its dashed limit. Other facets retain their final measurement.
     """
     base_cols = [f"base_{metric}" for metric in metrics]
+    leg_stop_kind = (
+        pl.when(pl.col("reached"))
+        .then(pl.lit("reached"))
+        .when(pl.col("panic"))
+        .then(pl.lit("panic"))
+        .when(pl.col("stop_reason") == "Saturated")
+        .then(pl.lit("saturated"))
+        .when(pl.col("stop_reason").str.starts_with("NodeLimit"))
+        .then(pl.lit("node limit"))
+        .when(pl.col("stop_reason").str.starts_with("TimeLimit"))
+        .then(pl.lit("time limit"))
+        .when(pl.col("stop_reason").str.starts_with("IterationLimit"))
+        .then(pl.lit("iteration limit"))
+        .when(pl.col("stop_reason").str.contains("memory limit exceeded", literal=True))
+        .then(pl.lit("memory limit"))
+        .otherwise(pl.lit("other"))
+        .alias("leg_stop_kind")
+    )
     per_pair = (
-        df.group_by("mode", "seed", "goal", "pair")
+        df.with_columns(leg_stop_kind)
+        .group_by("mode", "seed", "goal", "pair")
         .agg(
             pl.col("reached").sum().alias("n_reached"),
             pl.len().alias("n_attempts"),
+            *[
+                (pl.col("leg_stop_kind") == kind).sum().alias(f"n_{kind.replace(' ', '_')}")
+                for kind in (
+                    "node limit",
+                    "saturated",
+                    "time limit",
+                    "iteration limit",
+                    "memory limit",
+                    "panic",
+                    "other",
+                )
+            ],
             *[pl.col(col).first().alias(col) for col in base_cols],
+            pl.col("base_stop_reason").first(),
         )
         .unpivot(
-            index=["mode", "seed", "goal", "pair", "n_reached", "n_attempts"],
+            index=[
+                "mode",
+                "seed",
+                "goal",
+                "pair",
+                "n_reached",
+                "n_attempts",
+                "n_node_limit",
+                "n_saturated",
+                "n_time_limit",
+                "n_iteration_limit",
+                "n_memory_limit",
+                "n_panic",
+                "n_other",
+                "base_stop_reason",
+            ],
             on=base_cols,
             variable_name="metric",
-            value_name="baseline",
+            value_name="baseline_final",
         )
         .with_columns(
             pl.col("metric").str.strip_prefix("base_"),
@@ -339,6 +395,56 @@ def baseline_vs_soft_limits(
             .then(pl.lit("never reached"))
             .otherwise(pl.lit("reached at least once"))
             .alias("reachability"),
+            pl.when(pl.col("n_reached") > 0)
+            .then(pl.lit("reached"))
+            .when(pl.col("n_node_limit") == pl.col("n_attempts"))
+            .then(pl.lit("unreachable: node limit"))
+            .when(pl.col("n_saturated") == pl.col("n_attempts"))
+            .then(pl.lit("unreachable: saturated"))
+            .when(pl.col("n_time_limit") == pl.col("n_attempts"))
+            .then(pl.lit("unreachable: time limit"))
+            .when(pl.col("n_iteration_limit") == pl.col("n_attempts"))
+            .then(pl.lit("unreachable: iteration limit"))
+            .when(pl.col("n_memory_limit") == pl.col("n_attempts"))
+            .then(pl.lit("unreachable: memory limit"))
+            .otherwise(pl.lit("unreachable: mixed/other"))
+            .alias("leg_outcome"),
+        )
+        .with_columns(
+            pl.when(
+                (pl.col("metric") == "nodes")
+                & pl.col("base_stop_reason").str.starts_with("NodeLimit")
+            )
+            .then(pl.col("base_stop_reason").str.extract(r"^NodeLimit\((\d+)\)$", 1))
+            .when(
+                (pl.col("metric") == "iters")
+                & pl.col("base_stop_reason").str.starts_with("IterationLimit")
+            )
+            .then(pl.col("base_stop_reason").str.extract(r"^IterationLimit\((\d+)\)$", 1))
+            .when(
+                (pl.col("metric") == "total_time")
+                & pl.col("base_stop_reason").str.starts_with("TimeLimit")
+            )
+            .then(pl.col("base_stop_reason").str.extract(r"^TimeLimit\(([^)]+)\)$", 1))
+            .when(
+                (pl.col("metric") == "memory")
+                & pl.col("base_stop_reason").str.contains("memory limit exceeded", literal=True)
+            )
+            .then(
+                pl.col("base_stop_reason").str.extract(
+                    r"memory limit exceeded \((\d+) > \d+ bytes\)", 1
+                )
+            )
+            .otherwise(None)
+            .cast(pl.Float64)
+            .alias("baseline_stop_value")
+        )
+        .with_columns(
+            pl.coalesce("baseline_stop_value", "baseline_final").alias("baseline"),
+            pl.when(pl.col("baseline_stop_value").is_not_null())
+            .then(pl.lit("stop-reason measurement"))
+            .otherwise(pl.lit("final measurement"))
+            .alias("measurement"),
         )
     )
     soft_limits = limits.filter(pl.col("series") == "leg").select("mode", "metric", "limit")
@@ -347,10 +453,9 @@ def baseline_vs_soft_limits(
         .drop_nulls("baseline")
         .filter((pl.col("baseline") > 0) & (pl.col("limit") > 0))
         .with_columns(
-            (
-                pl.col("baseline").rank("ordinal").over("mode", "metric", "reachability")
-                - 1
-            ).alias("group_rank"),
+            (pl.col("baseline").rank("ordinal").over("mode", "metric", "reachability") - 1).alias(
+                "group_rank"
+            ),
             (pl.col("reachability") == "never reached")
             .sum()
             .over("mode", "metric")
@@ -369,8 +474,35 @@ def baseline_vs_soft_limits(
         )
     )
     modes = [m for m in meta["modes"] if m in plot["mode"].unique().to_list()]
-    status_order = ["never reached", "reached at least once"]
-    status_colors = ["#d62728", "#a8adb4"]
+    outcome_order = [
+        "unreachable: node limit",
+        "unreachable: saturated",
+        "unreachable: time limit",
+        "unreachable: iteration limit",
+        "unreachable: memory limit",
+        "unreachable: mixed/other",
+        "reached",
+    ]
+    outcome_colors = ["#d62728", "#eb6834", "#eda100", "#4a3aa7", "#e87ba4", "#35383d", "#a8adb4"]
+    drawn_outcomes = set(plot["leg_outcome"].unique().to_list())
+    outcome_order = [outcome for outcome in outcome_order if outcome in drawn_outcomes]
+    outcome_colors = [
+        color
+        for outcome, color in zip(
+            [
+                "unreachable: node limit",
+                "unreachable: saturated",
+                "unreachable: time limit",
+                "unreachable: iteration limit",
+                "unreachable: memory limit",
+                "unreachable: mixed/other",
+                "reached",
+            ],
+            outcome_colors,
+            strict=True,
+        )
+        if outcome in drawn_outcomes
+    ]
     scale = alt.Scale(type="log")
 
     points = (
@@ -382,28 +514,39 @@ def baseline_vs_soft_limits(
                 title="pairs: never reached (left) | reached (right); sorted within each",
                 axis=alt.Axis(labels=False, ticks=False),
             ),
-            y=alt.Y("baseline:Q", title="unguided baseline cost (log)", scale=scale),
+            y=alt.Y("baseline:Q", title="baseline stop/final measurement (log)", scale=scale),
             color=alt.Color(
-                "reachability:N",
-                sort=status_order,
-                scale=alt.Scale(domain=status_order, range=status_colors),
-                legend=alt.Legend(title=None),
+                "leg_outcome:N",
+                sort=outcome_order,
+                scale=alt.Scale(domain=outcome_order, range=outcome_colors),
+                legend=alt.Legend(title="guided-leg outcome"),
             ),
             size=alt.Size(
                 "reachability:N",
-                scale=alt.Scale(domain=status_order, range=[52, 18]),
+                scale=alt.Scale(domain=["never reached", "reached at least once"], range=[52, 18]),
                 legend=None,
             ),
             tooltip=[
                 "mode:N",
                 "metric:N",
                 "reachability:N",
+                "leg_outcome:N",
                 "seed:N",
                 "goal:N",
-                alt.Tooltip("baseline:Q", format=".3s"),
+                "base_stop_reason:N",
+                "measurement:N",
+                alt.Tooltip("baseline:Q", title="plotted baseline", format=".3s"),
+                alt.Tooltip("baseline_final:Q", title="final baseline", format=".3s"),
                 alt.Tooltip("limit:Q", title="soft limit", format=".3s"),
                 "n_reached:Q",
                 "n_attempts:Q",
+                "n_node_limit:Q",
+                "n_saturated:Q",
+                "n_time_limit:Q",
+                "n_iteration_limit:Q",
+                "n_memory_limit:Q",
+                "n_panic:Q",
+                "n_other:Q",
             ],
         )
     )

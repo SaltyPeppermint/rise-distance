@@ -29,6 +29,9 @@ Column glossary for the tidy frame (`load_runs`):
     base_nodes, base_classes, base_iters, base_total_time, base_nodes_per_class,
     base_memory  that seed's full unguided eqsat cost (base_memory = live-heap
                  bytes sampled right after the unguided run)
+    base_stop_reason
+                 why that unguided run ended, including the limit measurement
+                 carried by egg (for example ``NodeLimit(112290)``)
     guide_nodes, guide_classes, guide_time, guide_memory
                  the per-seed guide replay's cost (from `sample.rs`)
 """
@@ -110,6 +113,7 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
                     # Live-heap bytes (jemalloc stats.allocated): on the payload,
                     # not inside goal_egraph.
                     "base_memory": ok["base_memory"],
+                    "base_stop_reason": ok["stop_reason"],
                 }
             )
     if not rows:
