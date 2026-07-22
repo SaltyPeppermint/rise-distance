@@ -189,6 +189,118 @@ def abs_pair_strip(
     )
 
 
+def rel_pair_strip(
+    df: pl.DataFrame,
+    meta: dict,
+    *,
+    title: str,
+    y_title: str,
+    metrics: Sequence[str],
+    group_by: Sequence[str] = ("seed", "goal"),
+    group_reduce: str = "median",
+) -> alt.Chart:
+    """Baseline-relative sibling of `abs_pair_strip`: each series ÷ its own baseline.
+
+    Consumes the same long frame as `abs_pair_strip` (from the notebook's
+    `absolute_long`): columns `mode`, `metric`, `series` (``"leg"`` /
+    ``"baseline"`` / ``"guide"``), the pair keys, and native-unit `value`. Each
+    pair/metric's `leg` and `guide` are divided by that pair's `baseline` value,
+    turning the plot into *fraction of the unguided cost* — the ``baseline``
+    series collapses to the constant 1 and is dropped in favour of a single dashed
+    ``y = 1`` reference rule. Values below the rule are cheaper than unguided.
+
+    Layout matches `abs_pair_strip`: color is the series (leg/guide only), mode is
+    the facet row and metric the column, pairs ranked by the **leg** ratio so the
+    strip reads as a sorted savings curve with the guide point at the same x. y is
+    log-scaled — ratios span orders of magnitude and log keeps them legible and
+    symmetric around 1. No per-series limit rules: a fixed `--stop-*` budget
+    divided by a per-seed baseline is not a single horizontal line.
+    """
+    # Divide leg/guide by the pair's baseline (per mode/metric/pair): pivot the
+    # series to columns, ratio, then melt back to the leg/guide series.
+    wide = (
+        df.drop_nulls("value")
+        .pivot(on="series", index=["mode", "metric", *group_by], values="value")
+        .filter(pl.col("baseline") > 0)
+    )
+    ratios = wide.select(
+        "mode",
+        "metric",
+        *group_by,
+        *[
+            (pl.col(s) / pl.col("baseline")).alias(s)
+            for s in ("leg", "guide")
+            if s in wide.columns
+        ],
+    ).unpivot(
+        index=["mode", "metric", *group_by],
+        variable_name="series",
+        value_name="value",
+    )
+
+    per_pair = (
+        ratios.drop_nulls("value")
+        .filter(pl.col("value") > 0)
+        .group_by("mode", "metric", "series", *group_by)
+        .agg(getattr(pl.col("value"), group_reduce)().alias("v"))
+    )
+    # Rank pairs by the LEG ratio within each (mode, metric); share that rank with
+    # the guide series so both line up on x.
+    leg_rank = (
+        per_pair.filter(pl.col("series") == "leg")
+        .with_columns((pl.col("v").rank("ordinal").over("mode", "metric") - 1).alias("rank"))
+        .select("mode", "metric", *group_by, "rank")
+    )
+    per_pair = per_pair.join(leg_rank, on=["mode", "metric", *group_by], how="left")
+
+    scale = alt.Scale(type="log")
+    color = alt.Color(
+        "series:N",
+        scale=alt.Scale(
+            domain=["leg", "guide"],
+            range=[SERIES_COLORS["leg"], SERIES_COLORS["guide"]],
+        ),
+        legend=alt.Legend(title=None),
+    )
+    modes = [m for m in meta["modes"] if m in per_pair["mode"].unique().to_list()]
+
+    # Points carry the facet keys (mode/metric); the reference is a data-free
+    # `datum` rule at y=1 so it draws once in *every* facet cell without adding a
+    # null-keyed row (which would spawn its own null mode/metric facet). The
+    # shared dataset is handed to `.facet(data=...)` so the layer stays facetable.
+    points = alt.Chart().mark_circle(size=18, opacity=0.55).encode(
+        x=_pair_x(),
+        y=alt.Y("v:Q", title=y_title, scale=scale),
+        color=color,
+        tooltip=[
+            "mode:N",
+            "series:N",
+            "metric:N",
+            *[f"{g}:N" for g in group_by],
+            alt.Tooltip("v:Q", format=".3g"),
+        ],
+    )
+    # Single dashed y=1 reference: parity with the unguided baseline.
+    ref = (
+        alt.Chart()
+        .mark_rule(strokeDash=[4, 4], color="#7a7a77", opacity=0.8)
+        .encode(y=alt.Y("datum:Q", scale=scale))
+        .transform_calculate(datum="1")
+    )
+
+    return (
+        alt.layer(points, ref)
+        .properties(width=260, height=200)
+        .facet(
+            row=alt.Row("mode:N", title=None, sort=modes),
+            column=alt.Column("metric:N", title=None, sort=list(metrics)),
+            data=per_pair,
+        )
+        .properties(title=_title(title, meta))
+        .resolve_scale(y="independent", x="independent")
+    )
+
+
 def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatChart:
     """Two panels: per-pair reach rate (sorted strip) and a per-mode summary bar.
 
