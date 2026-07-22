@@ -301,6 +301,144 @@ def rel_pair_strip(
     )
 
 
+def baseline_vs_soft_limits(
+    df: pl.DataFrame,
+    meta: dict,
+    *,
+    metrics: Sequence[str],
+    limits: pl.DataFrame,
+) -> alt.Chart:
+    """Unguided baseline cost per pair against the guided leg's soft limits.
+
+    A pair is ``never reached`` when none of its attempts in that mode reached
+    the goal. Baseline cost is constant per seed, but is repeated for each goal
+    so reachability remains a seed/goal-pair property. Never-reached pairs occupy
+    the left block and reached pairs the right block; each block is independently
+    sorted by baseline value and separated by a vertical rule. Red points make
+    never-reached pairs stand out against the subdued successful pairs. Dashed
+    horizontal rules show the limit that governed the guided legs, not the looser
+    limit used to collect the baseline.
+    """
+    base_cols = [f"base_{metric}" for metric in metrics]
+    per_pair = (
+        df.group_by("mode", "seed", "goal", "pair")
+        .agg(
+            pl.col("reached").sum().alias("n_reached"),
+            pl.len().alias("n_attempts"),
+            *[pl.col(col).first().alias(col) for col in base_cols],
+        )
+        .unpivot(
+            index=["mode", "seed", "goal", "pair", "n_reached", "n_attempts"],
+            on=base_cols,
+            variable_name="metric",
+            value_name="baseline",
+        )
+        .with_columns(
+            pl.col("metric").str.strip_prefix("base_"),
+            pl.when(pl.col("n_reached") == 0)
+            .then(pl.lit("never reached"))
+            .otherwise(pl.lit("reached at least once"))
+            .alias("reachability"),
+        )
+    )
+    soft_limits = limits.filter(pl.col("series") == "leg").select("mode", "metric", "limit")
+    plot = (
+        per_pair.join(soft_limits, on=["mode", "metric"], how="inner")
+        .drop_nulls("baseline")
+        .filter((pl.col("baseline") > 0) & (pl.col("limit") > 0))
+        .with_columns(
+            (
+                pl.col("baseline").rank("ordinal").over("mode", "metric", "reachability")
+                - 1
+            ).alias("group_rank"),
+            (pl.col("reachability") == "never reached")
+            .sum()
+            .over("mode", "metric")
+            .alias("n_unreachable"),
+            (pl.col("reachability") == "reached at least once")
+            .sum()
+            .over("mode", "metric")
+            .alias("n_reachable"),
+        )
+        .with_columns(
+            pl.when(pl.col("reachability") == "never reached")
+            .then(pl.col("group_rank"))
+            .otherwise(pl.col("n_unreachable") + pl.col("group_rank"))
+            .alias("rank"),
+            (pl.col("n_unreachable") - 0.5).alias("split_rank"),
+        )
+    )
+    modes = [m for m in meta["modes"] if m in plot["mode"].unique().to_list()]
+    status_order = ["never reached", "reached at least once"]
+    status_colors = ["#d62728", "#a8adb4"]
+    scale = alt.Scale(type="log")
+
+    points = (
+        alt.Chart()
+        .mark_circle(opacity=0.72)
+        .encode(
+            x=alt.X(
+                "rank:Q",
+                title="pairs: never reached (left) | reached (right); sorted within each",
+                axis=alt.Axis(labels=False, ticks=False),
+            ),
+            y=alt.Y("baseline:Q", title="unguided baseline cost (log)", scale=scale),
+            color=alt.Color(
+                "reachability:N",
+                sort=status_order,
+                scale=alt.Scale(domain=status_order, range=status_colors),
+                legend=alt.Legend(title=None),
+            ),
+            size=alt.Size(
+                "reachability:N",
+                scale=alt.Scale(domain=status_order, range=[52, 18]),
+                legend=None,
+            ),
+            tooltip=[
+                "mode:N",
+                "metric:N",
+                "reachability:N",
+                "seed:N",
+                "goal:N",
+                alt.Tooltip("baseline:Q", format=".3s"),
+                alt.Tooltip("limit:Q", title="soft limit", format=".3s"),
+                "n_reached:Q",
+                "n_attempts:Q",
+            ],
+        )
+    )
+    limit_rule = (
+        alt.Chart()
+        .transform_aggregate(soft_limit="max(limit)", groupby=["mode", "metric"])
+        .mark_rule(strokeDash=[5, 4], color="#35383d", opacity=0.85)
+        .encode(y=alt.Y("soft_limit:Q", scale=scale))
+    )
+    group_divider = (
+        alt.Chart()
+        .transform_aggregate(
+            split_rank="max(split_rank)",
+            n_unreachable="max(n_unreachable)",
+            n_reachable="max(n_reachable)",
+            groupby=["mode", "metric"],
+        )
+        .transform_filter((alt.datum.n_unreachable > 0) & (alt.datum.n_reachable > 0))
+        .mark_rule(color="#7a7a77", opacity=0.7)
+        .encode(x="split_rank:Q")
+    )
+
+    return (
+        alt.layer(points, limit_rule, group_divider)
+        .properties(width=260, height=200)
+        .facet(
+            row=alt.Row("mode:N", title=None, sort=modes),
+            column=alt.Column("metric:N", title=None, sort=list(metrics)),
+            data=plot,
+        )
+        .properties(title=_title("Unguided baseline vs guided soft limits", meta))
+        .resolve_scale(y="independent", x="independent")
+    )
+
+
 def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatChart:
     """Two panels: per-pair reach rate (sorted strip) and a per-mode summary bar.
 
