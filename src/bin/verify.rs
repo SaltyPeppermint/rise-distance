@@ -1,10 +1,11 @@
-//! Run a single search leg: union the chosen guides, saturate, and report
-//! whether the goal became reachable within the eqsat limits.
+//! Run one (seed, goal) pair's attempt loop: for each guide subset, union the
+//! guides, saturate, and report goal reachability, stopping at the first reach.
 //!
-//! Stateless one-shot wrapper over [`verify_reachability`] — no guide egraph
-//! replay, no precompute. `guided_search.py` spawns this once per leg, passing the
-//! guide subset (as serialized [`GuideExpr`] node lists, origins intact) on
-//! stdin and the goal on argv.
+//! Stateless wrapper over [`verify_reachability`] — no guide egraph replay or
+//! precompute. `guided_search.py` spawns this once per pair, passing the pair's
+//! attempt subsets (serialized [`GuideExpr`] node lists) as a JSON array of
+//! arrays on stdin and the goal on argv. Prints a JSON array of `LegResult`, one
+//! per subset run — early-stopped, so possibly shorter than the input.
 
 use std::io::Read;
 
@@ -20,11 +21,13 @@ use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]
 #[command(
-    about = "Run one search leg: union guides, saturate, report goal reachability",
+    about = "Run one (seed, goal) pair's attempt loop: union guides, saturate, report reachability",
     after_help = "\
-Reads the guide subset as a JSON array on stdin and prints a JSON `LegResult`
-on stdout. `--goal`, `--language`, and the eqsat limits come from argv. Example:
-  echo '[...]' \\
+Reads the pair's attempt subsets as a JSON array of guide-node-list arrays on
+stdin and prints a JSON array of `LegResult` on stdout (one per subset run,
+early-stopped at the first reach). `--goal`, `--language`, and the eqsat limits
+come from argv. Example:
+  echo '[[...],[...]]' \\
     | verify --language math --goal '(+ x 0)' --max-iters 200 \\
       --max-nodes 1000000 --max-time 10 --backoff-scheduler
 "
@@ -60,8 +63,10 @@ struct LegResult {
     total_applied: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total_time: Option<f64>,
-    /// Live-heap bytes (jemalloc `stats.allocated`), sampled after
-    /// `verify_reachability` returns.
+    /// This leg's live-heap growth (bytes): jemalloc `stats.allocated` after
+    /// `verify_reachability` minus a sample taken just before the leg, so it
+    /// isolates this leg's egraph from any baseline left by earlier legs in the
+    /// shared process.
     #[serde(skip_serializing_if = "Option::is_none")]
     memory: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,41 +78,41 @@ struct LegResult {
 fn main() {
     let args = Args::parse();
 
-    // Guides come in on stdin as a JSON array of serialized `GuideExpr` node
-    // lists; they're parsed against the concrete language inside `run_leg`.
-    let mut guides_json = String::new();
+    // The pair's attempt subsets come in on stdin as a JSON array of arrays of
+    // serialized `GuideExpr` node lists; they're parsed against the concrete
+    // language inside `run_legs`.
+    let mut subsets_json = String::new();
     std::io::stdin()
-        .read_to_string(&mut guides_json)
-        .expect("read guides from stdin");
+        .read_to_string(&mut subsets_json)
+        .expect("read guide subsets from stdin");
 
-    let result = match args.language {
+    let results = match args.language {
         AvailableLanguages::Diospyros => {
-            run_leg::<_, ()>(&guides_json, &args, &diospyros::rules(false, false))
+            run_legs::<_, ()>(&subsets_json, &args, &diospyros::rules(false, false))
         }
         AvailableLanguages::Math => {
-            run_leg::<_, math::ConstantFold>(&guides_json, &args, &math::rules())
+            run_legs::<_, math::ConstantFold>(&subsets_json, &args, &math::rules())
         }
         AvailableLanguages::Prop => {
-            run_leg::<_, prop::ConstantFold>(&guides_json, &args, &prop::rules())
+            run_legs::<_, prop::ConstantFold>(&subsets_json, &args, &prop::rules())
         }
     };
 
-    serde_json::to_writer(std::io::stdout(), &result).expect("write leg result JSON");
+    serde_json::to_writer(std::io::stdout(), &results).expect("write leg results JSON");
     println!();
 }
 
-fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
-    guides_json: &str,
+/// Run the pair's attempt loop: one leg per subset, stopping at the first
+/// reach. Parses the goal once; a panicked leg surfaces as `panic: true` (caught
+/// in [`verify_reachability`]) and the loop continues.
+fn run_legs<L: MyLanguage, N: MyAnalysis<L>>(
+    subsets_json: &str,
     args: &Args,
     rules: &[Rewrite<L, N>],
-) -> LegResult {
-    let guide_exprs: Vec<GuideExpr<L>> =
-        serde_json::from_str(guides_json).expect("parse guide node lists");
-    assert!(!guide_exprs.is_empty(), "leg needs at least one guide");
-    let guides: Vec<RecExpr<_>> = guide_exprs
-        .into_iter()
-        .map(GuideExpr::into_recexpr)
-        .collect();
+) -> Vec<LegResult> {
+    let subsets: Vec<Vec<GuideExpr<L>>> =
+        serde_json::from_str(subsets_json).expect("parse guide subset node lists");
+    assert!(!subsets.is_empty(), "pair needs at least one attempt subset");
 
     let goal_expr = args
         .goal
@@ -115,7 +120,34 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
         .unwrap_or_else(|e| panic!("Failed to parse goal '{}': {e}", args.goal));
     let goal = Goal::Expr(goal_expr);
 
-    match verify_reachability(&guides, &goal, rules, &args.eqsat, args.full_union) {
+    let mut results = Vec::with_capacity(subsets.len());
+    for guide_exprs in subsets {
+        // Baseline for this leg's memory delta (see `LegResult::memory`).
+        let pre = live_heap_bytes();
+        let result = run_leg(guide_exprs, &goal, pre, args, rules);
+        let reached = result.reached;
+        results.push(result);
+        if reached {
+            break;
+        }
+    }
+    results
+}
+
+fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
+    guide_exprs: Vec<GuideExpr<L>>,
+    goal: &Goal<L>,
+    pre_heap: u64,
+    args: &Args,
+    rules: &[Rewrite<L, N>],
+) -> LegResult {
+    assert!(!guide_exprs.is_empty(), "leg needs at least one guide");
+    let guides: Vec<RecExpr<_>> = guide_exprs
+        .into_iter()
+        .map(GuideExpr::into_recexpr)
+        .collect();
+
+    match verify_reachability(&guides, goal, rules, &args.eqsat, args.full_union) {
         Ok((iterations, _target)) => {
             let last = iterations.last().expect("reached leg logged no iterations");
             LegResult {
@@ -130,7 +162,7 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
                         .sum(),
                 ),
                 total_time: Some(iterations.iter().map(|i| i.total_time).sum()),
-                memory: Some(live_heap_bytes()),
+                memory: Some(live_heap_bytes().saturating_sub(pre_heap)),
                 stop_reason: None,
                 panic: false,
             }

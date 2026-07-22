@@ -4,8 +4,9 @@ Spawns the `measure-size` Rust binary once per term in a seed-terms
 `terms.json` (as produced by `scripts/generate_seeds.py`). The binary
 runs eqsat and prints a JSON object `{"iterations": [<egg per-iteration
 stats, each with an `allocated` field>, ...]}` on stdout; `allocated` is
-jemalloc's live-heap bytes (`stats.allocated`) sampled at the start of
-each iteration. Memory is bounded by egg's graceful `--max-memory`
+the live-heap growth (jemalloc `stats.allocated`) over a baseline sampled
+right before the eqsat, so it isolates the egraph's footprint from the
+fixed process baseline. Memory is bounded by egg's graceful `--max-memory`
 per-iteration hook.
 
 The seed-terms file has shape

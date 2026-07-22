@@ -1,14 +1,14 @@
 """Drive the guide search from Python.
 
 The Rust `sample` and `verify` binaries touch no files: `sample` takes
-everything on argv, `verify` takes the per-leg guides on stdin plus
-`--goal`/`--language`/eqsat limits on argv. This driver owns all file I/O: it
-reads `goal_args.json` (language and the search-phase eqsat limits), flattens
-the goal-enriched `goal_terms.json` into per-seed specs, runs one `sample`
-subprocess per seed, then runs the search legs (one `verify` subprocess each),
-resampling fresh guide subsets until it either reaches the goal or uses all
-`--attempts` for a seed/goal pair. All logging and data wrangling
-(parquet/JSON) live here.
+everything on argv, `verify` takes a (seed, goal) pair's attempt subsets on
+stdin plus `--goal`/`--language`/eqsat limits on argv. This driver owns all
+file I/O: it reads `goal_args.json` (language and the search-phase eqsat
+limits), flattens the goal-enriched `goal_terms.json` into per-seed specs, runs
+one `sample` subprocess per seed, then runs one `verify` subprocess per seed/goal
+pair. Python precomputes all `--attempts` guide subsets for the pair up front and
+hands them over; `verify` runs one leg per subset and early-stops at the first
+reach. All logging and data wrangling (parquet/JSON) live here.
 
 The guide replay runs under an explicit budget given on the CLI: at least one
 of `--stop-iters`/`--stop-nodes`/`--stop-time`/`--stop-memory` is required;
@@ -313,64 +313,76 @@ def build_attempt_subsets(
     return [sequence[a * eff_k : (a + 1) * eff_k] for a in range(attempts)]
 
 
-def run_leg(
+def run_legs(
     args: Args,
     base_flags: list[str],
     goal: str,
-    guides: list,
-) -> dict:
-    """Run one `verify` subprocess and return the parsed `LegResult`.
+    subsets: list[list],
+) -> list[dict]:
+    """Run one `verify` subprocess for a whole (seed, goal) pair and return its
+    parsed `LegResult` list.
 
-    `verify` touches no files: the per-leg `guides` go in on stdin, and
-    `--goal`/`--language`/`--full-union`/the eqsat flags on argv. A
-    panic-guarded leg still exits 0 with `panic: true`; a nonzero exit means
-    the process itself failed (bad request, parse error, ...) and raises.
+    `verify` touches no files: the pair's attempt `subsets` (a list of guide
+    subsets) go in on stdin as a JSON array of arrays, and
+    `--goal`/`--language`/`--full-union`/the eqsat flags on argv. It runs one
+    leg per subset, stops at the first reach, and prints one `LegResult` per leg
+    actually run — so the returned list can be shorter than `subsets`. A
+    panic-guarded leg still yields a result with `panic: true` and the loop
+    continues; a nonzero exit means the process itself failed (bad request,
+    parse error, ...) and raises.
     """
     cmd = [str(args.verify_binary), *base_flags, "--goal", goal]
     if args.full_union:
         cmd.append("--full-union")
-    return run_json_subprocess(cmd, what=f"verify for goal {goal!r}", input=json.dumps(guides))
+    return run_json_subprocess(
+        cmd, what=f"verify for goal {goal!r}", input=json.dumps(subsets)
+    )
 
 
 def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     """Run one seed/goal pair's attempt loop and return its result rows.
 
-    Attempts are sequential and early-stop on the first reach. Runs in a worker
-    thread over no shared state; marks its last row `gave_up` if every attempt
-    failed. Each row's `k` is the *effective* subset size, not the requested
-    one, so a capped leg reports what it actually ran.
+    The whole loop runs in a single `verify` subprocess: Python precomputes all
+    attempt subsets and hands them over, `verify` runs one leg per subset and
+    early-stops at the first reach. Runs in a worker thread over no shared
+    state; marks its last row `gave_up` if every attempt failed. Each row's `k`
+    is the *effective* subset size, not the requested one, so a capped leg
+    reports what it actually ran.
+
+    An empty candidate pool is a hard error (nothing to draw guides from), so
+    this raises rather than emitting a row.
     """
     rng = random.Random(f"{args.rng_seed}:{item.seed}:{item.goal}")
     attempt_subsets = build_attempt_subsets(item.pool, args.strategy, args.k, args.attempts, rng)
+    if any(not guides for guides in attempt_subsets):
+        raise RuntimeError(
+            f"empty candidate pool for seed {item.seed!r} goal {item.goal!r}: "
+            f"strategy {args.strategy!r} drew no guides"
+        )
+
+    # One subprocess for the whole pair; `verify` early-stops at the first reach,
+    # so `results` is one LegResult per attempt actually run (<= len(subsets)).
+    results = run_legs(args, base_flags, item.goal, attempt_subsets)
     rows: list[dict] = []
-    for attempt, guides in enumerate(attempt_subsets):
+    for attempt, (guides, result) in enumerate(zip(attempt_subsets, results)):
         row = {
             "seed": item.seed,
             "goal": item.goal,
             "strategy": args.strategy,
             "k": len(guides),
             "attempt": attempt,
-            "reached": False,
+            "reached": result["reached"],
             "gave_up": False,
-            "panic": False,
-            **{field: None for field in LEG_RESULT_FIELDS},
+            "panic": result.get("panic", False),
+            **{field: result.get(field) for field in LEG_RESULT_FIELDS},
             **item.guide_meta,
         }
-        if not guides:
-            row["stop_reason"] = "empty_pool"
-            rows.append(row)
-            return rows
-        result = run_leg(args, base_flags, item.goal, guides)
-        row["reached"] = result["reached"]
-        row["panic"] = result.get("panic", False)
-        for field in LEG_RESULT_FIELDS:
-            row[field] = result.get(field)
         rows.append(row)
-        if result["reached"]:
-            return rows
 
-    # Used every attempt without reaching: mark the last leg as given up.
-    if rows:
+    # Fewer results than subsets means `verify` early-stopped on a reach, so the
+    # last row is a reach, not a give-up. Only mark give-up when every attempt
+    # ran without reaching.
+    if rows and len(results) == len(attempt_subsets) and not rows[-1]["reached"]:
         rows[-1]["gave_up"] = True
     return rows
 

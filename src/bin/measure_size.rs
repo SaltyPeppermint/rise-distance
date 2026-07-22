@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use clap::Parser;
 use egg::{Analysis, Iteration, IterationData, Language, RecExpr, Rewrite, Runner};
 use serde::Serialize;
@@ -29,11 +31,15 @@ struct Args {
     eqsat: EqsatConfig,
 }
 
+/// Live-heap baseline (jemalloc `stats.allocated`) captured before the eqsat and
+/// subtracted from each iteration's reading, so `allocated` isolates the
+/// egraph's footprint. Set in [`run`] before the runner is built.
+static PRE_HEAP: AtomicU64 = AtomicU64::new(0);
+
 /// Per-iteration annotation egg stores in each [`Iteration`]'s `data` slot.
-/// egg calls [`IterationData::make`] once at the *start* of every iteration
-/// (before search/apply), so `allocated` is jemalloc's live-heap bytes at that
-/// point, aligned with egg's own start-of-iteration
-/// `egraph_nodes`/`egraph_classes`.
+/// egg calls [`IterationData::make`] at the *start* of every iteration, so
+/// `allocated` is the live-heap growth over [`PRE_HEAP`] there, aligned with
+/// egg's own start-of-iteration `egraph_nodes`/`egraph_classes`.
 #[derive(Serialize)]
 struct HeapData {
     allocated: u64,
@@ -42,13 +48,14 @@ struct HeapData {
 impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
     fn make(_runner: &Runner<L, N, Self>) -> Self {
         Self {
-            allocated: live_heap_bytes(),
+            allocated: live_heap_bytes().saturating_sub(PRE_HEAP.load(Ordering::Relaxed)),
         }
     }
 }
 
 /// The whole stdout payload: egg's per-iteration stats, each carrying its
-/// start-of-iteration live-heap bytes in the flattened `data` slot.
+/// start-of-iteration live-heap growth (over the pre-eqsat baseline) in the
+/// flattened `data` slot.
 #[derive(Serialize)]
 struct Output {
     iterations: Vec<Iteration<HeapData>>,
@@ -77,6 +84,9 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) ->
         .term
         .parse()
         .unwrap_or_else(|e| panic!("Failed to parse term '{}': {e}", args.term));
+
+    // Baseline for `HeapData`'s per-iteration deltas (see `PRE_HEAP`).
+    PRE_HEAP.store(live_heap_bytes(), Ordering::Relaxed);
 
     // `HeapData` in the `D` slot makes egg sample live-heap bytes at each
     // iteration start and stash it in `Iteration::data` — no hook or shared cell

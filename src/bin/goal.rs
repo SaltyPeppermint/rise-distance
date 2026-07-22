@@ -126,13 +126,15 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     rules: &[Rewrite<L, N>],
     log: &mut String,
 ) -> Result<GoalGenMetadata<BigUint>, String> {
+    // Baseline for `base_memory`'s delta (see its field doc).
+    let pre_memory = live_heap_bytes();
     let Some(result) = eqsat::run_eqsat(seed_expr, rules.iter(), eqsat) else {
         return Err("big eqsat failed".to_owned());
     };
 
-    // Sample live-heap bytes right after the eqsat, before precompute below
-    // allocates further.
-    let base_memory = live_heap_bytes();
+    // Eqsat's live-heap growth over the baseline, sampled before precompute
+    // below allocates further.
+    let base_memory = live_heap_bytes().saturating_sub(pre_memory);
 
     let stop_reason = format!("{:?}", result.stop_reason());
     let SplitMetadata { guide, goal } = result.split_metadata();
