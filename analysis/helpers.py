@@ -7,11 +7,17 @@ the metric/baseline `ratio` already attached. The Altair specs in `plots.py`
 consume that frame directly, so the notebook stays a handful of declarative
 calls.
 
+Every run now uses a single guide-set size `k` (see `guided_search.py`), so `k`
+is a per-run constant, not a swept axis. It is folded into each mode's display
+name (``"<name> (k=<k>)"``) and reported in the subtitle; the plots put the
+individual seed/goal *pairs* on the x-axis instead.
+
 Column glossary for the tidy frame (`load_runs`):
 
-    mode         display name of the run (overlaid series)
+    mode         display name of the run (overlaid series), with " (k=<k>)" appended
     seed, goal   the eqsat seed term and the goal term
-    k            number of guides
+    pair         "<seed>│<goal>", the per-experiment identifier used as x
+    k            number of guides (constant within a run)
     reached      bool: did this leg reach the goal
     stop_reason  "empty_pool" when the candidate pool was empty
     iters, nodes, classes, nodes_per_class, total_time, memory
@@ -33,10 +39,6 @@ import polars as pl
 # Cost metrics carried through the plots. `nodes_per_class` is computed but not
 # plotted by default; add it to a plot's metric list to surface it.
 METRICS = ["iters", "nodes", "classes", "nodes_per_class", "total_time", "memory"]
-
-# smallest_* strategies emit a single k=1 point per goal (no k sweep). The plots
-# draw them as standalone markers rather than lines/bands.
-SINGLE_POINT_STRATEGIES = {"smallest_overall", "smallest_novel"}
 
 
 def find_latest_run(pattern: str = "run", subdir: str = "guided_search") -> Path:
@@ -119,29 +121,36 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
 def load_runs(runs: list[tuple[str, str]]) -> tuple[pl.DataFrame, dict]:
     """Load and stack the given runs into one tidy long DataFrame.
 
-    `runs` is a list of ``(display_name, run-dir pattern)``. Returns
-    ``(df, meta)`` where `df` is the tidy frame described in the module docstring
-    and `meta` carries plot-annotation info::
+    `runs` is a list of ``(display_name, run-dir pattern)``. Each run uses a
+    single guide-set size `k`, which is folded into the display `mode` as
+    ``"<name> (k=<k>)"`` so overlaying runs at different k's stays legible.
+    Returns ``(df, meta)`` where `df` is the tidy frame described in the module
+    docstring and `meta` carries plot-annotation info::
 
         meta = {
-            "modes":    [display names, in order],
-            "single":   {mode -> bool},        # single-point strategy?
-            "k_values": [sorted union of k across multi-point modes],
-            "n_goals":  int,                   # from the first multi-point mode
-            "n_trials": int,                   # configured `attempts`
+            "modes":    [display names (with " (k=<k>)"), in order],
+            "k":        {mode -> its single k},
+            "n_goals":  int,                   # max distinct goals across modes
+            "n_trials": int,                   # configured `attempts` (max)
         }
     """
-    frames, modes, single = [], [], {}
-    n_goals = n_trials = None
+    frames, modes, k_by_mode = [], [], {}
+    n_goals = n_trials = 0
     for name, pattern in runs:
         run_dir = find_latest_run(pattern)
         config = json.loads((run_dir / "config.json").read_text())
-        is_single = config["strategy"] in SINGLE_POINT_STRATEGIES
 
         legs = _load_leg_frame(run_dir)
+        ks = legs["k"].unique().to_list()
+        if len(ks) != 1:
+            raise ValueError(f"{run_dir.name}: expected a single k, found {sorted(ks)}")
+        k = ks[0]
+        label = f"{name} (k={k})"
+
         base = _baseline_frame(run_dir)
         df = legs.join(base, on="seed", how="left").with_columns(
-            pl.lit(name).alias("mode"),
+            pl.lit(label).alias("mode"),
+            pl.concat_str(["seed", "goal"], separator="│").alias("pair"),
             *[
                 pl.when(pl.col(f"base_{m}") > 0)
                 .then(pl.col(m) / pl.col(f"base_{m}"))
@@ -150,51 +159,42 @@ def load_runs(runs: list[tuple[str, str]]) -> tuple[pl.DataFrame, dict]:
             ],
         )
         frames.append(df)
-        modes.append(name)
-        single[name] = is_single
+        modes.append(label)
+        k_by_mode[label] = k
+        n_goals = max(n_goals, df["goal"].n_unique())
+        n_trials = max(n_trials, config["attempts"])
 
         n_reached = int(df["reached"].sum())
         print(
-            f"{name}: {run_dir.name} strategy={config['strategy']}: {len(df)} rows, "
-            f"k={sorted(df['k'].unique().to_list())}, {n_reached} reached"
+            f"{label}: {run_dir.name} strategy={config['strategy']}: "
+            f"{len(df)} rows, {n_reached} reached"
         )
-        if not is_single and n_goals is None:
-            n_goals = df["goal"].n_unique()
-            n_trials = config["attempts"]
-
-    if n_goals is None:
-        raise ValueError("no multi-point run found to derive (n_goals, n_trials)")
 
     df = pl.concat(frames, how="diagonal_relaxed")
-    k_values = sorted(
-        df.filter(~pl.col("mode").is_in([m for m, s in single.items() if s]))["k"]
-        .unique()
-        .to_list()
-    )
     meta = {
         "modes": modes,
-        "single": single,
-        "k_values": k_values,
+        "k": k_by_mode,
         "n_goals": n_goals,
         "n_trials": n_trials,
     }
-    print(f"\nk values: {k_values}   (n_goals={n_goals}, n_trials={n_trials})")
+    print(f"\nk per mode: {k_by_mode}   (n_goals={n_goals}, n_trials={n_trials})")
     return df, meta
 
 
 def goal_reach(df: pl.DataFrame) -> pl.DataFrame:
-    """Per (mode, goal, k) reachability: reach_rate and empty_pool_rate.
+    """Per (mode, goal) reachability over its attempts: reach_rate and empty_pool_rate.
 
-    `cond_reach_rate` excludes empty-pool legs from the denominator: given we
-    could sample k guides, did we reach the goal?
+    With a single k per run, this aggregates over the attempt loop for each
+    seed/goal pair. `cond_reach_rate` excludes empty-pool legs from the
+    denominator: given we could sample k guides, did we reach the goal?
     """
     empty = pl.col("stop_reason") == "empty_pool"
     return (
-        df.group_by("mode", "goal", "k")
+        df.group_by("mode", "seed", "goal", "pair")
         .agg(
             pl.col("reached").mean().alias("reach_rate"),
             (pl.col("reached").sum() / empty.not_().sum()).alias("cond_reach_rate"),
             empty.mean().alias("empty_pool_rate"),
         )
-        .sort("mode", "goal", "k")
+        .sort("mode", "goal")
     )

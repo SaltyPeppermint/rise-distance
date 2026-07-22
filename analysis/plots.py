@@ -1,11 +1,12 @@
 """Altair chart specs for the guide-selection analysis.
 
 Everything consumes the tidy long frame from `helpers.load_runs` (one row per
-leg, tagged with `mode`, carrying `r_<metric>` = metric / seed-baseline). The
-recurring shape is *median + 25-75 IQR band vs k, one facet per metric, one
-color per mode* — `band_vs_k` builds that once and the notebook calls it with a
-different value column each time. `k` is drawn on a log axis; ratio plots carry a
-dashed break-even line at 1.0.
+leg, tagged with `mode`, carrying `r_<metric>` = metric / seed-baseline). Each
+run now uses a single guide-set size `k`, so `k` is no longer an axis — the
+recurring shape is *one point per seed/goal pair, pairs sorted by value along
+x with no per-pair labels, one facet per metric, one color per mode*.
+`pair_strip` builds that once and the notebook calls it with a different value
+column each time; ratio plots carry a dashed break-even line at 1.0.
 
 Categorical colors use the validated 8-hue order from the dataviz palette
 (fixed, never cycled) so a mode keeps its color as runs are added/removed.
@@ -56,23 +57,24 @@ def _color(modes: Sequence[str]) -> alt.Color:
     )
 
 
-def _log_k(k_values: Sequence[int]) -> alt.X:
+def _pair_x() -> alt.X:
+    """Rank-ordered pair axis: each pair a slot, no labels (hundreds of pairs)."""
     return alt.X(
-        "k:Q",
-        scale=alt.Scale(type="log", base=10, nice=False),
-        axis=alt.Axis(values=list(k_values), title="k (number of guides)"),
+        "rank:Q",
+        title="seed/goal pair (sorted by value)",
+        axis=alt.Axis(labels=False, ticks=False),
     )
 
 
 def _title(title: str, meta: dict) -> alt.TitleParams:
     return alt.TitleParams(
         title,
-        subtitle=f"{meta['n_goals']} goals × {meta['n_trials']} trials per k",
+        subtitle=f"{meta['n_goals']} goals × {meta['n_trials']} attempts",
         subtitleColor="#7a7a77",
     )
 
 
-def band_vs_k(
+def pair_strip(
     df: pl.DataFrame,
     value: str,
     meta: dict,
@@ -81,180 +83,141 @@ def band_vs_k(
     y_title: str,
     metrics: Sequence[str],
     breakeven: bool = True,
-    group_by: Sequence[str] = (),
-    group_reduce: str = "min",
-    overlay_by: str | None = None,
+    group_by: Sequence[str] = ("seed", "goal"),
+    group_reduce: str = "median",
     columns: int = 3,
 ) -> alt.Chart:
-    """Median line + 25-75 IQR band of `value` vs k, one facet per metric.
+    """One point per seed/goal pair, pairs sorted by `value` along x, per metric.
 
-    Metric facets wrap after `columns` per row (default 3).
+    Metric facets wrap after `columns` per row (default 3). Within each
+    ``(mode, metric)`` facet the pairs are ranked by their `value` and that rank
+    is the x position, so the strip reads as a sorted curve; per-pair labels are
+    hidden (there can be hundreds).
 
-    `df` is long with columns `mode`, `k`, `metric`, and `value`. Callers that
-    start from the wide tidy frame melt the relevant `r_<metric>`/cost columns
-    into (`metric`, `value`) first — see the notebook.
+    `df` is long with columns `mode`, `metric`, `value`, and the pair keys
+    (`seed`, `goal`). Callers that start from the wide tidy frame melt the
+    relevant `r_<metric>`/cost columns into (`metric`, `value`) first — see the
+    notebook.
 
-    `group_by` pre-aggregates within each ``(mode, metric, k, *group_by)`` using
-    `group_reduce` before the cross-group median+IQR — e.g. ``group_by=["goal"]``
-    with ``group_reduce="min"`` gives "best guide per goal, summarised over
-    goals". Without it, the median+IQR runs over the raw rows.
+    `group_by` collapses each pair's attempts into a single point per
+    ``(mode, metric, *group_by)`` using `group_reduce` (default: median over the
+    reached attempts). ``group_by=["goal"]`` with ``group_reduce="min"`` gives
+    "best guide per goal".
 
-    `overlay_by` (e.g. ``"seed"`` or ``"goal"``) draws one faint median curve per
-    group of that column behind the band, to show the spread. It is independent
-    of `group_by`: the band is unchanged, the overlay just adds context.
-
-    Ratios are heavy-tailed, so median+IQR beats mean±sd. Single-point modes
-    (only k=1) fall out as a lone point, which reads fine on the log axis.
+    Ratios are heavy-tailed, so per-pair points reveal the spread that a single
+    band would hide.
     """
     modes = [m for m in meta["modes"] if m in df["mode"].unique().to_list()]
-    clean = df.drop_nulls(value)
-    agg = (
-        clean.group_by("mode", "metric", "k", *group_by).agg(
-            getattr(pl.col(value), group_reduce)().alias("m")
-        )
-        if group_by
-        else clean.with_columns(pl.col(value).alias("m"))
-    )
-    stats = (
-        agg.group_by("mode", "metric", "k")
-        .agg(
-            pl.col("m").median().alias("med"),
-            pl.col("m").quantile(0.25).alias("q25"),
-            pl.col("m").quantile(0.75).alias("q75"),
-        )
-        .sort("k")
+    per_pair = (
+        df.drop_nulls(value)
+        .group_by("mode", "metric", *group_by)
+        .agg(getattr(pl.col(value), group_reduce)().alias("v"))
+        # Rank pairs by value within each (mode, metric) facet -> sorted x.
+        .with_columns((pl.col("v").rank("ordinal").over("mode", "metric") - 1).alias("rank"))
     )
 
-    # A faceted layered chart must share ONE dataset across layers, so we union
-    # the aggregate rows (_kind="stat") with the faint per-group overlay rows
-    # (_kind="raw") into `data` and let each mark filter to its kind. Overlay
-    # rows are the per-`overlay_by` median, keyed by `_gid` (mode + group id) so
-    # each faint line is one group; this is independent of the band's grouping.
-    stat_rows = stats.with_columns(
-        pl.lit("stat").alias("_kind"), pl.lit(None, pl.Utf8).alias("_gid")
-    )
-    show_overlay = overlay_by is not None
-    if show_overlay:
-        # Match the band's per-group statistic when the overlay groups by the
-        # same column (e.g. best_ratio = per-goal min); otherwise show medians.
-        ov_reduce = group_reduce if overlay_by in group_by else "median"
-        raw_rows = (
-            clean.group_by("mode", "metric", "k", overlay_by)
-            .agg(getattr(pl.col(value), ov_reduce)().alias("med"))
-            .with_columns(
-                pl.lit(None, pl.Float64).alias("q25"),
-                pl.lit(None, pl.Float64).alias("q75"),
-                pl.lit("raw").alias("_kind"),
-                pl.concat_str(["mode", overlay_by], separator="│").alias("_gid"),
-            )
-            .select(stat_rows.columns)
-            .sort("k")
+    x = _pair_x()
+    points = (
+        alt.Chart(per_pair)
+        .mark_circle(size=18, opacity=0.55)
+        .encode(
+            x=x,
+            y=alt.Y("v:Q", title=y_title),
+            color=_color(modes),
+            tooltip=[
+                "mode:N",
+                "metric:N",
+                *[f"{g}:N" for g in group_by],
+                alt.Tooltip("v:Q", format=".3f"),
+            ],
         )
-        data = pl.concat([raw_rows, stat_rows], how="vertical")
-    else:
-        data = stat_rows
-
-    x = _log_k(meta["k_values"])
-    layers = []
-    if show_overlay:
-        layers.append(
-            alt.Chart()
-            .transform_filter(alt.datum._kind == "raw")
-            .mark_line(opacity=0.12, strokeWidth=0.6)
-            .encode(x=x, y=alt.Y("med:Q", title=y_title), color=_color(modes), detail="_gid:N")
-        )
-    stat = alt.Chart().transform_filter(alt.datum._kind == "stat")
-    band = stat.mark_area(opacity=0.18).encode(
-        x=x, y=alt.Y("q25:Q", title=y_title), y2="q75:Q", color=_color(modes)
     )
-    line = stat.mark_line(point=alt.OverlayMarkDef(size=45)).encode(
-        x=x,
-        y=alt.Y("med:Q", title=y_title),
-        color=_color(modes),
-        tooltip=["mode:N", "metric:N", "k:Q", alt.Tooltip("med:Q", format=".3f")],
-    )
-    layers += [band, line]
+    layers = [points]
     if breakeven:
         layers.append(
-            alt.Chart()
+            alt.Chart(per_pair)
             .mark_rule(strokeDash=[4, 4], color="#555", opacity=0.7)
             .encode(y=alt.datum(1.0))
         )
 
     return (
-        alt.layer(*layers, data=data)
+        alt.layer(*layers)
         .facet(facet=alt.Facet("metric:N", title=None, sort=list(metrics)), columns=columns)
         .properties(title=_title(title, meta))
-        .resolve_scale(y="independent")
+        .resolve_scale(y="independent", x="independent")
     )
 
 
 def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatChart:
-    """Three panels: leg reach rate vs k, goal coverage vs k, CDF of per-goal reach.
+    """Two panels: per-pair reach rate (sorted strip) and a per-mode summary bar.
 
-    `gr` is `helpers.goal_reach(df)`. Panels share the mode color legend.
+    `gr` is `helpers.goal_reach(df)`, one row per (mode, seed, goal) carrying
+    `reach_rate` = fraction of that pair's attempts that reached. The strip ranks
+    pairs by reach_rate within each mode (hardest at left) so the shape of the
+    reachability distribution is visible; the summary bar shows overall leg reach
+    rate and goal coverage per mode.
     """
     modes = meta["modes"]
     color = _color(modes)
-    x = _log_k(meta["k_values"])
 
-    leg = df.group_by("mode", "k").agg((pl.col("reached").mean() * 100).alias("rate")).sort("k")
-    rate = (
-        alt.Chart(leg)
-        .mark_line(point=True)
+    # Per-pair reach rate, ranked within mode -> sorted strip over pairs.
+    strip_df = gr.with_columns(
+        (pl.col("reach_rate").rank("ordinal").over("mode") - 1).alias("rank")
+    )
+    strip = (
+        alt.Chart(strip_df)
+        .mark_circle(size=16, opacity=0.6)
         .encode(
-            x=x,
-            y=alt.Y("rate:Q", title="reach rate (%)", scale=alt.Scale(domainMin=0)),
+            x=_pair_x(),
+            y=alt.Y("reach_rate:Q", title="reach rate over attempts", scale=alt.Scale(domain=[0, 1])),
             color=color,
-            tooltip=["mode:N", "k:Q", alt.Tooltip("rate:Q", format=".1f")],
+            tooltip=[
+                "mode:N",
+                "seed:N",
+                "goal:N",
+                alt.Tooltip("reach_rate:Q", format=".0%"),
+            ],
         )
-        .properties(title="Leg reachability rate vs k")
+        .properties(title="Per-pair reach rate (sorted)")
     )
 
-    cov = (
-        gr.group_by("mode", "k")
-        .agg((pl.col("reach_rate") > 0).mean().mul(100).alias("cov"))
-        .sort("k")
+    # Per-mode summary: overall leg reach rate and goal coverage (≥1 success).
+    summ = (
+        pl.concat(
+            [
+                df.group_by("mode")
+                .agg((pl.col("reached").mean() * 100).alias("pct"))
+                .with_columns(pl.lit("leg reach rate").alias("kind")),
+                gr.group_by("mode")
+                .agg(((pl.col("reach_rate") > 0).mean() * 100).alias("pct"))
+                .with_columns(pl.lit("goal coverage").alias("kind")),
+            ],
+            how="vertical",
+        )
     )
-    coverage = (
-        alt.Chart(cov)
-        .mark_line(point=True)
+    summary = (
+        alt.Chart(summ)
+        .mark_bar()
         .encode(
-            x=x,
-            y=alt.Y("cov:Q", title="goals with ≥1 success (%)", scale=alt.Scale(domain=[0, 100])),
+            x=alt.X("pct:Q", title="%", scale=alt.Scale(domain=[0, 100])),
+            y=alt.Y("mode:N", title=None, sort=list(modes)),
             color=color,
-            tooltip=["mode:N", "k:Q", alt.Tooltip("cov:Q", format=".1f")],
+            tooltip=["mode:N", "kind:N", alt.Tooltip("pct:Q", format=".1f")],
         )
-        .properties(title="Goal coverage vs k")
+        .properties(height=alt.Step(18))
+        .facet(row=alt.Row("kind:N", title=None))
+        .properties(title="Reachability summary by mode")
     )
 
-    # CDF of per-goal reach_rate, per (mode, k): rank goals, normalize to [0,1].
-    cdf_df = gr.with_columns(
-        (pl.col("reach_rate").rank("ordinal").over("mode", "k") - 1).alias("rank"),
-        pl.len().over("mode", "k").alias("n"),
-    ).with_columns((pl.col("rank") / (pl.col("n") - 1).clip(lower_bound=1)).alias("frac"))
-    cdf = (
-        alt.Chart(cdf_df)
-        .mark_line()
-        .encode(
-            x=alt.X("reach_rate:Q", title="per-goal reachability"),
-            y=alt.Y("frac:Q", title="fraction of goals (CDF)"),
-            color=color,
-            detail="k:N",
-            strokeDash=alt.StrokeDash("k:N", legend=alt.Legend(title="k")),
-        )
-        .properties(title="CDF of per-goal reachability by k")
-    )
-
-    return alt.vconcat(rate | coverage, cdf).properties(title=_title("Reachability summary", meta))
+    return alt.vconcat(strip, summary).properties(title=_title("Reachability summary", meta))
 
 
 def cost_boxplots(df: pl.DataFrame, meta: dict, metrics: Sequence[str]) -> alt.Chart:
-    """Box plots of reached-leg cost by mode, faceted metric (row) × k (column)."""
+    """Box plots of reached-leg cost by mode, one facet per metric."""
     modes = meta["modes"]
     long = (
         df.filter(pl.col("reached"))
-        .unpivot(index=["mode", "k"], on=list(metrics), variable_name="metric", value_name="v")
+        .unpivot(index=["mode"], on=list(metrics), variable_name="metric", value_name="v")
         .drop_nulls("v")
     )
     return (
@@ -266,30 +229,29 @@ def cost_boxplots(df: pl.DataFrame, meta: dict, metrics: Sequence[str]) -> alt.C
             color=_color(modes),
         )
         .properties(width=140, height=180)
-        .facet(row=alt.Row("metric:N", sort=list(metrics)), column=alt.Column("k:N", title="k"))
+        .facet(column=alt.Column("metric:N", sort=list(metrics), title=None))
         .resolve_scale(y="independent")
-        .properties(title=_title("Cost distribution by mode at each k", meta))
+        .properties(title=_title("Cost distribution by mode", meta))
     )
 
 
-def reach_heatmap(gr: pl.DataFrame, meta: dict, columns: int = 3) -> alt.Chart:
-    """Goal × k reachability heatmap, faceted by mode (hardest goals at top).
+def reach_heatmap(gr: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Goal × mode reachability heatmap (hardest goals at top).
 
-    Mode facets wrap after `columns` per row (default 3).
-
-    Goals are ranked per mode by mean reach_rate, and that rank is the y position.
-    Hundreds of goals in a few hundred pixels means each row is sub-pixel, so an
-    *ordinal* y (one axis band per goal) both stripes the image and is slow; we
-    instead give each cell an explicit ``gy → gy+1`` quantitative band via `y`/`y2`
-    so the rects tile seamlessly, and drop the rect stroke. The y scale is
-    reversed so rank 1 (hardest) sits at the top.
+    Goals are ranked by their mean reach_rate across modes, and that rank is the
+    y position, so each mode column shares the same goal ordering. Hundreds of
+    goals in a few hundred pixels means each row is sub-pixel, so an *ordinal* y
+    (one axis band per goal) both stripes the image and is slow; we instead give
+    each cell an explicit ``gy → gy+1`` quantitative band via `y`/`y2` so the
+    rects tile seamlessly, and drop the rect stroke. The y scale is reversed so
+    rank 1 (hardest) sits at the top.
     """
     order = (
-        gr.group_by("mode", "goal")
+        gr.group_by("goal")
         .agg(pl.col("reach_rate").mean().alias("avg"))
-        .with_columns((pl.col("avg").rank("ordinal").over("mode")).alias("gy"))
+        .with_columns(pl.col("avg").rank("ordinal").alias("gy"))
     )
-    plot = gr.join(order.select("mode", "goal", "gy"), on=["mode", "goal"]).with_columns(
+    plot = gr.join(order.select("goal", "gy"), on="goal").with_columns(
         (pl.col("gy") - 1).alias("gy0"), pl.col("gy").alias("gy1")
     )
     n_goals = plot.select(pl.col("gy").max()).item()
@@ -297,7 +259,7 @@ def reach_heatmap(gr: pl.DataFrame, meta: dict, columns: int = 3) -> alt.Chart:
         alt.Chart(plot)
         .mark_rect(stroke=None, strokeWidth=0)
         .encode(
-            x=alt.X("k:O", title="k (number of guides)"),
+            x=alt.X("mode:N", title=None, sort=list(meta["modes"]), axis=alt.Axis(labelAngle=-40)),
             y=alt.Y(
                 "gy0:Q",
                 title="goal (sorted by reachability, hardest at top)",
@@ -310,9 +272,8 @@ def reach_heatmap(gr: pl.DataFrame, meta: dict, columns: int = 3) -> alt.Chart:
                 scale=alt.Scale(scheme="redyellowgreen", domain=[0, 1]),
                 legend=alt.Legend(title="reach rate", format="%"),
             ),
-            tooltip=["mode:N", "goal:N", "k:O", alt.Tooltip("reach_rate:Q", format=".0%")],
+            tooltip=["mode:N", "goal:N", alt.Tooltip("reach_rate:Q", format=".0%")],
         )
-        .properties(width=180, height=420)
-        .facet(facet=alt.Facet("mode:N", title=None), columns=columns)
+        .properties(width=alt.Step(46), height=460)
         .properties(title=_title("Goal-level reachability heatmap", meta))
     )

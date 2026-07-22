@@ -22,7 +22,7 @@ Example:
     cargo build --release --bin sample --bin verify
     uv run scripts/guided_search.py data/seed_terms/dusky-cramp \\
         --stop-memory 4G \\
-        --attempts 5 --k 1 2 5 10 50 100 \\
+        --attempts 5 --k 10 \\
         --strategy no_replacement_count --full-union
 """
 
@@ -106,21 +106,16 @@ class Args:
 
     # search policy
     attempts: int = 5
-    """How many legs to try per (seed, goal, k), each with a freshly resampled
+    """How many legs to try per (seed, goal) pair, each with a freshly resampled
     guide subset. Counts the first try, so `attempts=1` means a single leg with
     no resampling. Stops early on the first reach; gives up after the last."""
     strategy: Strategy = "no_replacement_count"
     """Which candidate pool to restart with."""
-    k: list[int] = dataclasses.field(default_factory=lambda: [1, 2, 5, 10, 50, 100])
-    """Guide-set sizes to sweep: each seed/goal pair is tried independently at
-    every `k` (its own attempt loop), reproducing the old reach-rate-vs-k curve.
-    Forced to `[1]` for the `smallest_*` strategies."""
+    k: int = 1
+    """Guide-set size: each seed/goal pair runs one attempt loop drawing `k`
+    guides per leg. Forced to `1` for the `smallest_*` strategies."""
     full_union: bool = False
     """Use the experimental full-union add for the leg egraph."""
-
-    # sampling
-    samples_per_strategy: int = 10000
-    """Menu size per sampling strategy (passed to `sample`)."""
 
     seeds: int | None = None
     """Only process the first N seed terms (sorted order, so stable across
@@ -141,7 +136,7 @@ class Args:
 
 @dataclass
 class WorkItem:
-    """One independent (seed, goal, k) unit of work for the leg loop.
+    """One independent (seed, goal) unit of work for the leg loop.
 
     Each item carries the candidate `pool` it draws guides from and the
     seed-level `guide_meta` copied onto every result row. Items are built up
@@ -150,7 +145,6 @@ class WorkItem:
 
     seed: str
     goal: str
-    k: int
     pool: list
     guide_meta: dict
 
@@ -224,7 +218,9 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
     return specs
 
 
-def run_sample_shard(args: Args, base_flags: list[str], limits: dict, spec: SeedSpec) -> list:
+def run_sample_shard(
+    args: Args, base_flags: list[str], limits: dict, menu_size: int, spec: SeedSpec
+) -> list:
     """Run `sample` for a single seed and return its parsed record list, with
     the spec's `goals` spliced back onto each record.
 
@@ -239,7 +235,7 @@ def run_sample_shard(args: Args, base_flags: list[str], limits: dict, spec: Seed
         "--seed",
         spec.seed,
         "--samples-per-strategy",
-        str(args.samples_per_strategy),
+        str(menu_size),
     ]
     records = run_json_subprocess(cmd, what=f"sample for seed {spec.seed!r}")
     for record in records:
@@ -261,8 +257,12 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     # search-phase limits.
     sample_flags = ["--language", str(cfg["language"])]
     limits = replay_limits(args, cfg)
+    # Menu size = exactly what the attempt loop consumes: no_replacement_* needs
+    # k distinct guides per attempt across `attempts` disjoint attempts.
+    menu_size = args.k * args.attempts
     print(
-        f"Sampling guide menu for {len(specs)} seed(s) -> {sample_out} ({jobs} workers)",
+        f"Sampling guide menu ({menu_size}/strategy) for {len(specs)} seed(s) "
+        f"-> {sample_out} ({jobs} workers)",
         file=sys.stderr,
     )
 
@@ -270,7 +270,7 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     shard_records: dict[int, list] = {}
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = {
-            pool_exec.submit(run_sample_shard, args, sample_flags, limits, spec): i
+            pool_exec.submit(run_sample_shard, args, sample_flags, limits, menu_size, spec): i
             for i, spec in enumerate(specs)
         }
         for fut in tqdm(as_completed(futures), total=len(futures), desc="sampling", unit="seed"):
@@ -291,10 +291,8 @@ def build_attempt_subsets(
     picks with replacement per attempt.
 
     `no_replacement_*` slices consecutive `eff_k`-sized legs (`eff_k = min(k, pool)`)
-    out of a shuffled pool, so a k's attempts are disjoint until the pool is
+    out of a shuffled pool, so the attempts are disjoint until the pool is
     exhausted (`attempts * eff_k > len(pool)`), where a fresh pass is appended.
-    Cross-k reuse isn't handled here: each k is a separate WorkItem with its own
-    shuffle.
     """
     if strategy in SMALLEST_STRATEGIES:
         return [pool[:1] for _ in range(attempts)]
@@ -343,7 +341,7 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     one, so a capped leg reports what it actually ran.
     """
     rng = random.Random(f"{args.rng_seed}:{item.seed}:{item.goal}")
-    attempt_subsets = build_attempt_subsets(item.pool, args.strategy, item.k, args.attempts, rng)
+    attempt_subsets = build_attempt_subsets(item.pool, args.strategy, args.k, args.attempts, rng)
     rows: list[dict] = []
     for attempt, guides in enumerate(attempt_subsets):
         row = {
@@ -389,12 +387,11 @@ def resolve_output_dir(args: Args) -> Path:
     return out
 
 
-def build_work_items(seed_records: list, strategy: str, k_values: list[int]) -> list[WorkItem]:
-    """Flatten `sample`'s seed records into independent (seed, goal, k) items.
+def build_work_items(seed_records: list, strategy: str) -> list[WorkItem]:
+    """Flatten `sample`'s seed records into independent (seed, goal) items.
 
     Each item runs its own sequential attempt loop (early-stops on first reach);
-    items run concurrently. Sweeping k per pair reproduces the reach-rate-vs-k
-    curve.
+    items run concurrently.
     """
     items: list[WorkItem] = []
     for record in seed_records:
@@ -406,20 +403,18 @@ def build_work_items(seed_records: list, strategy: str, k_values: list[int]) -> 
             "guide_memory": record["guide_memory"],
         }
         for goal in record["goals"]:
-            for k in k_values:
-                items.append(WorkItem(record["seed"], goal, k, pool, guide_meta))
+            items.append(WorkItem(record["seed"], goal, pool, guide_meta))
     return items
 
 
-def warn_pool_shortfall(items: list[WorkItem], strategy: str, attempts: int) -> None:
-    """Warn once per (pool size, k) when no_replacement_* must cap or reuse.
+def warn_pool_shortfall(items: list[WorkItem], strategy: str, k: int, attempts: int) -> None:
+    """Warn once per pool size when no_replacement_* must cap or reuse.
 
-    Deduped on (pool size, k) since the shortfall is identical across pairs.
+    Deduped on pool size since the shortfall is identical across pairs.
     """
     if not strategy.startswith("no_replacement"):
         return
-    combos = {(len(item.pool), item.k) for item in items}
-    for pool_size, k in sorted(combos):
+    for pool_size in sorted({len(item.pool) for item in items}):
         eff_k = min(k, pool_size)
         if eff_k < k:
             print(
@@ -439,11 +434,11 @@ def warn_pool_shortfall(items: list[WorkItem], strategy: str, attempts: int) -> 
 
 def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> list[dict]:
     """Run every work item's attempt loop concurrently and collect result rows."""
-    print(f"Running legs for {len(items)} (seed, goal, k) item(s)", file=sys.stderr)
+    print(f"Running legs for {len(items)} (seed, goal) item(s)", file=sys.stderr)
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=args.jobs or os.cpu_count() or 1) as pool_exec:
         futures = [pool_exec.submit(run_pair, args, base_flags, item) for item in items]
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="legs", unit="pair×k"):
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="legs", unit="pair"):
             rows.extend(fut.result())
     return rows
 
@@ -455,25 +450,16 @@ def report_results(args: Args, out: Path, rows: list[dict]) -> None:
     (out / "results.json").write_text(json.dumps(rows, indent=2))
     (out / "config.json").write_text(json.dumps(dataclasses.asdict(args), indent=2, default=str))
 
-    # Per-pair "reached" = reached at any swept k. Also report reach rate per k
-    # (the point of the sweep): fraction of (seed, goal) pairs reached at each k.
+    # A pair counts as reached if any of its attempts reached.
     reached_pairs = df.filter(pl.col("reached")).select("seed", "goal").unique().height
     total_pairs = df.select("seed", "goal").unique().height
-    per_k = (
-        df.group_by("k", "seed", "goal")
-        .agg(pl.col("reached").any().alias("reached"))
-        .group_by("k")
-        .agg(pl.col("reached").mean().alias("reach_rate"))
-        .sort("k")
-    )
+    reach_rate = reached_pairs / total_pairs if total_pairs else 0.0
     print(
-        f"\nReached {reached_pairs}/{total_pairs} seed/goal pairs (at any k). "
+        f"\nReached {reached_pairs}/{total_pairs} seed/goal pairs "
+        f"(reach rate {reach_rate:.2f}) at k={args.k}. "
         f"Wrote {out / 'results.parquet'}",
         file=sys.stderr,
     )
-    print("Reach rate by k:", file=sys.stderr)
-    for r in per_k.iter_rows(named=True):
-        print(f"  k={r['k']:>3}: {r['reach_rate']:.2f}", file=sys.stderr)
 
 
 def main() -> int:
@@ -489,15 +475,15 @@ def main() -> int:
     exit_if_missing(args.sample_binary, args.verify_binary)
 
     cfg = json.loads((args.path / "goal_args.json").read_text())
-    k_values = [1] if args.strategy in SMALLEST_STRATEGIES else args.k
+    args.k = 1 if args.strategy in SMALLEST_STRATEGIES else args.k
     base_flags = ["--language", str(cfg["language"]), *limit_flags(eqsat_limits(cfg))]
     out = resolve_output_dir(args)
 
     samples_path = run_sample(args, cfg, out / "sample_run")
     seed_records = json.loads(samples_path.read_text())
 
-    items = build_work_items(seed_records, args.strategy, k_values)
-    warn_pool_shortfall(items, args.strategy, args.attempts)
+    items = build_work_items(seed_records, args.strategy)
+    warn_pool_shortfall(items, args.strategy, args.k, args.attempts)
 
     rows = run_all_pairs(args, base_flags, items)
 
