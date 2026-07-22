@@ -12,9 +12,10 @@ use rand_chacha::ChaCha12Rng;
 use rise_distance::sampling::Distribution;
 use serde::Serialize;
 
-use rise_distance::eqsat::EqsatConfig;
+use rise_distance::eqsat::{EqsatConfig, HeapData, Measurement};
 use rise_distance::generator::BoltzmannSampler;
 use rise_distance::langs::{AvailableLanguages, math, prop};
+use rise_distance::utils::HeapDelta;
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser, Serialize)]
@@ -126,7 +127,7 @@ fn main() {
     writer.flush().unwrap();
 }
 
-type SizeBucket = (usize, HashMap<String, (usize, ValidationResult)>);
+type SizeBucket = (usize, HashMap<String, (usize, ValidationResult, Measurement)>);
 
 fn run_language<S, N>(
     args: &Args,
@@ -171,7 +172,7 @@ fn collect_for_size<S, N>(
     retry_limit: usize,
     validity_config: &EqsatConfig,
     rules: &[Rewrite<S::Lang, N>],
-) -> HashMap<String, (usize, ValidationResult)>
+) -> HashMap<String, (usize, ValidationResult, Measurement)>
 where
     S: BoltzmannSampler,
     N: MyAnalysis<S::Lang>,
@@ -182,13 +183,13 @@ where
         let mut total_attempts = 0;
         let inserted = 'retry: {
             for _ in 0..retry_limit {
-                let (candidate, validation_result, attempts) = sampler
+                let (candidate, (validation_result, measurement), attempts) = sampler
                     .sample(rng, &|t| valididty_hook(t, validity_config, rules))
                     .expect("Too many failed sample attempts");
                 let candidate_str = candidate.to_string();
                 total_attempts += attempts;
                 if let Entry::Vacant(e) = collector.entry(candidate_str) {
-                    e.insert((total_attempts, validation_result));
+                    e.insert((total_attempts, validation_result, measurement));
                     break 'retry true;
                 }
             }
@@ -216,7 +217,7 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     expr: &RecExpr<L>,
     config: &EqsatConfig,
     rules: &[Rewrite<L, N>],
-) -> Option<ValidationResult> {
+) -> Option<(ValidationResult, Measurement)> {
     // egg's Runner can panic on certain malformed inside its merge check.
     // Fixing this would require only constructing correct terms and that is too complicated
     // We use catch_unwind to treat such cases as "not passing the check" rather than crashing the process.
@@ -224,7 +225,14 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     // '(cos (* (sqrt (* x (sqrt (i (/ 0 x) x)))) (sin (+ (pow 1 (/ 1 2)) (cos 2)))))'
     // The issue is that the binder check does not catch (i (/ 0 x) x) although (/ 0 x)
     // trivially simplifies to 0
-    let runner = config.build_runner::<_, _, ()>(expr);
+    //
+    // `HeapData` in the `D` slot makes egg sample live-heap bytes at each
+    // iteration start and stash it in `Iteration::data`, so the same run that
+    // validates the term also produces its measurement — no second eqsat pass.
+    // `heap`'s baseline, captured here before the egraph allocates, rebases
+    // those per-iteration readings in `Measurement::from_run` below.
+    let heap = HeapDelta::start();
+    let runner = config.build_runner::<_, _, HeapData>(expr);
 
     // Setting and unsetting the panic hook so we dont get debug spam. it is fine to ignore the output
     // Afterwards we reinstall the old default panic hook
@@ -261,7 +269,7 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
         if !hit_limit {
             return None;
         }
-        Some(ValidationResult {
+        let validation = ValidationResult {
             stop_reason,
             stop_nodes: r.egraph.nodes().len(),
             stop_classes: r.egraph.classes().len(),
@@ -270,9 +278,9 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
             last_classes: r.iterations.last()?.egraph_classes,
             last_time: r.iterations.last()?.total_time,
             iterations: r.iterations.len(),
-        })
+        };
+        Some(validation)
     })();
 
-    drop(r);
-    result
+    result.map(|validation| (validation, Measurement::from_run(heap.baseline(), r.iterations)))
 }

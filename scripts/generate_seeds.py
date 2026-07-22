@@ -1,20 +1,16 @@
-"""Generate random math terms and measure eqsat live-heap use on each.
+"""Generate random math terms, measuring eqsat live-heap use on each.
 
-Shells out to `target/release/generate` to produce a nested JSON of terms
-grouped by size, then to `target/release/measure-size` once per term to
-record per-iteration eqsat stats and live-heap bytes. The measurement is
-appended to each inner term record. Egg limits (`--max-iters`, `--max-nodes`,
-`--max-time`, `--max-memory`, `--backoff-scheduler`) are forwarded to both
-binaries.
+Shells out to `target/release/generate`, which produces a nested JSON of
+terms grouped by size. The same per-term eqsat run that validates a term also
+records its per-iteration stats and live-heap bytes, so `generate` writes the
+finished, measured file in one pass. Egg limits (`--max-iters`, `--max-nodes`,
+`--max-time`, `--max-memory`, `--backoff-scheduler`) are forwarded to it.
 
-`measure-size` emits a JSON object `{"iterations": [<egg per-iteration
-stats, each with an `allocated` field>, ...]}` (`allocated` = jemalloc
-`stats.allocated` live-heap bytes). The whole object is stored as the 3rd
-entry of each inner term record, so the `terms.json` payload has shape
+Each kept term carries a measurement object `{"iterations": [<egg
+per-iteration stats, each with an `allocated` field>, ...]}` (`allocated` =
+jemalloc `stats.allocated` live-heap bytes) as the 3rd entry of its record, so
+the `terms.json` payload has shape
 `[[size, {term: [attempts, validation_result, {iterations}]}], ...]`.
-
-On any per-term failure (non-zero exit, timeout, unparseable output), the
-3rd entry is `{"iterations": []}`.
 
 If `--path` is omitted, a fresh `data/seed_terms/<adjective>-<noun>/`
 directory is created (collision-retry against existing siblings). The output
@@ -28,15 +24,13 @@ import os
 import secrets
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
 import tyro
 from diceware.wordlist import WordList, get_wordlists_dir
-from tqdm import tqdm
 
-from common import MEASURE_FAILURE, exit_if_missing, measure_term, parse_size, subprocess_timeout
+from common import exit_if_missing, parse_size
 
 
 def _load_wordlist(name: str) -> list[str]:
@@ -67,9 +61,7 @@ class Args:
     If omitted, a fresh `data/seed_terms/<adjective>-<noun>/` is created."""
 
     generate_binary: Path = Path("target/release/generate")
-    measure_binary: Path = Path("target/release/measure-size")
 
-    # generate-only
     total_samples: int = tyro.MISSING
     min_size: int = tyro.MISSING
     max_size: int = tyro.MISSING
@@ -78,18 +70,14 @@ class Args:
     seed: int = tyro.MISSING
     tolerance: int = 1
     retry_limit: int = 10000
-    # measure-only; number of concurrent measure-size processes. Defaults
-    # to 1 because parallel runs compete for RAM and can perturb the
-    # live-heap readings.
-    parallelism: int = 1
 
-    # shared egg args
+    # egg args
     max_iters: int = 11
     max_nodes: int = 100_000
     max_time: float = 1.0
     max_memory: str | None = None
     """Graceful live-heap ceiling (jemalloc `stats.allocated`, e.g. "8G"),
-    enforced by egg's per-iteration hook in both binaries. Unset = unbounded."""
+    enforced by egg's per-iteration hook. Unset = unbounded."""
     backoff_scheduler: bool = True
     """Use egg's BackoffScheduler (pass --no-backoff-scheduler for the
     SimpleScheduler)."""
@@ -99,12 +87,11 @@ def main() -> int:
     description = (__doc__ or "") + (
         "\n"
         "Example:\n"
-        "    cargo build --release --bin generate --bin measure-size\n"
+        "    cargo build --release --bin generate\n"
         "    uv run scripts/generate_seeds.py \\\n"
         "        --total-samples 1000 --min-size 10 --max-size 50 \\\n"
         "        --distribution uniform --language math --seed 42 \\\n"
-        "        --max-iters 50 --max-nodes 100000 --max-time 10 \\\n"
-        "        --measure_parallelism 10"
+        "        --max-iters 50 --max-nodes 100000 --max-time 10"
     )
     args = tyro.cli(Args, description=description)
 
@@ -119,7 +106,7 @@ def main() -> int:
 
     max_memory_bytes = parse_size(args.max_memory) if args.max_memory is not None else None
 
-    exit_if_missing(args.generate_binary, args.measure_binary)
+    exit_if_missing(args.generate_binary)
 
     with args_path.open("w") as f:
         json.dump(dataclasses.asdict(args), f, indent=2, default=str)
@@ -163,49 +150,9 @@ def main() -> int:
         print(f"generate failed (exit {gen.returncode})", file=sys.stderr)
         return gen.returncode
 
-    with terms_path.open("r") as f:
-        big_collector = json.load(f)
-
-    timeout = subprocess_timeout(args.max_time)
-    measure_base = [
-        str(args.measure_binary),
-        "--language",
-        args.language,
-        "--max-iters",
-        str(args.max_iters),
-        "--max-nodes",
-        str(args.max_nodes),
-        "--max-time",
-        str(args.max_time),
-    ]
-    if max_memory_bytes is not None:
-        measure_base += ["--max-memory", str(max_memory_bytes)]
-    if args.backoff_scheduler:
-        measure_base.append("--backoff-scheduler")
-
-    def measure_one(term: str) -> dict:
-        return measure_term([*measure_base, "--term", term], timeout=timeout)
-
-    # big_collector is [[size, {term_str: [attempts, validation_result]}], ...].
-    # Collect (size_idx, term_str) refs in a flat list, measure in parallel,
-    # then append the `{iterations}` object to each inner record in place.
-    flat: list[tuple[int, str]] = [
-        (size_idx, term)
-        for size_idx, (_size, terms_map) in enumerate(big_collector)
-        for term in terms_map
-    ]
-    measurements: list[dict] = [dict(MEASURE_FAILURE) for _ in flat]
-    workers = max(1, args.parallelism)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(measure_one, t): i for i, (_, t) in enumerate(flat)}
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="terms"):
-            measurements[futures[fut]] = fut.result()
-
-    for (size_idx, term), stats in zip(flat, measurements):
-        big_collector[size_idx][1][term].append(stats)
-
-    with terms_path.open("w") as f:
-        json.dump(big_collector, f)
+    # `generate` writes the finished, measured `terms.json` itself: the same
+    # per-term eqsat run that validates a term records its per-iteration stats
+    # and live-heap bytes as the 3rd entry of the record.
     return 0
 
 

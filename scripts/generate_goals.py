@@ -56,8 +56,8 @@ class Args:
     """How to sample the GOAL terms (forwarded if set)."""
 
     skip_unmeasured: bool = True
-    """Skip seeds whose measurement is missing or empty (measurement failed:
-    `measure-size` logged no iterations)."""
+    """Skip seeds whose measurement is missing or empty (no iterations were
+    recorded for the seed during generation)."""
 
     retry_step: int = 5
     """How much to grow `max_size` on each precompute retry."""
@@ -81,8 +81,9 @@ class Args:
 
 def is_measured(record: object) -> bool:
     """True iff the record's measurement (`record[2]`, an `{"iterations"}`
-    object) is present and non-empty. A successful `measure-size` run always
-    logs at least one iteration; the failure sentinel is an empty list."""
+    object) is present and non-empty. A kept term always ran at least one
+    eqsat iteration during generation, so its measurement is non-empty; an
+    empty list marks a term with no recorded iterations."""
     if not (isinstance(record, list) and len(record) > 2):
         return False
     measurement = record[2]

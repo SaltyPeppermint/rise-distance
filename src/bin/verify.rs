@@ -16,7 +16,7 @@ use serde::Serialize;
 use rise_distance::cli::GuideExpr;
 use rise_distance::eqsat::{EqsatConfig, Goal, GuideError, verify_reachability};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
-use rise_distance::utils::live_heap_bytes;
+use rise_distance::utils::HeapDelta;
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]
@@ -123,8 +123,8 @@ fn run_legs<L: MyLanguage, N: MyAnalysis<L>>(
     let mut results = Vec::with_capacity(subsets.len());
     for guide_exprs in subsets {
         // Baseline for this leg's memory delta (see `LegResult::memory`).
-        let pre = live_heap_bytes();
-        let result = run_leg(guide_exprs, &goal, pre, args, rules);
+        let heap = HeapDelta::start();
+        let result = run_leg(guide_exprs, &goal, heap, args, rules);
         let reached = result.reached;
         results.push(result);
         if reached {
@@ -137,7 +137,7 @@ fn run_legs<L: MyLanguage, N: MyAnalysis<L>>(
 fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
     guide_exprs: Vec<GuideExpr<L>>,
     goal: &Goal<L>,
-    pre_heap: u64,
+    heap: HeapDelta,
     args: &Args,
     rules: &[Rewrite<L, N>],
 ) -> LegResult {
@@ -162,7 +162,7 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
                         .sum(),
                 ),
                 total_time: Some(iterations.iter().map(|i| i.total_time).sum()),
-                memory: Some(live_heap_bytes().saturating_sub(pre_heap)),
+                memory: Some(heap.bytes()),
                 stop_reason: None,
                 panic: false,
             }

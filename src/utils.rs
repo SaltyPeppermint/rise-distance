@@ -169,3 +169,39 @@ pub fn live_heap_bytes() -> u64 {
     epoch::advance().expect("failed to advance jemalloc epoch");
     stats::allocated::read().expect("failed to read jemalloc allocated stat") as u64
 }
+
+/// Live-heap growth measured across a scope: captures a [`live_heap_bytes`]
+/// baseline at [`HeapDelta::start`] and reports the delta over it at
+/// [`HeapDelta::bytes`]. Because jemalloc's `allocated` drops the moment an
+/// allocation is freed, the delta reflects what is still live at the point of
+/// reading — call `bytes` before anything the caller does *after* the measured
+/// work allocates further.
+#[derive(Debug, Clone, Copy)]
+pub struct HeapDelta {
+    pre: u64,
+}
+
+impl HeapDelta {
+    /// Capture the live-heap baseline to measure growth against.
+    #[must_use]
+    pub fn start() -> Self {
+        Self {
+            pre: live_heap_bytes(),
+        }
+    }
+
+    /// Live-heap bytes currently allocated over the baseline captured at
+    /// [`HeapDelta::start`], saturating at zero.
+    #[must_use]
+    pub fn bytes(&self) -> u64 {
+        live_heap_bytes().saturating_sub(self.pre)
+    }
+
+    /// The raw [`live_heap_bytes`] baseline captured at [`HeapDelta::start`],
+    /// for callers that rebase their own readings against it (e.g.
+    /// `Measurement::from_run`).
+    #[must_use]
+    pub fn baseline(&self) -> u64 {
+        self.pre
+    }
+}

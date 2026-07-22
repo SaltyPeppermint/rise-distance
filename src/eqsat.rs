@@ -273,6 +273,52 @@ where
     }
 }
 
+/// Per-iteration heap annotation egg stores in each [`Iteration`]'s `data` slot.
+/// egg calls [`IterationData::make`] at the *start* of every iteration, so
+/// `allocated` is the live-heap reading there, aligned with egg's own
+/// start-of-iteration `egraph_nodes`/`egraph_classes`.
+///
+/// The reading is the *absolute* [`live_heap_bytes`] value, not a delta over a
+/// pre-eqsat baseline — `make` has no access to one. Subtract a baseline
+/// afterwards with [`Measurement::from_run`] to isolate the egraph's footprint.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct HeapData {
+    pub allocated: u64,
+}
+
+impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
+    fn make(_runner: &Runner<L, N, Self>) -> Self {
+        Self {
+            allocated: live_heap_bytes(),
+        }
+    }
+}
+
+/// Per-iteration eqsat stats plus live-heap use, as produced by running a
+/// [`Runner`] with [`HeapData`] in its iteration-data slot (via
+/// `EqsatConfig::build_runner::<_, _, HeapData>`). Each iteration's `allocated`
+/// is live-heap growth over a pre-eqsat baseline once passed through
+/// [`Measurement::from_run`]. Serializes as `{"iterations": [...]}`, egg's
+/// `Iteration` flattening `data` so each entry carries an `allocated` field.
+#[derive(Debug, Serialize)]
+pub struct Measurement {
+    pub iterations: Vec<Iteration<HeapData>>,
+}
+
+impl Measurement {
+    /// Assemble a measurement from a finished runner's `iterations`, rebasing
+    /// each iteration's absolute [`HeapData::allocated`] reading to growth over
+    /// `pre` (the [`live_heap_bytes`] baseline captured *before*
+    /// `build_runner`), saturating at zero.
+    #[must_use]
+    pub fn from_run(pre: u64, mut iterations: Vec<Iteration<HeapData>>) -> Self {
+        for iter in &mut iterations {
+            iter.data.allocated = iter.data.allocated.saturating_sub(pre);
+        }
+        Self { iterations }
+    }
+}
+
 /// Run equality saturation up to `config` maximums and return the
 /// final egraph (`curr`) together with the last meaningfully different
 /// earlier egraph (`prev`).

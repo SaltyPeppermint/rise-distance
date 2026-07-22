@@ -26,7 +26,7 @@ workers.
 
 ```bash
 cargo build --release \
-    --bin generate --bin measure-size \
+    --bin generate \
     --bin goal --bin sample --bin verify
 ```
 
@@ -36,12 +36,12 @@ Writes `data/seed_terms/<auto-name>/terms.json` (+ `args.json`). Pick the
 language here — it flows through every later stage.
 
 ```bash
-uv run scripts/generate_and_measure.py \
+uv run scripts/generate_seeds.py \
     --total-samples 100 --min-size 10 --max-size 50 \
     --distribution uniform --language math --seed 42 \
     --max-memory 8G \
     --max-iters 200 --max-nodes 1000000 --max-time 10 \
-    --backoff-scheduler --measure_parallelism 10
+    --backoff-scheduler
 ```
 
 Note the printed output dir (e.g. `data/seed_terms/dusky-cramp`) and use it
