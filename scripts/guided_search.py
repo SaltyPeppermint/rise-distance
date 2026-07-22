@@ -1,23 +1,11 @@
 """Drive the guide search from Python.
 
-The Rust `sample` and `verify` binaries touch no files: `sample` takes
-everything on argv, `verify` takes a (seed, goal) pair's attempt subsets on
-stdin plus `--goal`/`--language`/eqsat limits on argv. This driver owns all
-file I/O: it reads `goal_args.json` (language and the search-phase eqsat
-limits), flattens the goal-enriched `goal_terms.json` into per-seed specs, runs
-one `sample` subprocess per seed, then runs one `verify` subprocess per seed/goal
-pair. Python precomputes all `--attempts` guide subsets for the pair up front and
-hands them over; `verify` runs one leg per subset and early-stops at the first
-reach. All logging and data wrangling (parquet/JSON) live here.
+This driver reads enriched seeds, samples a guide menu per seed, and verifies
+one attempt loop per seed/goal pair. It owns the JSON/parquet I/O; the Rust
+``sample`` and ``verify`` binaries communicate through argv, stdin, and stdout.
 
-Both phases — the guide replay (`sample`) and the leg search (`verify`) — run
-under an explicit budget given on the CLI: at least one of
-`--stop-iters`/`--stop-nodes`/`--stop-time`/`--stop-memory` is required; unset
-dimensions fall back to the search-phase (brute-force) limits from
-`goal_args.json`, and each run ends at whichever limit trips first. The point is
-to ask "how much can still be solved under a tighter budget than the brute-force
-full eqsat by breaking the search into guided legs", so the tighter budget binds
-the guide replay *and* every leg — not just the guide.
+Guide replay and leg search share the required ``--stop-*`` budget. Dimensions
+without an override retain their search-phase limits from ``goal_args.json``.
 
 Example:
     cargo build --release --bin sample --bin verify
@@ -137,12 +125,7 @@ class Args:
 
 @dataclass
 class WorkItem:
-    """One independent (seed, goal) unit of work for the leg loop.
-
-    Each item carries the candidate `pool` it draws guides from and the
-    seed-level `guide_meta` copied onto every result row. Items are built up
-    front (`build_work_items`) and run concurrently, one attempt loop each.
-    """
+    """One seed/goal unit, its guide pool, and seed-level guide metadata."""
 
     seed: str
     goal: str
@@ -196,11 +179,8 @@ class SeedSpec:
 def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
     """Flatten the goal-enriched `goal_terms.json` into per-seed specs.
 
-    `goal_terms.json` is a list of `[size, {seed: payload}]` groups, each
-    payload a `Result`-shaped `{"Ok": GoalGenMetadata}` / `{"Err": msg}`. We
-    pull the seed and its goals off each `Ok`. `Err` seeds (goal stage failed)
-    are dropped. Groups in file order, terms sorted for a deterministic
-    `--seeds`; `--goals` keeps each seed's first N goals in file order.
+    Drop ``Err`` payloads, sort terms within file-ordered groups, and apply the
+    optional seed and per-seed goal limits.
     """
     groups = json.loads((args.path / "goal_terms.json").read_text())
     specs: list[SeedSpec] = []
@@ -211,7 +191,6 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
                 continue  # Err seed: goal stage failed, nothing to replay.
             goals = ok["goals"]
             if args.goals is not None:
-                # First N in file order: deterministic across runs.
                 goals = goals[: args.goals]
             specs.append(SeedSpec(seed, goals))
     if args.seeds is not None:
@@ -222,13 +201,7 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
 def run_sample_shard(
     args: Args, base_flags: list[str], limits: dict, menu_size: int, spec: SeedSpec
 ) -> list:
-    """Run `sample` for a single seed and return its parsed record list, with
-    the spec's `goals` spliced back onto each record.
-
-    Everything goes on argv: `--seed`, `--language`, and `limits` (the
-    `--stop-*` replay budget from `replay_limits`). `sample` prints a
-    one-element `[SeedSamples]` array to stdout (empty on an internal failure).
-    """
+    """Run ``sample`` for one seed and attach its goals to each output record."""
     cmd = [
         str(args.sample_binary),
         *base_flags,
@@ -247,16 +220,11 @@ def run_sample_shard(
 def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     """Sample the guide menu in parallel, one `sample` subprocess per seed.
 
-    Captures each subprocess's stdout, merges the records in seed order (so the
-    output is deterministic regardless of completion order), and writes a single
-    `samples.json` under `sample_out` for provenance.
+    Merge results in seed order and write ``samples.json`` for provenance.
     """
     specs = flatten_enriched_seeds(args)
     sample_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
-    # Both sample (guide replay) and verify (legs) run under the --stop-* replay
-    # budget; this computes it for the sample phase (main() builds the same for
-    # verify's base_flags).
     sample_flags = ["--language", str(cfg["language"])]
     limits = replay_limits(args, cfg)
     # Menu size = exactly what the attempt loop consumes: no_replacement_* needs
@@ -268,7 +236,6 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
         file=sys.stderr,
     )
 
-    # index -> records, filled as subprocesses finish; merged in seed order below.
     shard_records: dict[int, list] = {}
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = {
@@ -321,17 +288,10 @@ def run_legs(
     goal: str,
     subsets: list[list],
 ) -> list[dict]:
-    """Run one `verify` subprocess for a whole (seed, goal) pair and return its
-    parsed `LegResult` list.
+    """Verify one seed/goal pair and return the legs run before early stopping.
 
-    `verify` touches no files: the pair's attempt `subsets` (a list of guide
-    subsets) go in on stdin as a JSON array of arrays, and
-    `--goal`/`--language`/`--full-union`/the eqsat flags on argv. It runs one
-    leg per subset, stops at the first reach, and prints one `LegResult` per leg
-    actually run — so the returned list can be shorter than `subsets`. A
-    panic-guarded leg still yields a result with `panic: true` and the loop
-    continues; a nonzero exit means the process itself failed (bad request,
-    parse error, ...) and raises.
+    Attempt subsets are sent as JSON on stdin. Panic-guarded legs still produce
+    results; process-level failures raise.
     """
     cmd = [str(args.verify_binary), *base_flags, "--goal", goal]
     if args.full_union:
@@ -342,15 +302,8 @@ def run_legs(
 def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     """Run one seed/goal pair's attempt loop and return its result rows.
 
-    The whole loop runs in a single `verify` subprocess: Python precomputes all
-    attempt subsets and hands them over, `verify` runs one leg per subset and
-    early-stops at the first reach. Runs in a worker thread over no shared
-    state; marks its last row `gave_up` if every attempt failed. Each row's `k`
-    is the *effective* subset size, not the requested one, so a capped leg
-    reports what it actually ran.
-
-    An empty candidate pool is a hard error (nothing to draw guides from), so
-    this raises rather than emitting a row.
+    The final row is marked ``gave_up`` only if all attempts ran and failed.
+    Reported ``k`` is the effective subset size. An empty pool is an error.
     """
     rng = random.Random(f"{args.rng_seed}:{item.seed}:{item.goal}")
     attempt_subsets = build_attempt_subsets(item.pool, args.strategy, args.k, args.attempts, rng)
@@ -360,8 +313,6 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
             f"strategy {args.strategy!r} drew no guides"
         )
 
-    # One subprocess for the whole pair; `verify` early-stops at the first reach,
-    # so `results` is one LegResult per attempt actually run (<= len(subsets)).
     results = run_legs(args, base_flags, item.goal, attempt_subsets)
     rows: list[dict] = []
     for attempt, (guides, result) in enumerate(zip(attempt_subsets, results)):
@@ -462,7 +413,6 @@ def report_results(args: Args, out: Path, rows: list[dict]) -> None:
     (out / "results.json").write_text(json.dumps(rows, indent=2))
     (out / "config.json").write_text(json.dumps(dataclasses.asdict(args), indent=2, default=str))
 
-    # A pair counts as reached if any of its attempts reached.
     reached_pairs = df.filter(pl.col("reached")).select("seed", "goal").unique().height
     total_pairs = df.select("seed", "goal").unique().height
     reach_rate = reached_pairs / total_pairs if total_pairs else 0.0
@@ -488,9 +438,6 @@ def main() -> int:
 
     cfg = json.loads((args.path / "goal_args.json").read_text())
     args.k = 1 if args.strategy in SMALLEST_STRATEGIES else args.k
-    # The --stop-* replay budget applies to BOTH phases: the guide replay (sample)
-    # and the leg search (verify) run under the same tightened limits, so the
-    # whole guided attempt is bounded by the tighter budget, not just the guide.
     base_flags = ["--language", str(cfg["language"]), *limit_flags(replay_limits(args, cfg))]
     out = resolve_output_dir(args)
 

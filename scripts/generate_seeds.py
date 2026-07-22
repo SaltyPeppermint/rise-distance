@@ -1,24 +1,11 @@
 """Generate random math terms, measuring eqsat live-heap use on each.
 
-Shells out to `target/release/generate`, which produces a nested JSON of
-terms grouped by size. The same per-term eqsat run that validates a term also
-records its per-iteration stats and live-heap bytes, so `generate` writes the
-finished, measured file in one pass. Egg limits (`--max-iters`, `--max-nodes`,
-`--max-time`, `--max-memory`, `--backoff-scheduler`) are forwarded to it.
+The Rust ``generate`` binary validates terms and records per-iteration egraph
+statistics and jemalloc live-heap deltas in ``terms.json``. This driver forwards
+the egg limits and records its arguments in ``generation_args.json``.
 
-Each kept term carries a measurement object `{"iterations": [<egg
-per-iteration stats, each with an `allocated` field>, ...], "total_allocated":
-N}` as the 3rd entry of its record. `allocated` is the per-iteration live-heap
-delta (jemalloc `stats.allocated` over a pre-eqsat baseline); `total_allocated`
-is the *true* post-run delta sampled the moment the run returns — the final
-egraph's footprint, not an iteration-boundary snapshot. The `terms.json` payload
-has shape
-`[[size, {term: [attempts, validation_result, {iterations, total_allocated}]}], ...]`.
-
-If `--path` is omitted, a fresh `data/seed_terms/<adjective>-<noun>/`
-directory is created (collision-retry against existing siblings). The output
-`terms.json` and a sidecar `generation_args.json` recording all CLI args are
-written into the directory.
+Without ``--path``, output goes to a new adjective-noun directory under
+``data/seed_terms``.
 """
 
 import dataclasses
@@ -153,9 +140,6 @@ def main() -> int:
         print(f"generate failed (exit {gen.returncode})", file=sys.stderr)
         return gen.returncode
 
-    # `generate` writes the finished, measured `terms.json` itself: the same
-    # per-term eqsat run that validates a term records its per-iteration stats
-    # and live-heap bytes as the 3rd entry of the record.
     return 0
 
 

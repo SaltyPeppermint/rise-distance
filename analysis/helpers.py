@@ -1,39 +1,8 @@
-"""Data loading and tidy-frame shaping for the guide-selection analysis.
+"""Load guided-search runs into the tidy frames used by the analysis plots.
 
-`guided_search.py` writes one `results.parquet` per run (a run == one strategy/config).
-This module loads a set of runs into a single **tidy long DataFrame** — one row
-per leg, tagged with its display `mode`, with the per-seed unguided baseline and
-the metric/baseline `ratio` already attached. The Altair specs in `plots.py`
-consume that frame directly, so the notebook stays a handful of declarative
-calls.
-
-Every run now uses a single guide-set size `k` (see `guided_search.py`), so `k`
-is a per-run constant, not a swept axis. Each mode's display name is derived
-from its replay-versus-baseline limit differences, attempt count, and `k`; the
-plots put the individual seed/goal *pairs* on the x-axis instead.
-
-Column glossary for the tidy frame (`load_runs`):
-
-    mode         derived display name of the run (overlaid series)
-    seed, goal   the eqsat seed term and the goal term
-    pair         "<seed>│<goal>", the per-experiment identifier used as x
-    k            number of guides (constant within a run)
-    reached      bool: did this leg reach the goal
-    stop_reason  "empty_pool" when the candidate pool was empty
-    iters, nodes, classes, nodes_per_class, total_time, memory
-                 leg cost (nodes/classes/time/memory include the guide-egraph
-                 overhead; nodes/classes are the true final egraph size read off
-                 the rebuilt egraph after the leg, not an iteration-boundary
-                 snapshot; memory is jemalloc live-heap bytes (stats.allocated),
-                 folded as max(leg, guide))
-    base_nodes, base_classes, base_iters, base_total_time, base_nodes_per_class,
-    base_memory  that seed's full unguided eqsat cost (base_memory = live-heap
-                 bytes sampled right after the unguided run)
-    base_stop_reason
-                 why that unguided run ended, including the limit measurement
-                 carried by egg (for example ``NodeLimit(112290)``)
-    guide_nodes, guide_classes, guide_time, guide_memory
-                 the per-seed guide replay's cost (from `sample.rs`)
+Each run has one guide-set size and contributes one row per leg. ``load_runs``
+adds the derived display mode, a seed/goal pair key, and the seed's unguided
+baseline. Guide-egraph overhead is folded into leg cost by ``_load_leg_frame``.
 """
 
 import json
@@ -72,12 +41,8 @@ def find_latest_run(pattern: str = "run", subdir: str = "guided_search") -> Path
 def _load_leg_frame(run_dir: Path) -> pl.DataFrame:
     """One run's `results.parquet`, with guide-egraph overhead folded into cost.
 
-    nodes/classes/memory become ``max(leg, guide)`` and total_time gains
-    guide_time, so each leg's cost includes the guide phase it built on. For
-    memory (jemalloc live-heap bytes, a point-in-time reading) the max is the
-    heavier of the two phases' footprints. Null cost columns (unreached /
-    empty-pool / panic legs) stay null. Empty-pool legs (k=0, no real guide set)
-    are dropped.
+    Nodes, classes, and memory become ``max(leg, guide)``; total time includes
+    guide time. Null costs remain null, and empty-pool legs are dropped.
     """
     df = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
     return df.with_columns(
@@ -99,11 +64,8 @@ def _load_leg_frame(run_dir: Path) -> pl.DataFrame:
 def _baseline_frame(run_dir: Path) -> pl.DataFrame:
     """Per-seed unguided full-eqsat baseline for a run, as a joinable frame.
 
-    The run's `config.json` points (via `path`) at the seed-terms folder, whose
-    `goal_terms.json` carries a per-seed `goal_egraph` block: full eqsat on the
-    seed with no guides. Every goal under a seed shares that seed's baseline, so
-    a guided leg can be compared against its own seed's unguided cost. `Err`
-    seeds are skipped. Columns: seed, base_<metric> for each METRIC.
+    Every goal under a seed shares its ``goal_egraph`` baseline. ``Err`` seeds
+    are skipped and metric columns receive a ``base_`` prefix.
     """
     config = json.loads((run_dir / "config.json").read_text())
     repo_root = Path(__file__).parent / ".."
@@ -138,17 +100,8 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
 def load_runs(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     """Load and stack the given runs into one tidy long DataFrame.
 
-    `runs` comes from `resolve_runs`, which derives each display label from the
-    replay/baseline limit difference, attempt count, and guide-set size `k`.
-    Returns ``(df, meta)`` where `df` is the tidy frame described in the module
-    docstring and `meta` carries plot-annotation info::
-
-        meta = {
-            "modes":    [derived display names, in order],
-            "k":        {mode -> its single k},
-            "n_goals":  int,                   # max distinct goals across modes
-            "n_trials": int,                   # configured `attempts` (max)
-        }
+    Returns the leg frame and plot metadata: ordered modes, guide-set size by
+    mode, maximum distinct goals, and maximum configured attempts.
     """
     frames, modes, k_by_mode = [], [], {}
     n_goals = n_trials = 0
@@ -232,9 +185,7 @@ def _format_limit(metric: str, value: float | None) -> str:
     return f"{formatted}s" if metric == "total_time" else formatted
 
 
-def _derived_label(
-    limits: dict[str, dict[str, float]], attempts: int, k: int
-) -> str:
+def _derived_label(limits: dict[str, dict[str, float]], attempts: int, k: int) -> str:
     """Describe only replay limits that differ from the unguided baseline."""
     replay = limits["leg"]
     baseline = limits["baseline"]
@@ -297,13 +248,9 @@ def resolve_runs(patterns: Sequence[str]) -> list[Run]:
 def _governing_limits(run_dir: Path) -> dict[str, dict[str, float]]:
     """The eqsat limits each egraph family actually ran under, per run.
 
-    All three read the search-phase eqsat config from the seed folder's
-    `goal_args.json`. The **guide** replay and the **leg** search both run under
-    the `--stop-*` replay budget the guided_search run set (in `config.json`,
-    each given dimension overriding its search-phase value — see
-    `guided_search.replay_limits`); the **baseline** (unguided `goal.rs`) run uses
-    the plain search-phase limits. Returns ``{egraph -> {dimension -> limit}}``,
-    dropping dimensions whose limit is unset (e.g. no `--max-memory`).
+    Guide and leg limits apply ``--stop-*`` overrides to the search-phase
+    configuration; the unguided baseline uses that configuration unchanged.
+    Unset dimensions are omitted.
     """
     config = json.loads((run_dir / "config.json").read_text())
     goal_args = json.loads(
@@ -311,8 +258,6 @@ def _governing_limits(run_dir: Path) -> dict[str, dict[str, float]]:
     )
     base = {dim: goal_args.get(key) for dim, key in LIMIT_KEYS.items()}
 
-    # Guide replay and legs: search-phase limits with each given --stop-*
-    # overriding its dimension (see guided_search.replay_limits).
     stop = {
         "iters": config.get("stop_iters"),
         "nodes": config.get("stop_nodes"),
@@ -351,15 +296,9 @@ def series_limit_frame(
     metrics: Sequence[str],
     series: Sequence[str] = ("leg", "baseline", "guide"),
 ) -> pl.DataFrame:
-    """Tidy ``(mode, series, metric, limit)`` frame of the ceiling each plotted
-    series ran under, for the limited `metrics`.
+    """Return ``(mode, series, metric, limit)`` rows for plotted ceilings.
 
-    The guide replay and the legs share the `--stop-*` replay budget, while the
-    baseline ran under the plain search-phase limits, so the three series can have
-    different ceilings — hence a limit per (series, metric), not one shared line.
-    `abs_pair_strip` draws a dashed rule per series, colored to match its points.
-    `metrics` without a limit (e.g. `classes`, which egg doesn't bound) are
-    dropped, so those facets get no line.
+    Series may have different ceilings; unbounded metrics are omitted.
     """
     limits_by_mode = _limits_by_mode(runs)
     rows = [

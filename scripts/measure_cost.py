@@ -1,23 +1,8 @@
 """Measure how extraction cost evolves per iteration of eqsat on each seed term.
 
-Spawns the `measure-cost` Rust binary once per term in a seed-terms
-`terms.json` (as produced by `scripts/generate_seeds.py`). The
-binary runs eqsat and prints a JSON object on stdout with two
-per-iteration arrays: `monotonic` (cost-function name -> cheapest
-extracted cost) and `novelty` (cost-function name -> whether the ILP
-extract changed since the previous iteration).
-
-Egg limits (`--max-iters`, `--max-nodes`, `--max-time`,
-`--backoff-scheduler`) are read from the sibling `generation_args.json`
-so that the cost trajectory is measured under the same conditions used
-to generate and validate the terms.
-
-The result is written to `<input_dir>/cost_evolution.json` with shape
-`{term: {"monotonic": [{costfn: value, ...}, ...],
-         "novelty":   [{costfn: bool,  ...}, ...]}}`.
-On any per-term failure (non-zero exit, timeout, unparseable output),
-the term maps to an empty dict. Plotting lives in
-`analysis/cost_evolution.ipynb`.
+Runs the Rust ``measure-cost`` binary once per term using the limits from the
+sibling ``generation_args.json``. Output is written to
+``cost_evolution.json`` as per-term ``monotonic`` cost and ``novelty`` arrays.
 
 Example:
     cargo build --release --bin measure-cost
@@ -69,7 +54,6 @@ def main() -> int:
     with args.path.open("r") as f:
         big_collector = json.load(f)
 
-    # big_collector is [[size, {term: [attempts, validation, {iterations}]}], ...]
     all_terms = [term for _size, terms_map in big_collector for term in terms_map]
 
     timeout = subprocess_timeout(float(run_args["max_time"]))

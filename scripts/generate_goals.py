@@ -1,15 +1,9 @@
 """Drive goal-term generation from Python.
 
-The Rust `goal` binary touches no files: it processes one seed per invocation
-(`--seed <expr>`, with `--language` and the eqsat limits also on argv) and
-prints that seed's `{"Ok":..}`/`{"Err":..}` payload to stdout. This driver owns
-all file I/O: it reads `generation_args.json` (for `language` and the eqsat
-config), flattens/filters the `terms.json` seed list, fans the invocations out
-across seeds, captures each payload, and writes the enriched copy to
-`goal_terms.json` next to it (same `[size, {term: payload}]` grouping;
-`terms.json` is never modified). A `goal_args.json` sidecar records the eqsat
-config the goals were generated under (top-level, read by `guided_search.py`)
-plus this run's CLI args under `driver_args`.
+Runs the file-free Rust ``goal`` binary once per selected seed and writes its
+payloads to ``goal_terms.json`` without modifying ``terms.json``. The
+``goal_args.json`` sidecar records the governing eqsat configuration and this
+driver's arguments.
 
 Example:
     cargo build --release --bin goal

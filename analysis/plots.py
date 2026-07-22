@@ -1,14 +1,7 @@
-"""Altair chart specs for the guide-selection analysis.
+"""Altair chart specs for the tidy guided-search frames from ``helpers``.
 
-Everything consumes the tidy long frame from `helpers.load_runs` (one row per
-leg, tagged with `mode`). Each run now uses a single guide-set size `k`, so `k`
-is no longer an axis — the recurring shape is *one point per seed/goal pair,
-pairs sorted by value along x with no per-pair labels, one facet per metric*.
-`abs_pair_strip` builds that in absolute native units, overlaying each pair's
-unguided baseline as a second series.
-
-Categorical colors use the validated 8-hue order from the dataviz palette
-(fixed, never cycled) so a mode keeps its color as runs are added/removed.
+Charts generally rank seed/goal pairs on x and facet by metric. Categorical
+colors use a fixed eight-hue palette so modes retain stable colors.
 """
 
 from collections.abc import Sequence
@@ -94,30 +87,11 @@ def abs_pair_strip(
     group_reduce: str = "median",
     log_y: bool = True,
 ) -> alt.Chart:
-    """Absolute-unit sibling of `pair_strip`: each series' cost vs the baseline.
+    """Plot leg, guide, and baseline costs in native units.
 
-    `df` is long with columns `mode`, `metric`, `series` (``"leg"`` /
-    ``"baseline"`` / ``"guide"``), the pair keys, and `value` in native units —
-    build it with the notebook's `absolute_long`. Each pair contributes one point
-    per series per metric; pairs are ranked by their **leg** value (shared across
-    series) so the strip reads as a sorted leg curve with the other series drawn
-    at the same x.
-
-    Color is the series. Mode is the facet **row** and metric the **column**, so
-    overlaying several runs stacks them as rows without the two encodings fighting
-    over the color channel. Every cell has an independent y (per-seed scale varies
-    wildly across metrics and runs).
-
-    `limits` is an optional ``(mode, series, metric, limit)`` frame (from
-    `helpers.series_limit_frame`); when given, each facet gets a dashed rule *per
-    series*, colored to match its points, at the ceiling that series ran under —
-    the guide/leg replay budget and the baseline's search-phase limit can differ.
-    Metrics absent from the frame — e.g. `classes`, which egg doesn't bound — get
-    no line.
-
-    `y` is log-scaled by default (`log_y`): absolute costs mix per-seed scale and
-    span orders of magnitude — the very spread the ratio plots normalized away —
-    so a linear axis squashes everything.
+    Input is long-form with ``mode``, ``metric``, ``series``, pair keys, and
+    ``value``. Pairs share the rank of their leg value. Optional per-series
+    limits become matching dashed rules; unbounded metrics have no rule.
     """
     per_pair = (
         df.drop_nulls("value")
@@ -203,22 +177,11 @@ def rel_pair_strip(
     group_by: Sequence[str] = ("seed", "goal"),
     group_reduce: str = "median",
 ) -> alt.Chart:
-    """Baseline-relative sibling of `abs_pair_strip`: each series ÷ its own baseline.
+    """Plot leg and guide cost divided by each pair's unguided baseline.
 
-    Consumes the same long frame as `abs_pair_strip` (from the notebook's
-    `absolute_long`): columns `mode`, `metric`, `series` (``"leg"`` /
-    ``"baseline"`` / ``"guide"``), the pair keys, and native-unit `value`. Each
-    pair/metric's `leg` and `guide` are divided by that pair's `baseline` value,
-    turning the plot into *fraction of the unguided cost* — the ``baseline``
-    series collapses to the constant 1 and is dropped in favour of a single dashed
-    ``y = 1`` reference rule. Values below the rule are cheaper than unguided.
-
-    Layout matches `abs_pair_strip`: color is the series (leg/guide only), mode is
-    the facet row and metric the column, pairs ranked by the **leg** ratio so the
-    strip reads as a sorted savings curve with the guide point at the same x. y is
-    log-scaled — ratios span orders of magnitude and log keeps them legible and
-    symmetric around 1. No per-series limit rules: a fixed `--stop-*` budget
-    divided by a per-seed baseline is not a single horizontal line.
+    Pairs share the rank of their leg ratio. The baseline becomes a dashed
+    ``y = 1`` rule; values below it are cheaper than unguided. The y scale is
+    logarithmic.
     """
     # Divide leg/guide by the pair's baseline (per mode/metric/pair): pivot the
     # series to columns, ratio, then melt back to the leg/guide series.
@@ -284,7 +247,6 @@ def rel_pair_strip(
             ],
         )
     )
-    # Single dashed y=1 reference: parity with the unguided baseline.
     ref = (
         alt.Chart()
         .mark_rule(strokeDash=[4, 4], color="#7a7a77", opacity=0.8)
@@ -585,16 +547,11 @@ def baseline_vs_soft_limits(
 def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatChart:
     """Two panels: per-pair reach rate (sorted strip) and a per-mode summary bar.
 
-    `gr` is `helpers.goal_reach(df)`, one row per (mode, seed, goal) carrying
-    `reach_rate` = fraction of that pair's attempts that reached. The strip ranks
-    pairs by reach_rate within each mode (hardest at left) so the shape of the
-    reachability distribution is visible; the summary bar shows overall leg reach
-    rate and goal coverage per mode.
+    ``gr`` is the pair-level output of ``helpers.goal_reach``.
     """
     modes = meta["modes"]
     color = _color(modes)
 
-    # Per-pair reach rate, ranked within mode -> sorted strip over pairs.
     strip_df = gr.with_columns(
         (pl.col("reach_rate").rank("ordinal").over("mode") - 1).alias("rank")
     )
@@ -617,7 +574,6 @@ def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatC
         .properties(title="Per-pair reach rate (sorted)")
     )
 
-    # Per-mode summary: overall leg reach rate and goal coverage (≥1 success).
     summ = pl.concat(
         [
             df.group_by("mode")
