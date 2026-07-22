@@ -515,7 +515,8 @@ where
                 return Err("goal found".to_owned());
             }
             Ok(())
-        });
+        })
+        .with_hook(memory_limit_hook(eqsat.max_memory));
 
     runner = if eqsat.backoff_scheduler {
         runner.with_scheduler(BackoffScheduler::default())
@@ -645,6 +646,38 @@ where
 
 #[cfg(test)]
 mod tests {
+    use egg::{RecExpr, StopReason};
+
+    use super::{EqsatConfig, Goal, GuideError, verify_reachability};
+    use crate::OriginLang;
+    use crate::langs::math::{self, ConstantFold, Math};
+
+    #[test]
+    fn verify_reachability_enforces_memory_limit() {
+        let guide: RecExpr<OriginLang<Math>> = "x".parse().unwrap();
+        let goal = Goal::Expr("definitely_unreachable".parse().unwrap());
+        let config = EqsatConfig {
+            max_iters: 100,
+            max_nodes: usize::MAX,
+            max_time: 60.0,
+            max_memory: Some(0),
+            backoff_scheduler: true,
+        };
+
+        let result = verify_reachability::<Math, ConstantFold>(
+            &[guide],
+            &goal,
+            &math::rules(),
+            &config,
+            false,
+        );
+        assert!(matches!(
+            result,
+            Err(GuideError::Unreached(StopReason::Other(message)))
+                if message.contains("memory limit exceeded")
+        ));
+    }
+
     /// `live_heap_bytes` must track live allocations: a large touched buffer
     /// shows up while alive and is gone once freed. This is the property the
     /// per-term memory ceiling relies on (no `malloc_trim` purge needed). Only
