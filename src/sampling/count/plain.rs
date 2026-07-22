@@ -151,15 +151,9 @@ impl<C: Counter> PlainTermCount<C> {
         }
 
         let eclass = &graph[canon_id];
-        // let type_overhead = self.type_overhead(&canon_id);
-
-        // Bail if type size overhead is too big
         let Some(child_budget) = size.checked_sub(1) else {
-            //+ type_overhead) else {
             return Vec::new();
         };
-
-        // let ty = OriginTree::from_eclass(graph, canon_id);
 
         let mut results = Vec::new();
 

@@ -25,7 +25,6 @@ pub fn contains<L: Language, A: Analysis<L>>(
 ) -> HashSet<Id> {
     assert!(egraph.clean);
     let mut memo = HashMap::<Id, HashSet<Id>>::default();
-    // let sketch_nodes = s.as_ref();
     let sketch_root = Id::from(sketch.as_ref().len() - 1);
     rec_contains(sketch, sketch_root, egraph, &mut memo)
 }

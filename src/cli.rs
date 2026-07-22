@@ -1,11 +1,5 @@
-//! Shared wire types for the `goal` / `sample` / `verify` split of the guide
-//! experiment. The three binaries touch no files: the Python drivers
-//! (`generate_goals.py` / `guided_search.py`) own all I/O, passing eqsat limits and
-//! language on argv (via [`crate::eqsat::EqsatConfig`], the shared clap flag
-//! group) and per-seed/per-leg data as the JSON records defined here. `goal`
-//! records [`GoalGenMetadata`] into `goal_terms.json`; `sample` emits [`SeedSamples`]
-//! (guide menus of [`GuideExpr`], one pool per [`Strategy`]); `guided_search.py` feeds
-//! chosen subsets back to `verify`.
+//! Shared wire types for the guide experiment's `goal`, `sample`, and `verify`
+//! binaries.
 
 use std::collections::BTreeMap;
 

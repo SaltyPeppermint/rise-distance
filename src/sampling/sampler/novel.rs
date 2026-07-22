@@ -46,16 +46,6 @@ enum Mode {
     Novel,
 }
 
-// /// One sampling candidate in [`Mode::AgreeWith`]: the chosen e-node index in
-// /// the curr class, the matching prev node, the candidate's weighted count,
-// /// and the per-child histograms used to draw child sizes.
-// type AgreeCandidate<'h, C> = (usize, &'h NodeMatch, C, Vec<&'h HashMap<usize, C>>);
-
-// /// One sampling candidate in [`Mode::Novel`]: the chosen e-node index, the
-// /// agreement profile, the candidate's weighted count, and the per-child
-// /// histograms.
-// type NovelCandidate<'h, C> = (usize, Vec<Option<Id>>, C, Vec<&'h HashMap<usize, C>>);
-
 impl<'a, 'g, C, L, N, W> NovelSampler<'a, 'g, C, L, N, W>
 where
     C: Counter,

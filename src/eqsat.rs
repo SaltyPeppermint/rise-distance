@@ -537,8 +537,6 @@ where
         eprintln!("Panic caught verify_reachability for guides: {guides:?}");
         return Err(GuideError::PanicWhileAttempt);
     };
-    // let runner = runner.run(rules);
-
     r.egraph.rebuild();
     let root = r.roots[0];
     if let Some(target) = goal.extract(&r.egraph, root) {
