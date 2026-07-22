@@ -1,12 +1,11 @@
 """Altair chart specs for the guide-selection analysis.
 
 Everything consumes the tidy long frame from `helpers.load_runs` (one row per
-leg, tagged with `mode`, carrying `r_<metric>` = metric / seed-baseline). Each
-run now uses a single guide-set size `k`, so `k` is no longer an axis — the
-recurring shape is *one point per seed/goal pair, pairs sorted by value along
-x with no per-pair labels, one facet per metric, one color per mode*.
-`pair_strip` builds that once and the notebook calls it with a different value
-column each time; ratio plots carry a dashed break-even line at 1.0.
+leg, tagged with `mode`). Each run now uses a single guide-set size `k`, so `k`
+is no longer an axis — the recurring shape is *one point per seed/goal pair,
+pairs sorted by value along x with no per-pair labels, one facet per metric*.
+`abs_pair_strip` builds that in absolute native units, overlaying each pair's
+unguided baseline as a second series.
 
 Categorical colors use the validated 8-hue order from the dataviz palette
 (fixed, never cycled) so a mode keeps its color as runs are added/removed.
@@ -74,75 +73,117 @@ def _title(title: str, meta: dict) -> alt.TitleParams:
     )
 
 
-def pair_strip(
+# Fixed hues for the series overlay, so each keeps its color independent of how
+# many modes are present.
+SERIES_COLORS = {"leg": PALETTE[0], "baseline": PALETTE[5], "guide": PALETTE[1]}  # blue/orange/green
+
+
+def abs_pair_strip(
     df: pl.DataFrame,
-    value: str,
     meta: dict,
     *,
     title: str,
     y_title: str,
     metrics: Sequence[str],
-    breakeven: bool = True,
+    limits: pl.DataFrame | None = None,
     group_by: Sequence[str] = ("seed", "goal"),
     group_reduce: str = "median",
-    columns: int = 3,
+    log_y: bool = True,
 ) -> alt.Chart:
-    """One point per seed/goal pair, pairs sorted by `value` along x, per metric.
+    """Absolute-unit sibling of `pair_strip`: each series' cost vs the baseline.
 
-    Metric facets wrap after `columns` per row (default 3). Within each
-    ``(mode, metric)`` facet the pairs are ranked by their `value` and that rank
-    is the x position, so the strip reads as a sorted curve; per-pair labels are
-    hidden (there can be hundreds).
+    `df` is long with columns `mode`, `metric`, `series` (``"leg"`` /
+    ``"baseline"`` / ``"guide"``), the pair keys, and `value` in native units —
+    build it with the notebook's `absolute_long`. Each pair contributes one point
+    per series per metric; pairs are ranked by their **leg** value (shared across
+    series) so the strip reads as a sorted leg curve with the other series drawn
+    at the same x.
 
-    `df` is long with columns `mode`, `metric`, `value`, and the pair keys
-    (`seed`, `goal`). Callers that start from the wide tidy frame melt the
-    relevant `r_<metric>`/cost columns into (`metric`, `value`) first — see the
-    notebook.
+    Color is the series. Mode is the facet **row** and metric the **column**, so
+    overlaying several runs stacks them as rows without the two encodings fighting
+    over the color channel. Every cell has an independent y (per-seed scale varies
+    wildly across metrics and runs).
 
-    `group_by` collapses each pair's attempts into a single point per
-    ``(mode, metric, *group_by)`` using `group_reduce` (default: median over the
-    reached attempts). ``group_by=["goal"]`` with ``group_reduce="min"`` gives
-    "best guide per goal".
+    `limits` is an optional ``(mode, series, metric, limit)`` frame (from
+    `helpers.series_limit_frame`); when given, each facet gets a dashed rule *per
+    series*, colored to match its points, at the ceiling that series ran under —
+    the guide/leg replay budget and the baseline's search-phase limit can differ.
+    Metrics absent from the frame — e.g. `classes`, which egg doesn't bound — get
+    no line.
 
-    Ratios are heavy-tailed, so per-pair points reveal the spread that a single
-    band would hide.
+    `y` is log-scaled by default (`log_y`): absolute costs mix per-seed scale and
+    span orders of magnitude — the very spread the ratio plots normalized away —
+    so a linear axis squashes everything.
     """
-    modes = [m for m in meta["modes"] if m in df["mode"].unique().to_list()]
     per_pair = (
-        df.drop_nulls(value)
-        .group_by("mode", "metric", *group_by)
-        .agg(getattr(pl.col(value), group_reduce)().alias("v"))
-        # Rank pairs by value within each (mode, metric) facet -> sorted x.
-        .with_columns((pl.col("v").rank("ordinal").over("mode", "metric") - 1).alias("rank"))
+        df.drop_nulls("value")
+        .filter(pl.col("value") > 0 if log_y else pl.lit(True))
+        .group_by("mode", "metric", "series", *group_by)
+        .agg(getattr(pl.col("value"), group_reduce)().alias("v"))
     )
+    # Rank pairs by the LEG value within each (mode, metric); share that rank with
+    # the pair's other series so all series line up on x.
+    leg_rank = (
+        per_pair.filter(pl.col("series") == "leg")
+        .with_columns((pl.col("v").rank("ordinal").over("mode", "metric") - 1).alias("rank"))
+        .select("mode", "metric", *group_by, "rank")
+    )
+    per_pair = per_pair.join(leg_rank, on=["mode", "metric", *group_by], how="left")
 
-    x = _pair_x()
+    scale = alt.Scale(type="log") if log_y else alt.Scale()
+    color = alt.Color(
+        "series:N",
+        scale=alt.Scale(domain=list(SERIES_COLORS), range=list(SERIES_COLORS.values())),
+        legend=alt.Legend(title=None),
+    )
+    modes = [m for m in meta["modes"] if m in per_pair["mode"].unique().to_list()]
+
+    # A layered facet needs one shared top-level dataset, so points and limit
+    # rules ride in a single frame tagged by `kind` and each mark filters to its
+    # own rows. Limit rows carry only (mode, series, metric, limit); their `y` is
+    # `limit`, the points' `y` is `v`.
+    points_rows = per_pair.with_columns(pl.lit("point").alias("kind"))
+    if limits is not None:
+        drawn = per_pair.select("mode", "series", "metric").unique()
+        limit_rows = limits.join(drawn, on=["mode", "series", "metric"], how="inner").with_columns(
+            pl.lit("limit").alias("kind")
+        )
+        data = pl.concat([points_rows, limit_rows], how="diagonal_relaxed")
+    else:
+        data = points_rows
+
+    base = alt.Chart(data)
     points = (
-        alt.Chart(per_pair)
+        base.transform_filter(alt.datum.kind == "point")
         .mark_circle(size=18, opacity=0.55)
         .encode(
-            x=x,
-            y=alt.Y("v:Q", title=y_title),
-            color=_color(modes),
+            x=_pair_x(),
+            y=alt.Y("v:Q", title=y_title, scale=scale),
+            color=color,
             tooltip=[
                 "mode:N",
+                "series:N",
                 "metric:N",
                 *[f"{g}:N" for g in group_by],
-                alt.Tooltip("v:Q", format=".3f"),
+                alt.Tooltip("v:Q", format=".3s"),
             ],
         )
     )
     layers = [points]
-    if breakeven:
+    if limits is not None:
         layers.append(
-            alt.Chart(per_pair)
-            .mark_rule(strokeDash=[4, 4], color="#555", opacity=0.7)
-            .encode(y=alt.datum(1.0))
+            base.transform_filter(alt.datum.kind == "limit")
+            .mark_rule(strokeDash=[4, 4], opacity=0.8)
+            .encode(y=alt.Y("limit:Q", scale=scale), color=color)
         )
 
     return (
         alt.layer(*layers)
-        .facet(facet=alt.Facet("metric:N", title=None, sort=list(metrics)), columns=columns)
+        .properties(width=260, height=200)
+        .facet(
+            row=alt.Row("mode:N", title=None, sort=modes),
+            column=alt.Column("metric:N", title=None, sort=list(metrics)),
+        )
         .properties(title=_title(title, meta))
         .resolve_scale(y="independent", x="independent")
     )
@@ -169,7 +210,9 @@ def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatC
         .mark_circle(size=16, opacity=0.6)
         .encode(
             x=_pair_x(),
-            y=alt.Y("reach_rate:Q", title="reach rate over attempts", scale=alt.Scale(domain=[0, 1])),
+            y=alt.Y(
+                "reach_rate:Q", title="reach rate over attempts", scale=alt.Scale(domain=[0, 1])
+            ),
             color=color,
             tooltip=[
                 "mode:N",
@@ -182,18 +225,16 @@ def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatC
     )
 
     # Per-mode summary: overall leg reach rate and goal coverage (≥1 success).
-    summ = (
-        pl.concat(
-            [
-                df.group_by("mode")
-                .agg((pl.col("reached").mean() * 100).alias("pct"))
-                .with_columns(pl.lit("leg reach rate").alias("kind")),
-                gr.group_by("mode")
-                .agg(((pl.col("reach_rate") > 0).mean() * 100).alias("pct"))
-                .with_columns(pl.lit("goal coverage").alias("kind")),
-            ],
-            how="vertical",
-        )
+    summ = pl.concat(
+        [
+            df.group_by("mode")
+            .agg((pl.col("reached").mean() * 100).alias("pct"))
+            .with_columns(pl.lit("leg reach rate").alias("kind")),
+            gr.group_by("mode")
+            .agg(((pl.col("reach_rate") > 0).mean() * 100).alias("pct"))
+            .with_columns(pl.lit("goal coverage").alias("kind")),
+        ],
+        how="vertical",
     )
     summary = (
         alt.Chart(summ)

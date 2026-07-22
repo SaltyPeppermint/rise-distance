@@ -7,10 +7,13 @@ finished, measured file in one pass. Egg limits (`--max-iters`, `--max-nodes`,
 `--max-time`, `--max-memory`, `--backoff-scheduler`) are forwarded to it.
 
 Each kept term carries a measurement object `{"iterations": [<egg
-per-iteration stats, each with an `allocated` field>, ...]}` (`allocated` =
-jemalloc `stats.allocated` live-heap bytes) as the 3rd entry of its record, so
-the `terms.json` payload has shape
-`[[size, {term: [attempts, validation_result, {iterations}]}], ...]`.
+per-iteration stats, each with an `allocated` field>, ...], "total_allocated":
+N}` as the 3rd entry of its record. `allocated` is the per-iteration live-heap
+delta (jemalloc `stats.allocated` over a pre-eqsat baseline); `total_allocated`
+is the *true* post-run delta sampled the moment the run returns — the final
+egraph's footprint, not an iteration-boundary snapshot. The `terms.json` payload
+has shape
+`[[size, {term: [attempts, validation_result, {iterations, total_allocated}]}], ...]`.
 
 If `--path` is omitted, a fresh `data/seed_terms/<adjective>-<noun>/`
 directory is created (collision-retry against existing siblings). The output

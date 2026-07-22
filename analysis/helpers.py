@@ -22,23 +22,22 @@ Column glossary for the tidy frame (`load_runs`):
     stop_reason  "empty_pool" when the candidate pool was empty
     iters, nodes, classes, nodes_per_class, total_time, memory
                  leg cost (nodes/classes/time/memory include the guide-egraph
-                 overhead; memory is jemalloc live-heap bytes (stats.allocated),
+                 overhead; nodes/classes are the true final egraph size read off
+                 the rebuilt egraph after the leg, not an iteration-boundary
+                 snapshot; memory is jemalloc live-heap bytes (stats.allocated),
                  folded as max(leg, guide))
     base_nodes, base_classes, base_iters, base_total_time, base_nodes_per_class,
     base_memory  that seed's full unguided eqsat cost (base_memory = live-heap
                  bytes sampled right after the unguided run)
-    r_nodes, r_classes, r_iters, r_total_time, r_nodes_per_class, r_memory
-                 metric / baseline (paired per seed); null where the metric is null
+    guide_nodes, guide_classes, guide_time, guide_memory
+                 the per-seed guide replay's cost (from `sample.rs`)
 """
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import polars as pl
-
-# Cost metrics carried through the plots. `nodes_per_class` is computed but not
-# plotted by default; add it to a plot's metric list to surface it.
-METRICS = ["iters", "nodes", "classes", "nodes_per_class", "total_time", "memory"]
 
 
 def find_latest_run(pattern: str = "run", subdir: str = "guided_search") -> Path:
@@ -151,12 +150,6 @@ def load_runs(runs: list[tuple[str, str]]) -> tuple[pl.DataFrame, dict]:
         df = legs.join(base, on="seed", how="left").with_columns(
             pl.lit(label).alias("mode"),
             pl.concat_str(["seed", "goal"], separator="│").alias("pair"),
-            *[
-                pl.when(pl.col(f"base_{m}") > 0)
-                .then(pl.col(m) / pl.col(f"base_{m}"))
-                .alias(f"r_{m}")
-                for m in METRICS
-            ],
         )
         frames.append(df)
         modes.append(label)
@@ -179,6 +172,101 @@ def load_runs(runs: list[tuple[str, str]]) -> tuple[pl.DataFrame, dict]:
     }
     print(f"\nk per mode: {k_by_mode}   (n_goals={n_goals}, n_trials={n_trials})")
     return df, meta
+
+
+# Dimensions that egg actually bounds with a `--max-*` (or `--stop-*`) limit, and
+# the eqsat-config key carrying that ceiling. `classes` has no limit (egg bounds
+# nodes, not classes), so it never gets a limit line.
+LIMIT_KEYS = {
+    "iters": "max_iters",
+    "nodes": "max_nodes",
+    "total_time": "max_time",
+    "memory": "max_memory",
+}
+
+
+def _governing_limits(run_dir: Path) -> dict[str, dict[str, float]]:
+    """The eqsat limits each egraph family actually ran under, per run.
+
+    All three read the search-phase eqsat config from the seed folder's
+    `goal_args.json`. The **guide** replay and the **leg** search both run under
+    the `--stop-*` replay budget the guided_search run set (in `config.json`,
+    each given dimension overriding its search-phase value — see
+    `guided_search.replay_limits`); the **baseline** (unguided `goal.rs`) run uses
+    the plain search-phase limits. Returns ``{egraph -> {dimension -> limit}}``,
+    dropping dimensions whose limit is unset (e.g. no `--max-memory`).
+    """
+    config = json.loads((run_dir / "config.json").read_text())
+    goal_args = json.loads(
+        (Path(__file__).parent / ".." / config["path"] / "goal_args.json").read_text()
+    )
+    base = {dim: goal_args.get(key) for dim, key in LIMIT_KEYS.items()}
+
+    # Guide replay and legs: search-phase limits with each given --stop-*
+    # overriding its dimension (see guided_search.replay_limits).
+    stop = {
+        "iters": config.get("stop_iters"),
+        "nodes": config.get("stop_nodes"),
+        "total_time": config.get("stop_time"),
+        "memory": config.get("stop_memory"),
+    }
+    replay = {dim: (stop[dim] if stop[dim] is not None else base[dim]) for dim in base}
+
+    limits = {"guide": dict(replay), "leg": dict(replay), "baseline": dict(base)}
+    return {
+        egraph: {dim: lim for dim, lim in dims.items() if lim is not None}
+        for egraph, dims in limits.items()
+    }
+
+
+def _limits_by_mode(runs: list[tuple[str, str]]) -> dict[str, dict[str, dict[str, float]]]:
+    """``mode -> {egraph -> {dimension -> limit}}`` for the given runs.
+
+    Mirrors how `load_runs` labels a mode (``"<name> (k=<k>)"``) so the returned
+    keys line up with the tidy frame's `mode` column.
+    """
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    for name, pattern in runs:
+        run_dir = find_latest_run(pattern)
+        legs = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
+        k = legs["k"].unique().to_list()[0]
+        out[f"{name} (k={k})"] = _governing_limits(run_dir)
+    return out
+
+
+# Which `_governing_limits` egraph slot each plotted series ran under. The guide
+# replay and the legs share the `--stop-*` replay budget; the baseline is the
+# unguided full run under the plain search-phase limits.
+SERIES_EGRAPH = {"leg": "leg", "baseline": "baseline", "guide": "guide"}
+
+
+def series_limit_frame(
+    runs: list[tuple[str, str]],
+    metrics: Sequence[str],
+    series: Sequence[str] = ("leg", "baseline", "guide"),
+) -> pl.DataFrame:
+    """Tidy ``(mode, series, metric, limit)`` frame of the ceiling each plotted
+    series ran under, for the limited `metrics`.
+
+    The guide replay and the legs share the `--stop-*` replay budget, while the
+    baseline ran under the plain search-phase limits, so the three series can have
+    different ceilings — hence a limit per (series, metric), not one shared line.
+    `abs_pair_strip` draws a dashed rule per series, colored to match its points.
+    `metrics` without a limit (e.g. `classes`, which egg doesn't bound) are
+    dropped, so those facets get no line.
+    """
+    limits_by_mode = _limits_by_mode(runs)
+    rows = [
+        {"mode": mode, "series": s, "metric": m, "limit": float(lims[SERIES_EGRAPH[s]][m])}
+        for mode, lims in limits_by_mode.items()
+        for s in series
+        for m in metrics
+        if m in LIMIT_KEYS and m in lims.get(SERIES_EGRAPH[s], {})
+    ]
+    return pl.DataFrame(
+        rows,
+        schema={"mode": pl.String, "series": pl.String, "metric": pl.String, "limit": pl.Float64},
+    )
 
 
 def goal_reach(df: pl.DataFrame) -> pl.DataFrame:

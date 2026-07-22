@@ -12,7 +12,7 @@ use thiserror::Error;
 use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::{OriginLang, lower};
 use crate::sketch::{self, Sketch};
-use crate::utils::live_heap_bytes;
+use crate::utils::{HeapDelta, live_heap_bytes};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EqsatMetadata {
@@ -298,24 +298,37 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
 /// [`Runner`] with [`HeapData`] in its iteration-data slot (via
 /// `EqsatConfig::build_runner::<_, _, HeapData>`). Each iteration's `allocated`
 /// is live-heap growth over a pre-eqsat baseline once passed through
-/// [`Measurement::from_run`]. Serializes as `{"iterations": [...]}`, egg's
+/// [`Measurement::from_run`]. `total_allocated` is the *true* post-run live-heap
+/// delta: [`live_heap_bytes`] sampled the moment the run returns, minus the same
+/// pre-eqsat baseline — the final egraph's footprint, not an iteration-boundary
+/// snapshot. Serializes as `{"iterations": [...], "total_allocated": N}`, egg's
 /// `Iteration` flattening `data` so each entry carries an `allocated` field.
 #[derive(Debug, Serialize)]
 pub struct Measurement {
     pub iterations: Vec<Iteration<HeapData>>,
+    pub total_allocated: u64,
 }
 
 impl Measurement {
     /// Assemble a measurement from a finished runner's `iterations`, rebasing
     /// each iteration's absolute [`HeapData::allocated`] reading to growth over
-    /// `pre` (the [`live_heap_bytes`] baseline captured *before*
-    /// `build_runner`), saturating at zero.
+    /// `heap`'s pre-eqsat baseline (the [`live_heap_bytes`] value captured
+    /// *before* `build_runner`), saturating at zero, and recording the true
+    /// post-run delta in `total_allocated` by sampling live-heap now.
+    ///
+    /// Call this immediately after the run returns and before the egraph is
+    /// dropped, so `total_allocated` still reflects the final egraph's live
+    /// allocations.
     #[must_use]
-    pub fn from_run(pre: u64, mut iterations: Vec<Iteration<HeapData>>) -> Self {
+    pub fn from_run(heap: &HeapDelta, mut iterations: Vec<Iteration<HeapData>>) -> Self {
+        let pre = heap.baseline();
         for iter in &mut iterations {
             iter.data.allocated = iter.data.allocated.saturating_sub(pre);
         }
-        Self { iterations }
+        Self {
+            iterations,
+            total_allocated: heap.bytes(),
+        }
     }
 }
 
@@ -457,8 +470,19 @@ impl<L: MyLanguage> Goal<L> {
     }
 }
 
+/// A reached run's outputs from [`verify_reachability`]: the per-iteration log,
+/// the extracted goal term, and the *true* final egraph size (`nodes`/`classes`
+/// read off the rebuilt egraph after the run, not an iteration-boundary
+/// snapshot).
+pub struct ReachedRun<L: MyLanguage> {
+    pub iterations: Vec<egg::Iteration<()>>,
+    pub target: RecExpr<L>,
+    pub nodes: usize,
+    pub classes: usize,
+}
+
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
-/// Returns `Some((iterations, nodes))` if reached, `None` otherwise.
+/// Returns a [`ReachedRun`] if reached, an error otherwise.
 ///
 /// # Errors
 ///
@@ -473,7 +497,7 @@ pub fn verify_reachability<L, N>(
     rules: &[Rewrite<L, N>],
     eqsat: &EqsatConfig,
     full_union: bool,
-) -> Result<(Vec<egg::Iteration<()>>, RecExpr<L>), GuideError>
+) -> Result<ReachedRun<L>, GuideError>
 where
     L: MyLanguage + 'static,
     N: MyAnalysis<L> + Default,
@@ -517,7 +541,12 @@ where
     r.egraph.rebuild();
     let root = r.roots[0];
     if let Some(target) = goal.extract(&r.egraph, root) {
-        Ok((r.iterations, target))
+        Ok(ReachedRun {
+            iterations: r.iterations,
+            target,
+            nodes: r.egraph.total_number_of_nodes(),
+            classes: r.egraph.classes().len(),
+        })
     } else {
         Err(GuideError::Unreached(r.stop_reason.clone().unwrap()))
     }

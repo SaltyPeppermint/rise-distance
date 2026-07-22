@@ -10,13 +10,14 @@ pair. Python precomputes all `--attempts` guide subsets for the pair up front an
 hands them over; `verify` runs one leg per subset and early-stops at the first
 reach. All logging and data wrangling (parquet/JSON) live here.
 
-The guide replay runs under an explicit budget given on the CLI: at least one
-of `--stop-iters`/`--stop-nodes`/`--stop-time`/`--stop-memory` is required;
-unset dimensions fall back to the search-phase (brute-force) limits from
-`goal_args.json`, and the replay ends at whichever limit trips first. The point
-is to ask "how much can still be solved under a tighter budget than the
-brute-force full eqsat by breaking the search into guided legs". The leg search
-itself keeps the search-phase limits.
+Both phases — the guide replay (`sample`) and the leg search (`verify`) — run
+under an explicit budget given on the CLI: at least one of
+`--stop-iters`/`--stop-nodes`/`--stop-time`/`--stop-memory` is required; unset
+dimensions fall back to the search-phase (brute-force) limits from
+`goal_args.json`, and each run ends at whichever limit trips first. The point is
+to ask "how much can still be solved under a tighter budget than the brute-force
+full eqsat by breaking the search into guided legs", so the tighter budget binds
+the guide replay *and* every leg — not just the guide.
 
 Example:
     cargo build --release --bin sample --bin verify
@@ -253,8 +254,9 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     specs = flatten_enriched_seeds(args)
     sample_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
-    # sample gets the --stop-* replay budget; verify keeps the plain
-    # search-phase limits.
+    # Both sample (guide replay) and verify (legs) run under the --stop-* replay
+    # budget; this computes it for the sample phase (main() builds the same for
+    # verify's base_flags).
     sample_flags = ["--language", str(cfg["language"])]
     limits = replay_limits(args, cfg)
     # Menu size = exactly what the attempt loop consumes: no_replacement_* needs
@@ -334,9 +336,7 @@ def run_legs(
     cmd = [str(args.verify_binary), *base_flags, "--goal", goal]
     if args.full_union:
         cmd.append("--full-union")
-    return run_json_subprocess(
-        cmd, what=f"verify for goal {goal!r}", input=json.dumps(subsets)
-    )
+    return run_json_subprocess(cmd, what=f"verify for goal {goal!r}", input=json.dumps(subsets))
 
 
 def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
@@ -488,7 +488,10 @@ def main() -> int:
 
     cfg = json.loads((args.path / "goal_args.json").read_text())
     args.k = 1 if args.strategy in SMALLEST_STRATEGIES else args.k
-    base_flags = ["--language", str(cfg["language"]), *limit_flags(eqsat_limits(cfg))]
+    # The --stop-* replay budget applies to BOTH phases: the guide replay (sample)
+    # and the leg search (verify) run under the same tightened limits, so the
+    # whole guided attempt is bounded by the tighter budget, not just the guide.
+    base_flags = ["--language", str(cfg["language"]), *limit_flags(replay_limits(args, cfg))]
     out = resolve_output_dir(args)
 
     samples_path = run_sample(args, cfg, out / "sample_run")

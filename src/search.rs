@@ -194,7 +194,7 @@ where
     );
 
     let (reached, verify_iters) = match verify {
-        Ok((iters, expr)) => (Some(expr), Some(iters)),
+        Ok(run) => (Some(run.target), Some(run.iterations)),
         Err(_) => (None, None),
     };
 
@@ -249,7 +249,7 @@ where
     );
 
     let (reached, verify_iters) = match verify {
-        Ok((iters, expr)) => (Some(expr), Some(iters)),
+        Ok(run) => (Some(run.target), Some(run.iterations)),
         Err(_) => (None, None),
     };
 

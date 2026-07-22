@@ -148,13 +148,15 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
         .collect();
 
     match verify_reachability(&guides, goal, rules, &args.eqsat, args.full_union) {
-        Ok((iterations, _target)) => {
-            let last = iterations.last().expect("reached leg logged no iterations");
+        Ok(run) => {
+            let iterations = &run.iterations;
             LegResult {
                 reached: true,
                 iters: Some(iterations.len()),
-                nodes: Some(last.egraph_nodes),
-                classes: Some(last.egraph_classes),
+                // True final egraph size (read off the rebuilt egraph after the
+                // run), not the last iteration-boundary snapshot.
+                nodes: Some(run.nodes),
+                classes: Some(run.classes),
                 total_applied: Some(
                     iterations
                         .iter()

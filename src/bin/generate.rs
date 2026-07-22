@@ -230,7 +230,9 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     // iteration start and stash it in `Iteration::data`, so the same run that
     // validates the term also produces its measurement — no second eqsat pass.
     // `heap`'s baseline, captured here before the egraph allocates, rebases
-    // those per-iteration readings in `Measurement::from_run` below.
+    // those per-iteration readings in `Measurement::from_run` below, which also
+    // samples live-heap once more right after the run to record the true
+    // post-run delta (`total_allocated`) — the final egraph's footprint.
     let heap = HeapDelta::start();
     let runner = config.build_runner::<_, _, HeapData>(expr);
 
@@ -282,5 +284,5 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
         Some(validation)
     })();
 
-    result.map(|validation| (validation, Measurement::from_run(heap.baseline(), r.iterations)))
+    result.map(|validation| (validation, Measurement::from_run(&heap, r.iterations)))
 }
