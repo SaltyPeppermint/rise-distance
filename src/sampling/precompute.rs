@@ -200,9 +200,9 @@ where
     ///
     /// Unlike [`Self::sample_frontier_terms`], this policy does not draw terms
     /// independently. It shares coverage state across the batch and prefers
-    /// under-used e-nodes, frontier profiles, and child-size choices. It makes
-    /// exactly one construction attempt per requested term and collapses any
-    /// exact duplicates rather than entering an unbounded rejection loop.
+    /// under-used e-nodes, frontier profiles, and child-size choices. It
+    /// refills exact duplicates while retaining the batch's coverage state,
+    /// subject to the sampler's bounded oversampling budget.
     #[must_use]
     pub fn sample_balanced_frontier_terms(
         &self,

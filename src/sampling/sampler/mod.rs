@@ -163,4 +163,4 @@ where
 }
 
 /// Cap on how many draws `sample_size` attempts per requested sample.
-const MAX_OVERSAMPLE: u64 = 32;
+pub(super) const MAX_OVERSAMPLE: u64 = 32;

@@ -3,7 +3,7 @@
 This document records why frontier membership was separated from sampling
 policy, how the shared constrained derivation space works, and how the
 coverage-balanced sampler increases structural variety without tree-distance
-comparisons or rejection sampling.
+comparisons or unbounded rejection sampling.
 
 The relevant implementation is:
 
@@ -44,8 +44,8 @@ Post-hoc alternatives have unattractive costs:
 
 The chosen design instead balances decisions while a valid frontier term is
 being constructed. Every partial derivation is feasible, every completed term
-is on the frontier, and the amount of construction work is bounded by the
-requested batch size.
+is on the frontier, and the amount of construction work is bounded by a fixed
+multiple of the requested batch size.
 
 ## Frontier membership as a two-state tree automaton
 
@@ -173,19 +173,21 @@ dependence between unrelated batches, and synchronization requirements.
 
 ## Work bound and duplicate behavior
 
-`BalancedFrontierSampler::sample_size` performs exactly one complete
-construction for each requested output, capped by the exact number of
-available frontier terms reported by the histogram.
+`BalancedFrontierSampler::sample_size` targets the requested number of distinct
+outputs, capped by the exact number of available frontier terms reported by the
+histogram. It retains one coverage map while refilling duplicates, with the
+same `32 × requested` construction budget as the independent sampler.
 
 Completed terms are placed in a set before return. An exact duplicate is
-collapsed, but is not retried. Therefore:
+collapsed and another construction is attempted while budget remains.
+Therefore:
 
-- Runtime does not grow when the frontier is dominated by similar or identical
-  derivations.
-- The method can return fewer than the requested number of distinct terms,
-  consistent with the `Sampler::sample_size` "up to" contract.
-- The coverage policy makes duplicates less likely but does not yet prove that
-  all constructed derivations are distinct.
+- Runtime remains bounded when the frontier is dominated by similar or
+  identical derivations.
+- The method usually fills duplicate-induced shortfalls, while retaining the
+  coverage policy across refill draws.
+- It can still return fewer than requested after exhausting the bounded work
+  budget, consistent with the `Sampler::sample_size` "up to" contract.
 
 `PrecomputePackage::sample_balanced_frontier_terms` is the production entry
 point. It uses the same size-distribution logic as `sample_frontier_terms`, but

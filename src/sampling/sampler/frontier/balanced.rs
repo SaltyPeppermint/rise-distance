@@ -17,7 +17,7 @@ use super::space::{
 };
 use crate::Counter;
 use crate::sampling::count::NovelTermCount;
-use crate::sampling::sampler::Sampler;
+use crate::sampling::sampler::{MAX_OVERSAMPLE, Sampler};
 use crate::{MyAnalysis, MyLanguage, OriginLang, lower, utils};
 
 /// Relative penalties used when balancing local derivation choices.
@@ -279,11 +279,14 @@ where
         let mut coverage = CoveragePolicy::new(self.config);
         let mut terms = HashSet::with_capacity(target);
 
-        // Exactly one construction per requested output. Duplicates are
-        // collapsed rather than retried, keeping the work bound independent of
-        // how concentrated the frontier is.
-        for _ in 0..target {
+        // Keep the coverage state across refill draws so duplicates steer
+        // subsequent constructions toward under-used choices. As in the
+        // default sampler, cap the work to keep duplicate-heavy frontiers from
+        // turning this into an unbounded rejection loop.
+        let mut budget = samples * MAX_OVERSAMPLE;
+        while terms.len() < target && budget > 0 {
             terms.insert(self.construct(id, size, &mut coverage, &mut rng));
+            budget -= 1;
         }
 
         let mut terms = terms.into_iter().collect::<Vec<_>>();
@@ -359,5 +362,49 @@ mod tests {
         for term in terms {
             assert!(prev.lookup_expr(&lower(term)).is_none());
         }
+    }
+
+    #[test]
+    fn balanced_sampler_refills_duplicates_up_to_target() {
+        // The previous graph contains only (+ a b). After merging a, b, and c,
+        // the root has eight novel size-3 combinations. With coverage penalties
+        // disabled, this seed repeats at least one combination in the first
+        // eight draws, so reaching all eight requires a refill draw.
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let c = curr.add(sym("c"));
+        let root = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        curr.union(a, b);
+        curr.union(a, c);
+        curr.rebuild();
+
+        let plain = PlainTermCount::<BigUint>::new(3, &curr);
+        let counts = NovelTermCount::new(3, &curr, &prev, plain);
+        let config = BalanceConfig {
+            node_penalty: 0,
+            profile_penalty: 0,
+            child_size_penalty: 0,
+        };
+        let sampler = BalancedFrontierSampler::with_config(&counts, root, config);
+        let seed = [17, 23];
+
+        let mut rng = utils::combined_rng([3, seed[0], seed[1]]);
+        let mut coverage = CoveragePolicy::new(config);
+        let first_batch = (0..8)
+            .map(|_| sampler.construct(root, 3, &mut coverage, &mut rng))
+            .collect::<HashSet<_>>();
+        assert!(
+            first_batch.len() < 8,
+            "fixture must contain an initial duplicate"
+        );
+
+        let terms = sampler
+            .sample_size(root, 3, 8, seed)
+            .expect("eight frontier terms");
+        assert_eq!(terms.len(), 8);
     }
 }
