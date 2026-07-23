@@ -24,7 +24,7 @@ pub enum Strategy {
 impl Strategy {
     /// Every guide strategy emitted by the `sample` binary.
     pub const ALL: [Strategy; 5] = [
-        Strategy::Sample(SampleStrategy::Count),
+        Strategy::Sample(SampleStrategy::Independent),
         Strategy::Sample(SampleStrategy::Naive),
         Strategy::Sample(SampleStrategy::Balanced),
         Strategy::Smallest { novel: false },
@@ -34,7 +34,7 @@ impl Strategy {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Strategy::Sample(SampleStrategy::Count) => "sample_count",
+            Strategy::Sample(SampleStrategy::Independent) => "sample_independent",
             Strategy::Sample(SampleStrategy::Naive) => "sample_naive",
             Strategy::Sample(SampleStrategy::Balanced) => "sample_balanced",
             Strategy::Smallest { novel: true } => "smallest_novel",
@@ -47,7 +47,7 @@ impl Strategy {
     #[must_use]
     pub const fn seed_of(&self) -> u64 {
         match self {
-            Strategy::Sample(SampleStrategy::Count) => 1,
+            Strategy::Sample(SampleStrategy::Independent) => 1,
             Strategy::Sample(SampleStrategy::Naive) => 2,
             Strategy::Sample(SampleStrategy::Balanced) => 3,
             Strategy::Smallest { .. } => 0,
@@ -139,13 +139,16 @@ mod tests {
         assert_eq!(
             names,
             [
-                "sample_count",
+                "sample_independent",
                 "sample_naive",
                 "sample_balanced",
                 "smallest_overall",
                 "smallest_novel",
             ]
         );
-        assert_eq!(Strategy::Sample(SampleStrategy::Balanced).seed_of(), 3);
+        assert_eq!(
+            Strategy::Sample(SampleStrategy::Balanced).seed_of(),
+            3
+        );
     }
 }

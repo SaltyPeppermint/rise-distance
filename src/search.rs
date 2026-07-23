@@ -164,9 +164,8 @@ where
     let Some(sampled) = pp.sample_frontier_terms(
         args.sample_count,
         TermSampleDist::GREEDY,
-        SampleStrategy::Count,
+        SampleStrategy::Independent,
         [args.cut_iters as u64, 0],
-        true,
     ) else {
         println!("{search_name}: sampling failed");
         return ReachResult {

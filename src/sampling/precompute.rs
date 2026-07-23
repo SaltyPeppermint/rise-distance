@@ -173,36 +173,25 @@ where
         distribution: TermSampleDist,
         sample_strategy: SampleStrategy,
         seed: [u64; 2],
-        novel: bool,
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let histogram = self.tc.data().get(&self.root)?;
 
         let samples_per_size =
             distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
 
-        match (sample_strategy, novel) {
-            (SampleStrategy::Naive, true) => {
+        match sample_strategy {
+            SampleStrategy::Naive => {
                 IndependentFrontierSampler::new(&self.tc, self.root, NaiveWeigher)
                     .sample_batch_root(&samples_per_size, seed)
             }
-            (SampleStrategy::Count, true) => {
+            SampleStrategy::Independent => {
                 IndependentFrontierSampler::new(&self.tc, self.root, CountWeigher)
                     .sample_batch_root(&samples_per_size, seed)
             }
-            (SampleStrategy::Balanced, true) => BalancedFrontierSampler::new(&self.tc, self.root)
-                .sample_batch_root(&samples_per_size, seed),
-            (SampleStrategy::Naive, false) => {
-                PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
+            SampleStrategy::Balanced => {
+                BalancedFrontierSampler::new(&self.tc, self.root)
                     .sample_batch_root(&samples_per_size, seed)
             }
-            (SampleStrategy::Count, false) => {
-                PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, CountWeigher)
-                    .sample_batch_root(&samples_per_size, seed)
-            }
-            // Coverage profiles are defined by agreement with the previous
-            // graph. There is no corresponding policy for unconstrained plain
-            // extraction.
-            (SampleStrategy::Balanced, false) => None,
         }
     }
 
@@ -340,7 +329,6 @@ mod tests {
                 TermSampleDist::GREEDY,
                 SampleStrategy::Balanced,
                 [5, 8],
-                true,
             )
             .expect("balanced frontier terms");
         let lowered = terms

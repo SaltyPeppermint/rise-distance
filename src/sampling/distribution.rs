@@ -9,8 +9,8 @@ use crate::Counter;
 #[derive(Serialize, serde::Deserialize, Debug, Clone, Copy, clap::ValueEnum, strum::Display)]
 #[strum(serialize_all = "kebab-case")]
 pub enum SampleStrategy {
+    Independent,
     Naive,
-    Count,
     Balanced,
 }
 

@@ -251,9 +251,8 @@ fn run_cut(
     let Some(sampled) = pp.sample_frontier_terms(
         args.sample_count,
         TermSampleDist::GREEDY,
-        SampleStrategy::Count,
+        SampleStrategy::Independent,
         [args.cut_iters as u64, 0],
-        true,
     ) else {
         warn("Sampling failed");
         return None;

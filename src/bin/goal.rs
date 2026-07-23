@@ -58,7 +58,7 @@ struct Args {
     size_distribution: TermSampleDist,
 
     /// How to sample the GOAL terms.
-    #[arg(long, default_value_t = SampleStrategy::Count)]
+    #[arg(long, default_value_t = SampleStrategy::Independent)]
     goal_sample_strategy: SampleStrategy,
 
     /// How much to grow `max_size` on each precompute retry.
@@ -189,7 +189,6 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
             args.size_distribution,
             args.goal_sample_strategy,
             [0, 0],
-            true,
         )
         .ok_or_else(|| "sample_frontier failed".to_owned())?;
 

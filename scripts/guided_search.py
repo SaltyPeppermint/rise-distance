@@ -41,10 +41,10 @@ from common import (
 # The `with_replacement_*` pools are re-drawn *with* replacement across a leg's
 # `k` picks; everything else is drawn without replacement.
 SamplingStrategy = Literal[
-    "no_replacement_count",
+    "no_replacement_independent",
     "no_replacement_naive",
     "no_replacement_balanced",
-    "with_replacement_count",
+    "with_replacement_independent",
     "with_replacement_naive",
     "with_replacement_balanced",
 ]
@@ -100,7 +100,7 @@ class Args:
     """How many legs to try per (seed, goal) pair, each with a freshly resampled
     guide subset. Counts the first try, so `attempts=1` means a single leg with
     no resampling. Stops early on the first reach; gives up after the last."""
-    strategy: Strategy = "no_replacement_count"
+    strategy: Strategy = "no_replacement_independent"
     """Which candidate pool to restart with."""
     k: int = 1
     """Guide-set size: each seed/goal pair runs one attempt loop drawing `k`
@@ -139,14 +139,14 @@ def pool_key(strategy: str) -> str:
     """Map a driver strategy to the candidate-pool key `sample` writes.
 
     The replacement prefix is a Python-side draw policy (`pick_subset`), not a
-    pool: `sample` emits `sample_count`, `sample_naive`, and
+    pool: `sample` emits `sample_independent`, `sample_naive`, and
     `sample_balanced`, so collapse the prefix to hit one of those.
     `smallest_*` keys pass through unchanged.
     """
     if strategy in SMALLEST_STRATEGIES:
         return strategy
-    if strategy.endswith("_count"):
-        return "sample_count"
+    if strategy.endswith("_independent"):
+        return "sample_independent"
     if strategy.endswith("_naive"):
         return "sample_naive"
     if strategy.endswith("_balanced"):

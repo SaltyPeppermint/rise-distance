@@ -216,7 +216,6 @@ fn draw_candidates<L: MyLanguage, N: MyAnalysis<L>>(
                 args.size_distribution,
                 s,
                 [args.samples_per_strategy as u64, strategy.seed_of()],
-                true,
             )
             .unwrap_or_else(|| {
                 eprintln!(
