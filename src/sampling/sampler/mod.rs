@@ -1,4 +1,4 @@
-mod novel;
+mod frontier;
 mod plain;
 mod weigher;
 
@@ -10,7 +10,7 @@ use rand_chacha::ChaCha12Rng;
 use crate::Counter;
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
-pub use novel::NovelSampler;
+pub use frontier::{BalanceConfig, BalancedFrontierSampler, IndependentFrontierSampler};
 pub use plain::PlainSampler;
 pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
 

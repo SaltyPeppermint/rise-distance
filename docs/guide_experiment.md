@@ -102,11 +102,16 @@ plotting.
 | --- | --- |
 | `--k <ints…>` | Guide-set sizes to sweep (guides unioned per leg). |
 | `--attempts N` | Legs per `(seed, goal, k)`; each resamples a fresh subset. Counts the first try. |
-| `--strategy` | Candidate pool: `no_replacement_count`, `with_replacement_count`, `no_replacement_naive`, `with_replacement_naive`, `smallest_novel`, `smallest_overall`. |
+| `--strategy` | Candidate pool: `no_replacement_count`, `with_replacement_count`, `no_replacement_naive`, `with_replacement_naive`, `no_replacement_balanced`, `with_replacement_balanced`, `smallest_novel`, `smallest_overall`. |
 | `--full-union` | Union guide nodes by their origin e-class (experimental; helped reachability historically). |
 | `--samples-per-strategy N` | Menu size `sample` draws per strategy (default 1000). Keep ≥ largest `k`. Values below ~30 can trip a pre-existing bigint sampler panic. |
 | `--jobs N` | Concurrent `verify` legs (default `os.cpu_count()`). Lower it if the large leg egraphs exhaust RAM. |
 | `--take-first N` | Only process the first N seeds. |
+
+The `balanced` pool is diversified while frontier terms are constructed.
+`count` and `naive` draw each candidate independently. The
+`with_replacement_*` / `no_replacement_*` prefix is a separate Python-side
+policy for selecting guide subsets from the resulting finite pool.
 
 ## Scaling notes
 

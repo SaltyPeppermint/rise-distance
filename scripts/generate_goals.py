@@ -18,11 +18,14 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import tyro
 from tqdm import tqdm
 
 from common import eqsat_limits, exit_if_missing, language_eqsat_flags, run_json_subprocess
+
+GoalSampleStrategy = Literal["count", "naive", "balanced"]
 
 
 @dataclass
@@ -46,8 +49,9 @@ class Args:
     size_distribution: str | None = None
     """How to distribute the sample budget across sizes (forwarded if set)."""
 
-    goal_sample_strategy: str | None = None
-    """How to sample the GOAL terms (forwarded if set)."""
+    goal_sample_strategy: GoalSampleStrategy | None = None
+    """How to sample the GOAL terms: count, naive, or balanced (forwarded if
+    set)."""
 
     skip_unmeasured: bool = True
     """Skip seeds whose measurement is missing or empty (no iterations were

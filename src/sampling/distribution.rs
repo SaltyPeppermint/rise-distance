@@ -11,6 +11,7 @@ use crate::Counter;
 pub enum SampleStrategy {
     Naive,
     Count,
+    Balanced,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

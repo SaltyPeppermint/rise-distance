@@ -2,7 +2,7 @@
 //!
 //! This is the "first half" of the old `guide` binary: it replays the
 //! guide-phase eqsat for one seed, builds a [`PrecomputePackage`], and samples
-//! the four-strategy guide menu. The individual search legs (the second half)
+//! the five-strategy guide menu. The individual search legs (the second half)
 //! are driven by `guided_search.py`, which feeds chosen guide subsets to `verify`.
 //!
 //! Touches no files and reads no stdin: everything comes on argv. `guided_search.py`
@@ -198,7 +198,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     })
 }
 
-/// Draw the guide-candidate pool for one strategy. The four sampling strategies
+/// Draw the guide-candidate pool for one strategy. The sampling strategies
 /// draw `samples_per_strategy` terms in a single batch; `Smallest` contributes
 /// the one smallest (novel or overall) root term.
 fn draw_candidates<L: MyLanguage, N: MyAnalysis<L>>(

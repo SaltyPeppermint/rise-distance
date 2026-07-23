@@ -100,16 +100,23 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
 def load_runs(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     """Load and stack the given runs into one tidy long DataFrame.
 
-    Returns the leg frame and plot metadata: ordered modes, guide-set size by
-    mode, maximum distinct goals, and maximum configured attempts.
+    Returns the leg frame and plot metadata: ordered modes, guide-set size and
+    sampling strategy by mode, maximum distinct goals, and maximum configured
+    attempts.
     """
-    frames, modes, k_by_mode = [], [], {}
+    frames, modes, k_by_mode, strategy_by_mode = [], [], {}, {}
     n_goals = n_trials = 0
     for run in runs:
         run_dir = run.directory
         config = json.loads((run_dir / "config.json").read_text())
 
         legs = _load_leg_frame(run_dir)
+        strategies = legs["strategy"].unique().to_list()
+        if strategies != [run.strategy]:
+            raise ValueError(
+                f"{run_dir.name}: config strategy={run.strategy!r}, "
+                f"result strategies={sorted(strategies)!r}"
+            )
         ks = legs["k"].unique().to_list()
         if len(ks) != 1:
             raise ValueError(f"{run_dir.name}: expected a single k, found {sorted(ks)}")
@@ -126,6 +133,7 @@ def load_runs(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
         frames.append(df)
         modes.append(label)
         k_by_mode[label] = k
+        strategy_by_mode[label] = run.strategy
         n_goals = max(n_goals, df["goal"].n_unique())
         n_trials = max(n_trials, config["attempts"])
 
@@ -139,10 +147,15 @@ def load_runs(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     meta = {
         "modes": modes,
         "k": k_by_mode,
+        "strategy": strategy_by_mode,
         "n_goals": n_goals,
         "n_trials": n_trials,
     }
-    print(f"\nk per mode: {k_by_mode}   (n_goals={n_goals}, n_trials={n_trials})")
+    print(
+        f"\nk per mode: {k_by_mode}\n"
+        f"strategy per mode: {strategy_by_mode}   "
+        f"(n_goals={n_goals}, n_trials={n_trials})"
+    )
     return df, meta
 
 

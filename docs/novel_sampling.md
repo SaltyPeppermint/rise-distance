@@ -5,7 +5,9 @@ End-to-end walkthrough of how the codebase samples terms from `curr` that are *n
 The relevant code lives in:
 
 - [src/sampling/count/novel.rs](../src/sampling/count/novel.rs) — counting & match enumeration.
-- [src/sampling/sampler/novel.rs](../src/sampling/sampler/novel.rs) — the sampler.
+- [src/sampling/sampler/frontier/space.rs](../src/sampling/sampler/frontier/space.rs) — the shared frontier-constrained derivation space.
+- [src/sampling/sampler/frontier/independent.rs](../src/sampling/sampler/frontier/independent.rs) — independent weighted sampling over that space.
+- [frontier_sampling.md](frontier_sampling.md) — the separation between frontier correctness and sampling policy, including coverage-balanced construction.
 
 ---
 
@@ -137,29 +139,30 @@ function derive_novel(plain, joint):
 
 ## 3. Sampling
 
-### Recursion modes
+### Frontier automaton states
 
-Once we know we want a novel-rooted term, the recursion threads a `Mode` through every subtree:
+Once we know we want a novel-rooted term, the shared `FrontierSpace` threads a
+`FrontierState` through every subtree:
 
 ```
-enum Mode {
-    Novel,            // subtree must not be extractable from any prev class
-    AgreeWith(pc),    // subtree must be extractable from prev's pc
+enum FrontierState {
+    OutsidePrev,       // subtree must not be extractable from any prev class
+    InsidePrev(pc),    // subtree must be extractable from prev's pc
 }
 ```
 
-- The public `sample(root, size, rng)` always starts in `Mode::Novel`.
-- A `Mode::Novel` recursion may *choose* to make some children agree with specific prev classes — those children recurse in `Mode::AgreeWith(pc)`.
-- A `Mode::AgreeWith(pc)` recursion is fully determined by the joint table: it just picks compatible (node, match) pairs and recurses.
+- The public `sample(root, size, rng)` always starts in `OutsidePrev`.
+- An `OutsidePrev` recursion may *choose* to make some children agree with specific prev classes — those children recurse in `InsidePrev(pc)`.
+- An `InsidePrev(pc)` recursion is fully determined by the joint table: it just picks compatible (node, match) pairs and recurses.
 
 There is no "Free" mode — once we're committed to producing a novel term, every subtree is constrained either to be novel or to agree with a specific prev class.
 
-### Mode::AgreeWith — straightforward weighted sampling
+### InsidePrev — straightforward weighted sampling
 
 When sampling at curr-class `c`, target size `s`, and committed prev class `pc`:
 
 ```
-function sample_agree(c, s, pc, rng):
+function construct_inside(c, s, pc, rng):
     candidates = []
     for (idx, n) in eclass(c).nodes:
         for m in matches_of(c, idx) with m.prev_class = pc:
@@ -174,7 +177,7 @@ function sample_agree(c, s, pc, rng):
     children = sample_children(
         children_ids = n.children,
         child_hists  = child_hists,
-        modes        = [Mode::AgreeWith(m.prev_children[i])  for i in 0..k],
+        states       = [InsidePrev(m.prev_children[i])  for i in 0..k],
         child_budget = s - 1,
         rng,
     )
@@ -182,9 +185,11 @@ function sample_agree(c, s, pc, rng):
     return stack_children(children, OriginLang(n, c))
 ```
 
-`AgreeWith` cannot fail in a healthy state: by the time we recurse into it, the parent's profile picked `pc` from `cover[c]`, so at least one match in `c` has `prev_class = pc`.
+`InsidePrev` cannot fail in a healthy state: by the time we recurse into it,
+the parent's profile picked `pc` from `cover[c]`, so at least one match in `c`
+has `prev_class = pc`.
 
-### Mode::Novel — agreement profiles
+### OutsidePrev — agreement profiles
 
 This is the heart of the refined sampler. At curr-class `c`, target size `s`:
 
@@ -204,7 +209,7 @@ Two prev classes can't share a term, so any non-novel term rooted at `n` is non-
 #### Pseudocode
 
 ```
-function sample_novel(c, s, rng):
+function construct_outside(c, s, rng):
     candidates = []
 
     for (idx, n) in eclass(c).nodes:
@@ -229,14 +234,14 @@ function sample_novel(c, s, rng):
     pick (idx, profile, _, child_hists) ~ WeightedIndex over candidates
     n = eclass(c).nodes[idx]
 
-    modes[i] =
-        if profile[i] = None:        Mode::Novel
-        else (profile[i] = Some(pc)): Mode::AgreeWith(pc)
+    states[i] =
+        if profile[i] = None:         OutsidePrev
+        else (profile[i] = Some(pc)): InsidePrev(pc)
 
     children = sample_children(
         children_ids = n.children,
         child_hists  = child_hists,
-        modes        = modes,
+        states       = states,
         child_budget = s - 1,
         rng,
     )
@@ -260,7 +265,7 @@ Once a candidate `(idx, profile-or-match, child_hists)` is chosen, we need to sp
 This is identical to the plain sampler's child-size loop, just using the mode-specific `child_hists`:
 
 ```
-function sample_children(children_ids, child_hists, modes, child_budget, rng):
+function sample_children(children_ids, child_hists, states, child_budget, rng):
     suffix = right-to-left convolution of child_hists  // suffix[i+1] = conv of i+1..k
     remaining = child_budget
     sampled = []
@@ -273,7 +278,7 @@ function sample_children(children_ids, child_hists, modes, child_budget, rng):
         ]
         s_i ~ WeightedIndex over candidates
         remaining -= s_i
-        sampled.push(sample_with_mode(children_ids[i], s_i, modes[i], rng))
+        sampled.push(construct(children_ids[i], s_i, states[i], rng))
 
     return sampled
 ```
@@ -288,18 +293,18 @@ The suffix convolution is built once per call from the chosen `child_hists`, so 
 
 We prove two statements together by induction on `size`:
 
-- **(A)** Sampling under `Mode::AgreeWith(pc)` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = Some(pc)` (assuming the precondition that `joint[(c, pc)](s) > 0`).
-- **(N)** Sampling under `Mode::Novel` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = None` (assuming `novel(c)(s) > 0`).
+- **(A)** Constructing under `InsidePrev(pc)` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = Some(pc)` (assuming the precondition that `joint[(c, pc)](s) > 0`).
+- **(N)** Constructing under `OutsidePrev` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = None` (assuming `novel(c)(s) > 0`).
 
 ### Base case (size 1, leaves)
 
-**(A)** A size-1 candidate in `sample_agree(c, 1, pc)` is a leaf node `n ∈ c` with a match `m` such that `m.prev_class = pc`. By construction of `enumerate_matches`, such a match exists iff `prev.lookup(n) = pc`. So the sampled term is a leaf `n` with `prev.lookup(n) = pc`. ✓
+**(A)** A size-1 candidate in `construct_inside(c, 1, pc)` is a leaf node `n ∈ c` with a match `m` such that `m.prev_class = pc`. By construction of `enumerate_matches`, such a match exists iff `prev.lookup(n) = pc`. So the sampled term is a leaf `n` with `prev.lookup(n) = pc`. ✓
 
-**(N)** A size-1 candidate in `sample_novel(c, 1)` is a leaf node `n ∈ c` whose empty profile `[]` does not complete any match — i.e., no leaf match exists for `n`. By the same construction, this means `prev.lookup(n) = None`. ✓
+**(N)** A size-1 candidate in `construct_outside(c, 1)` is a leaf node `n ∈ c` whose empty profile `[]` does not complete any match — i.e., no leaf match exists for `n`. By the same construction, this means `prev.lookup(n) = None`. ✓
 
 ### Inductive step (size > 1)
 
-**(A) at `(c, s, pc)`.** The sampler picks `(idx, m)` with `m.prev_class = pc` and a child-size split `(s_1, …, s_k)` summing to `s - 1` with each `joint(c_i, m.prev_children[i])(s_i) > 0`. Each child recurses under `Mode::AgreeWith(m.prev_children[i])`; by IH (A), child `i` returns `t_i` with `prev.lookup(t_i) = m.prev_children[i]`. Then `prev.lookup(n(t_1, …, t_k))` looks up the prev e-node with operator `n` and child classes `m.prev_children`, which by definition of the match sits in `m.prev_class = pc`. So `prev.lookup(t) = pc`. ✓
+**(A) at `(c, s, pc)`.** The sampler picks `(idx, m)` with `m.prev_class = pc` and a child-size split `(s_1, …, s_k)` summing to `s - 1` with each `joint(c_i, m.prev_children[i])(s_i) > 0`. Each child recurses under `InsidePrev(m.prev_children[i])`; by IH (A), child `i` returns `t_i` with `prev.lookup(t_i) = m.prev_children[i]`. Then `prev.lookup(n(t_1, …, t_k))` looks up the prev e-node with operator `n` and child classes `m.prev_children`, which by definition of the match sits in `m.prev_class = pc`. So `prev.lookup(t) = pc`. ✓
 
 **(N) at `(c, s)`.** Suppose for contradiction that the sampler returns `t = n(t_1, …, t_k)` with `prev.lookup(t) = Some(P)` for some prev class `P`. Then prev contains an e-node `n'` in `P` with canonical child classes `[q_1, …, q_k]` and `prev.lookup(t_i) = q_i` for each `i`.
 
@@ -310,15 +315,15 @@ The chosen profile `(a_1, …, a_k)` and the IHs determine each `t_i`:
 
 Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. The cartesian product loop in [`enumerate_matches`](../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
 
-(The `cover_of` exposed to the sampler is a subset of match enumeration's internal cover — `compute_joint` drops `(c, pc)` pairs whose histogram is empty within `max_size`. That's harmless here: any `q_i` reached by a real sampled child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `sample_novel` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
+(The `cover_of` exposed to the sampler is a subset of match enumeration's internal cover — `compute_joint` drops `(c, pc)` pairs whose histogram is empty within `max_size`. That's harmless here: any `q_i` reached by a real sampled child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `FrontierSpace` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
 
-So no `t` produced by `Mode::Novel` can have `prev.lookup(t) = Some(_)`, i.e., every produced term is novel. ✓
+So no `t` produced under `OutsidePrev` can have `prev.lookup(t) = Some(_)`, i.e., every produced term is novel. ✓
 
 ### Why the joint sum doesn't double-count
 
 The argument above also shows why `non_novel(c)(s) = sum_pc joint[(c, pc)](s)` doesn't double-count: if `t = n(t_1, …, t_k)` is non-novel, the unique prev class `P` containing it together with the unique tuple `[q_1, …, q_k] = [prev.lookup(t_i)]` nails down a unique match `m`. So `t` is counted exactly once across all `(c, pc)` pairs — under `pc = P`, by the match `m`. Two different matches at the same node would have to disagree on at least one `prev_children[i]`, but `prev.lookup(t_i)` is a single value, so at most one match's `prev_children` can equal the tuple of child lookups.
 
-This is the inclusion-exclusion argument referenced in `sample_novel`: the partition is by the unique witnessing match, with no overlap.
+This is the partition argument used by `FrontierSpace`: the partition is by the unique witnessing match, with no overlap.
 
 ### Termination
 
@@ -366,7 +371,7 @@ So `matches[(R, 0)]` has exactly one entry.
 - `plain(M)(1) = 2`, `non_novel(M)(1) = 1 + 1 = 2`, so `novel(M)(1)` is empty (every leaf of `M` is in some prev class).
 - `plain(R)(3) = 4` (the four ordered pairs over `{a, b}`), `non_novel(R)(3) = 1`, so `novel(R)(3) = 3`.
 
-### Sampling at `(R, size = 3, Mode::Novel)`
+### Sampling at `(R, size = 3, OutsidePrev)`
 
 Slot options for `Add(M, M)`'s two children:
 
@@ -375,13 +380,17 @@ Slot options for `Add(M, M)`'s two children:
 
 Nine profiles total. The single match `(R_prev, [A, B])` is completed by the profile `(Some(A), Some(B))` only, so eight profiles are novel-via-`n`. Of those, the ones with non-zero count at total budget 2:
 
-- `(Some(A), Some(A))`: child_hists = `[joint(M,A), joint(M,A)] = [{1:1}, {1:1}]`, conv at 2 = 1. Recurse children with `Mode::AgreeWith(A)`. Result: `Add(a, a)`.
+- `(Some(A), Some(A))`: child_hists = `[joint(M,A), joint(M,A)] = [{1:1}, {1:1}]`, conv at 2 = 1. Recurse children with `InsidePrev(A)`. Result: `Add(a, a)`.
 - `(Some(B), Some(A))`: similarly → `Add(b, a)`.
 - `(Some(B), Some(B))`: similarly → `Add(b, b)`.
 
 Profiles with any `None` have count 0 because `novel_histogram(M)` is empty. The remaining profiles also have count 0 in this graph.
 
-So the sampler picks uniformly (under `CountWeigher`) from the three non-novel-via-prev terms `Add(a,a)`, `Add(b,a)`, `Add(b,b)` but never `Add(a,b)`. This is exactly what `sampling::sampler::novel::tests::novel_sample_union_diagonal` asserts.
+So the sampler picks uniformly (under `CountWeigher`) from the three
+non-novel-via-prev terms `Add(a,a)`, `Add(b,a)`, `Add(b,b)` but never
+`Add(a,b)`. This is exactly what
+`sampling::sampler::frontier::independent::tests::independent_frontier_sample_union_diagonal`
+asserts.
 
 ---
 
@@ -390,10 +399,10 @@ So the sampler picks uniformly (under `CountWeigher`) from the three non-novel-v
 ```rust
 // Counting (in src/sampling/count/novel.rs):
 let plain = PlainTermCount::<C>::new(max_size, &curr);
-let novel = NovelTermCount::new(max_size, &curr, &prev, &plain);
+let novel = NovelTermCount::new(max_size, &curr, &prev, plain);
 
-// Sampling (in src/sampling/sampler/novel.rs):
-let sampler = NovelSampler::new(&novel, root, weigher);
+// Independent weighted sampling (in src/sampling/sampler/frontier/independent.rs):
+let sampler = IndependentFrontierSampler::new(&novel, root, weigher);
 
 if sampler.possible_size(root, size, /* samples */ 0) {
     let term = sampler.sample(root, size, &mut rng);
@@ -401,7 +410,11 @@ if sampler.possible_size(root, size, /* samples */ 0) {
 }
 ```
 
-`NovelSampler` implements the [`Sampler`](../src/sampling/sampler/mod.rs) trait, so it gets `sample_batch` / `sample_batch_root` for free.
+`IndependentFrontierSampler` implements the
+[`Sampler`](../src/sampling/sampler/mod.rs) trait, so it gets `sample_batch` /
+`sample_batch_root` for free. `BalancedFrontierSampler` implements the same
+trait but overrides `sample_size` so coverage state is shared across the terms
+in one size bucket; see [frontier_sampling.md](frontier_sampling.md).
 
 Note: the convenience entry points above (`PlainTermCount::new`, `NovelTermCount::new`,
 `Sampler::possible_size`) are compiled only under `#[cfg(test)]`. The production path is

@@ -6,7 +6,10 @@ use crate::eqsat::EqsatResult;
 use crate::sampling::count::{
     NodeMatches, NovelTermCount, PlainTermCount, enumerate_matches, find_novel_root_sizes,
 };
-use crate::sampling::sampler::{CountWeigher, NaiveWeigher, NovelSampler, PlainSampler, Sampler};
+use crate::sampling::sampler::{
+    BalancedFrontierSampler, CountWeigher, IndependentFrontierSampler, NaiveWeigher, PlainSampler,
+    Sampler,
+};
 use crate::sampling::{SampleStrategy, TermSampleDist};
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
@@ -178,9 +181,15 @@ where
             distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
 
         match (sample_strategy, novel) {
-            (SampleStrategy::Naive, true) => NovelSampler::new(&self.tc, self.root, NaiveWeigher)
-                .sample_batch_root(&samples_per_size, seed),
-            (SampleStrategy::Count, true) => NovelSampler::new(&self.tc, self.root, CountWeigher)
+            (SampleStrategy::Naive, true) => {
+                IndependentFrontierSampler::new(&self.tc, self.root, NaiveWeigher)
+                    .sample_batch_root(&samples_per_size, seed)
+            }
+            (SampleStrategy::Count, true) => {
+                IndependentFrontierSampler::new(&self.tc, self.root, CountWeigher)
+                    .sample_batch_root(&samples_per_size, seed)
+            }
+            (SampleStrategy::Balanced, true) => BalancedFrontierSampler::new(&self.tc, self.root)
                 .sample_batch_root(&samples_per_size, seed),
             (SampleStrategy::Naive, false) => {
                 PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher)
@@ -190,13 +199,57 @@ where
                 PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, CountWeigher)
                     .sample_batch_root(&samples_per_size, seed)
             }
+            // Coverage profiles are defined by agreement with the previous
+            // graph. There is no corresponding policy for unconstrained plain
+            // extraction.
+            (SampleStrategy::Balanced, false) => None,
         }
+    }
+
+    /// Sample frontier terms while balancing construction choices across each
+    /// requested size bucket.
+    ///
+    /// Unlike [`Self::sample_frontier_terms`], this policy does not draw terms
+    /// independently. It shares coverage state across the batch and prefers
+    /// under-used e-nodes, frontier profiles, and child-size choices. It makes
+    /// exactly one construction attempt per requested term and collapses any
+    /// exact duplicates rather than entering an unbounded rejection loop.
+    #[must_use]
+    pub fn sample_balanced_frontier_terms(
+        &self,
+        count: usize,
+        distribution: TermSampleDist,
+        seed: [u64; 2],
+    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
+        let histogram = self.tc.data().get(&self.root)?;
+        let samples_per_size =
+            distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
+
+        BalancedFrontierSampler::new(&self.tc, self.root).sample_batch_root(&samples_per_size, seed)
+    }
+
+    /// [`Self::sample_balanced_frontier_terms`] with explicit coverage
+    /// penalties.
+    #[must_use]
+    pub fn sample_balanced_frontier_terms_with_config(
+        &self,
+        count: usize,
+        distribution: TermSampleDist,
+        seed: [u64; 2],
+        config: crate::sampling::BalanceConfig,
+    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
+        let histogram = self.tc.data().get(&self.root)?;
+        let samples_per_size =
+            distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
+
+        BalancedFrontierSampler::with_config(&self.tc, self.root, config)
+            .sample_batch_root(&samples_per_size, seed)
     }
 
     #[must_use]
     pub fn smallest(&self, id: Id, novel: bool) -> RecExpr<OriginLang<L>> {
         if novel {
-            NovelSampler::new(&self.tc, self.root, NaiveWeigher).smallest(id)
+            IndependentFrontierSampler::new(&self.tc, self.root, NaiveWeigher).smallest(id)
         } else {
             PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher).smallest(id)
         }
@@ -264,6 +317,44 @@ mod tests {
             pp.root_histogram()
                 .values()
                 .all(|c| *c == BigUint::from(1u32))
+        );
+    }
+
+    #[test]
+    fn balanced_sample_strategy_covers_union_profiles() {
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let root = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev = curr.clone();
+        curr.union(a, b);
+        curr.rebuild();
+
+        let result = EqsatResult::new_for_tests(prev, curr, root);
+        let package =
+            PrecomputePackage::<BigUint, _, _>::precompute(&result, 3).expect("frontier package");
+        let terms = package
+            .sample_frontier_terms(
+                3,
+                TermSampleDist::GREEDY,
+                SampleStrategy::Balanced,
+                [5, 8],
+                true,
+            )
+            .expect("balanced frontier terms");
+        let lowered = terms
+            .into_iter()
+            .map(|term| crate::lower(term).to_string())
+            .collect::<hashbrown::HashSet<_>>();
+
+        assert_eq!(
+            lowered,
+            hashbrown::HashSet::from([
+                "(+ a a)".to_owned(),
+                "(+ b a)".to_owned(),
+                "(+ b b)".to_owned(),
+            ])
         );
     }
 }

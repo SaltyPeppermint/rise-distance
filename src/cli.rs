@@ -12,7 +12,7 @@ use crate::eqsat::EqsatMetadata;
 use crate::sampling::SampleStrategy;
 use crate::{MyLanguage, OriginLang};
 
-/// The four guide-sampling strategies. Sampling variants always draw novel
+/// The five guide-sampling strategies. Sampling variants always draw frontier
 /// terms; only `Smallest` exposes the novel/overall choice. Mirrors the enum
 /// that used to live in `guide.rs`.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -22,10 +22,11 @@ pub enum Strategy {
 }
 
 impl Strategy {
-    /// All four strategies, in the order `guide.rs` used.
-    pub const ALL: [Strategy; 4] = [
+    /// Every guide strategy emitted by the `sample` binary.
+    pub const ALL: [Strategy; 5] = [
         Strategy::Sample(SampleStrategy::Count),
         Strategy::Sample(SampleStrategy::Naive),
+        Strategy::Sample(SampleStrategy::Balanced),
         Strategy::Smallest { novel: false },
         Strategy::Smallest { novel: true },
     ];
@@ -35,18 +36,20 @@ impl Strategy {
         match self {
             Strategy::Sample(SampleStrategy::Count) => "sample_count",
             Strategy::Sample(SampleStrategy::Naive) => "sample_naive",
+            Strategy::Sample(SampleStrategy::Balanced) => "sample_balanced",
             Strategy::Smallest { novel: true } => "smallest_novel",
             Strategy::Smallest { novel: false } => "smallest_overall",
         }
     }
 
-    /// Deterministic per-strategy RNG salt so the two `SampleStrategy` variants
-    /// don't share a seed within a seed record.
+    /// Deterministic per-strategy RNG salt so sampling variants don't share a
+    /// seed within a seed record.
     #[must_use]
     pub const fn seed_of(&self) -> u64 {
         match self {
             Strategy::Sample(SampleStrategy::Count) => 1,
             Strategy::Sample(SampleStrategy::Naive) => 2,
+            Strategy::Sample(SampleStrategy::Balanced) => 3,
             Strategy::Smallest { .. } => 0,
         }
     }
@@ -124,4 +127,25 @@ pub struct GoalGenMetadata<C: Counter> {
     /// eqsat minus a sample before it, isolating the eqsat's footprint. A single
     /// combined reading, not splittable into `guide_egraph`/`goal_egraph` halves.
     pub base_memory: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guide_strategy_menu_includes_balanced_frontier_sampling() {
+        let names = Strategy::ALL.map(Strategy::name);
+        assert_eq!(
+            names,
+            [
+                "sample_count",
+                "sample_naive",
+                "sample_balanced",
+                "smallest_overall",
+                "smallest_novel",
+            ]
+        );
+        assert_eq!(Strategy::Sample(SampleStrategy::Balanced).seed_of(), 3);
+    }
 }

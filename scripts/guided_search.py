@@ -12,7 +12,7 @@ Example:
     uv run scripts/guided_search.py data/seed_terms/dusky-cramp \\
         --stop-memory 4G \\
         --attempts 5 --k 10 \\
-        --strategy no_replacement_count --full-union
+        --strategy no_replacement_balanced --full-union
 """
 
 import dataclasses
@@ -37,14 +37,16 @@ from common import (
     run_json_subprocess,
 )
 
-# Strategy names emitted by `sample` (see Strategy::name in src/cli/sample.rs).
+# Strategy names emitted by `sample` (see Strategy::name in src/cli.rs).
 # The `with_replacement_*` pools are re-drawn *with* replacement across a leg's
 # `k` picks; everything else is drawn without replacement.
 SamplingStrategy = Literal[
     "no_replacement_count",
     "no_replacement_naive",
+    "no_replacement_balanced",
     "with_replacement_count",
     "with_replacement_naive",
+    "with_replacement_balanced",
 ]
 SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
 Strategy = Literal[SamplingStrategy, SmallestStrategy]
@@ -137,8 +139,9 @@ def pool_key(strategy: str) -> str:
     """Map a driver strategy to the candidate-pool key `sample` writes.
 
     The replacement prefix is a Python-side draw policy (`pick_subset`), not a
-    pool: `sample` only emits `sample_count` / `sample_naive`, so collapse the
-    prefix to hit one of those. `smallest_*` keys pass through unchanged.
+    pool: `sample` emits `sample_count`, `sample_naive`, and
+    `sample_balanced`, so collapse the prefix to hit one of those.
+    `smallest_*` keys pass through unchanged.
     """
     if strategy in SMALLEST_STRATEGIES:
         return strategy
@@ -146,6 +149,8 @@ def pool_key(strategy: str) -> str:
         return "sample_count"
     if strategy.endswith("_naive"):
         return "sample_naive"
+    if strategy.endswith("_balanced"):
+        return "sample_balanced"
     return strategy
 
 
