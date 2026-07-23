@@ -1,9 +1,4 @@
-"""Load guided-search runs into the tidy frames used by the analysis plots.
-
-Each run has one guide-set size and contributes one row per leg. ``load_runs``
-adds the derived display mode, a seed/goal pair key, and the seed's unguided
-baseline. Guide-egraph overhead is folded into leg cost by ``_load_leg_frame``.
-"""
+"""Load guided-search runs into frames used by the analysis plots."""
 
 import json
 from collections.abc import Sequence
@@ -15,8 +10,6 @@ import polars as pl
 
 @dataclass(frozen=True)
 class Run:
-    """A resolved guided-search run with an analysis-derived display label."""
-
     pattern: str
     directory: Path
     label: str
@@ -39,11 +32,7 @@ def find_latest_run(pattern: str = "run", subdir: str = "guided_search") -> Path
 
 
 def _load_leg_frame(run_dir: Path) -> pl.DataFrame:
-    """One run's `results.parquet`, with guide-egraph overhead folded into cost.
-
-    Nodes, classes, and memory become ``max(leg, guide)``; total time includes
-    guide time. Null costs remain null, and empty-pool legs are dropped.
-    """
+    """Load legs, folding guide-egraph overhead into their costs."""
     df = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
     return df.with_columns(
         pl.when(pl.col("nodes").is_not_null())
@@ -62,11 +51,7 @@ def _load_leg_frame(run_dir: Path) -> pl.DataFrame:
 
 
 def _baseline_frame(run_dir: Path) -> pl.DataFrame:
-    """Per-seed unguided full-eqsat baseline for a run, as a joinable frame.
-
-    Every goal under a seed shares its ``goal_egraph`` baseline. ``Err`` seeds
-    are skipped and metric columns receive a ``base_`` prefix.
-    """
+    """Load each seed's unguided full-eqsat baseline."""
     config = json.loads((run_dir / "config.json").read_text())
     repo_root = Path(__file__).parent / ".."
     terms = json.loads((repo_root / config["path"] / "goal_terms.json").read_text())
@@ -86,8 +71,7 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
                     "base_classes": e["classes"],
                     "base_nodes_per_class": e["nodes"] / e["classes"],
                     "base_total_time": e["time"],
-                    # Live-heap bytes (jemalloc stats.allocated): on the payload,
-                    # not inside goal_egraph.
+                    # base_memory sits beside goal_egraph in the payload.
                     "base_memory": ok["base_memory"],
                     "base_stop_reason": ok["stop_reason"],
                 }
@@ -98,12 +82,7 @@ def _baseline_frame(run_dir: Path) -> pl.DataFrame:
 
 
 def load_runs(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
-    """Load and stack the given runs into one tidy long DataFrame.
-
-    Returns the leg frame and plot metadata: ordered modes, guide-set size and
-    sampling strategy by mode, maximum distinct goals, and maximum configured
-    attempts.
-    """
+    """Stack runs into a leg frame and return it with plot metadata."""
     frames, modes, k_by_mode, strategy_by_mode = [], [], {}, {}
     n_goals = n_trials = 0
     for run in runs:
@@ -150,6 +129,7 @@ def load_runs(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
         "strategy": strategy_by_mode,
         "n_goals": n_goals,
         "n_trials": n_trials,
+        "defaults": _render_fields(_partition_fields(runs)[0]),
     }
     print(
         f"\nk per mode: {k_by_mode}\n"
@@ -159,9 +139,7 @@ def load_runs(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     return df, meta
 
 
-# Dimensions that egg actually bounds with a `--max-*` (or `--stop-*`) limit, and
-# the eqsat-config key carrying that ceiling. `classes` has no limit (egg bounds
-# nodes, not classes), so it never gets a limit line.
+# Eqsat-config ceilings. Classes are not bounded separately.
 LIMIT_KEYS = {
     "iters": "max_iters",
     "nodes": "max_nodes",
@@ -198,27 +176,39 @@ def _format_limit(metric: str, value: float | None) -> str:
     return f"{formatted}s" if metric == "total_time" else formatted
 
 
-def _derived_label(limits: dict[str, dict[str, float]], attempts: int, k: int) -> str:
-    """Describe only replay limits that differ from the unguided baseline."""
+def _run_fields(limits: dict[str, dict[str, float]], attempts: int, k: int, strategy: str) -> dict:
+    """Format the fields used to compare and label runs."""
     replay = limits["leg"]
     baseline = limits["baseline"]
-    differences = [
-        f"{LIMIT_LABELS[metric]} {_format_limit(metric, replay.get(metric))} vs "
-        f"{_format_limit(metric, baseline.get(metric))}"
-        for metric in LIMIT_KEYS
-        if replay.get(metric) != baseline.get(metric)
-    ]
-    limit_part = ", ".join(differences) if differences else "baseline limits"
-    return f"{limit_part} · attempts={_compact_number(float(attempts))} · k={k}"
+    fields = {}
+    for metric in LIMIT_KEYS:
+        if replay.get(metric) != baseline.get(metric):
+            fields[LIMIT_LABELS[metric]] = (
+                f"{_format_limit(metric, replay.get(metric))} vs "
+                f"{_format_limit(metric, baseline.get(metric))}"
+            )
+        else:
+            fields[LIMIT_LABELS[metric]] = "baseline"
+    fields["attempts"] = _compact_number(float(attempts))
+    fields["k"] = str(k)
+    fields["strategy"] = strategy
+    return fields
+
+
+def _render_fields(fields: dict) -> str:
+    """Render run fields as a plot-label fragment."""
+    parts = []
+    for name, value in fields.items():
+        if name in LIMIT_LABELS.values():
+            if value != "baseline":
+                parts.append(f"{name} {value}")
+        else:
+            parts.append(f"{name}={value}")
+    return " · ".join(parts) if parts else "baseline limits"
 
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
-    """Resolve run patterns and derive concise, collision-safe plot labels.
-
-    Labels show guide/leg limits versus the unguided baseline, but only for
-    dimensions whose effective limits differ. Strategy and directory provenance
-    are appended only when the analytical labels would otherwise collide.
-    """
+    """Resolve run patterns and derive collision-safe plot labels."""
     runs = []
     for pattern in patterns:
         run_dir = find_latest_run(pattern)
@@ -228,43 +218,52 @@ def resolve_runs(patterns: Sequence[str]) -> list[Run]:
         if len(ks) != 1:
             raise ValueError(f"{run_dir.name}: expected a single k, found {sorted(ks)}")
         k = ks[0]
-        limits = _governing_limits(run_dir)
         runs.append(
             Run(
                 pattern=pattern,
                 directory=run_dir,
-                label=_derived_label(limits, config["attempts"], k),
+                label="",
                 k=k,
                 attempts=config["attempts"],
                 strategy=config["strategy"],
-                limits=limits,
+                limits=_governing_limits(run_dir),
             )
         )
+
+    _, differing = _partition_fields(runs)
+    for i, fields in enumerate(differing):
+        runs[i] = replace(runs[i], label=_render_fields(fields))
 
     labels = [run.label for run in runs]
     for label in set(labels):
         indexes = [i for i, candidate in enumerate(labels) if candidate == label]
         if len(indexes) < 2:
             continue
-        strategy_labels = [f"{runs[i].label} · {runs[i].strategy}" for i in indexes]
-        unique_by_strategy = len(set(strategy_labels)) == len(strategy_labels)
-        for i, strategy_label in zip(indexes, strategy_labels, strict=True):
-            suffix = (
-                strategy_label
-                if unique_by_strategy
-                else f"{strategy_label} · {runs[i].directory.name}"
-            )
-            runs[i] = replace(runs[i], label=suffix)
+        for i in indexes:
+            runs[i] = replace(runs[i], label=f"{runs[i].label} · {runs[i].directory.name}")
     return runs
 
 
-def _governing_limits(run_dir: Path) -> dict[str, dict[str, float]]:
-    """The eqsat limits each egraph family actually ran under, per run.
+def _partition_fields(runs: Sequence[Run]) -> tuple[dict, list[dict]]:
+    """Split run fields into shared defaults and per-run differences."""
+    all_fields = [
+        _run_fields(run.limits, run.attempts, run.k, run.strategy) for run in runs
+    ]
+    if not all_fields:
+        return {}, []
+    shared_names = {
+        name for name in all_fields[0] if len({f[name] for f in all_fields}) == 1
+    }
+    shared = {name: all_fields[0][name] for name in all_fields[0] if name in shared_names}
+    differing = [
+        {name: v for name, v in fields.items() if name not in shared_names}
+        for fields in all_fields
+    ]
+    return shared, differing
 
-    Guide and leg limits apply ``--stop-*`` overrides to the search-phase
-    configuration; the unguided baseline uses that configuration unchanged.
-    Unset dimensions are omitted.
-    """
+
+def _governing_limits(run_dir: Path) -> dict[str, dict[str, float]]:
+    """Resolve guide, leg, and baseline limits for one run."""
     config = json.loads((run_dir / "config.json").read_text())
     goal_args = json.loads(
         (Path(__file__).parent / ".." / config["path"] / "goal_args.json").read_text()
@@ -286,21 +285,7 @@ def _governing_limits(run_dir: Path) -> dict[str, dict[str, float]]:
     }
 
 
-def _limits_by_mode(runs: Sequence[Run]) -> dict[str, dict[str, dict[str, float]]]:
-    """``mode -> {egraph -> {dimension -> limit}}`` for the given runs.
-
-    Uses the same resolved labels and limits as `load_runs`, so its keys line up
-    exactly with the tidy frame's `mode` column.
-    """
-    out: dict[str, dict[str, dict[str, float]]] = {}
-    for run in runs:
-        out[run.label] = run.limits
-    return out
-
-
-# Which `_governing_limits` egraph slot each plotted series ran under. The guide
-# replay and the legs share the `--stop-*` replay budget; the baseline is the
-# unguided full run under the plain search-phase limits.
+# Limit family used by each plotted series.
 SERIES_EGRAPH = {"leg": "leg", "baseline": "baseline", "guide": "guide"}
 
 
@@ -313,10 +298,9 @@ def series_limit_frame(
 
     Series may have different ceilings; unbounded metrics are omitted.
     """
-    limits_by_mode = _limits_by_mode(runs)
     rows = [
         {"mode": mode, "series": s, "metric": m, "limit": float(lims[SERIES_EGRAPH[s]][m])}
-        for mode, lims in limits_by_mode.items()
+        for mode, lims in ((run.label, run.limits) for run in runs)
         for s in series
         for m in metrics
         if m in LIMIT_KEYS and m in lims.get(SERIES_EGRAPH[s], {})
@@ -328,12 +312,7 @@ def series_limit_frame(
 
 
 def goal_reach(df: pl.DataFrame) -> pl.DataFrame:
-    """Per (mode, goal) reachability over its attempts: reach_rate and empty_pool_rate.
-
-    With a single k per run, this aggregates over the attempt loop for each
-    seed/goal pair. `cond_reach_rate` excludes empty-pool legs from the
-    denominator: given we could sample k guides, did we reach the goal?
-    """
+    """Aggregate reach and empty-pool rates by seed/goal pair."""
     empty = pl.col("stop_reason") == "empty_pool"
     return (
         df.group_by("mode", "seed", "goal", "pair")

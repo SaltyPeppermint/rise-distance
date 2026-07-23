@@ -1,16 +1,11 @@
-"""Altair chart specs for the tidy guided-search frames from ``helpers``.
-
-Charts generally rank seed/goal pairs on x and facet by metric. Categorical
-colors use a fixed eight-hue palette so modes retain stable colors.
-"""
+"""Altair charts for the guided-search frames from ``helpers``."""
 
 from collections.abc import Sequence
 
 import altair as alt
 import polars as pl
 
-# Validated categorical hues (dataviz reference palette, light-surface steps),
-# in fixed order. Modes are assigned slots by their position in `modes`.
+# Modes take colors in this fixed order.
 PALETTE = [
     "#2a78d6",  # blue
     "#008300",  # green
@@ -22,7 +17,6 @@ PALETTE = [
     "#e34948",  # red
 ]
 
-# Applied via `alt.themes` in the notebook; keeps grids recessive and sizing sane.
 THEME = {
     "config": {
         "view": {"continuousWidth": 320, "continuousHeight": 260, "strokeOpacity": 0},
@@ -59,15 +53,16 @@ def _pair_x() -> alt.X:
 
 
 def _title(title: str, meta: dict) -> alt.TitleParams:
+    subtitle = [f"{meta['n_goals']} goals × {meta['n_trials']} attempts"]
+    if meta.get("defaults"):
+        subtitle.append(meta["defaults"])
     return alt.TitleParams(
         title,
-        subtitle=f"{meta['n_goals']} goals × {meta['n_trials']} attempts",
+        subtitle=subtitle,
         subtitleColor="#7a7a77",
     )
 
 
-# Fixed hues for the series overlay, so each keeps its color independent of how
-# many modes are present.
 SERIES_COLORS = {
     "leg": PALETTE[0],
     "baseline": PALETTE[5],
@@ -99,8 +94,7 @@ def abs_pair_strip(
         .group_by("mode", "metric", "series", *group_by)
         .agg(getattr(pl.col("value"), group_reduce)().alias("v"))
     )
-    # Rank pairs by the LEG value within each (mode, metric); share that rank with
-    # the pair's other series so all series line up on x.
+    # Give all series the rank of their pair's leg value.
     leg_rank = (
         per_pair.filter(pl.col("series") == "leg")
         .with_columns((pl.col("v").rank("ordinal").over("mode", "metric") - 1).alias("rank"))
@@ -116,10 +110,7 @@ def abs_pair_strip(
     )
     modes = [m for m in meta["modes"] if m in per_pair["mode"].unique().to_list()]
 
-    # A layered facet needs one shared top-level dataset, so points and limit
-    # rules ride in a single frame tagged by `kind` and each mark filters to its
-    # own rows. Limit rows carry only (mode, series, metric, limit); their `y` is
-    # `limit`, the points' `y` is `v`.
+    # Layered facets need one dataset, so tag point and limit rows by kind.
     points_rows = per_pair.with_columns(pl.lit("point").alias("kind"))
     if limits is not None:
         drawn = per_pair.select("mode", "series", "metric").unique()
@@ -183,8 +174,7 @@ def rel_cost_ecdf(
     relative-cost ratio. The baseline becomes a dashed ``x = 1`` rule; values
     left of it are cheaper than unguided. The x scale is logarithmic.
     """
-    # Divide leg/guide by the pair's baseline (per mode/metric/pair): pivot the
-    # series to columns, ratio, then melt back to the leg/guide series.
+    # Pivot to divide each series by its pair's baseline, then return to long form.
     wide = (
         df.drop_nulls("value")
         .pivot(on="series", index=["mode", "metric", *group_by], values="value")
@@ -224,10 +214,7 @@ def rel_cost_ecdf(
     )
     modes = [m for m in meta["modes"] if m in per_pair["mode"].unique().to_list()]
 
-    # Curves carry the facet keys (mode/metric); the reference is a data-free
-    # `datum` rule at x=1 so it draws once in *every* facet cell without adding a
-    # null-keyed row (which would spawn its own null mode/metric facet). The
-    # shared dataset is handed to `.facet(data=...)` so the layer stays facetable.
+    # A data-free rule draws in every facet without creating null-keyed facets.
     curves = (
         alt.Chart()
         .mark_line(interpolate="step-after", strokeWidth=2)
@@ -278,21 +265,11 @@ def baseline_vs_soft_limits(
     metrics: Sequence[str],
     limits: pl.DataFrame,
 ) -> alt.Chart:
-    """Unguided baseline cost per pair against the guided leg's soft limits.
+    """Compare each pair's unguided baseline with guided-leg soft limits.
 
-    A pair is ``never reached`` when none of its attempts in that mode reached
-    the goal. Never-reached pairs occupy the left block and reached pairs the
-    right block; each block is independently sorted by baseline value and
-    separated by a vertical rule. Color identifies how the guided attempts
-    ended (node limit, saturation, another limit, or a mixture), while reached
-    pairs stay gray.
-
-    Egg's node limit is checked against the hash-cons memo size, whereas the
-    stored baseline ``nodes`` value is the smaller post-rebuild canonical node
-    count. For the metric matching the baseline's stop reason, use the numeric
-    value carried by ``NodeLimit(N)`` / ``TimeLimit(T)`` /
-    ``IterationLimit(I)`` (or the memory-hook message), making the point directly
-    comparable to its dashed limit. Other facets retain their final measurement.
+    Never-reached and reached pairs form separate sorted blocks. When a baseline
+    stopped on the plotted metric, its stop-reason value replaces the final
+    measurement so it remains comparable with the limit.
     """
     base_cols = [f"base_{metric}" for metric in metrics]
     leg_stop_kind = (
@@ -549,10 +526,7 @@ def baseline_vs_soft_limits(
 
 
 def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatChart:
-    """Two panels: per-pair reach rate (sorted strip) and a per-mode summary bar.
-
-    ``gr`` is the pair-level output of ``helpers.goal_reach``.
-    """
+    """Plot per-pair reach rates and per-mode summaries."""
     modes = meta["modes"]
     color = _color(modes)
 
@@ -630,16 +604,7 @@ def cost_boxplots(df: pl.DataFrame, meta: dict, metrics: Sequence[str]) -> alt.C
 
 
 def reach_heatmap(gr: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Goal × mode reachability heatmap (hardest goals at top).
-
-    Goals are ranked by their mean reach_rate across modes, and that rank is the
-    y position, so each mode column shares the same goal ordering. Hundreds of
-    goals in a few hundred pixels means each row is sub-pixel, so an *ordinal* y
-    (one axis band per goal) both stripes the image and is slow; we instead give
-    each cell an explicit ``gy → gy+1`` quantitative band via `y`/`y2` so the
-    rects tile seamlessly, and drop the rect stroke. The y scale is reversed so
-    rank 1 (hardest) sits at the top.
-    """
+    """Plot goal × mode reachability, with the hardest goals at top."""
     order = (
         gr.group_by("goal")
         .agg(pl.col("reach_rate").mean().alias("avg"))
