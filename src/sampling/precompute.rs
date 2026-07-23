@@ -79,7 +79,7 @@ where
     /// largest size that will be sampled. `start_size`, `max_retries`, and
     /// `retry_step` only define the search cap
     /// `start_size + max_retries * retry_step`; there is no retry schedule.
-    /// See `docs/incremental_probe.md`.
+    /// See `docs/counting/novel_size_search.md`.
     ///
     /// The size scan uses `BigUint`, so it neither overflows nor has
     /// probabilistic false negatives. Package counts use `C`; construction

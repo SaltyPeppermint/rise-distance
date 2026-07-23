@@ -1,12 +1,12 @@
-# Novel sampling
+# Novel-term counting and sampling
 
 End-to-end walkthrough of how the codebase samples terms from `curr` that are *not* extractable from any e-class in `prev` — i.e., terms that carry information learned in the iteration that produced `curr` from `prev`.
 
 The relevant code lives in:
 
-- [src/sampling/count/novel.rs](../src/sampling/count/novel.rs) — counting & match enumeration.
-- [src/sampling/sampler/frontier/space.rs](../src/sampling/sampler/frontier/space.rs) — the shared frontier-constrained derivation space.
-- [src/sampling/sampler/frontier/independent.rs](../src/sampling/sampler/frontier/independent.rs) — independent weighted sampling over that space.
+- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — counting & match enumeration.
+- [src/sampling/sampler/frontier/space.rs](../../src/sampling/sampler/frontier/space.rs) — the shared frontier-constrained derivation space.
+- [src/sampling/sampler/frontier/independent.rs](../../src/sampling/sampler/frontier/independent.rs) — independent weighted sampling over that space.
 - [frontier_sampling.md](frontier_sampling.md) — the separation between frontier correctness and sampling policy, including coverage-balanced construction.
 
 ---
@@ -92,7 +92,7 @@ function enumerate_matches(curr, prev):
     return matches
 ```
 
-The implementation also builds `cover` from `joint` afterwards ([`build_cover`](../src/sampling/count/novel.rs)) so the sampler can look it up by curr class.
+The implementation also builds `cover` from `joint` afterwards ([`build_cover`](../../src/sampling/count/novel.rs)) so the sampler can look it up by curr class.
 
 ### Phase 2: Joint counts, layered by size
 
@@ -109,13 +109,13 @@ Where `c_i` is the i-th canonical curr child class of `n`. For zero-arity nodes 
 
 The matched e-node costs 1, so every child pair is evaluated at a size
 strictly below `s`: the recurrence is stratified by size exactly like the
-plain counts ([layered_counting.md](layered_counting.md) §2), and the
+plain counts ([layered counting](../counting/layered_counting.md) §2), and the
 implementation reuses the same generic layer-by-layer kernel (`LayeredDp`,
 one pass per size, each `(pair, size)` cell computed once — no fixpoint,
 even on cyclic e-graphs). `joint_children_of` translates the match table
 into the kernel's shape: key = `(c, pc)` pair, one node per match, child
 keys = `zip(n.children, m.prev_children)`. See
-[incremental_probe.md](incremental_probe.md) for the full argument (this
+[smallest novel-size search](../counting/novel_size_search.md) for the full argument (this
 replaced a worklist fixpoint over whole per-pair histograms).
 
 ### Phase 3: Derive `novel`
@@ -154,6 +154,16 @@ enum FrontierState {
 - The public `sample(root, size, rng)` always starts in `OutsidePrev`.
 - An `OutsidePrev` recursion may *choose* to make some children agree with specific prev classes — those children recurse in `InsidePrev(pc)`.
 - An `InsidePrev(pc)` recursion is fully determined by the joint table: it just picks compatible (node, match) pairs and recurses.
+
+It is useful to read `OutsidePrev` as a top-down proof obligation. The sampler
+can discharge it at the current node by choosing an all-`InsidePrev` child
+profile that matches no previous e-node, or delegate it to one or more
+`OutsidePrev` children. Once any child is outside, the completed parent and
+all of its ancestors are necessarily outside too. Therefore a term needs only
+one point where reconstruction in `prev` fails; the states locate that point
+while keeping every child in a disjoint counted category. See
+[frontier_sampling.md](frontier_sampling.md#outsideprev-as-a-proof-obligation)
+for a worked profile example.
 
 There is no "Free" mode — once we're committed to producing a novel term, every subtree is constrained either to be novel or to agree with a specific prev class.
 
@@ -313,7 +323,7 @@ The chosen profile `(a_1, …, a_k)` and the IHs determine each `t_i`:
 - If `a_i = None`: by IH (N), `prev.lookup(t_i) = None`. But we just said `prev.lookup(t_i) = q_i`, a concrete prev class. Contradiction unless every `a_i ≠ None`.
 - If `a_i = Some(pc_i)`: by IH (A), `prev.lookup(t_i) = pc_i`. So `q_i = pc_i`.
 
-Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. The cartesian product loop in [`enumerate_matches`](../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
+Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. The cartesian product loop in [`enumerate_matches`](../../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
 
 (The `cover_of` exposed to the sampler is a subset of match enumeration's internal cover — `compute_joint` drops `(c, pc)` pairs whose histogram is empty within `max_size`. That's harmless here: any `q_i` reached by a real sampled child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `FrontierSpace` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
 
@@ -394,7 +404,7 @@ asserts.
 
 ---
 
-## 5. API summary
+## 6. API summary
 
 ```rust
 // Counting (in src/sampling/count/novel.rs):
@@ -411,13 +421,13 @@ if sampler.possible_size(root, size, /* samples */ 0) {
 ```
 
 `IndependentFrontierSampler` implements the
-[`Sampler`](../src/sampling/sampler/mod.rs) trait, so it gets `sample_batch` /
+[`Sampler`](../../src/sampling/sampler/mod.rs) trait, so it gets `sample_batch` /
 `sample_batch_root` for free. `BalancedFrontierSampler` implements the same
 trait but overrides `sample_size` so coverage state is shared across the terms
 in one size bucket; see [frontier_sampling.md](frontier_sampling.md).
 
 Note: the convenience entry points above (`PlainTermCount::new`, `NovelTermCount::new`,
 `Sampler::possible_size`) are compiled only under `#[cfg(test)]`. The production path is
-`PrecomputePackage` ([src/sampling/precompute.rs](../src/sampling/precompute.rs)), which
+`PrecomputePackage` ([src/sampling/precompute.rs](../../src/sampling/precompute.rs)), which
 builds the analysis via `PlainTermCount::rooted` / `NovelTermCount::with_matches` so one
 match enumeration is shared across repeated analyses of the same e-graph pair.

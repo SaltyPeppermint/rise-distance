@@ -7,13 +7,13 @@ comparisons or unbounded rejection sampling.
 
 The relevant implementation is:
 
-- [`src/sampling/count/novel.rs`](../src/sampling/count/novel.rs): match,
+- [`src/sampling/count/novel.rs`](../../src/sampling/count/novel.rs): match,
   joint-count, and outside-`prev` histograms.
-- [`src/sampling/sampler/frontier/space.rs`](../src/sampling/sampler/frontier/space.rs):
+- [`src/sampling/sampler/frontier/space.rs`](../../src/sampling/sampler/frontier/space.rs):
   shared frontier states and feasible derivations.
-- [`src/sampling/sampler/frontier/independent.rs`](../src/sampling/sampler/frontier/independent.rs):
+- [`src/sampling/sampler/frontier/independent.rs`](../../src/sampling/sampler/frontier/independent.rs):
   independent weighted sampling over that space.
-- [`src/sampling/sampler/frontier/balanced.rs`](../src/sampling/sampler/frontier/balanced.rs):
+- [`src/sampling/sampler/frontier/balanced.rs`](../../src/sampling/sampler/frontier/balanced.rs):
   batch-local coverage-balanced sampling over the same space.
 
 The detailed counting argument remains in
@@ -70,6 +70,44 @@ known:
    children with the `pc_i` values and look it up in `prev`.
    - A successful lookup gives `InsidePrev(parent_pc)`.
    - A failed lookup gives `OutsidePrev`.
+
+### `OutsidePrev` as a proof obligation
+
+The transition above is bottom-up, but construction runs top-down. At an
+`OutsidePrev` node, the sampler has the obligation to ensure that the completed
+subtree is absent from `prev`. A feasible child-state profile discharges or
+delegates that obligation in one of two ways:
+
+1. **Step outside at the current node.** Every child is
+   `InsidePrev(pc_i)`, but the translated parent
+   `node(pc_1, ..., pc_k)` has no match in `prev`. The current node is the first
+   point where reconstruction in `prev` fails. Its descendants can all be
+   constructed with `InsidePrev` constraints.
+2. **Delegate the step to a child.** At least one child is
+   `OutsidePrev`. That child must establish a failure somewhere in its own
+   subtree. Because a previous parent extraction requires every concrete child
+   extraction to belong to a previous e-class, the child's failure also makes
+   the current node—and every ancestor above it—`OutsidePrev`.
+
+Thus a completed term needs only one failure to reconstruct in `prev`. The
+sampler does not store a separate `already_outside` flag: an `OutsidePrev`
+state is the still-active obligation, while an all-`InsidePrev` profile with no
+previous-node match discharges it locally.
+
+For example, if `prev` contains `F(A, B)` but not `F(B, B)`, then an
+`OutsidePrev` construction of `F` treats these profiles differently:
+
+```text
+[InsidePrev(A), InsidePrev(B)]  rejected: reconstructs F(A, B)
+[InsidePrev(B), InsidePrev(B)]  accepted: steps outside at this F
+[OutsidePrev,  InsidePrev(B)]  accepted: delegates the step to the first child
+```
+
+Although one failure is sufficient for frontier membership, every child is
+still classified as either `OutsidePrev` or `InsidePrev(pc)`. This partitions
+the concrete child terms into disjoint cases and lets the `novel` and `joint`
+histograms provide exact branch counts. A `Free` state would combine those
+cases and lose that direct, non-overlapping correspondence.
 
 Sampling a frontier term means constructing a derivation rooted at:
 

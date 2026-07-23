@@ -1,5 +1,9 @@
 # Guide experiment pipeline
 
+This is an operational guide. For the sampling model behind the experiment,
+see [novel-term counting and sampling](sampling/novel_sampling.md) and
+[frontier sampling policies](sampling/frontier_sampling.md).
+
 The guide experiment measures how well sampled guide terms steer equality
 saturation toward a goal. It runs in four stages, each feeding the next through
 a seed folder (`data/seed_terms/<name>/`) that accumulates `terms.json` and

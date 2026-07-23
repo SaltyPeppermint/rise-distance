@@ -1,16 +1,20 @@
-# Size-incremental exact search
+# Finding the smallest novel sizes
 
 `backoff_precompute` finds the `sizes`-th smallest novel term size at the
 root in one exact, size-incremental scan. It then builds the sampling package
 at exactly that size.
 
+This document is the implementation and correctness reference for that search.
+For the generic recurrence it builds on, read
+[size-layered term counting](layered_counting.md).
+
 The relevant code is:
 
-- [src/sampling/count/layered.rs](../src/sampling/count/layered.rs) — the
+- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) — the
   generic `LayeredDp` kernel shared by plain and joint counting.
-- [src/sampling/count/novel.rs](../src/sampling/count/novel.rs) — layered
+- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — layered
   joint counting and `find_novel_root_sizes`.
-- [src/sampling/precompute.rs](../src/sampling/precompute.rs) — cap handling
+- [src/sampling/precompute.rs](../../src/sampling/precompute.rs) — cap handling
   and package construction.
 
 ## Why the search is incremental

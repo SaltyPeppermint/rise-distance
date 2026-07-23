@@ -294,7 +294,7 @@ fn child_combinations(children: &[Id], cover: &MatchCover) -> Vec<ChildIds> {
 /// contributes 1 to a term's size, so a pair's count at `size` depends only
 /// on child-pair counts at sizes strictly below it — the same stratification
 /// [`count_terms`](super::count_terms) uses for the plain counts, and the
-/// same [`LayeredDp`] kernel (see `docs/incremental_probe.md`). Each
+/// same [`LayeredDp`] kernel (see `docs/counting/novel_size_search.md`). Each
 /// `(pair, size)` cell is computed exactly once, even on cyclic e-graphs.
 fn compute_joint<C: Counter, L: Language, N: Analysis<L>>(
     max_size: usize,
@@ -348,7 +348,7 @@ fn joint_children_of<L: Language, N: Analysis<L>>(
 /// after layer `s`,
 /// `plain[root](s) - sum_pc joint[(root, pc)](s)` is final. The scan can
 /// therefore stop at the requested number of sizes without computing any
-/// larger layers or sampler-only caches. See `docs/incremental_probe.md`.
+/// larger layers or sampler-only caches. See `docs/counting/novel_size_search.md`.
 pub fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     max_size: usize,
     curr: &EGraph<L, N>,

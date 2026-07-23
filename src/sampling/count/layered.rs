@@ -12,7 +12,7 @@
 //! The layer loop itself is generic over the key type ([`LayeredDp`]): the
 //! same argument applies verbatim to the joint counts over
 //! `(curr_class, prev_class)` pairs, which reuse this kernel with matches as
-//! nodes (see `novel.rs` and `docs/incremental_probe.md`). Stepping one layer
+//! nodes (see `novel.rs` and `docs/counting/novel_size_search.md`). Stepping one layer
 //! at a time also lets the exact root-size scan stop as soon as it has seen
 //! enough novel sizes.
 //!
