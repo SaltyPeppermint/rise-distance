@@ -22,6 +22,8 @@ class Run:
 def _list_runs(pattern: str = "", subdir: str = "guided_search") -> list[Path]:
     """Run directories matching `pattern` under `data/<subdir>`, oldest first."""
     data_dir = Path(__file__).parent / ".." / "data" / subdir
+    if not data_dir.is_dir():
+        return []
     return sorted(
         (f for f in data_dir.iterdir() if f.is_dir() and pattern in f.name),
         key=lambda p: p.stat().st_mtime,
@@ -326,5 +328,135 @@ def goal_reach(df: pl.DataFrame) -> pl.DataFrame:
             (pl.col("reached").sum() / empty.not_().sum()).alias("cond_reach_rate"),
             empty.mean().alias("empty_pool_rate"),
         )
+        .sort("mode", "goal")
+    )
+
+
+def resolve_grid(pattern: str = "") -> Path:
+    """Resolve the newest guided-search grid directory matching ``pattern``."""
+    matches = [
+        directory
+        for directory in _list_runs(pattern, subdir="guided_search_grid")
+        if (directory / "grid_config.json").is_file()
+    ]
+    if not matches:
+        suffix = f" matching {pattern!r}" if pattern else ""
+        raise FileNotFoundError(f"No guided-search grid directory{suffix}")
+    return matches[-1]
+
+
+def grid_prefix_budgets(grid_dir: Path) -> list[int]:
+    """Return the cumulative candidate budgets recorded by a grid run."""
+    config = json.loads((grid_dir / "grid_config.json").read_text())
+    return [int(budget) for budget in config["prefix_budgets"]]
+
+
+def _grid_mode(distribution: str, strategy: str) -> str:
+    """Compact, stable label for one grid policy."""
+    short_strategy = strategy.removeprefix("no_replacement_").removeprefix("with_replacement_")
+    return f"{short_strategy} · {distribution}"
+
+
+def load_grid(grid_dir: Path, budget: int) -> tuple[pl.DataFrame, dict]:
+    """Load a grid as reached-by-prefix observations.
+
+    Each output row represents one ``(mode, sampling seed, seed, goal)`` unit.
+    ``reached`` is true iff that pair reached the goal before ``budget``
+    candidates. This is the correct unit for averaging over repeated sampling
+    seeds despite each underlying verification loop stopping at its first
+    success.
+    """
+    grid_config = json.loads((grid_dir / "grid_config.json").read_text())
+    max_attempts = int(grid_config["attempts"])
+    if budget < 1 or budget > max_attempts:
+        raise ValueError(f"budget must be between 1 and {max_attempts}, got {budget}")
+
+    distributions = list(grid_config["distributions_expanded"])
+    sampling_seeds = [int(seed) for seed in grid_config["sampling_seeds_expanded"]]
+    strategies = list(grid_config["strategies_expanded"])
+    expected = {
+        (distribution, sampling_seed, strategy)
+        for distribution in distributions
+        for sampling_seed in sampling_seeds
+        for strategy in strategies
+    }
+
+    frames = []
+    loaded = set()
+    for result_path in sorted(grid_dir.glob("distribution.*/sampling_seed.*/*/results.parquet")):
+        run_dir = result_path.parent
+        config = json.loads((run_dir / "config.json").read_text())
+        distribution = str(config["size_distribution"])
+        sampling_seed = int(config["sampling_seed"])
+        strategy = str(config["strategy"])
+        key = (distribution, sampling_seed, strategy)
+        if key not in expected:
+            continue
+
+        frame = (
+            pl.read_parquet(result_path, columns=["seed", "goal", "attempt", "reached"])
+            .group_by("seed", "goal")
+            .agg(((pl.col("attempt") < budget) & pl.col("reached")).any().alias("reached"))
+            .with_columns(
+                pl.lit(distribution).alias("distribution"),
+                pl.lit(sampling_seed).alias("sampling_seed"),
+                pl.lit(strategy).alias("strategy"),
+                pl.lit(budget).alias("budget"),
+                pl.lit(_grid_mode(distribution, strategy)).alias("mode"),
+                pl.concat_str(["seed", "goal"], separator="│").alias("pair"),
+            )
+        )
+        frames.append(frame)
+        loaded.add(key)
+
+    missing = expected - loaded
+    if missing:
+        preview = ", ".join(
+            f"({distribution}, {seed}, {strategy})"
+            for distribution, seed, strategy in sorted(missing)[:5]
+        )
+        more = f", … {len(missing) - 5} more" if len(missing) > 5 else ""
+        print(f"WARNING: grid is incomplete; missing {len(missing)} cells: {preview}{more}")
+    if not frames:
+        raise FileNotFoundError(f"No completed result cells under {grid_dir}")
+
+    df = pl.concat(frames, how="vertical")
+    modes = [
+        _grid_mode(distribution, strategy)
+        for distribution in distributions
+        for strategy in strategies
+        if (distribution, strategy) in set(df.select("distribution", "strategy").iter_rows())
+    ]
+    completed_sampling_seeds = df["sampling_seed"].n_unique()
+    n_pairs = df.select("seed", "goal").unique().height
+    meta = {
+        "modes": modes,
+        "n_goals": n_pairs,
+        "n_trials": budget,
+        "defaults": "",
+        "subtitle": [
+            f"{n_pairs} seed/goal pairs",
+            f"first {budget} candidates · {completed_sampling_seeds} sampling seeds",
+        ],
+        "reach_rate_title": "reach rate over sampling seeds",
+        "leg_rate_label": "mean pair reachability",
+        "coverage_label": "coverage across sampling seeds",
+        "grid_dir": grid_dir,
+        "budget": budget,
+        "sampling_seeds": completed_sampling_seeds,
+        "missing_cells": len(missing),
+    }
+    print(
+        f"Loaded {len(loaded)}/{len(expected)} cells from {grid_dir.name}: "
+        f"{len(df)} pair/seed observations at prefix budget {budget}"
+    )
+    return df, meta
+
+
+def grid_goal_reach(df: pl.DataFrame) -> pl.DataFrame:
+    """Average reached-by-prefix observations over grid sampling seeds."""
+    return (
+        df.group_by("mode", "seed", "goal", "pair")
+        .agg(pl.col("reached").mean().alias("reach_rate"))
         .sort("mode", "goal")
     )

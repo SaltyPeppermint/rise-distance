@@ -53,7 +53,9 @@ def _pair_x() -> alt.X:
 
 
 def _title(title: str, meta: dict) -> alt.TitleParams:
-    subtitle = [f"{meta['n_goals']} goals × {meta['n_trials']} attempts"]
+    subtitle = list(
+        meta.get("subtitle", [f"{meta['n_goals']} goals × {meta['n_trials']} attempts"])
+    )
     if meta.get("defaults"):
         subtitle.append(meta["defaults"])
     return alt.TitleParams(
@@ -529,6 +531,9 @@ def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatC
     """Plot per-pair reach rates and per-mode summaries."""
     modes = meta["modes"]
     color = _color(modes)
+    reach_rate_title = meta.get("reach_rate_title", "reach rate over attempts")
+    leg_rate_label = meta.get("leg_rate_label", "leg reach rate")
+    coverage_label = meta.get("coverage_label", "goal coverage")
 
     strip_df = gr.with_columns(
         (pl.col("reach_rate").rank("ordinal").over("mode") - 1).alias("rank")
@@ -538,9 +543,7 @@ def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatC
         .mark_circle(size=16, opacity=0.6)
         .encode(
             x=_pair_x(),
-            y=alt.Y(
-                "reach_rate:Q", title="reach rate over attempts", scale=alt.Scale(domain=[0, 1])
-            ),
+            y=alt.Y("reach_rate:Q", title=reach_rate_title, scale=alt.Scale(domain=[0, 1])),
             color=color,
             tooltip=[
                 "mode:N",
@@ -556,10 +559,10 @@ def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatC
         [
             df.group_by("mode")
             .agg((pl.col("reached").mean() * 100).alias("pct"))
-            .with_columns(pl.lit("leg reach rate").alias("kind")),
+            .with_columns(pl.lit(leg_rate_label).alias("kind")),
             gr.group_by("mode")
             .agg(((pl.col("reach_rate") > 0).mean() * 100).alias("pct"))
-            .with_columns(pl.lit("goal coverage").alias("kind")),
+            .with_columns(pl.lit(coverage_label).alias("kind")),
         ],
         how="vertical",
     )

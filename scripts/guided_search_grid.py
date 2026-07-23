@@ -184,11 +184,16 @@ def main() -> int:
                     "distributions_expanded": distributions,
                     "sampling_seeds_expanded": sampling_seeds,
                     "strategies_expanded": strategies,
-                    "prefix_budgets": [
-                        budget
-                        for budget in (1, 2, 5, 10, 20, 50, 100, 250, 500, 1000)
-                        if budget <= args.attempts
-                    ],
+                    "prefix_budgets": sorted(
+                        {
+                            args.attempts,
+                            *(
+                                budget
+                                for budget in (1, 2, 5, 10, 20, 50, 100, 250, 500, 1000)
+                                if budget <= args.attempts
+                            ),
+                        }
+                    ),
                 },
                 indent=2,
                 default=str,
