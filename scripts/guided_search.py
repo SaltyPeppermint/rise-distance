@@ -81,6 +81,11 @@ class Args:
     """Run folder for `results.parquet`/`results.json`. Auto-created under
     `data/guided_search/` if omitted."""
 
+    samples_input: Path | None = None
+    """Existing `samples.json` candidate manifest to reuse. When set, skip
+    guide replay and candidate sampling. This permits paired strategy runs over
+    exactly the same per-seed menus."""
+
     sample_binary: Path = Path("target/release/sample")
     verify_binary: Path = Path("target/release/verify")
 
@@ -118,6 +123,14 @@ class Args:
 
     rng_seed: int = 0
     """RNG seed for subset selection (offset per attempt)."""
+
+    sampling_seed: int = 0
+    """Rust candidate-sampling seed. Unlike `rng_seed`, this controls which
+    terms enter each strategy's candidate menu."""
+
+    size_distribution: str = "greedy"
+    """How `sample` allocates the candidate budget across root term sizes:
+    `greedy`, `uniform`, `proportional:<min>`, or `normal:<sigma>`."""
 
     jobs: int | None = None
     """Max concurrent `verify` legs (one seed/goal pair per worker). Each pair's
@@ -230,7 +243,14 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     specs = flatten_enriched_seeds(args)
     sample_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
-    sample_flags = ["--language", str(cfg["language"])]
+    sample_flags = [
+        "--language",
+        str(cfg["language"]),
+        "--size-distribution",
+        args.size_distribution,
+        "--sampling-seed",
+        str(args.sampling_seed),
+    ]
     limits = replay_limits(args, cfg)
     # Menu size = exactly what the attempt loop consumes: no_replacement_* needs
     # k distinct guides per attempt across `attempts` disjoint attempts.
@@ -446,7 +466,14 @@ def main() -> int:
     base_flags = ["--language", str(cfg["language"]), *limit_flags(replay_limits(args, cfg))]
     out = resolve_output_dir(args)
 
-    samples_path = run_sample(args, cfg, out / "sample_run")
+    if args.samples_input is None:
+        samples_path = run_sample(args, cfg, out / "sample_run")
+    else:
+        samples_path = args.samples_input
+        if not samples_path.is_file():
+            print(f"Candidate manifest not found: {samples_path}", file=sys.stderr)
+            return 2
+        print(f"Reusing candidate manifest {samples_path}", file=sys.stderr)
     seed_records = json.loads(samples_path.read_text())
 
     items = build_work_items(seed_records, args.strategy)

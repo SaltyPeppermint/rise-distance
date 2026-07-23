@@ -67,6 +67,12 @@ struct Args {
     #[arg(long, default_value_t = 1000)]
     samples_per_strategy: usize,
 
+    /// Seed for candidate sampling. This deliberately does not depend on
+    /// `samples_per_strategy`, so a larger batch extends the same deterministic
+    /// per-size draw streams instead of replacing a smaller experiment's pool.
+    #[arg(long, default_value_t = 0)]
+    sampling_seed: u64,
+
     /// How much to grow `max_size` on each precompute retry.
     #[arg(long, default_value_t = 5)]
     retry_step: usize,
@@ -215,7 +221,7 @@ fn draw_candidates<L: MyLanguage, N: MyAnalysis<L>>(
                 args.samples_per_strategy,
                 args.size_distribution,
                 s,
-                [args.samples_per_strategy as u64, strategy.seed_of()],
+                [args.sampling_seed, strategy.seed_of()],
             )
             .unwrap_or_else(|| {
                 eprintln!(

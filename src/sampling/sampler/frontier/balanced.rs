@@ -8,7 +8,7 @@
 
 use egg::{Id, RecExpr};
 use hashbrown::{HashMap, HashSet};
-use rand::Rng;
+use rand::distributions::{Distribution, WeightedIndex};
 use rand_chacha::ChaCha12Rng;
 
 use super::space::{
@@ -112,6 +112,7 @@ where
 struct NodeKey {
     curr: Id,
     state: FrontierState,
+    context: u64,
     node_idx: usize,
 }
 
@@ -149,6 +150,7 @@ impl CoveragePolicy {
         NodeKey {
             curr: site.curr,
             state: site.state,
+            context: site.context,
             node_idx,
         }
     }
@@ -164,28 +166,35 @@ impl CoveragePolicy {
         }
     }
 
-    fn branch_score(&self, site: BranchSite, branch: &FrontierBranch<'_, impl Counter>) -> u64 {
+    fn branch_score<C: Counter>(&self, site: BranchSite, branch: &FrontierBranch<'_, C>) -> f64 {
         let node = Self::node_key(site, branch.node_idx);
         let profile = Self::profile_key(site, branch.node_idx, &branch.child_states);
-        self.config
+        let usage = self
+            .config
             .node_penalty
             .saturating_mul(*self.node_usage.get(&node).unwrap_or(&0))
             .saturating_add(
                 self.config
                     .profile_penalty
                     .saturating_mul(*self.profile_usage.get(&profile).unwrap_or(&0)),
-            )
+            );
+        capacity_priority(
+            &branch.count,
+            usage,
+            self.config.node_penalty != 0 || self.config.profile_penalty != 0,
+        )
     }
 
-    fn choose_lowest_score(scores: impl Iterator<Item = u64>, rng: &mut ChaCha12Rng) -> usize {
+    fn choose_weighted_score(scores: impl Iterator<Item = f64>, rng: &mut ChaCha12Rng) -> usize {
         let scores = scores.collect::<Vec<_>>();
-        let best = *scores.iter().min().expect("at least one coverage choice");
-        let tied = scores
+        let best = scores
             .iter()
-            .enumerate()
-            .filter_map(|(idx, &score)| (score == best).then_some(idx))
-            .collect::<Vec<_>>();
-        tied[rng.gen_range(0..tied.len())]
+            .copied()
+            .reduce(f64::max)
+            .expect("at least one coverage choice");
+        WeightedIndex::new(scores.iter().map(|score| (score - best).exp()))
+            .expect("coverage priorities contain a positive choice")
+            .sample(rng)
     }
 }
 
@@ -197,7 +206,7 @@ impl<C: Counter> FrontierPolicy<C> for CoveragePolicy {
         rng: &mut ChaCha12Rng,
     ) -> usize {
         let selected =
-            Self::choose_lowest_score(choices.iter().map(|b| self.branch_score(site, b)), rng);
+            Self::choose_weighted_score(choices.iter().map(|b| self.branch_score(site, b)), rng);
         let branch = &choices[selected];
         let node = Self::node_key(site, branch.node_idx);
         let profile = Self::profile_key(site, branch.node_idx, &branch.child_states);
@@ -215,16 +224,19 @@ impl<C: Counter> FrontierPolicy<C> for CoveragePolicy {
         rng: &mut ChaCha12Rng,
     ) -> usize {
         let profile = Self::profile_key(site.branch, site.node_idx, site.child_states);
-        let selected = Self::choose_lowest_score(
+        let selected = Self::choose_weighted_score(
             choices.iter().map(|choice| {
                 let key = ChildSizeKey {
                     profile: profile.clone(),
                     child_index: site.child_index,
                     child_size: choice.size,
                 };
-                self.config
+                let usage = self
+                    .config
                     .child_size_penalty
-                    .saturating_mul(*self.child_size_usage.get(&key).unwrap_or(&0))
+                    .saturating_mul(*self.child_size_usage.get(&key).unwrap_or(&0));
+                let capacity = choice.child_count.clone() * &choice.rest_count;
+                capacity_priority(&capacity, usage, self.config.child_size_penalty != 0)
             }),
             rng,
         );
@@ -237,6 +249,21 @@ impl<C: Counter> FrontierPolicy<C> for CoveragePolicy {
         *usage = usage.saturating_add(1);
         selected
     }
+}
+
+/// Log of the capacity-aware coverage weight `capacity / (usage + 1)`.
+/// Sampling from these weights covers structural branches without repeatedly
+/// forcing low-capacity choices after their few completions are exhausted.
+#[expect(clippy::cast_precision_loss)]
+fn capacity_priority<C: Counter>(capacity: &C, usage: u64, coverage_enabled: bool) -> f64 {
+    if !coverage_enabled {
+        return 0.0;
+    }
+    let capacity = capacity
+        .to_f64()
+        .filter(|value| value.is_finite())
+        .unwrap_or(f64::MAX);
+    capacity.ln() - (usage as f64 + 1.0).ln()
 }
 
 impl<C, L, N> Sampler<C, L, N> for BalancedFrontierSampler<'_, '_, C, L, N>
@@ -280,9 +307,9 @@ where
         let mut terms = HashSet::with_capacity(target);
 
         // Keep the coverage state across refill draws so duplicates steer
-        // subsequent constructions toward under-used choices. As in the
-        // default sampler, cap the work to keep duplicate-heavy frontiers from
-        // turning this into an unbounded rejection loop.
+        // subsequent constructions toward under-used choices. Cap this phase
+        // to keep duplicate-heavy frontiers from turning it into an unbounded
+        // rejection loop.
         let mut budget = samples * MAX_OVERSAMPLE;
         while terms.len() < target && budget > 0 {
             terms.insert(self.construct(id, size, &mut coverage, &mut rng));
@@ -406,5 +433,35 @@ mod tests {
             .sample_size(root, 3, 8, seed)
             .expect("eight frontier terms");
         assert_eq!(terms.len(), 8);
+    }
+
+    #[test]
+    fn balanced_sampler_fills_large_skewed_frontier() {
+        // Merging 22 leaves creates 22^2 - 1 novel combinations below the
+        // existing binary root. A context-free, capacity-blind coverage score
+        // synchronizes the two child choices and repeatedly visits only a
+        // fraction of those combinations.
+        let mut curr = EGraph::<Math, ()>::new(());
+        let leaves = (0..22)
+            .map(|i| curr.add(sym(&format!("s{i}"))))
+            .collect::<Vec<_>>();
+        let root = curr.add(Math::Add([leaves[0], leaves[0]]));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        for &leaf in &leaves[1..] {
+            curr.union(leaves[0], leaf);
+        }
+        curr.rebuild();
+
+        let plain = PlainTermCount::<BigUint>::new(3, &curr);
+        let counts = NovelTermCount::new(3, &curr, &prev, plain);
+        let sampler = BalancedFrontierSampler::new(&counts, root);
+        let terms = sampler
+            .sample_size(root, 3, 400, [31, 41])
+            .expect("large frontier terms");
+
+        assert_eq!(terms.len(), 400);
+        assert_eq!(terms.iter().collect::<HashSet<_>>().len(), 400);
     }
 }

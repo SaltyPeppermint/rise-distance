@@ -122,8 +122,13 @@ The balanced policy records three local feature families:
 1. **Node coverage**
 
    ```text
-   (current class, frontier state, e-node index)
+   (construction context, current class, frontier state, e-node index)
    ```
+
+   The context fingerprints the parent derivation, tree position, and preceding
+   sibling terms. This prevents repeated occurrences of the same e-class from
+   sharing a counter and synchronizing their choices into a small set of
+   combinations.
 
 2. **Profile coverage**
 
@@ -141,18 +146,35 @@ The balanced policy records three local feature families:
    (profile key, child position, chosen child size)
    ```
 
-For each feasible choice, the current implementation computes an integer
-penalty from its usage counts. It selects a minimum-penalty choice and breaks
-ties with the caller's seeded RNG:
+Together these are hierarchical coverage metrics: choices are balanced within
+the structural prefix where they occur, rather than only by their global
+e-class identity. In particular, a later child's choices are balanced
+separately for each preceding sibling term, which spreads samples across joint
+combinations instead of merely balancing each child's marginal frequencies.
+
+For each feasible choice, the current implementation combines its exact
+completion capacity with its usage penalty:
 
 ```text
-branch penalty =
+branch usage =
     node_penalty    * node_usage
   + profile_penalty * profile_usage
 
-size penalty =
+branch weight =
+    branch_capacity / (branch_usage + 1)
+
+size usage =
     child_size_penalty * child_size_usage
+
+size weight =
+    (child_capacity * remaining_sibling_capacity) / (size_usage + 1)
 ```
+
+It samples from these weights with the caller's seeded RNG. Capacity prevents a
+one-term branch from receiving the same repeated quota as a branch with
+thousands of distinct completions; the usage denominator still pushes the
+batch toward under-covered choices. Weights are evaluated in log space so very
+large exact counts remain numerically stable.
 
 The defaults are:
 
@@ -223,10 +245,9 @@ so their different selection distributions cannot affect this proof.
 The current version deliberately starts with a small, auditable policy.
 Promising follow-up work is:
 
-1. **Capacity-tempered balancing.** Incorporate a branch's exact capacity using
-   a weight such as `capacity^alpha / (1 + usage)^beta`. `alpha = 0` recovers
-   structural balancing; `alpha = 1` approaches count-proportional sampling.
-   This needs a stable logarithmic conversion for very large `BigUint` counts.
+1. **Tunable capacity tempering.** Expose exponents in
+   `capacity^alpha / (1 + usage)^beta` when experiments need a continuum
+   between structural and count-proportional balancing.
 
 2. **Exact sampling without replacement.** Implement rank/unrank over the
    frontier derivation grammar. Production blocks have known counts, and child
