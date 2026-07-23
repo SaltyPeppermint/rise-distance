@@ -19,16 +19,13 @@ class Run:
     limits: dict[str, dict[str, float]]
 
 
-def find_latest_run(pattern: str = "run", subdir: str = "guided_search") -> Path:
-    """Return the newest run directory matching `pattern` under `data/<subdir>`."""
+def _list_runs(pattern: str = "", subdir: str = "guided_search") -> list[Path]:
+    """Run directories matching `pattern` under `data/<subdir>`, oldest first."""
     data_dir = Path(__file__).parent / ".." / "data" / subdir
-    candidates = sorted(
+    return sorted(
         (f for f in data_dir.iterdir() if f.is_dir() and pattern in f.name),
         key=lambda p: p.stat().st_mtime,
     )
-    if not candidates:
-        raise FileNotFoundError(f"No '{pattern}' directories in {data_dir.resolve()}")
-    return candidates[-1]
 
 
 def _load_leg_frame(run_dir: Path) -> pl.DataFrame:
@@ -208,10 +205,23 @@ def _render_fields(fields: dict) -> str:
 
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
-    """Resolve run patterns and derive collision-safe plot labels."""
+    """Resolve run patterns and derive collision-safe plot labels.
+
+    With no patterns, resolve every `run.*` directory instead.
+    """
+    if not patterns:
+        patterns = [d.name for d in _list_runs("run.")]
+
     runs = []
+    seen: set[Path] = set()
     for pattern in patterns:
-        run_dir = find_latest_run(pattern)
+        matches = _list_runs(pattern)
+        if not matches:
+            raise FileNotFoundError(f"No run directory matching {pattern!r}")
+        run_dir = matches[-1]
+        if run_dir in seen:
+            continue
+        seen.add(run_dir)
         config = json.loads((run_dir / "config.json").read_text())
         legs = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
         ks = legs["k"].unique().to_list()
@@ -246,18 +256,13 @@ def resolve_runs(patterns: Sequence[str]) -> list[Run]:
 
 def _partition_fields(runs: Sequence[Run]) -> tuple[dict, list[dict]]:
     """Split run fields into shared defaults and per-run differences."""
-    all_fields = [
-        _run_fields(run.limits, run.attempts, run.k, run.strategy) for run in runs
-    ]
+    all_fields = [_run_fields(run.limits, run.attempts, run.k, run.strategy) for run in runs]
     if not all_fields:
         return {}, []
-    shared_names = {
-        name for name in all_fields[0] if len({f[name] for f in all_fields}) == 1
-    }
+    shared_names = {name for name in all_fields[0] if len({f[name] for f in all_fields}) == 1}
     shared = {name: all_fields[0][name] for name in all_fields[0] if name in shared_names}
     differing = [
-        {name: v for name, v in fields.items() if name not in shared_names}
-        for fields in all_fields
+        {name: v for name, v in fields.items() if name not in shared_names} for fields in all_fields
     ]
     return shared, differing
 
