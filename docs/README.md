@@ -6,13 +6,15 @@ The documentation is organized by purpose:
 docs/
 ├── guide_experiment.md   runnable experiment workflow
 ├── counting/             counting algorithms and size discovery
-└── sampling/             frontier semantics and sampling policies
+└── sampling/             term and frontier sampling
 ```
 
 ## Start here
 
 - To run the guide experiment, follow the
   [guide experiment pipeline](guide_experiment.md).
+- For seed generation, read
+  [random term generation](sampling/term_generation.md).
 - To understand how novel terms are defined, counted, and sampled, start with
   [novel-term counting and sampling](sampling/novel_sampling.md).
 - To understand the shared frontier constraint and the available sampling

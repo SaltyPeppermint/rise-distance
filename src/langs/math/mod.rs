@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 pub use cost_fn::{
     AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive, SillyCheap, TinyConstant,
 };
-pub use generate::MathSampler;
 
 pub type Constant = Ratio<BigInt>;
 

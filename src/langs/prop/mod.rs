@@ -6,8 +6,6 @@ use egg::{
 };
 use serde::{Deserialize, Serialize};
 
-pub use generate::PropSampler;
-
 define_language! {
     #[derive(Deserialize, Serialize)]
     pub enum Prop {

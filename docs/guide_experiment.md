@@ -1,8 +1,9 @@
 # Guide experiment pipeline
 
-This is an operational guide. For the sampling model behind the experiment,
-see [novel-term counting and sampling](sampling/novel_sampling.md) and
-[frontier sampling policies](sampling/frontier_sampling.md).
+This is an operational guide. See
+[random term generation](sampling/term_generation.md) for stage 1 and
+[novel-term counting and sampling](sampling/novel_sampling.md) and
+[frontier sampling policies](sampling/frontier_sampling.md) for the guide phase.
 
 The guide experiment measures how well sampled guide terms steer equality
 saturation toward a goal. It runs in four stages, each feeding the next through
@@ -37,7 +38,8 @@ cargo build --release \
 ## 1. Generate seed terms (skip if you already have a seed folder)
 
 Writes `data/seed_terms/<auto-name>/terms.json` (+ `args.json`). Pick the
-language here — it flows through every later stage.
+language here — it flows through every later stage. Generated terms have exact
+sizes; only those that pass the eqsat validity check are kept.
 
 ```bash
 uv run scripts/generate_seeds.py \

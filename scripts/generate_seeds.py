@@ -58,7 +58,6 @@ class Args:
     distribution: str = tyro.MISSING
     language: str = tyro.MISSING
     seed: int = tyro.MISSING
-    tolerance: int = 1
     retry_limit: int = 10000
 
     # egg args
@@ -115,8 +114,6 @@ def main() -> int:
         args.language,
         "--seed",
         str(args.seed),
-        "--tolerance",
-        str(args.tolerance),
         "--retry-limit",
         str(args.retry_limit),
         "--path",

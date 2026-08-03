@@ -13,7 +13,7 @@ use rise_distance::sampling::Distribution;
 use serde::Serialize;
 
 use rise_distance::eqsat::{EqsatConfig, HeapData, Measurement};
-use rise_distance::generator::BoltzmannSampler;
+use rise_distance::generator::{Samplable, SizeUniformSampler};
 use rise_distance::langs::{AvailableLanguages, math, prop};
 use rise_distance::utils::HeapDelta;
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -47,15 +47,11 @@ struct Args {
     #[arg(long)]
     max_size: usize,
 
-    /// Size tolerance for the Boltzmann sampler
-    #[arg(long, default_value_t = 1)]
-    tolerance: usize,
-
     /// RNG seed for deterministic sampling
     #[arg(long)]
     seed: u64,
 
-    /// Maximum retries when rejecting previously seen terms (mainly relevant for small term sizes)
+    /// Maximum draws per distinct, validated term
     #[arg(long, default_value_t = 10000)]
     retry_limit: usize,
 
@@ -71,8 +67,7 @@ struct Args {
     #[arg(long)]
     path: PathBuf,
 
-    /// Eqsat limits for each term's validity check (bound each per-term run,
-    /// not the whole generation).
+    /// Eqsat limits for each term's validity check
     #[command(flatten)]
     eqsat: EqsatConfig,
 }
@@ -85,7 +80,7 @@ fn main() {
         .distribution
         .samples_per_size(&sizes, args.total_samples);
 
-    // Derive one RNG per size by advancing the root RNG sequentially, making it deterministic and ordered.
+    // Give each size a deterministic RNG.
     let mut root_rng = ChaCha12Rng::seed_from_u64(args.seed);
     let mut sized_rngs = samples_per_size
         .iter()
@@ -94,18 +89,17 @@ fn main() {
             (*size, *n, rng)
         })
         .collect::<Vec<_>>();
-    // Sort by size to make the whole thing deterministic
     sized_rngs.sort_by_key(|(size, _, _)| *size);
 
     let big_collector = match args.language {
         AvailableLanguages::Diospyros => unimplemented!("Dios has no sampler"),
-        AvailableLanguages::Math => run_language::<math::MathSampler, math::ConstantFold>(
+        AvailableLanguages::Math => run_language::<math::Math, math::ConstantFold>(
             &args,
             &args.eqsat,
             sized_rngs,
             &math::rules(),
         ),
-        AvailableLanguages::Prop => run_language::<prop::PropSampler, prop::ConstantFold>(
+        AvailableLanguages::Prop => run_language::<prop::Prop, prop::ConstantFold>(
             &args,
             &args.eqsat,
             sized_rngs,
@@ -127,18 +121,20 @@ fn main() {
     writer.flush().unwrap();
 }
 
-type SizeBucket = (usize, HashMap<String, (usize, ValidationResult, Measurement)>);
+type SizeBucket = (
+    usize,
+    HashMap<String, (usize, ValidationResult, Measurement)>,
+);
 
-fn run_language<S, N>(
+fn run_language<L, N>(
     args: &Args,
     validity_config: &EqsatConfig,
     sized_rngs: Vec<(usize, u64, ChaCha12Rng)>,
-    rules: &[Rewrite<S::Lang, N>],
+    rules: &[Rewrite<L, N>],
 ) -> Vec<SizeBucket>
 where
-    S: BoltzmannSampler,
-    S::Lang: 'static,
-    N: MyAnalysis<S::Lang> + Default,
+    L: Samplable,
+    N: MyAnalysis<L> + Default,
 {
     let style = ProgressStyle::with_template(
         "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} sizes ({eta})",
@@ -149,11 +145,10 @@ where
     sized_rngs
         .into_iter()
         .map(|(size, n, mut rng)| {
-            let collector = collect_for_size::<S, N>(
+            let collector = collect_for_size::<L, N>(
                 size,
                 n,
                 &mut rng,
-                args.tolerance,
                 args.retry_limit,
                 validity_config,
                 rules,
@@ -164,38 +159,43 @@ where
         .collect()
 }
 
-fn collect_for_size<S, N>(
+/// Collect `n` distinct validated terms of size exactly `size`.
+fn collect_for_size<L, N>(
     size: usize,
     n: u64,
     rng: &mut ChaCha12Rng,
-    tolerance: usize,
     retry_limit: usize,
     validity_config: &EqsatConfig,
-    rules: &[Rewrite<S::Lang, N>],
+    rules: &[Rewrite<L, N>],
 ) -> HashMap<String, (usize, ValidationResult, Measurement)>
 where
-    S: BoltzmannSampler,
-    N: MyAnalysis<S::Lang>,
+    L: Samplable,
+    N: MyAnalysis<L>,
 {
-    let sampler = S::new(size, tolerance, None);
+    let sampler = SizeUniformSampler::<L>::new(size, None);
     let mut collector = HashMap::new();
     while (collector.len() as u64) < n {
-        let mut total_attempts = 0;
+        let mut attempts = 0;
         let inserted = 'retry: {
             for _ in 0..retry_limit {
-                let (candidate, (validation_result, measurement), attempts) = sampler
-                    .sample(rng, &|t| valididty_hook(t, validity_config, rules))
-                    .expect("Too many failed sample attempts");
-                let candidate_str = candidate.to_string();
-                total_attempts += attempts;
-                if let Entry::Vacant(e) = collector.entry(candidate_str) {
-                    e.insert((total_attempts, validation_result, measurement));
+                attempts += 1;
+                let candidate = sampler.sample(rng);
+                let Some((validation_result, measurement)) =
+                    valididty_hook(&candidate, validity_config, rules)
+                else {
+                    continue;
+                };
+                if let Entry::Vacant(e) = collector.entry(candidate.to_string()) {
+                    e.insert((attempts, validation_result, measurement));
                     break 'retry true;
                 }
             }
             false
         };
-        assert!(inserted, "Sampled previously seen term too often");
+        assert!(
+            inserted,
+            "no new valid term of size {size} within {retry_limit} attempts"
+        );
     }
     collector
 }
@@ -218,26 +218,11 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     config: &EqsatConfig,
     rules: &[Rewrite<L, N>],
 ) -> Option<(ValidationResult, Measurement)> {
-    // egg's Runner can panic on certain malformed inside its merge check.
-    // Fixing this would require only constructing correct terms and that is too complicated
-    // We use catch_unwind to treat such cases as "not passing the check" rather than crashing the process.
-    // An example would be the expression
-    // '(cos (* (sqrt (* x (sqrt (i (/ 0 x) x)))) (sin (+ (pow 1 (/ 1 2)) (cos 2)))))'
-    // The issue is that the binder check does not catch (i (/ 0 x) x) although (/ 0 x)
-    // trivially simplifies to 0
-    //
-    // `HeapData` in the `D` slot makes egg sample live-heap bytes at each
-    // iteration start and stash it in `Iteration::data`, so the same run that
-    // validates the term also produces its measurement — no second eqsat pass.
-    // `heap`'s baseline, captured here before the egraph allocates, rebases
-    // those per-iteration readings in `Measurement::from_run` below, which also
-    // samples live-heap once more right after the run to record the true
-    // post-run delta (`total_allocated`) — the final egraph's footprint.
+    // Measure heap use during the same run that validates the term.
     let heap = HeapDelta::start();
     let runner = config.build_runner::<_, _, HeapData>(expr);
 
-    // Setting and unsetting the panic hook so we dont get debug spam. it is fine to ignore the output
-    // Afterwards we reinstall the old default panic hook
+    // Treat runner panics as failed validation.
     let start = Instant::now();
     let Ok(r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules))) else {
         println!("panic caught in iter_check_hook for expr: {expr}");
@@ -246,24 +231,9 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     };
     let stop_time = start.elapsed().as_secs_f64();
 
-    // We keep a term only if it can grow an egraph to the `--max-memory`
-    // target: the per-term live-heap hook stops the run once jemalloc's live
-    // allocations cross that ceiling, which egg surfaces as `StopReason::Other`
-    // carrying the `memory_limit_hook` message (see `eqsat::memory_limit_hook`).
-    // Every other stop reason means the term saturated or hit a safety backstop
-    // (iteration/node/time) *before* reaching the target, so it is too easy and
-    // we reject it.
-    //
-    // jemalloc's `allocated` drops the moment this attempt's egraph is freed, so
-    // no between-term heap purge is needed to keep each attempt's baseline clean.
     let result = (|| {
         let stop_reason = r.stop_reason.clone()?;
-        // Accept a term if its run was cut off by any resource limit. In
-        // practice the iteration/node/time limits are set so high that only the
-        // `--max-memory` ceiling fires (surfaced as `StopReason::Other` with the
-        // `memory_limit_hook` message), but hitting any of them still means the
-        // term is hard enough to keep. Only saturation (the term simplifies away
-        // before exhausting any budget) is rejected.
+        // Resource exhaustion passes; saturation does not.
         let hit_limit = matches!(
             stop_reason,
             StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
