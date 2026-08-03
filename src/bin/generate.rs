@@ -6,9 +6,10 @@ use std::time::Instant;
 use clap::Parser;
 use egg::{RecExpr, Rewrite, StopReason};
 use hashbrown::{HashMap, hash_map::Entry};
-use indicatif::{ProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
+use rayon::prelude::*;
 use rise_distance::sampling::Distribution;
 use serde::Serialize;
 
@@ -143,7 +144,7 @@ where
     .progress_chars("=>-");
 
     sized_rngs
-        .into_iter()
+        .into_par_iter()
         .map(|(size, n, mut rng)| {
             let collector = collect_for_size::<L, N>(
                 size,

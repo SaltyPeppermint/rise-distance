@@ -11,9 +11,9 @@ crate-type = ["rlib"]
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 egg = { version = "0.11", features = ["serde-1", "lp"] }
-hashbrown = { version = "0.17", features = ["serde"] }
+hashbrown = { version = "0.17", features = ["serde", "rayon"] }
 lexpr = "0.2"
-indicatif = { version = "0.18" }
+indicatif = { version = "0.18", features = ["rayon"] }
 tikv-jemallocator = "0.6"
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 # log = "0.4"
@@ -21,7 +21,7 @@ num = { version = "0.4", features = ["serde", "rand"] }
 ordered-float = { version = "5", features = ["serde"] }
 rand = "0.8"
 rand_chacha = "0.3"
-# rayon = "1"
+rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 smallvec = "1"
