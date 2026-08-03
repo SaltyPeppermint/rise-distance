@@ -1,11 +1,4 @@
-"""Classical-ML baselines for next-iteration eqsat memory prediction.
-
-Fits on the transition frame from `iteration_data`: features are one eqsat
-iteration's state, targets are the next iteration's live-heap use. Everything
-is evaluated with a term-grouped CV split, since iterations inside one run are
-strongly autocorrelated and a random row split would leak neighbours across
-the fold boundary.
-"""
+"""Models for next-iteration eqsat memory prediction."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -21,8 +14,7 @@ from sklearn.model_selection import GroupKFold, cross_val_predict
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
-# Heavy-tailed features that a linear model should see in log space. Rule
-# counts get the same treatment; `log1p` keeps their many zeros finite.
+# Features transformed with log1p for the linear model.
 LOG_SCALARS = frozenset(
     {
         "egraph_nodes",
@@ -41,11 +33,7 @@ LOG_SCALARS = frozenset(
 
 
 def _base_column(col: str) -> str:
-    """Strip a `_lag<k>` suffix, so a lagged column scales like its original.
-
-    Log-space delta columns have no meaningful base and are left alone; they
-    are already centred near zero and belong in the linear block.
-    """
+    """Strip a `_lag<k>` suffix."""
     if "_lag" in col:
         return col.rsplit("_lag", 1)[0]
     return col
@@ -53,7 +41,7 @@ def _base_column(col: str) -> str:
 
 @dataclass(frozen=True)
 class Target:
-    """One prediction task and the naive baseline it must beat."""
+    """Prediction target and baseline."""
 
     key: str
     label: str
@@ -62,9 +50,7 @@ class Target:
     def naive(self, df: pl.DataFrame) -> np.ndarray:
         """Carry-forward baseline in the target's own units."""
         if self.key == "y_log_next":
-            # Assume memory does not change: log(next) = log(current).
             return np.log(df["allocated"].to_numpy().astype(np.float64))
-        # Assume no growth: log(next/current) = 0.
         return np.zeros(len(df), dtype=np.float64)
 
 
@@ -72,32 +58,24 @@ TARGETS = (
     Target(
         "y_log_next",
         "log next-iteration memory",
-        "Deployable target. Memory is strongly autocorrelated, so the "
-        "carry-forward baseline is already close; treat its score as the bar.",
+        "Log memory in the next iteration.",
     ),
     Target(
         "y_log_growth",
         "log memory growth ratio",
-        "Signal test. The carry-forward baseline scores ~0 by construction, "
-        "so any gain here is genuine predictive content.",
+        "Log ratio of next-iteration to current memory.",
     ),
 )
 
 
 def design_matrix(df: pl.DataFrame, features: Sequence[str]) -> np.ndarray:
-    """Dense float matrix in `features` order (sklearn takes numpy directly)."""
+    """Return a dense float matrix in feature order."""
     return df.select(list(features)).to_numpy().astype(np.float64)
 
 
 def make_models(features: Sequence[str], rules: Sequence[str]) -> dict[str, Pipeline]:
-    """Ridge on log-scaled features, plus a gradient-boosted tree ensemble.
-
-    Trees are scale- and monotone-invariant, so the boosted model takes the
-    raw columns; only the linear model needs the log/standardise treatment.
-    """
+    """Create ridge and gradient-boosting models."""
     rule_set = set(rules)
-    # A lagged copy is the same quantity one step back, so it needs the same
-    # log treatment as its base column. Deltas are already in log space.
     log_cols = [
         i
         for i, col in enumerate(features)
@@ -134,11 +112,7 @@ def evaluate(
     n_splits: int = 5,
     n_jobs: int = 5,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Cross-validate every model on every target, grouped by seed term.
-
-    Returns a tidy metrics frame and a long frame of out-of-fold predictions
-    for the plots.
-    """
+    """Cross-validate each model and target, grouped by seed term."""
     X = design_matrix(df, features)
     groups = df["term"].to_numpy()
     cv = GroupKFold(n_splits=n_splits)
@@ -158,7 +132,6 @@ def evaluate(
                     "MAE (log)": mean_absolute_error(y, pred),
                     "RMSE (log)": float(np.sqrt(np.mean((y - pred) ** 2))),
                     "R2": r2_score(y, pred),
-                    # Back out of log space: typical multiplicative error.
                     "median error x": float(np.exp(np.median(np.abs(y - pred)))),
                 }
             )
@@ -190,11 +163,7 @@ def importances(
     n_repeats: int = 5,
     top: int = 20,
 ) -> pl.DataFrame:
-    """Permutation importance for the boosted model on held-out terms.
-
-    Fit on four folds and permute on the fifth, so importance reflects
-    generalisation to unseen terms rather than in-sample fit.
-    """
+    """Compute permutation importance on one held-out group fold."""
     X = design_matrix(df, features)
     y = df[target].to_numpy()
     groups = df["term"].to_numpy()
@@ -227,13 +196,7 @@ def window_sweep(
     n_splits: int = 5,
     n_jobs: int = 5,
 ) -> pl.DataFrame:
-    """Score the models at several history depths.
-
-    Takes the raw iteration frame rather than a transition frame, since each
-    window size needs its lags rebuilt before the row filters. Backfilled
-    warm-up rows keep the row set identical across `windows`, so the scores are
-    directly comparable and the naive baseline is a fixed reference line.
-    """
+    """Score the models at several history depths."""
     import iteration_data as data
 
     rows = []
@@ -260,11 +223,7 @@ def size_extrapolation(
     *,
     split_size: int = 36,
 ) -> pl.DataFrame:
-    """Train on small seed terms and test on large ones.
-
-    A harder question than grouped CV: does a model fitted on cheap runs still
-    predict the expensive ones you actually care about?
-    """
+    """Train on terms below `split_size` and test on the remaining terms."""
     X = design_matrix(df, features)
     is_large = (df["term_size"] >= split_size).to_numpy()
 
