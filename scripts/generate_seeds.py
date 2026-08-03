@@ -132,7 +132,7 @@ def main() -> int:
         gen_cmd.append("--backoff-scheduler")
 
     print(f"Generating terms -> {terms_path}", file=sys.stderr)
-    gen = subprocess.run(gen_cmd)
+    gen = subprocess.run(gen_cmd, check=False)
     if gen.returncode != 0:
         print(f"generate failed (exit {gen.returncode})", file=sys.stderr)
         return gen.returncode

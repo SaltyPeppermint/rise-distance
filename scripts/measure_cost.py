@@ -70,6 +70,7 @@ def main() -> int:
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
         if proc.returncode != 0:
             raise RuntimeError(

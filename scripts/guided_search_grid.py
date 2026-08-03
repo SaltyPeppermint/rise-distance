@@ -42,7 +42,7 @@ class Args:
     distributions: str = "greedy,uniform,proportional:1"
     """Comma-separated root-size distributions accepted by `sample`."""
 
-    sampling_seeds: str = "0,1,2,3,4,5,6,7,8,9"
+    sampling_seeds: str = "0,1,2"
     """Comma-separated Rust candidate-sampling seeds."""
 
     strategies: str = "no_replacement_independent,no_replacement_balanced"
@@ -252,7 +252,7 @@ def main() -> int:
                     print(shlex.join(cmd))
                     continue
 
-                completed = subprocess.run(cmd)
+                completed = subprocess.run(cmd, check=False)
                 if completed.returncode != 0:
                     print(
                         f"Grid stopped after failed cell {strategy_out} "

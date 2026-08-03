@@ -59,7 +59,14 @@ def run_json_subprocess(
     non-JSON stdout; `what` names the failing unit in those messages
     (e.g. "goal for seed '(+ a b)'").
     """
-    proc = subprocess.run(cmd, input=input, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(
+        cmd,
+        input=input,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"{what} failed (code {proc.returncode}):\n{proc.stderr}")
     try:

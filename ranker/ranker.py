@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -62,7 +62,7 @@ class GuideRanker(nn.Module):
         return self.head(pooled.float())
 
 
-def load_guide_eval(path: Path) -> "pl.DataFrame":
+def load_guide_eval(path: Path) -> pl.DataFrame:
     """Load a guide-eval CSV file into a DataFrame.
 
     Returns a DataFrame with columns:
