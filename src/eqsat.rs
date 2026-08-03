@@ -274,9 +274,11 @@ where
 }
 
 /// Per-iteration heap annotation egg stores in each [`Iteration`]'s `data` slot.
-/// egg calls [`IterationData::make`] at the *start* of every iteration, so
-/// `allocated` is the live-heap reading there, aligned with egg's own
-/// start-of-iteration `egraph_nodes`/`egraph_classes`.
+/// egg calls [`IterationData::make`] at the end of `Runner::run_one`.
+/// `allocated` therefore reflects the heap after that iteration's rewrites,
+/// while egg's `egraph_nodes`/`egraph_classes` fields describe its start.
+/// When a hook stops an iteration before any rewrites run, this reading is
+/// effectively the heap value observed by the hook.
 ///
 /// The reading is the *absolute* [`live_heap_bytes`] value, not a delta over a
 /// pre-eqsat baseline — `make` has no access to one. Subtract a baseline
@@ -301,12 +303,13 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
 /// [`Measurement::from_run`]. `total_allocated` is the *true* post-run live-heap
 /// delta: [`live_heap_bytes`] sampled the moment the run returns, minus the same
 /// pre-eqsat baseline — the final egraph's footprint, not an iteration-boundary
-/// snapshot. Serializes as `{"iterations": [...], "total_allocated": N}`, egg's
-/// `Iteration` flattening `data` so each entry carries an `allocated` field.
+/// snapshot. `memory_limit` is the configured ceiling rebased to that baseline,
+/// so analysis can compare it directly with `allocated`.
 #[derive(Debug, Serialize)]
 pub struct Measurement {
     pub iterations: Vec<Iteration<HeapData>>,
     pub total_allocated: u64,
+    pub memory_limit: Option<u64>,
 }
 
 impl Measurement {
@@ -320,7 +323,11 @@ impl Measurement {
     /// dropped, so `total_allocated` still reflects the final egraph's live
     /// allocations.
     #[must_use]
-    pub fn from_run(heap: &HeapDelta, mut iterations: Vec<Iteration<HeapData>>) -> Self {
+    pub fn from_run(
+        heap: &HeapDelta,
+        mut iterations: Vec<Iteration<HeapData>>,
+        max_memory: Option<u64>,
+    ) -> Self {
         let pre = heap.baseline();
         for iter in &mut iterations {
             iter.data.allocated = iter.data.allocated.saturating_sub(pre);
@@ -328,6 +335,7 @@ impl Measurement {
         Self {
             iterations,
             total_allocated: heap.bytes(),
+            memory_limit: max_memory.map(|limit| limit.saturating_sub(pre)),
         }
     }
 }
@@ -674,6 +682,17 @@ mod tests {
             Err(GuideError::Unreached(StopReason::Other(message)))
                 if message.contains("memory limit exceeded")
         ));
+    }
+
+    #[test]
+    fn measurement_rebases_memory_limit() {
+        use super::Measurement;
+        use crate::utils::HeapDelta;
+
+        let heap = HeapDelta::start();
+        let limit = heap.baseline() + 4096;
+        let measurement = Measurement::from_run(&heap, Vec::new(), Some(limit));
+        assert_eq!(measurement.memory_limit, Some(4096));
     }
 
     /// `live_heap_bytes` must track live allocations: a large touched buffer

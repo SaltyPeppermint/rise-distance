@@ -254,5 +254,10 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
         Some(validation)
     })();
 
-    result.map(|validation| (validation, Measurement::from_run(&heap, r.iterations)))
+    result.map(|validation| {
+        (
+            validation,
+            Measurement::from_run(&heap, r.iterations, config.max_memory),
+        )
+    })
 }

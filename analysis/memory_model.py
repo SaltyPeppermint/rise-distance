@@ -226,6 +226,11 @@ def size_extrapolation(
     """Train on terms below `split_size` and test on the remaining terms."""
     X = design_matrix(df, features)
     is_large = (df["term_size"] >= split_size).to_numpy()
+    if not is_large.any() or is_large.all():
+        lo, hi = df["term_size"].min(), df["term_size"].max()
+        raise ValueError(
+            f"split_size={split_size} must divide the observed term sizes [{lo}, {hi}]"
+        )
 
     rows = []
     for target in TARGETS:
