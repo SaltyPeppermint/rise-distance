@@ -23,25 +23,22 @@ where
     let ref_size = ref_flat.size();
     let ref_pp = PreprocessedTree::new(&ref_flat);
 
-    candidates.fold(
-        (None, ZSStats::default()),
-        |(best, stats), candidate| {
-            let candidate_flat: FlatTree<L> = (&candidate).into();
-            let running = best.as_ref().map_or(usize::MAX, |v: &(_, usize)| v.1);
+    candidates.fold((None, ZSStats::default()), |(best, stats), candidate| {
+        let candidate_flat: FlatTree<L> = (&candidate).into();
+        let running = best.as_ref().map_or(usize::MAX, |v: &(_, usize)| v.1);
 
-            if candidate_flat.size().abs_diff(ref_size) > running {
-                return (best, stats + ZSStats::size_pruned());
-            }
+        if candidate_flat.size().abs_diff(ref_size) > running {
+            return (best, stats + ZSStats::size_pruned());
+        }
 
-            let distance = tree_distance_with_ref(&candidate_flat, &ref_pp, costs);
-            let best = [best, Some((candidate, distance))]
-                .into_iter()
-                .flatten()
-                .min_by_key(|v| v.1);
+        let distance = tree_distance_with_ref(&candidate_flat, &ref_pp, costs);
+        let best = [best, Some((candidate, distance))]
+            .into_iter()
+            .flatten()
+            .min_by_key(|v| v.1);
 
-            (best, stats + ZSStats::compared())
-        },
-    )
+        (best, stats + ZSStats::compared())
+    })
 }
 
 /// Statistics from filtered extraction

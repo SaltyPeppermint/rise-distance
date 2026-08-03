@@ -188,10 +188,8 @@ where
                 IndependentFrontierSampler::new(&self.tc, self.root, CountWeigher)
                     .sample_batch_root(&samples_per_size, seed)
             }
-            SampleStrategy::Balanced => {
-                BalancedFrontierSampler::new(&self.tc, self.root)
-                    .sample_batch_root(&samples_per_size, seed)
-            }
+            SampleStrategy::Balanced => BalancedFrontierSampler::new(&self.tc, self.root)
+                .sample_batch_root(&samples_per_size, seed),
         }
     }
 
@@ -324,12 +322,7 @@ mod tests {
         let package =
             PrecomputePackage::<BigUint, _, _>::precompute(&result, 3).expect("frontier package");
         let terms = package
-            .sample_frontier_terms(
-                3,
-                TermSampleDist::GREEDY,
-                SampleStrategy::Balanced,
-                [5, 8],
-            )
+            .sample_frontier_terms(3, TermSampleDist::GREEDY, SampleStrategy::Balanced, [5, 8])
             .expect("balanced frontier terms");
         let lowered = terms
             .into_iter()

@@ -146,9 +146,6 @@ mod tests {
                 "smallest_novel",
             ]
         );
-        assert_eq!(
-            Strategy::Sample(SampleStrategy::Balanced).seed_of(),
-            3
-        );
+        assert_eq!(Strategy::Sample(SampleStrategy::Balanced).seed_of(), 3);
     }
 }

@@ -11,22 +11,12 @@ use serde::{Deserialize, Serialize};
 
 /// Trait for node labels in e-graphs and exprs.
 pub trait MyLanguage:
-    Serialize
-    + for<'de> Deserialize<'de>
-    + Display
-    + Language
-    + FromOp<Error: Display>
-    + 'static
+    Serialize + for<'de> Deserialize<'de> + Display + Language + FromOp<Error: Display> + 'static
 {
 }
 
 impl<
-    L: Serialize
-        + for<'de> Deserialize<'de>
-        + Display
-        + Language
-        + FromOp<Error: Display>
-        + 'static,
+    L: Serialize + for<'de> Deserialize<'de> + Display + Language + FromOp<Error: Display> + 'static,
 > MyLanguage for L
 {
 }

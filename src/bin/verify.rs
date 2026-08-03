@@ -112,7 +112,10 @@ fn run_legs<L: MyLanguage, N: MyAnalysis<L>>(
 ) -> Vec<LegResult> {
     let subsets: Vec<Vec<GuideExpr<L>>> =
         serde_json::from_str(subsets_json).expect("parse guide subset node lists");
-    assert!(!subsets.is_empty(), "pair needs at least one attempt subset");
+    assert!(
+        !subsets.is_empty(),
+        "pair needs at least one attempt subset"
+    );
 
     let goal_expr = args
         .goal
