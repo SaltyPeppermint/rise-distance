@@ -2,6 +2,10 @@
 
 End-to-end walkthrough of how the codebase samples terms from `curr` that are *not* extractable from any e-class in `prev` — i.e., terms that carry information learned in the iteration that produced `curr` from `prev`.
 
+This is e-graph extraction, not direct grammar generation. For the seed-term
+sampler and its binder semantics, see
+[term_generation.md](term_generation.md).
+
 The relevant code lives in:
 
 - [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — counting & match enumeration.
@@ -396,8 +400,8 @@ Nine profiles total. The single match `(R_prev, [A, B])` is completed by the pro
 
 Profiles with any `None` have count 0 because `novel_histogram(M)` is empty. The remaining profiles also have count 0 in this graph.
 
-So the sampler picks uniformly (under `CountWeigher`) from the three
-non-novel-via-prev terms `Add(a,a)`, `Add(b,a)`, `Add(b,b)` but never
+So the sampler picks uniformly (under `CountWeigher`) from the three terms
+novel relative to `prev`: `Add(a,a)`, `Add(b,a)`, `Add(b,b)`, but never
 `Add(a,b)`. This is exactly what
 `sampling::sampler::frontier::independent::tests::independent_frontier_sample_union_diagonal`
 asserts.

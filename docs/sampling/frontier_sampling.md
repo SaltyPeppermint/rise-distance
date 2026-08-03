@@ -18,6 +18,8 @@ The relevant implementation is:
 
 The detailed counting argument remains in
 [`novel_sampling.md`](novel_sampling.md).
+Direct grammar sampling, including exact binder handling, is documented
+separately in [`term_generation.md`](term_generation.md).
 
 ## Motivation
 
