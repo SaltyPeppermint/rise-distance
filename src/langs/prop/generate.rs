@@ -6,17 +6,19 @@ use super::Prop;
 /// Grammar for random propositional terms.
 impl Samplable for Prop {
     fn grammar(leaf_symbols: Option<Vec<Self>>) -> Grammar<Self> {
-        Grammar {
-            leaves: leaf_symbols.unwrap_or_else(default_symbols),
-            vars: Vec::new(),
-            unary: vec![Prop::Not(id0())],
-            binary: vec![
-                Prop::And([id0(), id0()]),
-                Prop::Or([id0(), id0()]),
-                Prop::Implies([id0(), id0()]),
+        Grammar::new(
+            vec![
+                leaf_symbols.unwrap_or_else(default_symbols),
+                vec![Prop::Not(id0())],
+                vec![
+                    Prop::And([id0(), id0()]),
+                    Prop::Or([id0(), id0()]),
+                    Prop::Implies([id0(), id0()]),
+                ],
             ],
-            binder: Vec::new(),
-        }
+            Vec::new(),
+            Vec::new(),
+        )
     }
 }
 

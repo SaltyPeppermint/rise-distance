@@ -7,13 +7,9 @@ use crate::utils::stack_children;
 
 /// How an operator's children are filled when building a term.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shape {
-    /// A leaf with size 1.
-    Leaf,
-    /// One term child.
-    Unary,
-    /// Two term children.
-    Binary,
+enum Shape {
+    /// `n` independently generated children.
+    Arity(usize),
     /// A body and a variable that occurs free in it.
     Binder,
 }
@@ -22,32 +18,48 @@ impl Shape {
     /// Smallest term this shape can produce.
     const fn min_size(self) -> usize {
         match self {
-            Shape::Leaf => 1,
-            Shape::Unary => 2,
-            Shape::Binary | Shape::Binder => 3,
+            Shape::Arity(k) => k + 1,
+            Shape::Binder => 3,
         }
     }
 }
 
 /// Operator pools grouped by shape.
 pub struct Grammar<L> {
-    /// Variables and constants.
-    pub leaves: Vec<L>,
+    /// `ops[k]` holds the operators of arity `k`; `ops[0]` are the leaves.
+    pub ops: Vec<Vec<L>>,
     /// Leaves usable as bound variables.
     pub vars: Vec<L>,
-    pub unary: Vec<L>,
-    pub binary: Vec<L>,
     /// Operators whose children are a body and bound variable.
     pub binder: Vec<L>,
 }
 
 impl<L> Grammar<L> {
+    /// Build a grammar from its operator pools.
+    ///
+    /// `ops[k]` holds the operators of arity `k`, so `ops[0]` are the leaves.
+    #[must_use]
+    pub fn new(ops: Vec<Vec<L>>, vars: Vec<L>, binder: Vec<L>) -> Self {
+        Self { ops, vars, binder }
+    }
+
+    /// Largest arity with at least one operator, or 0 if the grammar is empty.
+    fn max_arity(&self) -> usize {
+        self.ops
+            .iter()
+            .rposition(|pool| !pool.is_empty())
+            .unwrap_or(0)
+    }
+
+    /// Operators of arity `k`, or an empty slice if the grammar has none.
+    fn pool(&self, k: usize) -> &[L] {
+        self.ops.get(k).map_or(&[], Vec::as_slice)
+    }
+
     /// Number of distinct labels available for a given shape.
     fn label_count(&self, shape: Shape) -> usize {
         match shape {
-            Shape::Leaf => self.leaves.len(),
-            Shape::Unary => self.unary.len(),
-            Shape::Binary => self.binary.len(),
+            Shape::Arity(k) => self.pool(k).len(),
             Shape::Binder => self.binder.len(),
         }
     }
@@ -72,6 +84,10 @@ pub struct SizeUniformSampler<L: MyLanguage> {
     grammar: Grammar<L>,
     /// Number of terms at each size; index 0 is unused.
     counts: Vec<f64>,
+    /// `comps[k][m]` counts ordered `k`-tuples of terms with total size `m`.
+    comps: Vec<Vec<f64>>,
+    /// Every shape the grammar can build, in weighting order.
+    shapes: Vec<Shape>,
     target: usize,
 }
 
@@ -86,16 +102,23 @@ impl<L: Samplable> SizeUniformSampler<L> {
     #[must_use]
     pub fn new(target: usize, leaf_symbols: Option<Vec<L>>) -> Self {
         let grammar = L::grammar(leaf_symbols);
-        let counts = count_terms(&grammar, target);
+        let (counts, comps) = count_terms(&grammar, target);
 
         assert!(
             target >= 1 && counts[target] > 0.0,
             "grammar admits no term of size {target}"
         );
 
+        let shapes = (0..=grammar.max_arity())
+            .map(Shape::Arity)
+            .chain(std::iter::once(Shape::Binder))
+            .collect();
+
         Self {
             grammar,
             counts,
+            comps,
+            shapes,
             target,
         }
     }
@@ -127,27 +150,16 @@ impl<L: Samplable> SizeUniformSampler<L> {
     fn gen_sized<R: Rng>(&self, rng: &mut R, n: usize) -> RecExpr<L> {
         debug_assert!(n >= 1, "cannot build a term of size 0");
 
-        let shapes = [Shape::Leaf, Shape::Unary, Shape::Binary, Shape::Binder];
-        let shape = *shapes
+        let shape = *self
+            .shapes
             .choose_weighted(rng, |shape| self.shape_count(*shape, n))
             .expect("counts[n] > 0 guarantees at least one shape is possible");
 
         match shape {
-            Shape::Leaf => {
-                let label = pick(rng, &self.grammar.leaves);
-                stack_children(&[], label)
-            }
-            Shape::Unary => {
-                let op = pick(rng, &self.grammar.unary);
-                let child = self.gen_sized(rng, n - 1);
-                stack_children(&[child], op)
-            }
-            Shape::Binary => {
-                let op = pick(rng, &self.grammar.binary);
-                let left_size = self.pick_split(rng, n - 1);
-                let left = self.gen_sized(rng, left_size);
-                let right = self.gen_sized(rng, n - 1 - left_size);
-                stack_children(&[left, right], op)
+            Shape::Arity(k) => {
+                let op = pick(rng, self.grammar.pool(k));
+                let children = self.gen_children(rng, k, n - 1);
+                stack_children(&children, op)
             }
             Shape::Binder => {
                 let op = pick(rng, &self.grammar.binder);
@@ -160,6 +172,35 @@ impl<L: Samplable> SizeUniformSampler<L> {
                 stack_children(&[body, var], op)
             }
         }
+    }
+
+    /// Generate `k` children with total size `rest`, uniformly over all such tuples.
+    fn gen_children<R: Rng>(&self, rng: &mut R, k: usize, rest: usize) -> Vec<RecExpr<L>> {
+        let mut children = Vec::with_capacity(k);
+        let mut left = rest;
+        // The last child takes whatever remains, so only k-1 sizes are drawn.
+        for remaining in (1..k).rev() {
+            let size = self.pick_child_size(rng, remaining, left);
+            children.push(self.gen_sized(rng, size));
+            left -= size;
+        }
+        if k > 0 {
+            children.push(self.gen_sized(rng, left));
+        }
+        children
+    }
+
+    /// Pick one child's size, weighted by how many tuples each choice leaves open.
+    ///
+    /// `remaining` is the number of children still to be sized after this one,
+    /// and `left` is the total size they must share with it.
+    fn pick_child_size<R: Rng>(&self, rng: &mut R, remaining: usize, left: usize) -> usize {
+        let sizes = (1..=left - remaining).collect::<Vec<_>>();
+        *sizes
+            .choose_weighted(rng, |size| {
+                self.counts[*size] * self.comps[remaining][left - *size]
+            })
+            .expect("the shape was chosen with non-zero weight")
     }
 
     /// Generate a binder body with at least one free variable.
@@ -184,33 +225,10 @@ impl<L: Samplable> SizeUniformSampler<L> {
             return 0.0;
         }
         match shape {
-            Shape::Leaf => {
-                if n == 1 {
-                    labels
-                } else {
-                    0.0
-                }
-            }
-            Shape::Unary => labels * self.counts[n - 1],
-            Shape::Binary => labels * self.split_total(n - 1),
+            Shape::Arity(k) => labels * self.comps[k][n - 1],
             // Count bodies, then choose among each body's free variables.
             Shape::Binder => labels * self.counts[n - 2],
         }
-    }
-
-    /// Number of ordered child pairs with total size `rest`.
-    fn split_total(&self, rest: usize) -> f64 {
-        (1..rest)
-            .map(|k| self.counts[k] * self.counts[rest - k])
-            .sum()
-    }
-
-    /// Pick a left-child size, weighted by the number of resulting term pairs.
-    fn pick_split<R: Rng>(&self, rng: &mut R, rest: usize) -> usize {
-        let sizes = (1..rest).collect::<Vec<_>>();
-        *sizes
-            .choose_weighted(rng, |k| self.counts[*k] * self.counts[rest - *k])
-            .expect("the shape was chosen with non-zero weight")
     }
 }
 
@@ -221,40 +239,56 @@ fn pick<R: Rng, T: Clone>(rng: &mut R, pool: &[T]) -> T {
         .clone()
 }
 
-/// Count terms of each exact size through `limit`.
+/// Count terms of each exact size through `limit`, and the child tuples that
+/// build them.
 ///
 /// ```text
-/// counts[1] = |leaves|
-/// counts[n] = |unary|  * counts[n-1]
-///           + |binary| * sum_{k=1}^{n-2} counts[k] * counts[n-1-k]
-///           + |binder| * counts[n-2]
+/// comps[0][m] = 1 if m == 0 else 0
+/// comps[k][m] = sum_{j=1}^{m-1} counts[j] * comps[k-1][m-j]
+/// counts[n]   = sum_k |ops[k]| * comps[k][n-1]
+///             + |binder| * counts[n-2]
 /// ```
+///
+/// Sizes are strictly increasing in `n`, so `comps[k][m]` for `m < n` is already
+/// final by the time `counts[n]` reads it.
 ///
 /// Binder counts represent bodies; their free-variable choices are made during
 /// sampling. Counts use `f64` because sampling needs ratios, not exact bigints.
 #[expect(clippy::cast_precision_loss)]
-fn count_terms<L>(grammar: &Grammar<L>, limit: usize) -> Vec<f64> {
-    let n_leaf = grammar.leaves.len() as f64;
-    let n_unary = grammar.unary.len() as f64;
-    let n_binary = grammar.binary.len() as f64;
+fn count_terms<L>(grammar: &Grammar<L>, limit: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
+    let max_arity = grammar.max_arity();
     let n_binder = grammar.binder.len() as f64;
 
     let mut counts = vec![0.0; limit + 1];
-    if limit >= 1 {
-        counts[1] = n_leaf;
-    }
-    for n in 2..=limit {
-        let unary = n_unary * counts[n - 1];
-        let binary = n_binary
-            * (1..n - 1)
-                .map(|k| counts[k] * counts[n - 1 - k])
+    // comps[0] is the empty tuple: the only way to total 0 is to take no children.
+    let mut comps = vec![vec![0.0; limit + 1]; max_arity + 1];
+    comps[0][0] = 1.0;
+
+    for n in 1..=limit {
+        // A k-tuple totalling n-1 uses only counts below n, already computed.
+        for k in 1..=max_arity {
+            comps[k][n - 1] = (1..n)
+                .map(|j| counts[j] * comps[k - 1][n - 1 - j])
                 .sum::<f64>();
+        }
+
+        let arities: f64 = (0..=max_arity)
+            .map(|k| grammar.pool(k).len() as f64 * comps[k][n - 1])
+            .sum();
         let binder = if n >= 3 {
             n_binder * counts[n - 2]
         } else {
             0.0
         };
-        counts[n] = unary + binary + binder;
+        counts[n] = arities + binder;
     }
-    counts
+
+    // comps[k][limit] is never read by counts, but pick_child_size can ask for it.
+    for k in 1..=max_arity {
+        comps[k][limit] = (1..=limit)
+            .map(|j| counts[j] * comps[k - 1][limit - j])
+            .sum::<f64>();
+    }
+
+    (counts, comps)
 }

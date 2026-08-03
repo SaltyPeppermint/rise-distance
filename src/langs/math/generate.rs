@@ -18,24 +18,26 @@ impl Samplable for Math {
             .cloned()
             .collect();
 
-        Grammar {
-            leaves,
+        Grammar::new(
+            vec![
+                leaves,
+                vec![
+                    Math::Ln(id0()),
+                    Math::Sqrt(id0()),
+                    Math::Sin(id0()),
+                    Math::Cos(id0()),
+                ],
+                vec![
+                    Math::Add([id0(), id0()]),
+                    Math::Sub([id0(), id0()]),
+                    Math::Mul([id0(), id0()]),
+                    Math::Div([id0(), id0()]),
+                    Math::Pow([id0(), id0()]),
+                ],
+            ],
             vars,
-            unary: vec![
-                Math::Ln(id0()),
-                Math::Sqrt(id0()),
-                Math::Sin(id0()),
-                Math::Cos(id0()),
-            ],
-            binary: vec![
-                Math::Add([id0(), id0()]),
-                Math::Sub([id0(), id0()]),
-                Math::Mul([id0(), id0()]),
-                Math::Div([id0(), id0()]),
-                Math::Pow([id0(), id0()]),
-            ],
-            binder: vec![Math::Diff([id0(), id0()]), Math::Integral([id0(), id0()])],
-        }
+            vec![Math::Diff([id0(), id0()]), Math::Integral([id0(), id0()])],
+        )
     }
 
     fn free_var_indices(grammar: &Grammar<Self>, expr: &RecExpr<Self>) -> Vec<usize> {
