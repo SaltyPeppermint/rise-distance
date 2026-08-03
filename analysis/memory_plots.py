@@ -6,6 +6,9 @@ from altair.typing import ChartType
 
 from plots import PALETTE
 
+# Whisker length in IQRs, matching `mark_boxplot`'s default extent.
+EXTENT = 1.5
+
 MODEL_COLORS = {
     "naive (carry forward)": "#9aa0a6",
     "ridge": PALETTE[0],
@@ -89,17 +92,121 @@ def predicted_vs_actual(predictions: pl.DataFrame, target: str, sample: int = 40
     )
 
 
-def residual_distribution(predictions: pl.DataFrame, target: str) -> ChartType:
-    """Residual spread per model; a tight band centred on zero is the goal."""
-    plot = predictions.filter(pl.col("target") == target)
-    return (
-        alt.Chart(plot)
-        .mark_boxplot(extent=1.5, size=18)
-        .encode(
-            x=alt.X("model:N", title=None, sort=list(MODEL_COLORS), axis=alt.Axis(labelAngle=-25)),
-            y=alt.Y("residual:Q", title="predicted − actual (log)"),
-            color=_model_color(),
+def growth_histogram(
+    transitions: pl.DataFrame, col: str = "y_log_growth", bins: int = 80
+) -> ChartType:
+    """Distribution of the growth target, binned in Polars.
+
+    `alt.Bin(maxbins=80)` bins in the browser, so the chart spec would carry
+    every transition to draw 80 bars. Counting here ships 80 rows instead.
+    """
+    bounds = transitions.select(lo=pl.col(col).min(), hi=pl.col(col).max()).cast(pl.Float64)
+    lo, hi = bounds.item(0, "lo"), bounds.item(0, "hi")
+    width = (hi - lo) / bins
+    counts = (
+        transitions.select(
+            # Right-open bins, with the top edge folded into the last bin so
+            # the maximum does not land in a bin of its own.
+            bin_index=((pl.col(col) - lo) / width).floor().clip(0, bins - 1).cast(pl.Int32)
         )
+        .group_by("bin_index")
+        .len(name="transitions")
+        .with_columns(
+            bin_start=lo + pl.col("bin_index") * width,
+            bin_end=lo + (pl.col("bin_index") + 1) * width,
+        )
+        .sort("bin_index")
+    )
+    return (
+        alt.Chart(counts)
+        .mark_bar()
+        .encode(
+            x=alt.X("bin_start:Q", bin="binned", title="log memory growth ratio"),
+            x2="bin_end:Q",
+            y=alt.Y("transitions:Q", title="transitions"),
+        )
+        .properties(
+            width=520,
+            height=200,
+            title=alt.TitleParams(
+                "Distribution of memory growth",
+                subtitle=["0 means memory held steady · 0.69 means it doubled"],
+                subtitleColor="#7a7a77",
+            ),
+        )
+    )
+
+
+def residual_summary(predictions: pl.DataFrame, target: str) -> pl.DataFrame:
+    """Five-number summary per model, with whiskers clamped to real data.
+
+    Aggregating here rather than in Vega keeps the notebook small: a boxplot
+    needs five numbers per model, not one row per prediction.
+    """
+    quartiles = (
+        predictions.filter(pl.col("target") == target)
+        .group_by("model")
+        .agg(
+            # Linear interpolation to match Vega's quartiles; Polars defaults
+            # to "nearest", which shifts the box edges by a hair.
+            pl.col("residual").quantile(0.25, interpolation="linear").alias("q1"),
+            pl.col("residual").median().alias("median"),
+            pl.col("residual").quantile(0.75, interpolation="linear").alias("q3"),
+            pl.col("residual").alias("residual"),
+        )
+        .with_columns((pl.col("q3") - pl.col("q1")).alias("iqr"))
+        .with_columns(
+            lo=pl.col("q1") - EXTENT * pl.col("iqr"),
+            hi=pl.col("q3") + EXTENT * pl.col("iqr"),
+        )
+    )
+    # Whiskers reach the furthest observation inside 1.5·IQR, matching what
+    # `mark_boxplot(extent=1.5)` would have drawn from the raw rows. Clamping
+    # the min/max to the fences would draw the fence itself, which invents a
+    # whisker past where the data actually stops.
+    #
+    # `list.eval` cannot see sibling columns, so this explodes back to one row
+    # per residual and filters against the fences directly.
+    return (
+        quartiles.explode("residual")
+        .filter(pl.col("residual").is_between("lo", "hi"))
+        .group_by("model", "q1", "median", "q3")
+        .agg(
+            lo_whisker=pl.col("residual").min(),
+            hi_whisker=pl.col("residual").max(),
+        )
+    )
+
+
+def residual_distribution(predictions: pl.DataFrame, target: str) -> ChartType:
+    """Residual spread per model; a tight band centred on zero is the goal.
+
+    Drawn from `residual_summary`, so the chart spec carries one row per model
+    instead of one per prediction.
+    """
+    plot = residual_summary(predictions, target)
+    x = alt.X("model:N", title=None, sort=list(MODEL_COLORS), axis=alt.Axis(labelAngle=-25))
+    y_title = "predicted − actual (log)"
+
+    whisker = (
+        alt.Chart(plot)
+        .mark_rule()
+        .encode(
+            x=x, y=alt.Y("lo_whisker:Q", title=y_title), y2="hi_whisker:Q", color=_model_color()
+        )
+    )
+    box = (
+        alt.Chart(plot)
+        .mark_bar(size=18)
+        .encode(x=x, y=alt.Y("q1:Q", title=y_title), y2="q3:Q", color=_model_color())
+    )
+    midline = (
+        alt.Chart(plot)
+        .mark_tick(color="white", size=18, thickness=2)
+        .encode(x=x, y=alt.Y("median:Q", title=y_title))
+    )
+    return (
+        alt.layer(whisker, box, midline)
         .properties(width=280, height=220)
         .properties(
             title=alt.TitleParams(
