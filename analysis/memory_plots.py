@@ -1,5 +1,8 @@
 """Altair charts for the next-iteration memory model."""
 
+import json
+from pathlib import Path
+
 import altair as alt
 import polars as pl
 from altair.typing import ChartType
@@ -15,12 +18,152 @@ MODEL_COLORS = {
     "gradient boosting": PALETTE[1],
 }
 
+MEMORY_SERIES_COLORS = {
+    "individual run": "#9aa9b8",
+    "10th–90th percentile": "#72a5dc",
+    "median": "#1f5f99",
+    "memory limit": "#d62728",
+}
+
 
 def _model_color() -> alt.Color:
     return alt.Color(
         "model:N",
         scale=alt.Scale(domain=list(MODEL_COLORS), range=list(MODEL_COLORS.values())),
         legend=alt.Legend(title=None),
+    )
+
+
+def _parse_size(value: str | float) -> float:
+    """Parse a byte count or a human size such as ``100M``."""
+    if not isinstance(value, str):
+        return float(value)
+
+    text = value.strip().upper()
+    suffixes = {"K": 2**10, "M": 2**20, "G": 2**30, "T": 2**40}
+    suffix = text[-1]
+    if suffix in suffixes:
+        return float(text[:-1]) * suffixes[suffix]
+    return float(text)
+
+
+def maximum_egraph_memory(iterations: pl.DataFrame, seed_dir: Path) -> ChartType:
+    """Plot each term's peak heap with its distribution and configured limit.
+
+    Stop iterations are excluded because their heap reading is a post-run
+    total rather than a mid-run egraph measurement.
+    """
+    maxima = (
+        iterations.filter(~pl.col("is_stop_iter") & (pl.col("allocated") > 0))
+        .group_by("term", "term_size")
+        .agg((pl.col("allocated").max() / 2**20).alias("max_memory_mib"))
+    )
+    summary = (
+        maxima.group_by("term_size")
+        .agg(
+            pl.col("max_memory_mib").quantile(0.1).alias("p10"),
+            pl.col("max_memory_mib").median().alias("median"),
+            pl.col("max_memory_mib").quantile(0.9).alias("p90"),
+        )
+        .sort("term_size")
+    )
+
+    run_args = json.loads((seed_dir / "generation_args.json").read_text())
+    raw_limit = run_args.get("max_memory")
+    series = list(MEMORY_SERIES_COLORS)
+    if raw_limit is None:
+        series.remove("memory limit")
+
+    series_color = alt.Color(
+        "series:N",
+        title=None,
+        scale=alt.Scale(
+            domain=series,
+            range=[MEMORY_SERIES_COLORS[name] for name in series],
+        ),
+        legend=alt.Legend(orient="top"),
+    )
+    y_scale = alt.Scale(type="log")
+
+    points = (
+        alt.Chart(maxima)
+        .transform_calculate(series="'individual run'")
+        .mark_circle(size=16, opacity=0.18)
+        .encode(
+            x=alt.X("term_size:Q", title="term size"),
+            y=alt.Y(
+                "max_memory_mib:Q",
+                title="maximum egraph memory (MiB)",
+                scale=y_scale,
+            ),
+            color=series_color,
+            tooltip=[
+                "term_size:Q",
+                alt.Tooltip(
+                    "max_memory_mib:Q",
+                    title="maximum memory (MiB)",
+                    format=".2f",
+                ),
+            ],
+        )
+    )
+    band = (
+        alt.Chart(summary)
+        .transform_calculate(series="'10th–90th percentile'")
+        .mark_area(opacity=0.2)
+        .encode(
+            x="term_size:Q",
+            y=alt.Y("p10:Q", scale=y_scale),
+            y2="p90:Q",
+            color=series_color,
+        )
+    )
+    median = (
+        alt.Chart(summary)
+        .transform_calculate(series="'median'")
+        .mark_line(strokeWidth=2)
+        .encode(
+            x="term_size:Q",
+            y=alt.Y("median:Q", scale=y_scale),
+            color=series_color,
+            tooltip=[
+                "term_size:Q",
+                alt.Tooltip("p10:Q", title="10th percentile (MiB)", format=".2f"),
+                alt.Tooltip("median:Q", title="median (MiB)", format=".2f"),
+                alt.Tooltip("p90:Q", title="90th percentile (MiB)", format=".2f"),
+            ],
+        )
+    )
+    layers = [points, band, median]
+
+    if raw_limit is not None:
+        limit_mib = _parse_size(raw_limit) / 2**20
+        limit = (
+            alt.Chart(pl.DataFrame({"memory_limit_mib": [limit_mib]}))
+            .transform_calculate(series="'memory limit'")
+            .mark_rule(strokeWidth=2)
+            .encode(
+                y=alt.Y("memory_limit_mib:Q", scale=y_scale),
+                color=series_color,
+                tooltip=[
+                    alt.Tooltip(
+                        "memory_limit_mib:Q",
+                        title="memory limit (MiB)",
+                        format=".2f",
+                    )
+                ],
+            )
+        )
+        layers.append(limit)
+
+    return alt.layer(*layers).properties(
+        width=360,
+        height=200,
+        title=alt.TitleParams(
+            "Maximum egraph memory",
+            subtitle=[f"{len(maxima):,} data points · one per term"],
+            subtitleColor="#7a7a77",
+        ),
     )
 
 
