@@ -15,7 +15,6 @@ use serde::Serialize;
 use rise_distance::eqsat::{EqsatConfig, HeapData, Measurement};
 use rise_distance::generator::{Samplable, SizeUniformSampler};
 use rise_distance::langs::{AvailableLanguages, math, prop};
-use rise_distance::utils::HeapDelta;
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser, Serialize)]
@@ -218,9 +217,9 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     config: &EqsatConfig,
     rules: &[Rewrite<L, N>],
 ) -> Option<(ValidationResult, Measurement)> {
-    // Measure heap use during the same run that validates the term.
-    let heap = HeapDelta::start();
-    let runner = config.build_runner::<_, _, HeapData>(expr);
+    // build_runner captures the sole baseline before constructing the runner
+    // and returns it for measurement after the run.
+    let (runner, heap) = config.build_runner::<_, _, HeapData>(expr);
 
     // Treat runner panics as failed validation.
     let start = Instant::now();
@@ -254,10 +253,5 @@ pub fn valididty_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
         Some(validation)
     })();
 
-    result.map(|validation| {
-        (
-            validation,
-            Measurement::from_run(&heap, r.iterations, config.max_memory),
-        )
-    })
+    result.map(|validation| (validation, Measurement::from_run(heap, r.iterations)))
 }

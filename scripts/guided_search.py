@@ -98,7 +98,9 @@ class Args:
     stop_time: float | None = None
     """Guide-replay wall-clock budget in seconds."""
     stop_memory: str | None = None
-    """Guide-replay live-heap budget (jemalloc `stats.allocated`, e.g. `4G`)."""
+    """Guide-replay absolute process live-heap ceiling (jemalloc
+    `stats.allocated`, e.g. `4G`). Each run converts it to a limit relative to
+    its shared pre-Runner baseline before enforcing it."""
 
     # search policy
     attempts: int = 5

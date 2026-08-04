@@ -22,7 +22,6 @@ use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::lower;
 use rise_distance::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
-use rise_distance::utils::HeapDelta;
 use rise_distance::{MyAnalysis, MyLanguage, eqsat};
 
 #[derive(Parser)]
@@ -126,15 +125,13 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     rules: &[Rewrite<L, N>],
     log: &mut String,
 ) -> Result<GoalGenMetadata<BigUint>, String> {
-    // Baseline for `base_memory`'s delta (see its field doc).
-    let heap = HeapDelta::start();
     let Some(result) = eqsat::run_eqsat(seed_expr, rules.iter(), eqsat) else {
         return Err("big eqsat failed".to_owned());
     };
 
-    // Eqsat's live-heap growth over the baseline, sampled before precompute
-    // below allocates further.
-    let base_memory = heap.bytes();
+    // Run-relative allocation from eqsat's shared pre-Runner baseline, sampled
+    // before precompute below allocates further.
+    let base_memory = result.allocated();
 
     let stop_reason = format!("{:?}", result.stop_reason());
     let SplitMetadata { guide, goal } = result.split_metadata();

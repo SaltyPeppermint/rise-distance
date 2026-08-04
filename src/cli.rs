@@ -98,10 +98,10 @@ pub struct SeedSamples<L: MyLanguage> {
     /// Total wall-clock time (seconds) of the guide-phase replay, so the driver
     /// can add the guide overhead to each leg's `total_time`.
     pub guide_time: f64,
-    /// Guide-phase replay's live-heap growth (bytes): jemalloc `stats.allocated`
-    /// after the replay minus a sample before it, isolating the replay's
-    /// footprint. (The `--stop-memory` budget is enforced against absolute
-    /// live-heap in the eqsat's memory hook, not this delta.)
+    /// Guide-phase replay's run-relative live allocation (bytes): jemalloc
+    /// `stats.allocated` minus the shared baseline captured immediately before
+    /// Runner construction. The absolute configured memory ceiling is rebased
+    /// to this same coordinate system before the hook compares it.
     pub guide_memory: u64,
     pub stop_reason: String,
 }
@@ -123,9 +123,10 @@ pub struct GoalGenMetadata<C: Counter> {
     pub stop_reason: String,
     pub guide_egraph: EqsatMetadata,
     pub goal_egraph: EqsatMetadata,
-    /// Eqsat's live-heap growth (bytes): jemalloc `stats.allocated` after the
-    /// eqsat minus a sample before it, isolating the eqsat's footprint. A single
-    /// combined reading, not splittable into `guide_egraph`/`goal_egraph` halves.
+    /// Eqsat's run-relative live allocation (bytes): jemalloc
+    /// `stats.allocated` minus the shared baseline captured immediately before
+    /// Runner construction. A single combined reading, not splittable into
+    /// `guide_egraph`/`goal_egraph` halves.
     pub base_memory: u64,
 }
 

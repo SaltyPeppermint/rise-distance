@@ -80,9 +80,10 @@ def run_json_subprocess(
 
 def eqsat_limits(cfg: dict) -> dict:
     """Extract the eqsat limits from a raw config dict (`generation_args.json`
-    / `goal_args.json`). `max_memory` is an optional live-heap ceiling (jemalloc
-    `stats.allocated`), accepted as a human size string (e.g. `"1G"`) or a raw
-    byte count, normalized to bytes."""
+    / `goal_args.json`). `max_memory` is an optional absolute process
+    live-heap ceiling (jemalloc `stats.allocated`), accepted as a human size
+    string (e.g. `"1G"`) or a raw byte count, normalized to bytes. Rust rebases
+    it against each run's shared pre-Runner baseline before hook comparison."""
     max_memory = cfg.get("max_memory")
     if isinstance(max_memory, str):
         max_memory = parse_size(max_memory)

@@ -19,7 +19,6 @@ use std::collections::BTreeMap;
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
-use rise_distance::utils::HeapDelta;
 use time::OffsetDateTime;
 
 use rise_distance::cli::{GuideExpr, SeedSamples, Strategy};
@@ -142,17 +141,14 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
         .parse::<RecExpr<L>>()
         .unwrap_or_else(|e| panic!("Failed to parse seed '{}': {e}", args.seed));
 
-    // Baseline for `guide_memory`'s delta (see its field doc).
-    let heap = HeapDelta::start();
-
     // Replay the guide phase under the effective limits the driver computed;
     // the replay ends at whichever limit trips first.
     let result = run_eqsat(&seed_expr, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
     eprintln!("Guide replay stop reason: {:?}", result.stop_reason());
 
-    // Replay's live-heap growth over the baseline, sampled before precompute
-    // and sampling below allocate further.
-    let guide_memory = heap.bytes();
+    // Run-relative allocation from the replay's shared pre-Runner baseline,
+    // sampled before precompute and sampling below allocate further.
+    let guide_memory = result.allocated();
     let guide_nodes = result.curr().total_number_of_nodes();
     let guide_classes = result.curr().classes().len();
     let guide_iters = result.data().len();

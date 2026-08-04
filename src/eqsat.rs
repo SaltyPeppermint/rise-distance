@@ -28,6 +28,86 @@ pub enum GuideError {
     PanicWhileAttempt,
 }
 
+/// Heap coordinates shared by every memory-aware component of one egg run.
+///
+/// `baseline` is the absolute process live heap sampled immediately before the
+/// [`Runner`] is constructed. `relative_limit` is the public absolute
+/// `max_memory` ceiling converted once into run-relative coordinates. Copies of
+/// this value retain exactly the same baseline; hooks must receive a copy
+/// instead of capturing a new [`HeapDelta`].
+#[derive(Debug, Clone, Copy)]
+pub struct RunHeap {
+    baseline: HeapDelta,
+    absolute_limit: Option<u64>,
+    relative_limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RunHeapReading {
+    absolute: u64,
+    relative: u64,
+}
+
+impl RunHeap {
+    /// Capture the sole pre-run baseline and convert the configured absolute
+    /// process-heap ceiling into the run-relative coordinate system.
+    #[must_use]
+    fn start(max_memory: Option<u64>) -> Self {
+        let baseline = HeapDelta::start();
+        let relative_limit = max_memory.map(|limit| baseline.relative_to(limit));
+        Self {
+            baseline,
+            absolute_limit: max_memory,
+            relative_limit,
+        }
+    }
+
+    /// Current live allocation relative to the shared pre-run baseline.
+    #[must_use]
+    pub fn current_relative(self) -> u64 {
+        self.current().relative
+    }
+
+    /// Rebase an absolute process live-heap reading against the shared
+    /// baseline. This is also useful to memory-aware hooks with an existing
+    /// heap sample.
+    #[must_use]
+    pub const fn relative_to(self, absolute_live_heap: u64) -> u64 {
+        self.baseline.relative_to(absolute_live_heap)
+    }
+
+    /// The shared absolute process live-heap baseline.
+    #[must_use]
+    pub const fn baseline(self) -> u64 {
+        self.baseline.baseline()
+    }
+
+    /// The configured absolute ceiling converted to run-relative coordinates.
+    #[must_use]
+    pub const fn relative_limit(self) -> Option<u64> {
+        self.relative_limit
+    }
+
+    /// Take one absolute process-heap sample and derive its run-relative value.
+    fn current(self) -> RunHeapReading {
+        let absolute = live_heap_bytes();
+        RunHeapReading {
+            absolute,
+            relative: self.relative_to(absolute),
+        }
+    }
+
+    #[cfg(test)]
+    fn from_baseline(baseline: u64, max_memory: Option<u64>) -> Self {
+        let baseline = HeapDelta::from_baseline(baseline);
+        Self {
+            baseline,
+            absolute_limit: max_memory,
+            relative_limit: max_memory.map(|limit| baseline.relative_to(limit)),
+        }
+    }
+}
+
 impl EqsatMetadata {
     /// Summarize a single eqsat run from its per-iteration log. egg records
     /// `egraph_nodes`/`egraph_classes` at the *start* of each iteration, so the
@@ -69,9 +149,10 @@ pub struct EqsatConfig {
     #[arg(long)]
     pub max_time: f64,
 
-    /// Live-heap ceiling in bytes (jemalloc `stats.allocated`), enforced by a
-    /// per-iteration hook (egg has no native memory limit). `None` (flag unset)
-    /// = unbounded.
+    /// Absolute process live-heap ceiling in bytes (jemalloc
+    /// `stats.allocated`), enforced by a per-iteration hook (egg has no native
+    /// memory limit). At run setup it is converted to a limit relative to the
+    /// shared pre-run baseline. `None` (flag unset) = unbounded.
     #[serde(default)]
     #[arg(long)]
     pub max_memory: Option<u64>,
@@ -85,23 +166,27 @@ impl EqsatConfig {
     /// Build a [`Runner`] configured with this config's limits (including the
     /// live-heap hook when `max_memory` is set) and scheduler.
     #[must_use]
-    pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> Runner<L, N, D>
+    pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> (Runner<L, N, D>, RunHeap)
     where
         L: MyLanguage,
         N: MyAnalysis<L>,
         D: IterationData<L, N>,
     {
+        // This must remain immediately before Runner construction: allocations
+        // by Runner::new and with_expr belong to this run.
+        let heap = RunHeap::start(self.max_memory);
         let runner = Runner::<L, N, D>::new(N::default())
             .with_expr(expr)
             .with_iter_limit(self.max_iters)
             .with_node_limit(self.max_nodes)
             .with_time_limit(Duration::from_secs_f64(self.max_time))
-            .with_hook(memory_limit_hook(self.max_memory));
-        if self.backoff_scheduler {
+            .with_hook(memory_limit_hook(heap));
+        let runner = if self.backoff_scheduler {
             runner.with_scheduler(BackoffScheduler::default())
         } else {
             runner.with_scheduler(SimpleScheduler)
-        }
+        };
+        (runner, heap)
     }
 }
 
@@ -121,6 +206,7 @@ where
     curr: EGraph<L, N>,
     root: Id,
     stop_reason: StopReason,
+    heap: RunHeap,
 }
 
 impl<L, N> EqsatResult<L, N>
@@ -139,6 +225,7 @@ where
             curr,
             root,
             stop_reason: StopReason::Saturated,
+            heap: RunHeap::start(None),
         }
     }
 
@@ -174,6 +261,19 @@ where
     #[must_use]
     pub const fn stop_reason(&self) -> &StopReason {
         &self.stop_reason
+    }
+
+    /// Current run-relative live allocation using the baseline captured before
+    /// this result's Runner was constructed.
+    #[must_use]
+    pub fn allocated(&self) -> u64 {
+        self.heap.current_relative()
+    }
+
+    /// The heap coordinate system shared by this run's hooks and measurements.
+    #[must_use]
+    pub const fn run_heap(&self) -> RunHeap {
+        self.heap
     }
 
     /// Consume the result and return the final egraph together with the root id.
@@ -250,12 +350,14 @@ const MIN_ITERS: usize = 3;
 /// limit): returning `Err` stops the run and egg records it as
 /// `StopReason::Other`. A no-op when `max_memory` is `None`.
 ///
-/// The ceiling is compared against jemalloc's live-heap bytes
-/// ([`live_heap_bytes`]), which drops immediately when a term's egraph is freed.
-/// No between-term heap purge is needed for the reading to reflect only the
-/// current term's footprint.
+/// The public ceiling is an absolute process-live-heap value. [`RunHeap`]
+/// converts it once to a limit relative to the shared pre-run baseline; this
+/// hook compares the current run-relative allocation to that relative limit.
+/// The comparison has the same absolute threshold as before while sharing the
+/// coordinate system used by training measurements and future predictive
+/// hooks.
 fn memory_limit_hook<L, N, D>(
-    max_memory: Option<u64>,
+    heap: RunHeap,
 ) -> impl FnMut(&mut Runner<L, N, D>) -> Result<(), String> + 'static
 where
     L: Language,
@@ -263,10 +365,16 @@ where
     D: IterationData<L, N>,
 {
     move |_runner| {
-        if let Some(limit) = max_memory {
-            let live = live_heap_bytes();
-            if live > limit {
-                return Err(format!("memory limit exceeded ({live} > {limit} bytes)"));
+        if let Some(relative_limit) = heap.relative_limit() {
+            let current = heap.current();
+            if current.relative > relative_limit {
+                let absolute_limit = heap
+                    .absolute_limit
+                    .expect("relative memory limit requires absolute limit");
+                return Err(format!(
+                    "memory limit exceeded ({} > {absolute_limit} bytes)",
+                    current.absolute
+                ));
             }
         }
         Ok(())
@@ -280,9 +388,9 @@ where
 /// When a hook stops an iteration before any rewrites run, this reading is
 /// effectively the heap value observed by the hook.
 ///
-/// The reading is the *absolute* [`live_heap_bytes`] value, not a delta over a
-/// pre-eqsat baseline — `make` has no access to one. Subtract a baseline
-/// afterwards with [`Measurement::from_run`] to isolate the egraph's footprint.
+/// The reading is the *absolute* [`live_heap_bytes`] value because egg's
+/// `IterationData::make` has no user-state parameter. [`Measurement::from_run`]
+/// rebases it exactly once with the same [`RunHeap`] supplied to the hooks.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct HeapData {
     pub allocated: u64,
@@ -316,26 +424,22 @@ impl Measurement {
     /// Assemble a measurement from a finished runner's `iterations`, rebasing
     /// each iteration's absolute [`HeapData::allocated`] reading to growth over
     /// `heap`'s pre-eqsat baseline (the [`live_heap_bytes`] value captured
-    /// *before* `build_runner`), saturating at zero, and recording the true
+    /// inside `build_runner` before Runner construction), saturating at zero,
+    /// and recording the true
     /// post-run delta in `total_allocated` by sampling live-heap now.
     ///
     /// Call this immediately after the run returns and before the egraph is
     /// dropped, so `total_allocated` still reflects the final egraph's live
     /// allocations.
     #[must_use]
-    pub fn from_run(
-        heap: &HeapDelta,
-        mut iterations: Vec<Iteration<HeapData>>,
-        max_memory: Option<u64>,
-    ) -> Self {
-        let pre = heap.baseline();
+    pub fn from_run(heap: RunHeap, mut iterations: Vec<Iteration<HeapData>>) -> Self {
         for iter in &mut iterations {
-            iter.data.allocated = iter.data.allocated.saturating_sub(pre);
+            iter.data.allocated = heap.relative_to(iter.data.allocated);
         }
         Self {
             iterations,
-            total_allocated: heap.bytes(),
-            memory_limit: max_memory.map(|limit| limit.saturating_sub(pre)),
+            total_allocated: heap.current_relative(),
+            memory_limit: heap.relative_limit(),
         }
     }
 }
@@ -369,6 +473,9 @@ where
     }));
     let hook_slots = Rc::clone(&slots);
 
+    // Capture exactly once, immediately before Runner construction. In
+    // particular, with_expr's initial egraph allocations are run-relative.
+    let heap = RunHeap::start(config.max_memory);
     let mut runner = Runner::default()
         .with_time_limit(Duration::try_from_secs_f64(config.max_time).unwrap_or(Duration::MAX))
         .with_node_limit(config.max_nodes)
@@ -386,7 +493,7 @@ where
             }
             Ok(())
         })
-        .with_hook(memory_limit_hook(config.max_memory));
+        .with_hook(memory_limit_hook(heap));
 
     runner = if config.backoff_scheduler {
         runner.with_scheduler(BackoffScheduler::default())
@@ -438,6 +545,7 @@ where
         curr,
         root,
         stop_reason,
+        heap,
     })
 }
 
@@ -487,6 +595,9 @@ pub struct ReachedRun<L: MyLanguage> {
     pub target: RecExpr<L>,
     pub nodes: usize,
     pub classes: usize,
+    /// Final live allocation relative to the baseline captured before this
+    /// run's Runner was constructed.
+    pub allocated: u64,
 }
 
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
@@ -513,6 +624,9 @@ where
     assert!(!guides.is_empty(), "must have at least one guide");
     let goal_clone = goal.clone();
 
+    // Capture exactly once, immediately before Runner construction. Adding and
+    // unioning guide expressions below is therefore included in this run.
+    let heap = RunHeap::start(eqsat.max_memory);
     let mut runner = Runner::default()
         .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
         .with_node_limit(eqsat.max_nodes)
@@ -524,7 +638,7 @@ where
             }
             Ok(())
         })
-        .with_hook(memory_limit_hook(eqsat.max_memory));
+        .with_hook(memory_limit_hook(heap));
 
     runner = if eqsat.backoff_scheduler {
         runner.with_scheduler(BackoffScheduler::default())
@@ -553,6 +667,7 @@ where
             target,
             nodes: r.egraph.total_number_of_nodes(),
             classes: r.egraph.classes().len(),
+            allocated: heap.current_relative(),
         })
     } else {
         Err(GuideError::Unreached(r.stop_reason.clone().unwrap()))
@@ -652,11 +767,22 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::sync::Mutex;
+
     use egg::{RecExpr, StopReason};
 
-    use super::{EqsatConfig, Goal, GuideError, verify_reachability};
+    use super::{
+        EqsatConfig, Goal, GuideError, HeapData, Measurement, RunHeap, live_heap_bytes,
+        verify_reachability,
+    };
     use crate::OriginLang;
     use crate::langs::math::{self, ConstantFold, Math};
+
+    // jemalloc stats are process-wide, so keep allocation-sensitive tests from
+    // perturbing one another.
+    static HEAP_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn verify_reachability_enforces_memory_limit() {
@@ -686,13 +812,131 @@ mod tests {
 
     #[test]
     fn measurement_rebases_memory_limit() {
-        use super::Measurement;
-        use crate::utils::HeapDelta;
-
-        let heap = HeapDelta::start();
-        let limit = heap.baseline() + 4096;
-        let measurement = Measurement::from_run(&heap, Vec::new(), Some(limit));
+        let heap = RunHeap::from_baseline(10_000, Some(14_096));
+        let measurement = Measurement::from_run(heap, Vec::new());
         assert_eq!(measurement.memory_limit, Some(4096));
+    }
+
+    #[test]
+    fn pre_baseline_allocations_are_excluded_and_post_baseline_allocations_are_included() {
+        const BYTES: usize = 32 * 1024 * 1024;
+        let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut before_baseline = vec![0_u8; BYTES];
+        for byte in before_baseline.iter_mut().step_by(4096) {
+            *byte = 1;
+        }
+        let heap = RunHeap::start(None);
+        let before_post_allocation = heap.current_relative();
+
+        let mut after_baseline = vec![0_u8; BYTES];
+        for byte in after_baseline.iter_mut().step_by(4096) {
+            *byte = 1;
+        }
+        std::hint::black_box((&before_baseline, &after_baseline));
+        let after_post_allocation = heap.current_relative();
+
+        assert!(
+            before_post_allocation < BYTES as u64 / 2,
+            "allocation made before baseline leaked into relative reading: \
+             {before_post_allocation}"
+        );
+        assert!(
+            after_post_allocation >= BYTES as u64 / 2,
+            "allocation made after baseline was not included: {after_post_allocation}"
+        );
+    }
+
+    #[test]
+    fn hard_limit_has_the_same_absolute_threshold_after_rebasing() {
+        let heap = RunHeap::from_baseline(1_000, Some(1_500));
+        for absolute in [999, 1_000, 1_499, 1_500, 1_501, u64::MAX] {
+            assert_eq!(
+                heap.relative_to(absolute) > heap.relative_limit().unwrap(),
+                absolute > 1_500,
+                "threshold changed at absolute live heap {absolute}"
+            );
+        }
+    }
+
+    #[test]
+    fn measurement_and_two_hooks_share_the_runner_baseline() {
+        let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let expr: RecExpr<Math> = "(+ x 0)".parse().unwrap();
+        let config = EqsatConfig {
+            max_iters: 1,
+            max_nodes: usize::MAX,
+            max_time: 60.0,
+            max_memory: None,
+            backoff_scheduler: false,
+        };
+        let (runner, heap) = config.build_runner::<_, ConstantFold, HeapData>(&expr);
+        // Give both hooks the same absolute sample so the assertion tests their
+        // shared coordinate system, independent of allocations on other test
+        // threads between hook calls.
+        let shared_absolute_sample = live_heap_bytes();
+        let first_baseline = Rc::new(Cell::new(None));
+        let second_baseline = Rc::new(Cell::new(None));
+        let first_relative = Rc::new(Cell::new(None));
+        let second_relative = Rc::new(Cell::new(None));
+
+        let runner = {
+            let baseline = Rc::clone(&first_baseline);
+            let relative = Rc::clone(&first_relative);
+            runner.with_hook(move |_| {
+                baseline.set(Some(heap.baseline()));
+                relative.set(Some(heap.relative_to(shared_absolute_sample)));
+                Ok(())
+            })
+        };
+        let runner = {
+            let baseline = Rc::clone(&second_baseline);
+            let relative = Rc::clone(&second_relative);
+            runner.with_hook(move |_| {
+                baseline.set(Some(heap.baseline()));
+                relative.set(Some(heap.relative_to(shared_absolute_sample)));
+                Ok(())
+            })
+        };
+
+        let runner = runner.run(&[]);
+        let absolute_iteration_reading = runner.iterations[0].data.allocated;
+        let measurement = Measurement::from_run(heap, runner.iterations);
+
+        assert_eq!(first_baseline.get(), Some(heap.baseline()));
+        assert_eq!(second_baseline.get(), Some(heap.baseline()));
+        assert_eq!(first_relative.get(), second_relative.get());
+        assert_eq!(
+            measurement.iterations[0].data.allocated,
+            heap.relative_to(absolute_iteration_reading)
+        );
+        assert_eq!(measurement.memory_limit, heap.relative_limit());
+    }
+
+    #[test]
+    fn runner_and_with_expr_allocations_are_after_the_baseline() {
+        let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut expr = RecExpr::<Math>::default();
+        let mut root = expr.add(Math::Symbol("x".into()));
+        for _ in 0..50_000 {
+            root = expr.add(Math::Sin(root));
+        }
+        std::hint::black_box(root);
+
+        let config = EqsatConfig {
+            max_iters: 1,
+            max_nodes: usize::MAX,
+            max_time: 60.0,
+            max_memory: None,
+            backoff_scheduler: false,
+        };
+        let (runner, heap) = config.build_runner::<_, ConstantFold, ()>(&expr);
+        std::hint::black_box(&runner);
+
+        assert!(
+            heap.current_relative() > 1024 * 1024,
+            "Runner construction and with_expr allocation were not measured"
+        );
     }
 
     /// `live_heap_bytes` must track live allocations: a large touched buffer
@@ -705,6 +949,7 @@ mod tests {
         use super::live_heap_bytes;
 
         const BYTES: usize = 512 * 1024 * 1024; // 512 MiB
+        let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let before = live_heap_bytes();
 

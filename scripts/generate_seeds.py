@@ -65,8 +65,10 @@ class Args:
     max_nodes: int = 100_000
     max_time: float = 1.0
     max_memory: str | None = None
-    """Graceful live-heap ceiling (jemalloc `stats.allocated`, e.g. "8G"),
-    enforced by egg's per-iteration hook. Unset = unbounded."""
+    """Graceful absolute process live-heap ceiling (jemalloc
+    `stats.allocated`, e.g. "8G"). Each run converts it to a limit relative to
+    its shared pre-Runner baseline before egg's hook enforces it. Unset =
+    unbounded."""
     backoff_scheduler: bool = True
     """Use egg's BackoffScheduler (pass --no-backoff-scheduler for the
     SimpleScheduler)."""

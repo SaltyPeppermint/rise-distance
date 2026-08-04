@@ -16,7 +16,6 @@ use serde::Serialize;
 use rise_distance::cli::GuideExpr;
 use rise_distance::eqsat::{EqsatConfig, Goal, GuideError, verify_reachability};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
-use rise_distance::utils::HeapDelta;
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]
@@ -63,10 +62,9 @@ struct LegResult {
     total_applied: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total_time: Option<f64>,
-    /// This leg's live-heap growth (bytes): jemalloc `stats.allocated` after
-    /// `verify_reachability` minus a sample taken just before the leg, so it
-    /// isolates this leg's egraph from any baseline left by earlier legs in the
-    /// shared process.
+    /// This leg's run-relative allocation (bytes): jemalloc
+    /// `stats.allocated` minus the shared baseline captured immediately before
+    /// constructing this leg's Runner.
     #[serde(skip_serializing_if = "Option::is_none")]
     memory: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,9 +123,7 @@ fn run_legs<L: MyLanguage, N: MyAnalysis<L>>(
 
     let mut results = Vec::with_capacity(subsets.len());
     for guide_exprs in subsets {
-        // Baseline for this leg's memory delta (see `LegResult::memory`).
-        let heap = HeapDelta::start();
-        let result = run_leg(guide_exprs, &goal, heap, args, rules);
+        let result = run_leg(guide_exprs, &goal, args, rules);
         let reached = result.reached;
         results.push(result);
         if reached {
@@ -140,7 +136,6 @@ fn run_legs<L: MyLanguage, N: MyAnalysis<L>>(
 fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
     guide_exprs: Vec<GuideExpr<L>>,
     goal: &Goal<L>,
-    heap: HeapDelta,
     args: &Args,
     rules: &[Rewrite<L, N>],
 ) -> LegResult {
@@ -167,7 +162,7 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
                         .sum(),
                 ),
                 total_time: Some(iterations.iter().map(|i| i.total_time).sum()),
-                memory: Some(heap.bytes()),
+                memory: Some(run.allocated),
                 stop_reason: None,
                 panic: false,
             }
