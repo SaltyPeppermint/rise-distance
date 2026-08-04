@@ -93,6 +93,7 @@
               libGL
               cbc
               openssl
+              stdenv.cc.cc.lib
             ]
           );
         };

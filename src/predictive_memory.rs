@@ -47,10 +47,6 @@ struct ParitySample {
     absolute_tolerance: f64,
 }
 
-trait MemoryGrowthPredictor {
-    fn predict_log_growth(&mut self, features: &[f32; FEATURE_COUNT]) -> Result<f64, String>;
-}
-
 pub(crate) struct OnnxMemoryGrowthPredictor {
     session: Session,
     safety_margin: f64,
@@ -112,9 +108,7 @@ impl OnnxMemoryGrowthPredictor {
         predictor.predict_log_growth(&[0.0; FEATURE_COUNT])?;
         Ok(predictor)
     }
-}
 
-impl MemoryGrowthPredictor for OnnxMemoryGrowthPredictor {
     fn predict_log_growth(&mut self, features: &[f32; FEATURE_COUNT]) -> Result<f64, String> {
         let input = Tensor::from_array(([1_usize, FEATURE_COUNT], features.to_vec()))
             .map_err(|error| error.to_string())?;
@@ -238,17 +232,16 @@ fn predicted_next_absolute(
     baseline.saturating_add(predicted_delta.ceil() as u64)
 }
 
-fn predictive_decision<P: MemoryGrowthPredictor>(
-    predictor: &mut P,
-    features: &[f32; FEATURE_COUNT],
+fn predictive_decision(
+    predicted_log_growth: f64,
     baseline: u64,
     allocated: u64,
     absolute_limit: u64,
     safety_margin: f64,
-) -> Result<Option<u64>, String> {
-    let prediction = predictor.predict_log_growth(features)?;
-    let predicted = predicted_next_absolute(baseline, allocated, prediction, safety_margin);
-    Ok((predicted >= absolute_limit).then_some(predicted))
+) -> Option<u64> {
+    let predicted =
+        predicted_next_absolute(baseline, allocated, predicted_log_growth, safety_margin);
+    (predicted >= absolute_limit).then_some(predicted)
 }
 
 /// Hook invoked before iteration `i + 1`, using iteration `i`'s egg metadata.
@@ -282,14 +275,14 @@ where
             .absolute_limit()
             .expect("predictive hook requires an absolute memory limit");
         let safety_margin = predictor.safety_margin;
+        let predicted_log_growth = predictor.predict_log_growth(&features)?;
         if let Some(predicted) = predictive_decision(
-            &mut predictor,
-            &features,
+            predicted_log_growth,
             heap.baseline(),
             allocated,
             absolute_limit,
             safety_margin,
-        )? {
+        ) {
             return Err(format!(
                 "predicted next-iteration memory limit crossing \
                  ({predicted} >= {absolute_limit} bytes)"
@@ -314,14 +307,6 @@ mod tests {
             rebuild_time: 0.4,
             total_time: 1.0,
             n_rebuilds: 2,
-        }
-    }
-
-    struct FixedPredictor(f64);
-
-    impl MemoryGrowthPredictor for FixedPredictor {
-        fn predict_log_growth(&mut self, _features: &[f32; FEATURE_COUNT]) -> Result<f64, String> {
-            Ok(self.0)
         }
     }
 
@@ -383,14 +368,12 @@ mod tests {
 
     #[test]
     fn prediction_below_ceiling_continues() {
-        let result = predictive_decision(&mut FixedPredictor(0.0), &[0.0; 16], 100, 200, 301, 0.0);
-        assert_eq!(result.unwrap(), None);
+        assert_eq!(predictive_decision(0.0, 100, 200, 301, 0.0), None);
     }
 
     #[test]
     fn prediction_at_or_above_ceiling_stops() {
-        let result = predictive_decision(&mut FixedPredictor(0.0), &[0.0; 16], 100, 200, 300, 0.0);
-        assert_eq!(result.unwrap(), Some(300));
+        assert_eq!(predictive_decision(0.0, 100, 200, 300, 0.0), Some(300));
     }
 
     #[test]
