@@ -95,14 +95,14 @@ fn main() {
 }
 
 fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
-    let eqsat = args.eqsat;
+    let eqsat = &args.eqsat;
     let seed_expr = args
         .seed
         .parse::<RecExpr<L>>()
         .unwrap_or_else(|e| panic!("Failed to parse seed '{}': {e}", args.seed));
 
     let mut log = format!("[seed] {}\n", args.seed);
-    let enriched = process_seed(args, &eqsat, &seed_expr, rules, &mut log);
+    let enriched = process_seed(args, eqsat, &seed_expr, rules, &mut log);
     match &enriched {
         Ok(g) => {
             writeln!(log, "Successfully generated {} goals!", g.goals.len()).unwrap();

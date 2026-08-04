@@ -69,6 +69,9 @@ class Args:
     `stats.allocated`, e.g. "8G"). Each run converts it to a limit relative to
     its shared pre-Runner baseline before egg's hook enforces it. Unset =
     unbounded."""
+    predict_next_memory: Path | None = None
+    """Path to an ONNX next-iteration memory model. Requires max_memory and an
+    adjacent same-stem JSON manifest; the hard memory hook remains enabled."""
     backoff_scheduler: bool = True
     """Use egg's BackoffScheduler (pass --no-backoff-scheduler for the
     SimpleScheduler)."""
@@ -130,6 +133,8 @@ def main() -> int:
 
     if max_memory_bytes is not None:
         gen_cmd += ["--max-memory", str(max_memory_bytes)]
+    if args.predict_next_memory is not None:
+        gen_cmd += ["--predict-next-memory", str(args.predict_next_memory)]
     if args.backoff_scheduler:
         gen_cmd.append("--backoff-scheduler")
 

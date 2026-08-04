@@ -31,6 +31,14 @@ LOG_SCALARS = frozenset(
     }
 )
 
+BOOSTED_PARAMETERS = {
+    "max_iter": 300,
+    "learning_rate": 0.08,
+    "min_samples_leaf": 20,
+    "l2_regularization": 1.0,
+    "random_state": 0,
+}
+
 
 def _base_column(col: str) -> str:
     """Strip a `_lag<k>` suffix."""
@@ -92,15 +100,7 @@ def make_models(features: Sequence[str], rules: Sequence[str]) -> dict[str, Pipe
         ),
         Ridge(alpha=1.0),
     )
-    boosted = make_pipeline(
-        HistGradientBoostingRegressor(
-            max_iter=300,
-            learning_rate=0.08,
-            min_samples_leaf=20,
-            l2_regularization=1.0,
-            random_state=0,
-        )
-    )
+    boosted = make_pipeline(HistGradientBoostingRegressor(**BOOSTED_PARAMETERS))
     return {"ridge": ridge, "gradient boosting": boosted}
 
 

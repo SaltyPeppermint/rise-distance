@@ -1,4 +1,7 @@
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::Duration;
 
 use egg::{
     Analysis, AstSize, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language, RecExpr,
@@ -11,6 +14,7 @@ use thiserror::Error;
 
 use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::{OriginLang, lower};
+use crate::predictive_memory;
 use crate::sketch::{self, Sketch};
 use crate::utils::{HeapDelta, live_heap_bytes};
 
@@ -88,6 +92,12 @@ impl RunHeap {
         self.relative_limit
     }
 
+    /// The configured absolute process live-heap ceiling.
+    #[must_use]
+    pub(crate) const fn absolute_limit(self) -> Option<u64> {
+        self.absolute_limit
+    }
+
     /// Take one absolute process-heap sample and derive its run-relative value.
     fn current(self) -> RunHeapReading {
         let absolute = live_heap_bytes();
@@ -135,7 +145,7 @@ impl EqsatMetadata {
 /// `verify` binaries; the Python drivers read the values out of the
 /// `generation_args.json` / `goal_args.json` sidecars and forward them on
 /// argv.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, clap::Args)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, clap::Args)]
 pub struct EqsatConfig {
     /// Maximum eqsat iterations.
     #[arg(long)]
@@ -157,6 +167,14 @@ pub struct EqsatConfig {
     #[arg(long)]
     pub max_memory: Option<u64>,
 
+    /// Path to an ONNX model used to predict whether the next eqsat iteration
+    /// will cross `max_memory`. The adjacent same-stem JSON manifest supplies
+    /// the feature order and safety margin. Disabled when unset and ignored
+    /// unless `max_memory` is set.
+    #[serde(default)]
+    #[arg(long, value_name = "MODEL.onnx")]
+    pub predict_next_memory: Option<PathBuf>,
+
     /// Use the backoff scheduler instead of the simple one.
     #[arg(long)]
     pub backoff_scheduler: bool,
@@ -165,6 +183,11 @@ pub struct EqsatConfig {
 impl EqsatConfig {
     /// Build a [`Runner`] configured with this config's limits (including the
     /// live-heap hook when `max_memory` is set) and scheduler.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the requested predictive ONNX model or its manifest cannot be
+    /// loaded, validated, or prewarmed.
     #[must_use]
     pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> (Runner<L, N, D>, RunHeap)
     where
@@ -172,15 +195,28 @@ impl EqsatConfig {
         N: MyAnalysis<L>,
         D: IterationData<L, N>,
     {
-        // This must remain immediately before Runner construction: allocations
-        // by Runner::new and with_expr belong to this run.
+        let predictor = self
+            .max_memory
+            .and(self.predict_next_memory.as_deref())
+            .map(|model_path| {
+                predictive_memory::OnnxMemoryGrowthPredictor::load_and_prewarm(model_path)
+                    .expect("failed to initialize predictive memory model")
+            });
+        // Model initialization must precede this sole baseline. Runner::new
+        // and with_expr allocations then belong to this run.
         let heap = RunHeap::start(self.max_memory);
+        let term_size = expr.as_ref().len();
         let runner = Runner::<L, N, D>::new(N::default())
             .with_expr(expr)
             .with_iter_limit(self.max_iters)
             .with_node_limit(self.max_nodes)
             .with_time_limit(Duration::from_secs_f64(self.max_time))
             .with_hook(memory_limit_hook(heap));
+        let runner = if let Some(predictor) = predictor {
+            runner.with_hook(predictive_memory::hook(heap, term_size, predictor))
+        } else {
+            runner
+        };
         let runner = if self.backoff_scheduler {
             runner.with_scheduler(BackoffScheduler::default())
         } else {
@@ -473,9 +509,17 @@ where
     }));
     let hook_slots = Rc::clone(&slots);
 
-    // Capture exactly once, immediately before Runner construction. In
-    // particular, with_expr's initial egraph allocations are run-relative.
+    let predictor = config
+        .max_memory
+        .and(config.predict_next_memory.as_deref())
+        .map(|model_path| {
+            predictive_memory::OnnxMemoryGrowthPredictor::load_and_prewarm(model_path)
+                .expect("failed to initialize predictive memory model")
+        });
+    // Capture exactly once after predictor prewarming and immediately before
+    // Runner construction. with_expr's allocations are run-relative.
     let heap = RunHeap::start(config.max_memory);
+    let term_size = start.as_ref().len();
     let mut runner = Runner::default()
         .with_time_limit(Duration::try_from_secs_f64(config.max_time).unwrap_or(Duration::MAX))
         .with_node_limit(config.max_nodes)
@@ -494,6 +538,9 @@ where
             Ok(())
         })
         .with_hook(memory_limit_hook(heap));
+    if let Some(predictor) = predictor {
+        runner = runner.with_hook(predictive_memory::hook(heap, term_size, predictor));
+    }
 
     runner = if config.backoff_scheduler {
         runner.with_scheduler(BackoffScheduler::default())
@@ -624,8 +671,9 @@ where
     assert!(!guides.is_empty(), "must have at least one guide");
     let goal_clone = goal.clone();
 
-    // Capture exactly once, immediately before Runner construction. Adding and
-    // unioning guide expressions below is therefore included in this run.
+    // Predictive stopping is deliberately disabled here: a multi-guide run
+    // has no training-compatible single `term_size`. The hard limit remains.
+    // Adding and unioning guide expressions below is included in this run.
     let heap = RunHeap::start(eqsat.max_memory);
     let mut runner = Runner::default()
         .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
@@ -768,9 +816,11 @@ where
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::path::PathBuf;
     use std::rc::Rc;
     use std::sync::Mutex;
 
+    use clap::Parser;
     use egg::{RecExpr, StopReason};
 
     use super::{
@@ -784,6 +834,12 @@ mod tests {
     // perturbing one another.
     static HEAP_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        eqsat: EqsatConfig,
+    }
+
     #[test]
     fn verify_reachability_enforces_memory_limit() {
         let guide: RecExpr<OriginLang<Math>> = "x".parse().unwrap();
@@ -793,6 +849,7 @@ mod tests {
             max_nodes: usize::MAX,
             max_time: 60.0,
             max_memory: Some(0),
+            predict_next_memory: None,
             backoff_scheduler: true,
         };
 
@@ -808,6 +865,41 @@ mod tests {
             Err(GuideError::Unreached(StopReason::Other(message)))
                 if message.contains("memory limit exceeded")
         ));
+    }
+
+    #[test]
+    fn predictive_stopping_is_disabled_by_default_when_deserializing() {
+        let config: EqsatConfig = serde_json::from_value(serde_json::json!({
+            "max_iters": 10,
+            "max_nodes": 1000,
+            "max_time": 1.0,
+            "max_memory": 1_000_000,
+            "backoff_scheduler": false
+        }))
+        .unwrap();
+        assert!(config.predict_next_memory.is_none());
+    }
+
+    #[test]
+    fn predictive_model_path_is_read_from_the_cli_flag() {
+        let args = TestCli::try_parse_from([
+            "test",
+            "--max-iters",
+            "10",
+            "--max-nodes",
+            "1000",
+            "--max-time",
+            "1",
+            "--max-memory",
+            "1000000",
+            "--predict-next-memory",
+            "models/custom.onnx",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.eqsat.predict_next_memory,
+            Some(PathBuf::from("models/custom.onnx"))
+        );
     }
 
     #[test]
@@ -868,6 +960,7 @@ mod tests {
             max_nodes: usize::MAX,
             max_time: 60.0,
             max_memory: None,
+            predict_next_memory: None,
             backoff_scheduler: false,
         };
         let (runner, heap) = config.build_runner::<_, ConstantFold, HeapData>(&expr);
@@ -928,6 +1021,7 @@ mod tests {
             max_nodes: usize::MAX,
             max_time: 60.0,
             max_memory: None,
+            predict_next_memory: None,
             backoff_scheduler: false,
         };
         let (runner, heap) = config.build_runner::<_, ConstantFold, ()>(&expr);

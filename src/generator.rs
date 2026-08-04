@@ -376,7 +376,7 @@ fn count_terms<L: Samplable>(
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_precision_loss, clippy::float_cmp)]
+#[expect(clippy::cast_precision_loss, clippy::float_cmp)]
 mod tests {
     use egg::{Id, RecExpr, define_language};
     use hashbrown::{HashMap, HashSet};

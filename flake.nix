@@ -80,6 +80,7 @@
             freetype
             expat
             cbc
+            openssl
           ];
 
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
@@ -91,6 +92,7 @@
               vulkan-loader
               libGL
               cbc
+              openssl
             ]
           );
         };

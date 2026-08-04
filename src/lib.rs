@@ -13,6 +13,7 @@ pub mod eqsat;
 pub mod generator;
 pub mod langs;
 mod origin;
+mod predictive_memory;
 pub mod sampling;
 pub mod search;
 pub mod sketch;

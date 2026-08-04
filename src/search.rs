@@ -133,6 +133,7 @@ where
         max_nodes: args.max_nodes,
         max_time: args.max_time,
         max_memory: None,
+        predict_next_memory: None,
         backoff_scheduler: false,
     };
 
@@ -228,6 +229,7 @@ where
         max_nodes: args.max_nodes,
         max_time: args.max_time,
         max_memory: None,
+        predict_next_memory: None,
         backoff_scheduler: false,
     };
 
