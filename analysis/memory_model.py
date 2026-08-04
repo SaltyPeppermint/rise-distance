@@ -154,6 +154,50 @@ def evaluate(
     return metrics, pl.concat(prediction_frames, how="vertical")
 
 
+def rule_feature_ablation(
+    df: pl.DataFrame,
+    scalar_features: Sequence[str],
+    rules: Sequence[str],
+    *,
+    n_splits: int = 5,
+    n_jobs: int = 5,
+) -> pl.DataFrame:
+    """Compare boosted models with and without per-rule application counts.
+
+    Both variants use the same grouped folds and hyperparameters. This isolates
+    the value of the rule-count block from model and train/test-split effects.
+    """
+    groups = df["term"].to_numpy()
+    cv = GroupKFold(n_splits=n_splits)
+    variants = {
+        "scalars only": list(scalar_features),
+        "scalars + rules": [*scalar_features, *rules],
+    }
+
+    rows = []
+    for target in TARGETS:
+        y = df[target.key].to_numpy()
+        for feature_set, features in variants.items():
+            X = design_matrix(df, features)
+            model = make_models(features, rules if feature_set == "scalars + rules" else ())[
+                "gradient boosting"
+            ]
+            pred = cross_val_predict(model, X, y, cv=cv, groups=groups, n_jobs=n_jobs)
+            rows.append(
+                {
+                    "target": target.label,
+                    "feature set": feature_set,
+                    "n_features": len(features),
+                    "MAE (log)": mean_absolute_error(y, pred),
+                    "RMSE (log)": float(np.sqrt(np.mean((y - pred) ** 2))),
+                    "R2": r2_score(y, pred),
+                    "median error x": float(np.exp(np.median(np.abs(y - pred)))),
+                }
+            )
+
+    return pl.DataFrame(rows)
+
+
 def importances(
     df: pl.DataFrame,
     features: Sequence[str],
