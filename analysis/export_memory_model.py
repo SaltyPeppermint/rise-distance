@@ -41,6 +41,10 @@ FEATURES = (
     "n_rebuilds",
     "iter_index",
     "term_size",
+    "n_banned",
+    "n_unbanned_this_iter",
+    "min_ban_remaining",
+    "total_times_banned",
 )
 TARGET = "y_log_growth"
 MODEL_PARAMETERS = memory_model.BOOSTED_PARAMETERS

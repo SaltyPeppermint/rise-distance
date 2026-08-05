@@ -412,6 +412,9 @@ where
 /// egg calls [`IterationData::make`] at the end of `Runner::run_one`.
 /// `allocated` therefore reflects the heap after that iteration's rewrites,
 /// while egg's `egraph_nodes`/`egraph_classes` fields describe its start.
+/// For row `k`, the four scheduler fields are the snapshot egg captured before
+/// hooks and rewrite search for `run_one(k)`, so they describe the ban state
+/// that governed iteration `k`, including when a hook stops that iteration.
 /// When a hook stops an iteration before any rewrites run, this reading is
 /// effectively the heap value observed by the hook.
 ///
@@ -421,12 +424,21 @@ where
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct HeapData {
     pub allocated: u64,
+    pub n_banned: usize,
+    pub n_unbanned_this_iter: usize,
+    pub min_ban_remaining: usize,
+    pub total_times_banned: usize,
 }
 
 impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
-    fn make(_runner: &Runner<L, N, Self>) -> Self {
+    fn make(runner: &Runner<L, N, Self>) -> Self {
+        let stats = runner.scheduler_stats;
         Self {
             allocated: live_heap_bytes(),
+            n_banned: stats.n_banned,
+            n_unbanned_this_iter: stats.n_unbanned_this_iter,
+            min_ban_remaining: stats.min_ban_remaining,
+            total_times_banned: stats.total_times_banned,
         }
     }
 }

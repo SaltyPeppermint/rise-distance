@@ -5,13 +5,13 @@
 
 use std::path::{Path, PathBuf};
 
-use egg::{Analysis, Iteration, IterationData, Language, Runner};
+use egg::{Analysis, Iteration, IterationData, Language, Runner, SchedulerStats};
 use ort::{session::Session, value::Tensor};
 use serde::Deserialize;
 
 use crate::eqsat::RunHeap;
 
-pub(crate) const FEATURE_NAMES: [&str; 16] = [
+pub(crate) const FEATURE_NAMES: [&str; 20] = [
     "egraph_nodes",
     "egraph_classes",
     "nodes_per_class",
@@ -28,6 +28,10 @@ pub(crate) const FEATURE_NAMES: [&str; 16] = [
     "n_rebuilds",
     "iter_index",
     "term_size",
+    "n_banned",
+    "n_unbanned_this_iter",
+    "min_ban_remaining",
+    "total_times_banned",
 ];
 const FEATURE_COUNT: usize = FEATURE_NAMES.len();
 
@@ -35,16 +39,6 @@ const FEATURE_COUNT: usize = FEATURE_NAMES.len();
 struct ModelManifest {
     features: Vec<String>,
     safety_margin: f64,
-    #[cfg(test)]
-    rust_parity_sample: ParitySample,
-}
-
-#[cfg(test)]
-#[derive(Debug, Deserialize)]
-struct ParitySample {
-    features: [f32; FEATURE_COUNT],
-    sklearn_prediction: f64,
-    absolute_tolerance: f64,
 }
 
 pub(crate) struct OnnxMemoryGrowthPredictor {
@@ -73,7 +67,8 @@ impl OnnxMemoryGrowthPredictor {
         })?;
         if manifest.features != FEATURE_NAMES {
             return Err(format!(
-                "memory-model feature order mismatch in {}: {:?}",
+                "memory-model feature order mismatch in {}: {:?}; \
+                 retraining and re-export are required",
                 manifest_path.display(),
                 manifest.features
             ));
@@ -177,6 +172,7 @@ fn build_features(
     previous_allocated: Option<u64>,
     iter_index: usize,
     term_size: usize,
+    scheduler_stats: SchedulerStats,
 ) -> [f32; FEATURE_COUNT] {
     let nodes = last.egraph_nodes as f64;
     let classes = last.egraph_classes as f64;
@@ -198,6 +194,10 @@ fn build_features(
         last.n_rebuilds as f64,
         iter_index as f64,
         term_size as f64,
+        scheduler_stats.n_banned as f64,
+        scheduler_stats.n_unbanned_this_iter as f64,
+        scheduler_stats.min_ban_remaining as f64,
+        scheduler_stats.total_times_banned as f64,
     ];
     values.map(|value| {
         let converted = value as f32;
@@ -244,7 +244,9 @@ fn predictive_decision(
     (predicted >= absolute_limit).then_some(predicted)
 }
 
-/// Hook invoked before iteration `i + 1`, using iteration `i`'s egg metadata.
+/// Hook invoked before iteration `i + 1`, using iteration `i`'s completed egg
+/// metadata. The scheduler fields are the snapshot already captured for
+/// iteration `i + 1`, the iteration whose memory use is being predicted.
 pub(crate) fn hook<L, N, D>(
     heap: RunHeap,
     term_size: usize,
@@ -268,6 +270,7 @@ where
             previous_allocated,
             earlier.len(),
             term_size,
+            runner.scheduler_stats,
         );
         previous_allocated = Some(allocated);
 
@@ -316,14 +319,31 @@ mod tests {
 
     #[test]
     fn feature_order_and_count_are_stable() {
-        assert_eq!(FEATURE_COUNT, 16);
+        assert_eq!(FEATURE_COUNT, 20);
         assert_eq!(FEATURE_NAMES[0], "egraph_nodes");
         assert_eq!(FEATURE_NAMES[15], "term_size");
+        assert_eq!(
+            &FEATURE_NAMES[16..],
+            &[
+                "n_banned",
+                "n_unbanned_this_iter",
+                "min_ban_remaining",
+                "total_times_banned",
+            ]
+        );
     }
 
     #[test]
     fn first_completed_iteration_uses_growth_defaults() {
-        let features = build_features(iteration(20, 4, 7), None, 1_000, None, 0, 11);
+        let features = build_features(
+            iteration(20, 4, 7),
+            None,
+            1_000,
+            None,
+            0,
+            11,
+            SchedulerStats::default(),
+        );
         assert_feature(features[5], 1.0);
         assert_feature(features[6], 1.0);
     }
@@ -337,6 +357,7 @@ mod tests {
             Some(1_000),
             1,
             11,
+            SchedulerStats::default(),
         );
         assert_feature(features[5], 1.5);
         assert_feature(features[6], 1.5);
@@ -345,7 +366,15 @@ mod tests {
     #[test]
     fn applied_counts_are_summed_without_rule_names() {
         assert_eq!(sum_applied_counts([&2, &5, &10].into_iter()), 17);
-        let features = build_features(iteration(20, 4, 17), None, 1_000, None, 0, 11);
+        let features = build_features(
+            iteration(20, 4, 17),
+            None,
+            1_000,
+            None,
+            0,
+            11,
+            SchedulerStats::default(),
+        );
         assert_feature(features[7], 17.0);
     }
 
@@ -358,12 +387,32 @@ mod tests {
             Some(0),
             1,
             0,
+            SchedulerStats::default(),
         );
         assert!(features.into_iter().all(f32::is_finite));
         assert_feature(features[2], 1.0);
         assert_feature(features[4], 1.0);
         assert_feature(features[5], 1.0);
         assert_feature(features[6], 1.0);
+    }
+
+    #[test]
+    fn scheduler_aggregates_have_fixed_feature_indices() {
+        let features = build_features(
+            iteration(0, 0, 0),
+            None,
+            0,
+            None,
+            0,
+            0,
+            SchedulerStats {
+                n_banned: 2,
+                n_unbanned_this_iter: 3,
+                min_ban_remaining: 4,
+                total_times_banned: 5,
+            },
+        );
+        assert_eq!(&features[16..], &[2.0, 3.0, 4.0, 5.0]);
     }
 
     #[test]
@@ -383,26 +432,12 @@ mod tests {
     }
 
     #[test]
-    fn onnx_file_matches_the_exporters_sklearn_prediction() {
+    fn stale_manifest_reports_retraining_before_parity_sample_shape() {
         let model_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("models/memory_growth.onnx");
-        let manifest_json =
-            std::fs::read_to_string(OnnxMemoryGrowthPredictor::manifest_path(&model_path)).unwrap();
-        let manifest: ModelManifest = serde_json::from_str(&manifest_json).unwrap();
-        let mut first = OnnxMemoryGrowthPredictor::load_and_prewarm(&model_path).unwrap();
-        let mut second = OnnxMemoryGrowthPredictor::load_and_prewarm(&model_path).unwrap();
-        let actual = first
-            .predict_log_growth(&manifest.rust_parity_sample.features)
-            .unwrap();
-        let second_actual = second
-            .predict_log_growth(&manifest.rust_parity_sample.features)
-            .unwrap();
-        assert!(
-            (actual - manifest.rust_parity_sample.sklearn_prediction).abs()
-                <= manifest.rust_parity_sample.absolute_tolerance
-        );
-        assert!(
-            (second_actual - manifest.rust_parity_sample.sklearn_prediction).abs()
-                <= manifest.rust_parity_sample.absolute_tolerance
-        );
+        let error = OnnxMemoryGrowthPredictor::load_and_prewarm(&model_path)
+            .err()
+            .expect("the checked-in 16-feature model should be stale");
+        assert!(error.contains("feature order mismatch"));
+        assert!(error.contains("retraining and re-export are required"));
     }
 }

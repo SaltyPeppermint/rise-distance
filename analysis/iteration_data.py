@@ -24,6 +24,13 @@ ITER_SCALARS = (
     "n_rebuilds",
 )
 
+SCHEDULER_SCALARS = (
+    "n_banned",
+    "n_unbanned_this_iter",
+    "min_ban_remaining",
+    "total_times_banned",
+)
+
 
 def _seed_dirs(pattern: str = "") -> list[Path]:
     """Seed-term directories matching `pattern`, oldest first."""
@@ -72,6 +79,7 @@ def load_iterations(seed_dir: Path) -> pl.DataFrame:
                     "iter_index": index,
                     "n_iters": len(iterations),
                     "allocated": it["data"]["allocated"],
+                    **{field: it["data"].get(field) for field in SCHEDULER_SCALARS},
                     "is_stop_iter": it["stop_reason"] is not None,
                     "run_stop_reason": json.dumps(validation["stop_reason"]),
                     **{field: it[field] for field in ITER_SCALARS},
@@ -188,6 +196,7 @@ def feature_columns(df: pl.DataFrame) -> tuple[list[str], list[str]]:
         "n_rebuilds",
         "iter_index",
         "term_size",
+        *SCHEDULER_SCALARS,
     ]
     return [col for col in scalars if col in df.columns], rule_columns(df)
 
@@ -207,6 +216,7 @@ WINDOW_SCALARS = (
     "rebuild_time",
     "total_time",
     "n_rebuilds",
+    *SCHEDULER_SCALARS,
 )
 
 # Lagged differences are taken in log space for the heavy-tailed, strictly

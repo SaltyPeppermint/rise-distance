@@ -259,8 +259,6 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 [[package]]
 name = "egg"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd40cfd4196d7a8f882ace95d623d4d6734588e502b4e188675a7c2f55eb4fb4"
 dependencies = [
  "env_logger",
  "good_lp",
@@ -273,9 +271,10 @@ dependencies = [
  "rustc-hash",
  "serde",
  "smallvec",
+ "spin 0.9.9",
  "symbol_table",
  "symbolic_expressions",
- "thiserror 1.0.69",
+ "thiserror",
  "vectorize",
 ]
 
@@ -991,7 +990,7 @@ dependencies = [
  "smallvec",
  "strum",
  "symbolic_expressions",
- "thiserror 2.0.19",
+ "thiserror",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "time",
@@ -1142,6 +1141,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
+
+[[package]]
+name = "spin"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1170,14 +1181,14 @@ dependencies = [
 
 [[package]]
 name = "symbol_table"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f19bffd69fb182e684d14e3c71d04c0ef33d1641ac0b9e81c712c734e83703bc"
+version = "0.5.0"
+source = "git+https://github.com/mwillsey/symbol_table?rev=a716c39a4aa4757c910c93fc10c5c7fa8f467133#a716c39a4aa4757c910c93fc10c5c7fa8f467133"
 dependencies = [
  "crossbeam-utils",
  "foldhash 0.1.5",
  "hashbrown 0.15.5",
  "serde",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -1223,31 +1234,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
-dependencies = [
- "thiserror-impl 1.0.69",
-]
-
-[[package]]
-name = "thiserror"
 version = "2.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9"
 dependencies = [
- "thiserror-impl 2.0.19",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "thiserror-impl",
 ]
 
 [[package]]

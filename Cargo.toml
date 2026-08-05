@@ -10,7 +10,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-egg = { version = "0.11", features = ["serde-1", "lp"] }
+egg = { path = "vendor/egg", version = "0.11", features = ["serde-1", "lp"] }
 hashbrown = { version = "0.17", features = ["serde", "rayon"] }
 lexpr = "0.2"
 indicatif = { version = "0.18", features = ["rayon"] }
