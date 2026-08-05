@@ -32,7 +32,7 @@ Prints one seed's `{\"Ok\":..}`/`{\"Err\":..}` payload as JSON to stdout; logs
 go to stderr. `scripts/generate_goals.py` fans these out and writes goal_terms.json.
 Example:
   goal --seed '(+ x 0)' --language math --max-iters 200 --max-nodes 1000000 \\
-    --max-time 10 --backoff-scheduler   # -> payload JSON on stdout
+    --max-time 10   # -> payload JSON on stdout
 "
 )]
 struct Args {

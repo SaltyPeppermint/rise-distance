@@ -20,7 +20,7 @@ Examples:
   generate plan --total-samples 1000 --min-size 5 --max-size 50 --distribution uniform
 
   generate one --size 17 --seed 42 --language math \\
-    --max-iters 50 --max-nodes 100000 --max-time 10 --backoff-scheduler
+    --max-iters 50 --max-nodes 100000 --max-time 10
 "
 )]
 struct Args {

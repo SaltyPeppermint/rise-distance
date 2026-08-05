@@ -28,7 +28,7 @@ early-stopped at the first reach). `--goal`, `--language`, and the eqsat limits
 come from argv. Example:
   echo '[[...],[...]]' \\
     | verify --language math --goal '(+ x 0)' --max-iters 200 \\
-      --max-nodes 1000000 --max-time 10 --backoff-scheduler
+      --max-nodes 1000000 --max-time 10
 "
 )]
 struct Args {

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use egg::{
     Analysis, AstSize, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language, RecExpr,
-    Rewrite, Runner, SimpleScheduler, StopReason,
+    Rewrite, Runner, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -140,9 +140,8 @@ impl EqsatMetadata {
     }
 }
 
-/// Eqsat resource limits and scheduler choice. Doubles as the shared clap flag
-/// group (`--max-*` / `--backoff-scheduler`) for the `goal` / `sample` /
-/// `verify` binaries; the Python drivers read the values out of the
+/// Eqsat resource limits. Doubles as the shared clap flag group (`--max-*`) for
+/// the `goal` / `sample` / `verify` binaries; the Python drivers read the values out of the
 /// `generation_args.json` / `goal_args.json` sidecars and forward them on
 /// argv.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, clap::Args)]
@@ -174,10 +173,6 @@ pub struct EqsatConfig {
     #[serde(default)]
     #[arg(long, value_name = "MODEL.onnx")]
     pub predict_next_memory: Option<PathBuf>,
-
-    /// Use the backoff scheduler instead of the simple one.
-    #[arg(long)]
-    pub backoff_scheduler: bool,
 }
 
 impl EqsatConfig {
@@ -211,16 +206,12 @@ impl EqsatConfig {
             .with_iter_limit(self.max_iters)
             .with_node_limit(self.max_nodes)
             .with_time_limit(Duration::from_secs_f64(self.max_time))
+            .with_scheduler(BackoffScheduler::default())
             .with_hook(memory_limit_hook(heap));
         let runner = if let Some(predictor) = predictor {
             runner.with_hook(predictive_memory::hook(heap, term_size, predictor))
         } else {
             runner
-        };
-        let runner = if self.backoff_scheduler {
-            runner.with_scheduler(BackoffScheduler::default())
-        } else {
-            runner.with_scheduler(SimpleScheduler)
         };
         (runner, heap)
     }
@@ -525,6 +516,7 @@ where
         .with_node_limit(config.max_nodes)
         .with_iter_limit(config.max_iters)
         .with_expr(start)
+        .with_scheduler(BackoffScheduler::default())
         .with_hook(move |runner| {
             let mut s = hook_slots.borrow_mut();
             let unchanged = s
@@ -542,12 +534,7 @@ where
         runner = runner.with_hook(predictive_memory::hook(heap, term_size, predictor));
     }
 
-    runner = if config.backoff_scheduler {
-        runner.with_scheduler(BackoffScheduler::default())
-    } else {
-        runner.with_scheduler(SimpleScheduler)
-    }
-    .run(rules);
+    runner = runner.run(rules);
 
     let stop_reason = runner.stop_reason.unwrap();
 
@@ -679,6 +666,7 @@ where
         .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
         .with_node_limit(eqsat.max_nodes)
         .with_iter_limit(eqsat.max_iters)
+        .with_scheduler(BackoffScheduler::default())
         .with_hook(move |runner| {
             let root = runner.roots[0];
             if goal_clone.reached(&runner.egraph, root) {
@@ -687,12 +675,6 @@ where
             Ok(())
         })
         .with_hook(memory_limit_hook(heap));
-
-    runner = if eqsat.backoff_scheduler {
-        runner.with_scheduler(BackoffScheduler::default())
-    } else {
-        runner.with_scheduler(SimpleScheduler)
-    };
 
     runner = if full_union {
         add_with_full_union(runner, guides)
@@ -850,7 +832,6 @@ mod tests {
             max_time: 60.0,
             max_memory: Some(0),
             predict_next_memory: None,
-            backoff_scheduler: true,
         };
 
         let result = verify_reachability::<Math, ConstantFold>(
@@ -868,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn predictive_stopping_is_disabled_by_default_when_deserializing() {
+    fn legacy_backoff_key_is_ignored_and_not_serialized() {
         let config: EqsatConfig = serde_json::from_value(serde_json::json!({
             "max_iters": 10,
             "max_nodes": 1000,
@@ -878,6 +859,12 @@ mod tests {
         }))
         .unwrap();
         assert!(config.predict_next_memory.is_none());
+        assert!(
+            serde_json::to_value(config)
+                .unwrap()
+                .get("backoff_scheduler")
+                .is_none()
+        );
     }
 
     #[test]
@@ -961,7 +948,6 @@ mod tests {
             max_time: 60.0,
             max_memory: None,
             predict_next_memory: None,
-            backoff_scheduler: false,
         };
         let (runner, heap) = config.build_runner::<_, ConstantFold, HeapData>(&expr);
         // Give both hooks the same absolute sample so the assertion tests their
@@ -1022,7 +1008,6 @@ mod tests {
             max_time: 60.0,
             max_memory: None,
             predict_next_memory: None,
-            backoff_scheduler: false,
         };
         let (runner, heap) = config.build_runner::<_, ConstantFold, ()>(&expr);
         std::hint::black_box(&runner);

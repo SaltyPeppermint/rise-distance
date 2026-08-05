@@ -39,7 +39,7 @@ passing the effective replay limits (search-phase limits overridden by its
 Example:
   sample --language math --seed '(+ x 0)' \\
     --max-iters 38 --max-nodes 1000000 --max-time 10 \\
-    --backoff-scheduler --max-memory 2000000000
+    --max-memory 2000000000
 "
 )]
 struct Args {

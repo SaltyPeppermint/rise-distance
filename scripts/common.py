@@ -93,14 +93,12 @@ def eqsat_limits(cfg: dict) -> dict:
         "max_time": cfg["max_time"],
         "max_memory": max_memory,
         "predict_next_memory": cfg.get("predict_next_memory"),
-        "backoff_scheduler": bool(cfg.get("backoff_scheduler", True)),
     }
 
 
 def limit_flags(limits: dict) -> list[str]:
     """Turn an eqsat-limit dict into the `--max-*` CLI flags the Rust binaries
-    take. `--max-memory` is added only when set; `--backoff-scheduler` is a
-    presence flag, added only when true."""
+    take. Optional memory flags are added only when set."""
     flags = [
         "--max-iters",
         str(limits["max_iters"]),
@@ -113,8 +111,6 @@ def limit_flags(limits: dict) -> list[str]:
         flags += ["--max-memory", str(limits["max_memory"])]
     if model_path := limits.get("predict_next_memory"):
         flags += ["--predict-next-memory", str(model_path)]
-    if limits["backoff_scheduler"]:
-        flags.append("--backoff-scheduler")
     return flags
 
 

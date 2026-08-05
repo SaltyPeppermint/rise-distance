@@ -77,7 +77,6 @@ class Args:
     max_memory: str | None = None
     """Rust's between-iterations live-heap early-stop hint."""
     predict_next_memory: Path | None = None
-    backoff_scheduler: bool = True
 
     workers: int = 4
     worker_timeout: float | None = None
@@ -130,7 +129,6 @@ def semantic_config(args: Args) -> dict[str, Any]:
         "predict_next_memory": (
             str(args.predict_next_memory) if args.predict_next_memory is not None else None
         ),
-        "backoff_scheduler": args.backoff_scheduler,
         "seed_derivation": "BLAKE2b-64(person=rise-seed-v1; signed-le128 fields)",
         "allocation_source": "generate plan",
     }
@@ -164,8 +162,6 @@ def _eqsat_flags(args: Args) -> list[str]:
         flags += ["--max-memory", str(parse_size(args.max_memory))]
     if args.predict_next_memory is not None:
         flags += ["--predict-next-memory", str(args.predict_next_memory)]
-    if args.backoff_scheduler:
-        flags.append("--backoff-scheduler")
     return flags
 
 
@@ -627,7 +623,9 @@ def prepare_generation_args(args: Args) -> None:
     wanted = semantic_config(args)
     if path.exists():
         existing = json.loads(path.read_text())
-        if existing.get("compatibility") != wanted:
+        compatibility = dict(existing.get("compatibility", {}))
+        legacy_backoff = compatibility.pop("backoff_scheduler", True)
+        if legacy_backoff is not True or compatibility != wanted:
             raise RuntimeError(
                 f"{path} is incompatible with this run; choose a new --path or restore "
                 "the original generation arguments"
