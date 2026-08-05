@@ -123,8 +123,8 @@ mod tests {
     use crate::langs::math::Math;
     use crate::lower;
     use crate::sampling::sampler::{CountWeigher, NaiveWeigher};
-    use crate::test_utils::sym;
     use crate::utils::combined_rng;
+    use crate::utils::sym;
 
     #[test]
     fn naive_sample_single_leaf() {

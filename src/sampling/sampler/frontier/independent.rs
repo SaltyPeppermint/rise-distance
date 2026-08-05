@@ -144,8 +144,7 @@ mod tests {
     use crate::langs::math::Math;
     use crate::sampling::count::PlainTermCount;
     use crate::sampling::sampler::CountWeigher;
-    use crate::test_utils::sym;
-    use crate::utils::combined_rng;
+    use crate::utils::{combined_rng, sym};
 
     #[test]
     fn independent_frontier_sample_picks_only_frontier_term() {

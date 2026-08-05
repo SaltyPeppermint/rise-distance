@@ -330,7 +330,7 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::sampling::count::PlainTermCount;
-    use crate::test_utils::sym;
+    use crate::utils::sym;
 
     #[test]
     fn balanced_sampler_covers_frontier_profiles_without_rejection() {

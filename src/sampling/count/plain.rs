@@ -242,7 +242,7 @@ mod tests {
 
     use super::*;
     use crate::langs::math::Math;
-    use crate::test_utils::sym;
+    use crate::utils::sym;
 
     #[test]
     fn enumerate_single_leaf() {

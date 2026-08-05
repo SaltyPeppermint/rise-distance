@@ -270,7 +270,7 @@ mod tests {
 
     use super::*;
     use crate::langs::math::Math;
-    use crate::test_utils::sym;
+    use crate::utils::sym;
 
     #[test]
     fn backoff_precompute_runs_exact_analysis_at_kth_novel_size() {

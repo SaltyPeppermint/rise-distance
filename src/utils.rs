@@ -164,64 +164,14 @@ pub fn id0() -> Id {
 /// cannot be read (both indicate jemalloc is not the active allocator).
 #[must_use]
 pub fn live_heap_bytes() -> u64 {
-    use tikv_jemalloc_ctl::{epoch, stats};
     // Stats are cached per epoch; advance it so the read reflects current state.
-    epoch::advance().expect("failed to advance jemalloc epoch");
-    stats::allocated::read().expect("failed to read jemalloc allocated stat") as u64
-}
-
-/// Live-heap growth measured across a scope: captures a [`live_heap_bytes`]
-/// baseline at [`HeapDelta::start`] and reports the delta over it at
-/// [`HeapDelta::bytes`]. Because jemalloc's `allocated` drops the moment an
-/// allocation is freed, the delta reflects what is still live at the point of
-/// reading — call `bytes` before anything the caller does *after* the measured
-/// work allocates further.
-#[derive(Debug, Clone, Copy)]
-pub struct HeapDelta {
-    pre: u64,
-}
-
-impl HeapDelta {
-    /// Capture the live-heap baseline to measure growth against.
-    #[must_use]
-    pub fn start() -> Self {
-        Self {
-            pre: live_heap_bytes(),
-        }
-    }
-
-    /// Live-heap bytes currently allocated over the baseline captured at
-    /// [`HeapDelta::start`], saturating at zero.
-    #[must_use]
-    pub fn bytes(&self) -> u64 {
-        self.relative_to(live_heap_bytes())
-    }
-
-    /// Rebase an absolute live-heap reading against this baseline.
-    ///
-    /// Saturation is intentional: jemalloc's live allocation can fall below
-    /// the baseline when allocations that predate the measured run are freed.
-    #[must_use]
-    pub const fn relative_to(&self, absolute_live_heap: u64) -> u64 {
-        absolute_live_heap.saturating_sub(self.pre)
-    }
-
-    /// The raw [`live_heap_bytes`] baseline captured at [`HeapDelta::start`].
-    #[must_use]
-    pub const fn baseline(&self) -> u64 {
-        self.pre
-    }
+    tikv_jemalloc_ctl::epoch::advance().expect("failed to advance jemalloc epoch");
+    tikv_jemalloc_ctl::stats::allocated::read().expect("failed to read jemalloc allocated stat")
+        as u64
 }
 
 #[cfg(test)]
-mod heap_tests {
-    use super::HeapDelta;
-
-    #[test]
-    fn relative_heap_saturates_below_baseline() {
-        let heap = HeapDelta { pre: 100 };
-        assert_eq!(heap.relative_to(99), 0);
-        assert_eq!(heap.relative_to(100), 0);
-        assert_eq!(heap.relative_to(101), 1);
-    }
+#[must_use]
+pub fn sym(name: &str) -> crate::langs::math::Math {
+    crate::langs::math::Math::Symbol(name.into())
 }
