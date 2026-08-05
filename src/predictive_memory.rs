@@ -9,8 +9,6 @@ use egg::{Analysis, Iteration, IterationData, Language, Runner, SchedulerStats};
 use ort::{session::Session, value::Tensor};
 use serde::Deserialize;
 
-use crate::eqsat::RunHeap;
-
 pub(crate) const FEATURE_NAMES: [&str; 20] = [
     "egraph_nodes",
     "egraph_classes",
@@ -248,7 +246,6 @@ fn predictive_decision(
 /// metadata. The scheduler fields are the snapshot already captured for
 /// iteration `i + 1`, the iteration whose memory use is being predicted.
 pub(crate) fn hook<L, N, D>(
-    heap: RunHeap,
     term_size: usize,
     mut predictor: OnnxMemoryGrowthPredictor,
 ) -> impl FnMut(&mut Runner<L, N, D>) -> Result<(), String> + 'static
@@ -262,7 +259,10 @@ where
         let Some((last, earlier)) = runner.iterations.split_last() else {
             return Ok(());
         };
-        let allocated = heap.current_relative();
+        let memory = runner
+            .memory_reading()
+            .expect("predictive runner has memory tracking");
+        let allocated = memory.relative;
         let features = build_features(
             last.into(),
             earlier.last().map(Into::into),
@@ -274,14 +274,16 @@ where
         );
         previous_allocated = Some(allocated);
 
-        let absolute_limit = heap
-            .absolute_limit()
+        let absolute_limit = runner
+            .absolute_memory_limit()
             .expect("predictive hook requires an absolute memory limit");
         let safety_margin = predictor.safety_margin;
         let predicted_log_growth = predictor.predict_log_growth(&features)?;
         if let Some(predicted) = predictive_decision(
             predicted_log_growth,
-            heap.baseline(),
+            runner
+                .memory_baseline()
+                .expect("predictive runner has memory tracking"),
             allocated,
             absolute_limit,
             safety_margin,

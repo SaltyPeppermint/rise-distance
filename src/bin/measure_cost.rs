@@ -115,7 +115,7 @@ where
     CostThisRound<L>: IterationData<L, N>,
 {
     eprintln!("Now running {expr}");
-    let (runner, _heap) = args.eqsat.build_runner::<_, _, CostThisRound<L>>(expr);
+    let runner = args.eqsat.build_runner::<_, _, CostThisRound<L>>(expr);
     let runner = runner.run(rules);
 
     CostEvolution::from_iterations(runner.iterations)

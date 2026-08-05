@@ -159,9 +159,7 @@ pub fn validity_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
     config: &EqsatConfig,
     rules: &[Rewrite<L, N>],
 ) -> Option<(ValidationResult, Measurement)> {
-    // build_runner captures the sole baseline before constructing the runner
-    // and returns it for measurement after the run.
-    let (runner, heap) = config.build_runner::<_, _, HeapData>(expr);
+    let runner = config.build_runner::<_, _, HeapData>(expr);
 
     // Treat runner panics as failed validation.
     let start = Instant::now();
@@ -177,8 +175,11 @@ pub fn validity_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
         // Resource exhaustion passes; saturation does not.
         let hit_limit = matches!(
             stop_reason,
-            StopReason::IterationLimit(_) | StopReason::NodeLimit(_) | StopReason::TimeLimit(_)
-        ) || matches!(&stop_reason, StopReason::Other(s) if s.contains("memory limit exceeded"));
+            StopReason::IterationLimit(_)
+                | StopReason::NodeLimit(_)
+                | StopReason::TimeLimit(_)
+                | StopReason::MemoryLimit(_)
+        );
         if !hit_limit {
             return None;
         }
@@ -195,5 +196,6 @@ pub fn validity_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
         Some(validation)
     })();
 
-    result.map(|validation| (validation, Measurement::from_run(heap, r.iterations)))
+    let report = r.final_memory_report()?;
+    result.map(|validation| (validation, Measurement::from_run(report, r.iterations)))
 }

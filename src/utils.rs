@@ -206,17 +206,10 @@ impl HeapDelta {
         absolute_live_heap.saturating_sub(self.pre)
     }
 
-    /// The raw [`live_heap_bytes`] baseline captured at [`HeapDelta::start`],
-    /// for callers that rebase their own readings against it (e.g.
-    /// `Measurement::from_run`).
+    /// The raw [`live_heap_bytes`] baseline captured at [`HeapDelta::start`].
     #[must_use]
     pub const fn baseline(&self) -> u64 {
         self.pre
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn from_baseline(pre: u64) -> Self {
-        Self { pre }
     }
 }
 
