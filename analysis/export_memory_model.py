@@ -5,6 +5,12 @@ The generated ONNX file is embedded by the Rust predictive-memory hook. Run:
     uv run python analysis/export_memory_model.py
 
 Pass ``--seed-dir`` to select a trace set instead of the newest seed-term run.
+
+``allocated`` is the absolute process live heap, matching what the hook reads at
+inference time and the coordinate system ``--max-memory`` is expressed in. The
+replay section of the evaluation report scores the model as the hook uses it:
+how many ceiling crossings it stops before they happen, at what cost in runs
+stopped needlessly.
 """
 
 import json
@@ -14,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
+import polars as pl
 import skl2onnx
 import sklearn
 import tyro
@@ -50,7 +57,9 @@ TARGET = "y_log_growth"
 MODEL_PARAMETERS = memory_model.BOOSTED_PARAMETERS
 SAFETY_QUANTILE = 0.99
 FLOAT32_PARITY_ATOL = 1e-5
-DEFAULT_CEILINGS = (32 << 20, 64 << 20, 128 << 20)
+# Spans the ceilings actually used in generation runs. The largest matters
+# most: crossings there are the ones the deployed hook has to catch.
+DEFAULT_CEILINGS = (64 << 20, 128 << 20, 256 << 20, 500 << 20)
 
 
 @dataclass(frozen=True)
@@ -114,59 +123,17 @@ def _replay(
     safety_margin: float,
     ceilings: tuple[int, ...],
 ) -> list[dict]:
-    """Evaluate one-step boundary decisions and distance to later crossings."""
-    rows = []
-    term = transitions["term"].to_numpy()
-    iteration = transitions["iter_index"].to_numpy()
-    allocated = transitions["allocated"].to_numpy().astype(np.float64)
-    actual_next = transitions["next_allocated"].to_numpy().astype(np.float64)
+    """Evaluate one-step boundary decisions and distance to later crossings.
 
-    for label, margin in (("raw", 0.0), ("conservative", safety_margin)):
-        predicted_next = allocated * np.exp(predictions + margin)
-        for ceiling in ceilings:
-            currently_below = allocated < ceiling
-            actual_crossing = currently_below & (actual_next >= ceiling)
-            predicted_stop = currently_below & (predicted_next >= ceiling)
-
-            # Simulate the hook: only the first predicted stop in each run is
-            # observable. Later decisions cannot happen after a predictive
-            # stop or the hard limit's first crossing.
-            starts = np.r_[0, np.flatnonzero(term[1:] != term[:-1]) + 1]
-            ends = np.r_[starts[1:], len(term)]
-            actual_crossings = avoided = missed = false_early = 0
-            iterations_early = []
-            for start, end in zip(starts, ends, strict=True):
-                actual_indices = np.flatnonzero(actual_crossing[start:end])
-                stop_indices = np.flatnonzero(predicted_stop[start:end])
-                crossing = int(actual_indices[0]) if len(actual_indices) else None
-                stop = int(stop_indices[0]) if len(stop_indices) else None
-                if crossing is not None:
-                    actual_crossings += 1
-                    if stop is not None and stop <= crossing:
-                        avoided += 1
-                        iterations_early.append(
-                            int(iteration[start + crossing] - iteration[start + stop])
-                        )
-                    else:
-                        missed += 1
-                elif stop is not None:
-                    false_early += 1
-
-            rows.append(
-                {
-                    "boundary": label,
-                    "ceiling_bytes": ceiling,
-                    "actual_crossings": actual_crossings,
-                    "avoided_crossings": avoided,
-                    "missed_crossings": missed,
-                    "false_early_stops": false_early,
-                    "iterations_early_mean": (
-                        float(np.mean(iterations_early)) if iterations_early else None
-                    ),
-                    "iterations_early_max": max(iterations_early, default=None),
-                }
-            )
-    return rows
+    Delegates to `memory_model.ceiling_decisions` so the exported report and
+    the notebook score stop decisions with identical logic.
+    """
+    return memory_model.ceiling_decisions(
+        transitions,
+        predictions,
+        ceilings,
+        margins=(("raw", 0.0), ("conservative", safety_margin)),
+    ).to_dicts()
 
 
 def _measure_overhead(
@@ -216,7 +183,13 @@ def main() -> None:
         trace_name = str(seed_dir.resolve().relative_to(Path.cwd().resolve()))
     except ValueError:
         trace_name = str(seed_dir.resolve())
-    transitions = data.build_transitions(data.load_iterations(seed_dir))
+    # Stop transitions are kept so the replay below has ceiling crossings to
+    # score -- a crossing is by construction a stop iteration. They are excluded
+    # from training just below, because their heap reading is a post-run total.
+    all_transitions = data.build_transitions(
+        data.load_iterations(seed_dir), keep_stop_transitions=True
+    )
+    transitions = all_transitions.filter(pl.col("next_is_stop_iter").not_())
     scalar_features, _ = data.feature_columns(transitions)
     if tuple(scalar_features) != FEATURES:
         raise AssertionError(f"feature mismatch: {scalar_features!r}")
@@ -279,9 +252,11 @@ def main() -> None:
             "observed_oof_miss_rate": observed_miss_rate,
         },
         "parity": parity,
+        # Scored on every transition, including the stop rows held out of
+        # training, so the crossings the hook exists to prevent are counted.
         "replay": _replay(
-            transitions,
-            oof,
+            all_transitions,
+            _ort_predict(model_bytes, memory_model.design_matrix(all_transitions, FEATURES)),
             safety_margin,
             tuple(args.ceilings),
         ),

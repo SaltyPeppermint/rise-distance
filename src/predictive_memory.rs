@@ -95,7 +95,8 @@ impl OnnxMemoryGrowthPredictor {
     }
 
     /// Construct and prewarm one predictor for one eqsat run. Call this before
-    /// capturing the run's heap baseline.
+    /// the Runner exists, so the session's own allocation settles before any
+    /// reading is taken against the ceiling.
     pub(crate) fn load_and_prewarm(model_path: &Path) -> Result<Self, String> {
         let mut predictor = Self::load(model_path)?;
         predictor.predict_log_growth(&[0.0; FEATURE_COUNT])?;
@@ -213,32 +214,28 @@ fn build_features(
     clippy::cast_sign_loss,
     reason = "bounds and finiteness are checked before the saturating byte conversion"
 )]
-fn predicted_next_absolute(
-    baseline: u64,
-    allocated: u64,
-    predicted_log_growth: f64,
-    safety_margin: f64,
-) -> u64 {
+/// Project the next iteration's absolute live heap. `allocated` is already an
+/// absolute reading, and the model predicts growth as a ratio against it, so
+/// the result is absolute without rebasing.
+fn predicted_next_absolute(allocated: u64, predicted_log_growth: f64, safety_margin: f64) -> u64 {
     let upper_log_growth = predicted_log_growth + safety_margin;
     if !upper_log_growth.is_finite() {
         return u64::MAX;
     }
-    let predicted_delta = (allocated as f64) * upper_log_growth.exp();
-    if !predicted_delta.is_finite() || predicted_delta > u64::MAX as f64 {
+    let predicted = (allocated as f64) * upper_log_growth.exp();
+    if !predicted.is_finite() || predicted > u64::MAX as f64 {
         return u64::MAX;
     }
-    baseline.saturating_add(predicted_delta.ceil() as u64)
+    predicted.ceil() as u64
 }
 
 fn predictive_decision(
     predicted_log_growth: f64,
-    baseline: u64,
     allocated: u64,
     absolute_limit: u64,
     safety_margin: f64,
 ) -> Option<u64> {
-    let predicted =
-        predicted_next_absolute(baseline, allocated, predicted_log_growth, safety_margin);
+    let predicted = predicted_next_absolute(allocated, predicted_log_growth, safety_margin);
     (predicted >= absolute_limit).then_some(predicted)
 }
 
@@ -259,10 +256,9 @@ where
         let Some((last, earlier)) = runner.iterations.split_last() else {
             return Ok(());
         };
-        let memory = runner
+        let allocated = runner
             .memory_reading()
             .expect("predictive runner has memory tracking");
-        let allocated = memory.relative;
         let features = build_features(
             last.into(),
             earlier.last().map(Into::into),
@@ -281,9 +277,6 @@ where
         let predicted_log_growth = predictor.predict_log_growth(&features)?;
         if let Some(predicted) = predictive_decision(
             predicted_log_growth,
-            runner
-                .memory_baseline()
-                .expect("predictive runner has memory tracking"),
             allocated,
             absolute_limit,
             safety_margin,
@@ -419,18 +412,26 @@ mod tests {
 
     #[test]
     fn prediction_below_ceiling_continues() {
-        assert_eq!(predictive_decision(0.0, 100, 200, 301, 0.0), None);
+        assert_eq!(predictive_decision(0.0, 300, 301, 0.0), None);
     }
 
     #[test]
     fn prediction_at_or_above_ceiling_stops() {
-        assert_eq!(predictive_decision(0.0, 100, 200, 300, 0.0), Some(300));
+        assert_eq!(predictive_decision(0.0, 300, 300, 0.0), Some(300));
+    }
+
+    /// Zero predicted growth projects the current reading unchanged: the
+    /// prediction scales the reading and adds no offset of its own, which is
+    /// what keeps it comparable to the configured ceiling.
+    #[test]
+    fn zero_growth_projects_the_current_reading() {
+        assert_eq!(predicted_next_absolute(300, 0.0, 0.0), 300);
     }
 
     #[test]
     fn non_finite_and_overflowing_predictions_stop_conservatively() {
-        assert_eq!(predicted_next_absolute(100, 200, f64::NAN, 0.0), u64::MAX);
-        assert_eq!(predicted_next_absolute(100, 200, f64::MAX, 0.0), u64::MAX);
+        assert_eq!(predicted_next_absolute(200, f64::NAN, 0.0), u64::MAX);
+        assert_eq!(predicted_next_absolute(200, f64::MAX, 0.0), u64::MAX);
     }
 
     #[test]

@@ -62,9 +62,9 @@ struct LegResult {
     total_applied: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total_time: Option<f64>,
-    /// This leg's run-relative allocation (bytes): jemalloc
-    /// `stats.allocated` minus the shared baseline captured immediately before
-    /// constructing this leg's Runner.
+    /// This leg's absolute allocation (bytes): jemalloc `stats.allocated` for
+    /// the whole process, the same coordinate system the configured memory
+    /// ceiling is expressed in.
     #[serde(skip_serializing_if = "Option::is_none")]
     memory: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

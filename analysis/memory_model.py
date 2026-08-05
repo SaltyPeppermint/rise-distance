@@ -154,6 +154,151 @@ def evaluate(
     return metrics, pl.concat(prediction_frames, how="vertical")
 
 
+def crossing_labels(df: pl.DataFrame, ceiling: float) -> tuple[np.ndarray, np.ndarray]:
+    """Rows sitting below `ceiling` and, of those, which ones cross it next.
+
+    A run can only be stopped from below, so rows already at or above the
+    ceiling are outside the decision problem entirely and are excluded rather
+    than counted as easy negatives.
+    """
+    allocated = df["allocated"].to_numpy().astype(np.float64)
+    next_allocated = df["next_allocated"].to_numpy().astype(np.float64)
+    below = allocated < ceiling
+    return below, below & (next_allocated >= ceiling)
+
+
+def ceiling_decisions(
+    df: pl.DataFrame,
+    predictions: np.ndarray,
+    ceilings: Sequence[float],
+    *,
+    margins: Sequence[tuple[str, float]] = (("raw", 0.0),),
+) -> pl.DataFrame:
+    """Score log-growth predictions as ceiling-crossing stop decisions.
+
+    Replays the Rust hook's rule -- stop when
+    `allocated * exp(prediction + margin) >= ceiling` -- over each run in
+    iteration order. Only the *first* predicted stop in a run is observable,
+    because the hook halts the run there; later rows describe a future that
+    would never have happened. Crossings are counted per run, not per row, for
+    the same reason.
+
+    `predictions` must be held-out (grouped-CV) log-growth predictions aligned
+    with `df`'s row order. Returns one row per (margin, ceiling) with the
+    quantities that matter operationally: how many runs were caught before
+    crossing, how many were missed, how many were stopped that never would have
+    crossed, and how much warning the catches gave.
+    """
+    if len(predictions) != len(df):
+        raise ValueError(f"predictions/rows mismatch: {len(predictions)} vs {len(df)}")
+
+    ordered = df.with_columns(pl.Series("_prediction", predictions)).sort("term", "iter_index")
+    term = ordered["term"].to_numpy()
+    iteration = ordered["iter_index"].to_numpy()
+    allocated = ordered["allocated"].to_numpy().astype(np.float64)
+    prediction = ordered["_prediction"].to_numpy()
+
+    # Run boundaries in the sorted frame.
+    starts = np.r_[0, np.flatnonzero(term[1:] != term[:-1]) + 1]
+    ends = np.r_[starts[1:], len(term)]
+
+    rows = []
+    for label, margin in margins:
+        predicted_next = allocated * np.exp(prediction + margin)
+        for ceiling in ceilings:
+            below, actual_crossing = crossing_labels(ordered, ceiling)
+            predicted_stop = below & (predicted_next >= ceiling)
+
+            crossings = caught = missed = false_stops = 0
+            warning = []
+            for start, end in zip(starts, ends, strict=True):
+                crossing_at = np.flatnonzero(actual_crossing[start:end])
+                stop_at = np.flatnonzero(predicted_stop[start:end])
+                crossing = int(crossing_at[0]) if len(crossing_at) else None
+                stop = int(stop_at[0]) if len(stop_at) else None
+                if crossing is not None:
+                    crossings += 1
+                    if stop is not None and stop <= crossing:
+                        caught += 1
+                        warning.append(int(iteration[start + crossing] - iteration[start + stop]))
+                    else:
+                        missed += 1
+                elif stop is not None:
+                    false_stops += 1
+
+            runs_at_risk = crossings + false_stops
+            rows.append(
+                {
+                    "boundary": label,
+                    "ceiling_mib": ceiling / 2**20,
+                    "runs": len(starts),
+                    "crossing_runs": crossings,
+                    "caught": caught,
+                    "missed": missed,
+                    "false_stops": false_stops,
+                    "recall": caught / crossings if crossings else None,
+                    # Of every run we stopped, the share that really would have
+                    # crossed. This is the cost side: a false stop throws away
+                    # work that would have completed fine.
+                    "precision": caught / runs_at_risk if runs_at_risk else None,
+                    "iters_warning_mean": float(np.mean(warning)) if warning else None,
+                    "iters_warning_max": max(warning, default=None),
+                }
+            )
+    return pl.DataFrame(rows)
+
+
+def ceiling_sweep(
+    df: pl.DataFrame,
+    features: Sequence[str],
+    rules: Sequence[str],
+    ceilings: Sequence[float],
+    *,
+    safety_quantile: float = 0.99,
+    n_splits: int = 5,
+    n_jobs: int = 5,
+) -> tuple[pl.DataFrame, float]:
+    """Cross-validate the boosted model, then score its ceiling decisions.
+
+    Fits on rows with a trustworthy growth target (`next_is_stop_iter` false,
+    when that column is present) so post-run heap totals never enter training,
+    but *scores* decisions on every row including the crossings themselves.
+
+    Returns the per-ceiling decision table and the safety margin, the
+    `safety_quantile` of held-out residuals. The margin is what buys recall:
+    the model underpredicts growth on some runs, and shifting predictions up by
+    this much converts most of those near-misses into catches.
+    """
+    trainable = (
+        df.filter(pl.col("next_is_stop_iter").not_()) if "next_is_stop_iter" in df.columns else df
+    )
+    X_train = design_matrix(trainable, features)
+    y_train = trainable["y_log_growth"].to_numpy()
+    cv = GroupKFold(n_splits=n_splits)
+    oof = cross_val_predict(
+        make_models(features, rules)["gradient boosting"],
+        X_train,
+        y_train,
+        cv=cv,
+        groups=trainable["term"].to_numpy(),
+        n_jobs=n_jobs,
+    )
+    # Positive residual means the model underpredicted actual log growth.
+    safety_margin = float(np.quantile(y_train - oof, safety_quantile))
+
+    # Score every row, including the stop transitions held out of training.
+    fitted = make_models(features, rules)["gradient boosting"].fit(X_train, y_train)
+    scored = fitted.predict(design_matrix(df, features))
+
+    decisions = ceiling_decisions(
+        df,
+        scored,
+        ceilings,
+        margins=(("raw", 0.0), ("conservative", safety_margin)),
+    )
+    return decisions, safety_margin
+
+
 def rule_feature_ablation(
     df: pl.DataFrame,
     scalar_features: Sequence[str],

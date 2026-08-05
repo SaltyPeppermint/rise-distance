@@ -106,7 +106,9 @@ def rule_columns(df: pl.DataFrame) -> list[str]:
     return sorted(col for col in df.columns if col.startswith("rule_"))
 
 
-def build_transitions(df: pl.DataFrame, window: int = 1) -> pl.DataFrame:
+def build_transitions(
+    df: pl.DataFrame, window: int = 1, *, keep_stop_transitions: bool = False
+) -> pl.DataFrame:
     """Pair each iteration with the next one's memory use.
 
     Features are strictly iteration `i`; the targets read iteration `i+1`.
@@ -118,6 +120,14 @@ def build_transitions(df: pl.DataFrame, window: int = 1) -> pl.DataFrame:
     comparable with a mid-run iteration. It is still usable as a *source* row
     only if it is not the stop iteration, which the shift-based construction
     handles naturally.
+
+    `keep_stop_transitions` retains transitions *into* a stop iteration, which
+    are otherwise dropped for the reason above. A memory-limit crossing is by
+    construction a stop iteration, so ceiling-crossing analysis has no positive
+    examples without these rows. They stay marked by `next_is_stop_iter` so the
+    growth regression can still exclude them: their `next_allocated` is a
+    post-run total and would bias `y_log_growth` upward. Use them as crossing
+    *labels*, not as regression targets.
 
     `window` is how many iterations of history each row sees, including the
     current one; `window > 1` adds the lag/delta columns from
@@ -148,9 +158,13 @@ def build_transitions(df: pl.DataFrame, window: int = 1) -> pl.DataFrame:
             (pl.col("allocated") / prev_allocated).alias("prev_growth"),
             (pl.col("egraph_nodes") / prev_nodes).alias("prev_node_growth"),
         )
-        # Drop the run's last row (no successor) and any transition *into* a
-        # stop iteration, whose heap reading is a post-run total.
-        .filter(pl.col("next_allocated").is_not_null() & pl.col("next_is_stop_iter").not_())
+        # Drop the run's last row (no successor) and, unless the caller wants
+        # them for crossing labels, any transition *into* a stop iteration,
+        # whose heap reading is a post-run total.
+        .filter(
+            pl.col("next_allocated").is_not_null()
+            & (pl.lit(keep_stop_transitions) | pl.col("next_is_stop_iter").not_())
+        )
         # Log targets need strictly positive readings on both ends.
         .filter((pl.col("allocated") > 0) & (pl.col("next_allocated") > 0))
         .with_columns(
@@ -170,9 +184,14 @@ def build_transitions(df: pl.DataFrame, window: int = 1) -> pl.DataFrame:
             (pl.col("next_allocated") / pl.col("allocated")).log().alias("y_log_growth"),
         )
     )
+    kept = (
+        f", {transitions['next_is_stop_iter'].sum()} into stop iterations"
+        if keep_stop_transitions
+        else ""
+    )
     print(
         f"Built {len(transitions)} transitions over {transitions['term'].n_unique()} terms "
-        f"(dropped {len(df) - len(transitions)} rows: run ends, stop iterations, zero heap)"
+        f"(dropped {len(df) - len(transitions)} rows: run ends, stop iterations, zero heap{kept})"
     )
     return transitions
 

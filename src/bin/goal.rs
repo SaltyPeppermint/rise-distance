@@ -129,8 +129,8 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
         return Err("big eqsat failed".to_owned());
     };
 
-    // Run-relative allocation from eqsat's shared pre-Runner baseline, sampled
-    // before precompute below allocates further.
+    // Absolute process live heap, sampled before precompute below allocates
+    // further.
     let base_memory = result.allocated();
 
     let stop_reason = format!("{:?}", result.stop_reason());

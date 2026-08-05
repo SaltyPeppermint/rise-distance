@@ -146,8 +146,8 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let result = run_eqsat(&seed_expr, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
     eprintln!("Guide replay stop reason: {:?}", result.stop_reason());
 
-    // Run-relative allocation from the replay's shared pre-Runner baseline,
-    // sampled before precompute and sampling below allocate further.
+    // Absolute process live heap, sampled before precompute and sampling below
+    // allocate further.
     let guide_memory = result.allocated();
     let guide_nodes = result.curr().total_number_of_nodes();
     let guide_classes = result.curr().classes().len();

@@ -99,8 +99,8 @@ class Args:
     """Guide-replay wall-clock budget in seconds."""
     stop_memory: str | None = None
     """Guide-replay absolute process live-heap ceiling (jemalloc
-    `stats.allocated`, e.g. `4G`). Each run converts it to a limit relative to
-    its shared pre-Runner baseline before enforcing it."""
+    `stats.allocated`, e.g. `4G`), enforced directly against the process live
+    heap with nothing subtracted out."""
     predict_next_memory: Path | None = None
     """Path to an ONNX next-iteration memory model. Requires an effective
     memory ceiling from `--stop-memory` or `goal_args.json`; the hard memory

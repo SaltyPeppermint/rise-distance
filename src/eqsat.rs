@@ -110,7 +110,8 @@ impl EqsatConfig {
                 predictive_memory::OnnxMemoryGrowthPredictor::load_and_prewarm(model_path)
                     .expect("failed to initialize predictive memory model")
             });
-        // Model initialization must precede Runner's baseline capture.
+        // Load the model before the Runner exists so the ONNX session's own
+        // allocation is not mistaken for eqsat growth mid-run.
         let term_size = expr.as_ref().len();
         let runner = Runner::<L, N, D>::new_with_memory_tracker(
             N::default(),
@@ -203,7 +204,7 @@ where
         &self.stop_reason
     }
 
-    /// Final run-relative live allocation sampled while the runner and its
+    /// Final absolute process live heap sampled while the runner and its
     /// final egraph were alive.
     #[must_use]
     pub fn allocated(&self) -> u64 {
@@ -288,6 +289,7 @@ const MIN_ITERS: usize = 3;
 /// hooks and rewrite search for `run_one(k)`, so they describe the ban state
 /// that governed iteration `k`, including when a hook stops that iteration.
 /// A stopped partial iteration records memory at the point `run_one` finishes.
+/// `allocated` is the absolute process live heap.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct HeapData {
     pub allocated: u64,
@@ -303,8 +305,7 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
         Self {
             allocated: runner
                 .sample_memory()
-                .expect("configured measurement runner has memory tracking")
-                .relative,
+                .expect("configured measurement runner has memory tracking"),
             n_banned: stats.n_banned,
             n_unbanned_this_iter: stats.n_unbanned_this_iter,
             min_ban_remaining: stats.min_ban_remaining,
@@ -315,10 +316,11 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
 
 /// Per-iteration eqsat stats plus live-heap use, as produced by running a
 /// [`Runner`] with [`HeapData`] in its iteration-data slot (via
-/// `EqsatConfig::build_runner::<_, _, HeapData>`). Each `allocated` value is
-/// already run-relative. `total_allocated` is Runner's final sample while the
-/// final egraph is alive. `memory_limit` is the absolute ceiling rebased to the
-/// same baseline.
+/// `EqsatConfig::build_runner::<_, _, HeapData>`). Every byte count here is an
+/// absolute process live-heap figure, in the same coordinate system egg's
+/// limit check uses, so readings are directly comparable to `memory_limit`
+/// across runs and workers. `total_allocated` is Runner's final sample while
+/// the final egraph is alive.
 #[derive(Debug, Serialize)]
 pub struct Measurement {
     pub iterations: Vec<Iteration<HeapData>>,
@@ -328,13 +330,13 @@ pub struct Measurement {
 
 impl Measurement {
     /// Assemble a measurement from a completed runner's final report and
-    /// already-relative iteration readings.
+    /// per-iteration readings.
     #[must_use]
     pub fn from_run(report: MemoryReport, iterations: Vec<Iteration<HeapData>>) -> Self {
         Self {
             iterations,
-            total_allocated: report.final_reading.relative,
-            memory_limit: report.relative_limit,
+            total_allocated: report.final_reading,
+            memory_limit: report.absolute_limit,
         }
     }
 }
@@ -404,8 +406,7 @@ where
     let allocated = runner
         .final_memory_report()
         .expect("configured eqsat runner has final memory report")
-        .final_reading
-        .relative;
+        .final_reading;
     let stop_reason = runner.stop_reason.unwrap();
 
     let root = runner.roots[0];
@@ -499,8 +500,8 @@ pub struct ReachedRun<L: MyLanguage> {
     pub target: RecExpr<L>,
     pub nodes: usize,
     pub classes: usize,
-    /// Final live allocation relative to the baseline captured before this
-    /// run's Runner was constructed.
+    /// Final absolute process live heap, in the same coordinate system as the
+    /// configured memory ceiling.
     pub allocated: u64,
 }
 
@@ -561,8 +562,7 @@ where
     let allocated = r
         .final_memory_report()
         .expect("configured reachability runner has final memory report")
-        .final_reading
-        .relative;
+        .final_reading;
     r.egraph.rebuild();
     let root = r.roots[0];
     if let Some(target) = goal.extract(&r.egraph, root) {
@@ -675,7 +675,7 @@ mod tests {
     use std::sync::Mutex;
 
     use clap::Parser;
-    use egg::{MemoryReading, MemoryReport, RecExpr, StopReason};
+    use egg::{MemoryReport, RecExpr, StopReason};
 
     use super::{EqsatConfig, Goal, GuideError, HeapData, Measurement, verify_reachability};
     use crate::OriginLang;
@@ -766,29 +766,30 @@ mod tests {
         );
     }
 
+    /// Reported figures are absolute: the limit is the one the user
+    /// configured, so readings from different runs and workers are directly
+    /// comparable against a single ceiling.
     #[test]
-    fn measurement_rebases_memory_limit() {
+    fn measurement_reports_absolute_memory_figures() {
         let report = MemoryReport {
-            baseline: 10_000,
-            final_reading: MemoryReading {
-                absolute: 12_000,
-                relative: 2_000,
-            },
+            final_reading: 12_000,
             absolute_limit: Some(14_096),
-            relative_limit: Some(4096),
         };
         let measurement = Measurement::from_run(report, Vec::new());
-        assert_eq!(measurement.memory_limit, Some(4096));
-        assert_eq!(measurement.total_allocated, 2_000);
+        assert_eq!(measurement.memory_limit, Some(14_096));
+        assert_eq!(measurement.total_allocated, 12_000);
     }
 
+    /// Readings are whole-process live heap with nothing subtracted out, so
+    /// heap the process already held is counted the same as the run's own.
+    /// This is what makes a reading comparable to the configured ceiling.
     #[test]
-    fn pre_baseline_allocations_are_excluded_and_post_baseline_allocations_are_included() {
+    fn readings_include_heap_held_before_the_runner_existed() {
         const BYTES: usize = 32 * 1024 * 1024;
         let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-        let mut before_baseline = vec![0_u8; BYTES];
-        for byte in before_baseline.iter_mut().step_by(4096) {
+        let mut held = vec![0_u8; BYTES];
+        for byte in held.iter_mut().step_by(4096) {
             *byte = 1;
         }
         let runner = egg::Runner::<Math, ConstantFold>::new_with_memory_tracker(
@@ -796,28 +797,17 @@ mod tests {
             live_heap_bytes,
             None,
         );
-        let before_post_allocation = runner.sample_memory().unwrap().relative;
-
-        let mut after_baseline = vec![0_u8; BYTES];
-        for byte in after_baseline.iter_mut().step_by(4096) {
-            *byte = 1;
-        }
-        std::hint::black_box((&before_baseline, &after_baseline));
-        let after_post_allocation = runner.sample_memory().unwrap().relative;
+        std::hint::black_box(&held);
+        let reading = runner.sample_memory().unwrap();
 
         assert!(
-            before_post_allocation < BYTES as u64 / 2,
-            "allocation made before baseline leaked into relative reading: \
-             {before_post_allocation}"
-        );
-        assert!(
-            after_post_allocation >= BYTES as u64 / 2,
-            "allocation made after baseline was not included: {after_post_allocation}"
+            reading >= BYTES as u64,
+            "pre-existing heap was excluded from the absolute reading: {reading}"
         );
     }
 
     #[test]
-    fn heap_data_is_relative_and_measurement_does_not_rebase_it() {
+    fn heap_data_and_measurement_agree_on_absolute_readings() {
         let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let expr: RecExpr<Math> = "(+ x 0)".parse().unwrap();
         let config = EqsatConfig {
@@ -837,12 +827,12 @@ mod tests {
             measurement.iterations[0].data.allocated,
             iteration_allocated
         );
-        assert_eq!(measurement.total_allocated, report.final_reading.relative);
-        assert_eq!(measurement.memory_limit, report.relative_limit);
+        assert_eq!(measurement.total_allocated, report.final_reading);
+        assert_eq!(measurement.memory_limit, report.absolute_limit);
     }
 
     #[test]
-    fn runner_and_with_expr_allocations_are_after_the_baseline() {
+    fn runner_and_with_expr_allocations_are_measured() {
         let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut expr = RecExpr::<Math>::default();
         let mut root = expr.add(Math::Symbol("x".into()));
@@ -851,6 +841,7 @@ mod tests {
         }
         std::hint::black_box(root);
 
+        let before = live_heap_bytes();
         let config = EqsatConfig {
             max_iters: 1,
             max_nodes: usize::MAX,
@@ -861,9 +852,11 @@ mod tests {
         let runner = config.build_runner::<_, ConstantFold, ()>(&expr);
         std::hint::black_box(&runner);
 
+        let reading = runner.sample_memory().unwrap();
         assert!(
-            runner.sample_memory().unwrap().relative > 1024 * 1024,
-            "Runner construction and with_expr allocation were not measured"
+            reading.saturating_sub(before) > 1024 * 1024,
+            "Runner construction and with_expr allocation were not measured: \
+             {before} -> {reading}"
         );
     }
 

@@ -434,6 +434,58 @@ def window_sweep_chart(sweep: pl.DataFrame, metric: str = "R2") -> ChartType:
     )
 
 
+BOUNDARY_COLORS = {"raw": "#9aa0a6", "conservative": PALETTE[0]}
+
+
+def ceiling_decisions_chart(decisions: pl.DataFrame) -> ChartType:
+    """Recall and precision of ceiling-crossing stops, by ceiling and boundary.
+
+    Recall is the share of runs that would have broken the ceiling and were
+    stopped first; precision is the share of stopped runs that really would
+    have crossed. The safety margin trades the second for the first.
+    """
+    scores = decisions.unpivot(
+        on=["recall", "precision"],
+        index=["boundary", "ceiling_mib"],
+        variable_name="metric",
+        value_name="value",
+    ).drop_nulls("value")
+
+    return (
+        alt.Chart(scores)
+        .mark_line(point=True, strokeWidth=2)
+        .encode(
+            x=alt.X("ceiling_mib:Q", title="ceiling (MiB)", scale=alt.Scale(type="log")),
+            y=alt.Y("value:Q", title=None, scale=alt.Scale(domain=[0, 1])),
+            color=alt.Color(
+                "boundary:N",
+                scale=alt.Scale(
+                    domain=list(BOUNDARY_COLORS), range=list(BOUNDARY_COLORS.values())
+                ),
+                legend=alt.Legend(title=None),
+            ),
+            tooltip=[
+                "boundary:N",
+                alt.Tooltip("ceiling_mib:Q", format=".0f"),
+                "metric:N",
+                alt.Tooltip("value:Q", format=".3f"),
+            ],
+        )
+        .properties(width=260, height=220)
+        .facet(column=alt.Column("metric:N", title=None))
+        .properties(
+            title=alt.TitleParams(
+                "Catching ceiling breaks before they happen",
+                subtitle=[
+                    "recall: crossings stopped in time · precision: stops that were warranted",
+                    "the safety margin buys recall at the cost of stopping some healthy runs",
+                ],
+                subtitleColor="#7a7a77",
+            )
+        )
+    )
+
+
 def importance_bars(importance: pl.DataFrame) -> ChartType:
     """Permutation importance on held-out terms, scalars vs rewrite rules."""
     order = importance["feature"].to_list()
