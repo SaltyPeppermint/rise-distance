@@ -193,6 +193,7 @@ def ceiling_decisions(
     term = ordered["term"].to_numpy()
     iteration = ordered["iter_index"].to_numpy()
     allocated = ordered["allocated"].to_numpy().astype(np.float64)
+    peak_allocated = ordered["iteration_peak_allocated"].to_numpy().astype(np.float64)
     prediction = ordered["_prediction"].to_numpy()
 
     # Run boundaries in the sorted frame.
@@ -221,7 +222,7 @@ def ceiling_decisions(
                         warning.append(int(iteration[start + crossing] - iteration[start + stop]))
                     else:
                         missed += 1
-                        peak = float(ordered["iteration_peak_allocated"][start + crossing])
+                        peak = float(peak_allocated[start + crossing])
                         missed_overshoot.append(peak / ceiling)
                 elif stop is not None:
                     false_stops += 1
