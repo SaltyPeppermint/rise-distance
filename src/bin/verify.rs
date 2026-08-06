@@ -14,7 +14,9 @@ use egg::{RecExpr, Rewrite};
 use serde::Serialize;
 
 use rise_distance::cli::GuideExpr;
-use rise_distance::eqsat::{EqsatConfig, Goal, GuideError, verify_reachability};
+use rise_distance::eqsat::{
+    EqsatConfig, Goal, GuideError, ReachedRun, verify_reachability, verify_unguided,
+};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
 
@@ -39,6 +41,10 @@ struct Args {
     /// The goal as a lowered s-expression string.
     #[arg(long)]
     goal: String,
+
+    /// Run an ordinary single-seed baseline instead of reading guide subsets.
+    #[arg(long)]
+    seed: Option<String>,
 
     /// Use the full-union add for the leg egraph.
     #[arg(long)]
@@ -67,6 +73,9 @@ struct LegResult {
     /// ceiling is expressed in.
     #[serde(skip_serializing_if = "Option::is_none")]
     memory: Option<u64>,
+    /// Largest sampled absolute live heap during the eqsat run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peak_live_heap: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stop_reason: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -76,20 +85,36 @@ struct LegResult {
 fn main() {
     let args = Args::parse();
 
-    // The pair's attempt subsets come in on stdin as a JSON array of arrays of
-    // serialized `GuideExpr` node lists; they're parsed against the concrete
-    // language inside `run_legs`.
-    let mut subsets_json = String::new();
-    std::io::stdin()
-        .read_to_string(&mut subsets_json)
-        .expect("read guide subsets from stdin");
+    let subsets_json = if args.seed.is_none() {
+        // The pair's attempt subsets come in on stdin as a JSON array of arrays
+        // of serialized `GuideExpr` node lists.
+        let mut json = String::new();
+        std::io::stdin()
+            .read_to_string(&mut json)
+            .expect("read guide subsets from stdin");
+        json
+    } else {
+        String::new()
+    };
 
     let results = match args.language {
+        AvailableLanguages::Diospyros if args.seed.is_some() => {
+            vec![run_unguided::<_, ()>(
+                &args,
+                &diospyros::rules(false, false),
+            )]
+        }
         AvailableLanguages::Diospyros => {
             run_legs::<_, ()>(&subsets_json, &args, &diospyros::rules(false, false))
         }
+        AvailableLanguages::Math if args.seed.is_some() => {
+            vec![run_unguided::<_, math::ConstantFold>(&args, &math::rules())]
+        }
         AvailableLanguages::Math => {
             run_legs::<_, math::ConstantFold>(&subsets_json, &args, &math::rules())
+        }
+        AvailableLanguages::Prop if args.seed.is_some() => {
+            vec![run_unguided::<_, prop::ConstantFold>(&args, &prop::rules())]
         }
         AvailableLanguages::Prop => {
             run_legs::<_, prop::ConstantFold>(&subsets_json, &args, &prop::rules())
@@ -145,7 +170,37 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
         .map(GuideExpr::into_recexpr)
         .collect();
 
-    match verify_reachability(&guides, goal, rules, &args.eqsat, args.full_union) {
+    result_to_leg(verify_reachability(
+        &guides,
+        goal,
+        rules,
+        &args.eqsat,
+        args.full_union,
+    ))
+}
+
+fn run_unguided<L: MyLanguage, N: MyAnalysis<L>>(
+    args: &Args,
+    rules: &[Rewrite<L, N>],
+) -> LegResult {
+    let seed_text = args.seed.as_ref().expect("unguided mode needs --seed");
+    let seed = seed_text
+        .parse::<RecExpr<L>>()
+        .unwrap_or_else(|e| panic!("Failed to parse seed '{seed_text}': {e}"));
+    let goal_expr = args
+        .goal
+        .parse::<RecExpr<L>>()
+        .unwrap_or_else(|e| panic!("Failed to parse goal '{}': {e}", args.goal));
+    result_to_leg(verify_unguided(
+        &seed,
+        &Goal::Expr(goal_expr),
+        rules,
+        &args.eqsat,
+    ))
+}
+
+fn result_to_leg<L: MyLanguage>(result: Result<ReachedRun<L>, GuideError>) -> LegResult {
+    match result {
         Ok(run) => {
             let iterations = &run.iterations;
             LegResult {
@@ -163,19 +218,25 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
                 ),
                 total_time: Some(iterations.iter().map(|i| i.total_time).sum()),
                 memory: Some(run.allocated),
+                peak_live_heap: Some(run.peak_allocated),
                 stop_reason: None,
                 panic: false,
             }
         }
-        Err(GuideError::Unreached(stop)) => LegResult {
+        Err(GuideError::Unreached {
+            stop_reason,
+            final_allocated,
+            peak_allocated,
+        }) => LegResult {
             reached: false,
             iters: None,
             nodes: None,
             classes: None,
             total_applied: None,
             total_time: None,
-            memory: None,
-            stop_reason: Some(format!("{stop:?}")),
+            memory: Some(final_allocated),
+            peak_live_heap: Some(peak_allocated),
+            stop_reason: Some(format!("{stop_reason:?}")),
             panic: false,
         },
         Err(GuideError::PanicWhileAttempt) => LegResult {
@@ -186,6 +247,7 @@ fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
             total_applied: None,
             total_time: None,
             memory: None,
+            peak_live_heap: None,
             stop_reason: None,
             panic: true,
         },

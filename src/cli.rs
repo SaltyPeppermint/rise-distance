@@ -103,6 +103,8 @@ pub struct SeedSamples<L: MyLanguage> {
     /// configured memory ceiling is expressed in. Includes heap the process
     /// already held before this run started.
     pub guide_memory: u64,
+    /// Largest sampled absolute live heap during guide replay.
+    pub guide_peak_live_heap: u64,
     pub stop_reason: String,
 }
 
@@ -128,6 +130,8 @@ pub struct GoalGenMetadata<C: Counter> {
     /// ceiling is expressed in. A single combined reading, not splittable into
     /// `guide_egraph`/`goal_egraph` halves.
     pub base_memory: u64,
+    /// Largest sampled absolute live heap during the unguided goal run.
+    pub base_peak_live_heap: u64,
 }
 
 #[cfg(test)]

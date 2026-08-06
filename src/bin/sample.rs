@@ -149,6 +149,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     // Absolute process live heap, sampled before precompute and sampling below
     // allocate further.
     let guide_memory = result.allocated();
+    let guide_peak_live_heap = result.peak_allocated();
     let guide_nodes = result.curr().total_number_of_nodes();
     let guide_classes = result.curr().classes().len();
     let guide_iters = result.data().len();
@@ -196,6 +197,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
         guide_iters,
         guide_time,
         guide_memory,
+        guide_peak_live_heap,
         stop_reason: format!("{:?}", result.stop_reason()),
     })
 }

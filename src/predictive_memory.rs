@@ -329,8 +329,7 @@ fn validate_scheduler_compatibility(
         let mut actual: Vec<_> = actual_rules.into_iter().collect();
         actual.sort_unstable();
         return Err(format!(
-            "memory-model rule-set compatibility error: manifest requires {:?}, runner exposes {:?}",
-            expected_rules, actual
+            "memory-model rule-set compatibility error: manifest requires {expected_rules:?}, runner exposes {actual:?}"
         ));
     }
     Ok(())
@@ -339,6 +338,7 @@ fn validate_scheduler_compatibility(
 #[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
+    clippy::too_many_arguments,
     reason = "the deployed ONNX interface intentionally uses float32 features"
 )]
 fn build_features(

@@ -116,6 +116,7 @@ def driver_command(
     strategy: str,
     output: Path,
     samples_input: Path | None,
+    unguided_input: Path | None,
 ) -> list[str]:
     """Construct one guided_search.py invocation."""
     cmd = [
@@ -152,6 +153,7 @@ def driver_command(
     optional_flag(cmd, "--stop-memory", args.stop_memory)
     optional_flag(cmd, "--predict-next-memory", args.predict_next_memory)
     optional_flag(cmd, "--samples-input", samples_input)
+    optional_flag(cmd, "--unguided-input", unguided_input)
     return cmd
 
 
@@ -205,6 +207,13 @@ def main() -> int:
         )
 
     total = len(distributions) * len(sampling_seeds) * len(strategies)
+    first_output = (
+        out
+        / f"distribution.{safe_component(distributions[0])}"
+        / f"sampling_seed.{sampling_seeds[0]}"
+        / safe_component(strategies[0])
+    )
+    unguided_manifest = first_output / "unguided_results.parquet"
     cell_number = 0
     for distribution in distributions:
         for sampling_seed in sampling_seeds:
@@ -220,8 +229,16 @@ def main() -> int:
                 cell_number += 1
                 strategy_out = cell / safe_component(strategy)
                 result = strategy_out / "results.parquet"
+                comparison = strategy_out / "comparison.parquet"
+                unguided = strategy_out / "unguided_results.parquet"
                 producer_has_provenance = strategy_index > 0 or manifest.is_file()
-                if result.is_file() and producer_has_provenance and not args.dry_run:
+                if (
+                    result.is_file()
+                    and comparison.is_file()
+                    and unguided.is_file()
+                    and producer_has_provenance
+                    and not args.dry_run
+                ):
                     print(f"[{cell_number}/{total}] already complete: {strategy_out}")
                     continue
 
@@ -235,6 +252,14 @@ def main() -> int:
                         file=sys.stderr,
                     )
                     return 1
+                unguided_input = None if strategy_out == first_output else unguided_manifest
+                if unguided_input is not None and not unguided_input.is_file() and not args.dry_run:
+                    print(
+                        f"Missing shared unguided baseline {unguided_input}; "
+                        "rerun the first grid cell.",
+                        file=sys.stderr,
+                    )
+                    return 1
 
                 cmd = driver_command(
                     args,
@@ -243,6 +268,7 @@ def main() -> int:
                     strategy=strategy,
                     output=strategy_out,
                     samples_input=samples_input,
+                    unguided_input=unguided_input,
                 )
                 print(
                     f"[{cell_number}/{total}] distribution={distribution} "

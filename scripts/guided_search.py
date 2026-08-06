@@ -16,6 +16,7 @@ Example:
 """
 
 import dataclasses
+import hashlib
 import json
 import os
 import random
@@ -34,7 +35,7 @@ from common import (
     exit_if_missing,
     limit_flags,
     parse_size,
-    run_json_subprocess,
+    run_json_subprocess_measured,
 )
 
 # Strategy names emitted by `sample` (see Strategy::name in src/cli.rs).
@@ -65,9 +66,29 @@ LEG_RESULT_DTYPES = {
     "total_applied": pl.Int64,
     "total_time": pl.Float64,
     "memory": pl.Int64,
+    "peak_live_heap": pl.Int64,
+    "verify_peak_rss_bytes": pl.Int64,
     "stop_reason": pl.String,
 }
 LEG_RESULT_FIELDS = tuple(LEG_RESULT_DTYPES)
+ATTEMPT_SCHEMA = {
+    "seed": pl.String,
+    "goal": pl.String,
+    "strategy": pl.String,
+    "k": pl.Int64,
+    "attempt": pl.Int64,
+    "reached": pl.Boolean,
+    "gave_up": pl.Boolean,
+    "panic": pl.Boolean,
+    **LEG_RESULT_DTYPES,
+    "guide_nodes": pl.Int64,
+    "guide_classes": pl.Int64,
+    "guide_time": pl.Float64,
+    "guide_memory": pl.Int64,
+    "guide_peak_live_heap": pl.Int64,
+    "sample_peak_rss_bytes": pl.Int64,
+    "guide_stop_reason": pl.String,
+}
 
 
 @dataclass
@@ -85,6 +106,10 @@ class Args:
     """Existing `samples.json` candidate manifest to reuse. When set, skip
     guide replay and candidate sampling. This permits paired strategy runs over
     exactly the same per-seed menus."""
+
+    unguided_input: Path | None = None
+    """Existing `unguided_results.parquet` to reuse. The pair universe and
+    effective limits must match this run."""
 
     sample_binary: Path = Path("target/release/sample")
     verify_binary: Path = Path("target/release/verify")
@@ -226,7 +251,7 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
 
 def run_sample_shard(
     args: Args, base_flags: list[str], limits: dict, menu_size: int, spec: SeedSpec
-) -> list:
+) -> list[dict]:
     """Run ``sample`` for one seed and attach its goals to each output record."""
     cmd = [
         str(args.sample_binary),
@@ -237,9 +262,22 @@ def run_sample_shard(
         "--samples-per-strategy",
         str(menu_size),
     ]
-    records = run_json_subprocess(cmd, what=f"sample for seed {spec.seed!r}")
+    measured = run_json_subprocess_measured(cmd, what=f"sample for seed {spec.seed!r}")
+    records = measured.payload
+    if not records:
+        return [
+            {
+                "seed": spec.seed,
+                "goals": spec.goals,
+                "candidates": {},
+                "sample_status": "failed",
+                "sample_peak_rss_bytes": measured.peak_rss_bytes,
+            }
+        ]
     for record in records:
         record["goals"] = spec.goals
+        record["sample_status"] = "ok"
+        record["sample_peak_rss_bytes"] = measured.peak_rss_bytes
     return records
 
 
@@ -320,7 +358,7 @@ def run_legs(
     base_flags: list[str],
     goal: str,
     subsets: list[list],
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """Verify one seed/goal pair and return the legs run before early stopping.
 
     Attempt subsets are sent as JSON on stdin. Panic-guarded legs still produce
@@ -329,7 +367,10 @@ def run_legs(
     cmd = [str(args.verify_binary), *base_flags, "--goal", goal]
     if args.full_union:
         cmd.append("--full-union")
-    return run_json_subprocess(cmd, what=f"verify for goal {goal!r}", input=json.dumps(subsets))
+    measured = run_json_subprocess_measured(
+        cmd, what=f"verify for goal {goal!r}", input=json.dumps(subsets)
+    )
+    return measured.payload, measured.peak_rss_bytes
 
 
 def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
@@ -346,7 +387,7 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
             f"strategy {args.strategy!r} drew no guides"
         )
 
-    results = run_legs(args, base_flags, item.goal, attempt_subsets)
+    results, verify_peak_rss_bytes = run_legs(args, base_flags, item.goal, attempt_subsets)
     rows: list[dict] = []
     for attempt, (guides, result) in enumerate(zip(attempt_subsets, results)):
         row = {
@@ -358,6 +399,7 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
             "reached": result["reached"],
             "gave_up": False,
             "panic": result.get("panic", False),
+            "verify_peak_rss_bytes": verify_peak_rss_bytes,
             **{field: result.get(field) for field in LEG_RESULT_FIELDS},
             **item.guide_meta,
         }
@@ -391,12 +433,17 @@ def build_work_items(seed_records: list, strategy: str) -> list[WorkItem]:
     """
     items: list[WorkItem] = []
     for record in seed_records:
+        if record.get("sample_status") != "ok":
+            continue
         pool = record["candidates"].get(pool_key(strategy), [])
         guide_meta = {
             "guide_nodes": record["guide_nodes"],
             "guide_classes": record["guide_classes"],
             "guide_time": record["guide_time"],
             "guide_memory": record["guide_memory"],
+            "guide_peak_live_heap": record["guide_peak_live_heap"],
+            "sample_peak_rss_bytes": record["sample_peak_rss_bytes"],
+            "guide_stop_reason": record["stop_reason"],
         }
         for goal in record["goals"]:
             items.append(WorkItem(record["seed"], goal, pool, guide_meta))
@@ -439,22 +486,177 @@ def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> l
     return rows
 
 
-def report_results(args: Args, out: Path, rows: list[dict]) -> None:
-    """Write results/config to `out` and print the reach-rate summary."""
-    df = pl.DataFrame(rows, schema_overrides=LEG_RESULT_DTYPES)
+def expected_pairs(seed_records: list[dict]) -> list[dict]:
+    """Return every planned pair, including seeds whose sampling failed."""
+    return [
+        {
+            "seed": record["seed"],
+            "goal": goal,
+            "sample_status": record.get("sample_status", "ok"),
+            "sample_peak_rss_bytes": record.get("sample_peak_rss_bytes"),
+            "guide_peak_live_heap": record.get("guide_peak_live_heap"),
+            "guide_stop_reason": record.get("stop_reason"),
+        }
+        for record in seed_records
+        for goal in record["goals"]
+    ]
+
+
+def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
+    """Run the pair-matched single-seed baseline with predictive stopping."""
+    cmd = [
+        str(args.verify_binary),
+        *base_flags,
+        "--seed",
+        pair["seed"],
+        "--goal",
+        pair["goal"],
+    ]
+    measured = run_json_subprocess_measured(cmd, what=f"unguided verify for goal {pair['goal']!r}")
+    result = measured.payload[0]
+    return {
+        "seed": pair["seed"],
+        "goal": pair["goal"],
+        "unguided_success": result["reached"],
+        "unguided_stop_reason": result.get("stop_reason"),
+        "unguided_panic": result.get("panic", False),
+        "unguided_final_live_heap_bytes": result.get("memory"),
+        "unguided_peak_live_heap_bytes": result.get("peak_live_heap"),
+        "unguided_peak_rss_bytes": measured.peak_rss_bytes,
+    }
+
+
+def run_all_unguided(args: Args, base_flags: list[str], pairs: list[dict]) -> list[dict]:
+    print(f"Running {len(pairs)} pair-matched unguided baseline(s)", file=sys.stderr)
+    rows = []
+    with ThreadPoolExecutor(max_workers=args.jobs or os.cpu_count() or 1) as pool_exec:
+        futures = [pool_exec.submit(run_unguided_pair, args, base_flags, pair) for pair in pairs]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="unguided", unit="pair"):
+            rows.append(future.result())
+    return rows
+
+
+def summarize_pairs(
+    args: Args,
+    seed_records: list[dict],
+    rows: list[dict],
+    *,
+    predictor_enabled: bool,
+) -> list[dict]:
+    """Collapse attempt rows to one guided workflow row per planned pair."""
+    attempts_by_pair: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        attempts_by_pair.setdefault((row["seed"], row["goal"]), []).append(row)
+
+    summary = []
+    for pair in expected_pairs(seed_records):
+        attempts = sorted(
+            attempts_by_pair.get((pair["seed"], pair["goal"]), []),
+            key=lambda row: row["attempt"],
+        )
+        successes = [row for row in attempts if row["reached"]]
+        sample_peak = pair["sample_peak_rss_bytes"]
+        verify_peak = attempts[0]["verify_peak_rss_bytes"] if attempts else None
+        rss_peaks = [peak for peak in (sample_peak, verify_peak) if peak is not None]
+        live_peaks = [
+            peak
+            for peak in (
+                pair["guide_peak_live_heap"],
+                *(row.get("peak_live_heap") for row in attempts),
+            )
+            if peak is not None
+        ]
+        setup_status = pair["sample_status"]
+        if setup_status == "ok" and not attempts:
+            setup_status = "empty_pool"
+        summary.append(
+            {
+                **pair,
+                "strategy": args.strategy,
+                "k": args.k,
+                "attempt_budget": args.attempts,
+                "guided_success": bool(successes),
+                "success_attempt": successes[0]["attempt"] + 1 if successes else None,
+                "attempts_run": len(attempts),
+                "guided_stop_reason": None
+                if successes
+                else (attempts[-1].get("stop_reason") if attempts else setup_status),
+                "guided_panic": any(row["panic"] for row in attempts),
+                "setup_status": setup_status,
+                "verify_peak_rss_bytes": verify_peak,
+                "guided_peak_rss_bytes": max(rss_peaks) if rss_peaks else None,
+                "guided_peak_live_heap_bytes": max(live_peaks) if live_peaks else None,
+                "predictor_scope": (
+                    "guide_replay_and_unguided" if predictor_enabled else "disabled"
+                ),
+            }
+        )
+    return summary
+
+
+def report_results(
+    args: Args,
+    out: Path,
+    seed_records: list[dict],
+    rows: list[dict],
+    unguided_rows: list[dict],
+    limits: dict,
+) -> None:
+    """Write attempt, pair, baseline, and joined comparison results."""
+    df = pl.DataFrame(rows, schema=ATTEMPT_SCHEMA)
     df.write_parquet(out / "results.parquet")
     (out / "results.json").write_text(json.dumps(rows, indent=2))
-    (out / "config.json").write_text(json.dumps(dataclasses.asdict(args), indent=2, default=str))
 
-    reached_pairs = df.filter(pl.col("reached")).select("seed", "goal").unique().height
-    total_pairs = df.select("seed", "goal").unique().height
+    pair_rows = summarize_pairs(
+        args,
+        seed_records,
+        rows,
+        predictor_enabled=limits.get("predict_next_memory") is not None,
+    )
+    pairs = pl.DataFrame(pair_rows)
+    unguided = pl.DataFrame(unguided_rows)
+    comparison = pairs.join(unguided, on=["seed", "goal"], how="left", validate="1:1")
+    pairs.write_parquet(out / "pair_results.parquet")
+    unguided.write_parquet(out / "unguided_results.parquet")
+    comparison.write_parquet(out / "comparison.parquet")
+    config = {
+        **dataclasses.asdict(args),
+        "effective_limits": limits,
+        "memory_model": memory_model_provenance(limits.get("predict_next_memory")),
+    }
+    (out / "config.json").write_text(json.dumps(config, indent=2, default=str))
+
+    reached_pairs = int(pairs["guided_success"].sum())
+    total_pairs = len(pairs)
     reach_rate = reached_pairs / total_pairs if total_pairs else 0.0
     print(
         f"\nReached {reached_pairs}/{total_pairs} seed/goal pairs "
         f"(reach rate {reach_rate:.2f}) at k={args.k}. "
-        f"Wrote {out / 'results.parquet'}",
+        f"Wrote {out / 'comparison.parquet'}",
         file=sys.stderr,
     )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def memory_model_provenance(model: str | Path | None) -> dict | None:
+    """Hash the deployed model and adjacent manifest for reproducibility."""
+    if model is None:
+        return None
+    model_path = Path(model)
+    manifest_path = model_path.with_suffix(".json")
+    return {
+        "model": str(model_path),
+        "model_sha256": _sha256(model_path),
+        "manifest": str(manifest_path),
+        "manifest_sha256": _sha256(manifest_path),
+    }
 
 
 def main() -> int:
@@ -491,13 +693,46 @@ def main() -> int:
             return 2
         print(f"Reusing candidate manifest {samples_path}", file=sys.stderr)
     seed_records = json.loads(samples_path.read_text())
+    for record in seed_records:
+        # Reused manifests from the new schema retain measured setup metadata.
+        record.setdefault("sample_status", "ok")
+        if record["sample_status"] == "ok":
+            missing = {
+                "guide_peak_live_heap",
+                "sample_peak_rss_bytes",
+            } - set(record)
+            if missing:
+                print(
+                    f"Candidate manifest predates peak-memory telemetry; missing "
+                    f"{sorted(missing)} for seed {record.get('seed')!r}.",
+                    file=sys.stderr,
+                )
+                return 2
 
     items = build_work_items(seed_records, args.strategy)
     warn_pool_shortfall(items, args.strategy, args.k, args.attempts)
 
     rows = run_all_pairs(args, base_flags, items)
 
-    report_results(args, out, rows)
+    pairs = expected_pairs(seed_records)
+    if args.unguided_input is None:
+        unguided_rows = run_all_unguided(args, base_flags, pairs)
+    else:
+        if not args.unguided_input.is_file():
+            print(f"Unguided result file not found: {args.unguided_input}", file=sys.stderr)
+            return 2
+        unguided_rows = pl.read_parquet(args.unguided_input).to_dicts()
+        planned_keys = {(pair["seed"], pair["goal"]) for pair in pairs}
+        baseline_keys = {(row["seed"], row["goal"]) for row in unguided_rows}
+        if planned_keys != baseline_keys:
+            print(
+                "Unguided result pair universe does not match this run "
+                f"(planned={len(planned_keys)}, baseline={len(baseline_keys)}).",
+                file=sys.stderr,
+            )
+            return 2
+
+    report_results(args, out, seed_records, rows, unguided_rows, limits)
     return 0
 
 

@@ -28,7 +28,11 @@ pub struct EqsatMetadata {
 
 #[derive(Debug, Error, Display, Serialize, Clone)]
 pub enum GuideError {
-    Unreached(StopReason),
+    Unreached {
+        stop_reason: StopReason,
+        final_allocated: u64,
+        peak_allocated: u64,
+    },
     PanicWhileAttempt,
 }
 
@@ -148,6 +152,7 @@ where
     root: Id,
     stop_reason: StopReason,
     allocated: u64,
+    peak_allocated: u64,
 }
 
 impl<L, N> EqsatResult<L, N>
@@ -167,6 +172,7 @@ where
             root,
             stop_reason: StopReason::Saturated,
             allocated: 0,
+            peak_allocated: 0,
         }
     }
 
@@ -209,6 +215,12 @@ where
     #[must_use]
     pub fn allocated(&self) -> u64 {
         self.allocated
+    }
+
+    /// Largest sampled absolute process live heap while the runner was active.
+    #[must_use]
+    pub fn peak_allocated(&self) -> u64 {
+        self.peak_allocated
     }
 
     /// Consume the result and return the final egraph together with the root id.
@@ -332,6 +344,7 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
 pub struct Measurement {
     pub iterations: Vec<Iteration<HeapData>>,
     pub total_allocated: u64,
+    pub peak_allocated: u64,
     pub memory_limit: Option<u64>,
 }
 
@@ -343,6 +356,7 @@ impl Measurement {
         Self {
             iterations,
             total_allocated: report.final_reading,
+            peak_allocated: report.peak_reading,
             memory_limit: report.absolute_limit,
         }
     }
@@ -410,10 +424,9 @@ where
 
     runner = runner.run(rules);
 
-    let allocated = runner
+    let memory = runner
         .final_memory_report()
-        .expect("configured eqsat runner has final memory report")
-        .final_reading;
+        .expect("configured eqsat runner has final memory report");
     let stop_reason = runner.stop_reason.unwrap();
 
     let root = runner.roots[0];
@@ -457,7 +470,8 @@ where
         curr,
         root,
         stop_reason,
-        allocated,
+        allocated: memory.final_reading,
+        peak_allocated: memory.peak_reading,
     })
 }
 
@@ -510,6 +524,8 @@ pub struct ReachedRun<L: MyLanguage> {
     /// Final absolute process live heap, in the same coordinate system as the
     /// configured memory ceiling.
     pub allocated: u64,
+    /// Largest sampled absolute process live heap during this run.
+    pub peak_allocated: u64,
 }
 
 /// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
@@ -566,10 +582,9 @@ where
         eprintln!("Panic caught verify_reachability for guides: {guides:?}");
         return Err(GuideError::PanicWhileAttempt);
     };
-    let allocated = r
+    let memory = r
         .final_memory_report()
-        .expect("configured reachability runner has final memory report")
-        .final_reading;
+        .expect("configured reachability runner has final memory report");
     r.egraph.rebuild();
     let root = r.roots[0];
     if let Some(target) = goal.extract(&r.egraph, root) {
@@ -578,10 +593,74 @@ where
             target,
             nodes: r.egraph.total_number_of_nodes(),
             classes: r.egraph.classes().len(),
-            allocated,
+            allocated: memory.final_reading,
+            peak_allocated: memory.peak_reading,
         })
     } else {
-        Err(GuideError::Unreached(r.stop_reason.clone().unwrap()))
+        Err(GuideError::Unreached {
+            stop_reason: r.stop_reason.clone().unwrap(),
+            final_allocated: memory.final_reading,
+            peak_allocated: memory.peak_reading,
+        })
+    }
+}
+
+/// Run an ordinary single-seed eqsat and stop when `goal` is reachable.
+///
+/// Unlike multi-guide verification, this uses [`EqsatConfig::build_runner`],
+/// so a configured next-memory predictor is active and receives its
+/// training-compatible single input-term size.
+#[expect(clippy::missing_panics_doc, clippy::missing_errors_doc)]
+pub fn verify_unguided<L, N>(
+    seed: &RecExpr<L>,
+    goal: &Goal<L>,
+    rules: &[Rewrite<L, N>],
+    eqsat: &EqsatConfig,
+) -> Result<ReachedRun<L>, GuideError>
+where
+    L: MyLanguage + 'static,
+    N: MyAnalysis<L> + Default,
+{
+    let goal_clone = goal.clone();
+    let mut runner = eqsat.build_runner::<L, N, ()>(seed);
+    // Check the goal before the predictive hook at each decision boundary.
+    runner.hooks.insert(
+        0,
+        Box::new(move |r| {
+            let root = r.roots[0];
+            if goal_clone.reached(&r.egraph, root) {
+                return Err("goal found".to_owned());
+            }
+            Ok(())
+        }),
+    );
+
+    let Ok(mut runner) =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules)))
+    else {
+        eprintln!("Panic caught in unguided verification for seed: {seed:?}");
+        return Err(GuideError::PanicWhileAttempt);
+    };
+    let memory = runner
+        .final_memory_report()
+        .expect("configured unguided runner has final memory report");
+    runner.egraph.rebuild();
+    let root = runner.roots[0];
+    if let Some(target) = goal.extract(&runner.egraph, root) {
+        Ok(ReachedRun {
+            iterations: runner.iterations,
+            target,
+            nodes: runner.egraph.total_number_of_nodes(),
+            classes: runner.egraph.classes().len(),
+            allocated: memory.final_reading,
+            peak_allocated: memory.peak_reading,
+        })
+    } else {
+        Err(GuideError::Unreached {
+            stop_reason: runner.stop_reason.clone().unwrap(),
+            final_allocated: memory.final_reading,
+            peak_allocated: memory.peak_reading,
+        })
     }
 }
 
@@ -720,7 +799,10 @@ mod tests {
         );
         assert!(matches!(
             result,
-            Err(GuideError::Unreached(StopReason::MemoryLimit(observed))) if observed > 0
+            Err(GuideError::Unreached {
+                stop_reason: StopReason::MemoryLimit(observed),
+                ..
+            }) if observed > 0
         ));
     }
 
@@ -780,11 +862,13 @@ mod tests {
     fn measurement_reports_absolute_memory_figures() {
         let report = MemoryReport {
             final_reading: 12_000,
+            peak_reading: 13_000,
             absolute_limit: Some(14_096),
         };
         let measurement = Measurement::from_run(report, Vec::new());
         assert_eq!(measurement.memory_limit, Some(14_096));
         assert_eq!(measurement.total_allocated, 12_000);
+        assert_eq!(measurement.peak_allocated, 13_000);
     }
 
     /// Readings are whole-process live heap with nothing subtracted out, so
@@ -835,6 +919,7 @@ mod tests {
             iteration_allocated
         );
         assert_eq!(measurement.total_allocated, report.final_reading);
+        assert_eq!(measurement.peak_allocated, report.peak_reading);
         assert_eq!(measurement.memory_limit, report.absolute_limit);
     }
 

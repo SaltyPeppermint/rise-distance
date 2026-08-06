@@ -132,6 +132,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     // Absolute process live heap, sampled before precompute below allocates
     // further.
     let base_memory = result.allocated();
+    let base_peak_live_heap = result.peak_allocated();
 
     let stop_reason = format!("{:?}", result.stop_reason());
     let SplitMetadata { guide, goal } = result.split_metadata();
@@ -205,6 +206,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
         goal_egraph: goal,
         guide_egraph: guide,
         base_memory,
+        base_peak_live_heap,
         goals: goal_strings,
         frontier_histogram,
         stop_reason,

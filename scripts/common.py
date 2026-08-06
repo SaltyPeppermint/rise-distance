@@ -2,8 +2,13 @@
 plumbing, binary checks, and eqsat CLI flag building."""
 
 import json
+import os
+import signal
 import subprocess
 import sys
+import tempfile
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -59,23 +64,75 @@ def run_json_subprocess(
     non-JSON stdout; `what` names the failing unit in those messages
     (e.g. "goal for seed '(+ a b)'").
     """
-    proc = subprocess.run(
-        cmd,
-        input=input,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    return run_json_subprocess_measured(cmd, what=what, input=input, timeout=timeout).payload
+
+
+@dataclass(frozen=True)
+class MeasuredJson:
+    payload: Any
+    peak_rss_bytes: int
+
+
+def run_json_subprocess_measured(
+    cmd: list[str],
+    *,
+    what: str,
+    input: str | None = None,
+    timeout: float | None = None,
+) -> MeasuredJson:
+    """Run a JSON child and return its Linux lifetime high-water RSS.
+
+    Temporary files keep large JSON and log streams from blocking while
+    ``wait4`` retains per-child ``ru_maxrss`` even under concurrent drivers.
+    """
+    with (
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdin_file,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout_file,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file,
+    ):
+        if input is not None:
+            stdin_file.write(input)
+            stdin_file.seek(0)
+        proc = subprocess.Popen(
+            cmd,
+            stdin=stdin_file if input is not None else subprocess.DEVNULL,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            text=True,
+            start_new_session=True,
+        )
+        started = time.monotonic()
+        usage = None
+        while True:
+            waited, status, usage = os.wait4(proc.pid, os.WNOHANG)
+            if waited:
+                proc.returncode = os.waitstatus_to_exitcode(status)
+                break
+            if timeout is not None and time.monotonic() - started > timeout:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                waited, status, usage = os.wait4(proc.pid, 0)
+                proc.returncode = os.waitstatus_to_exitcode(status)
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            time.sleep(0.01)
+
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        stdout = stdout_file.read()
+        stderr = stderr_file.read()
     if proc.returncode != 0:
-        raise RuntimeError(f"{what} failed (code {proc.returncode}):\n{proc.stderr}")
+        raise RuntimeError(f"{what} failed (code {proc.returncode}):\n{stderr}")
     try:
-        return json.loads(proc.stdout)
+        payload = json.loads(stdout)
     except json.JSONDecodeError as e:
         raise RuntimeError(
             f"{what} returned non-JSON stdout: {e}\n"
-            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+            f"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
         ) from e
+    # Linux reports ru_maxrss in KiB.
+    return MeasuredJson(payload=payload, peak_rss_bytes=int(usage.ru_maxrss) * 1024)
 
 
 def eqsat_limits(cfg: dict) -> dict:
