@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use egg::{
     Analysis, AstSize, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language,
-    MemoryReport, RecExpr, Rewrite, Runner, StopReason,
+    MemoryReport, MemorySamplePhase, RecExpr, Rewrite, Runner, SchedulerSnapshot, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -281,35 +281,42 @@ where
 /// states for a meaningful guide/goal split.
 const MIN_ITERS: usize = 3;
 
-/// Per-iteration heap annotation egg stores in each [`Iteration`]'s `data` slot.
-/// egg calls [`IterationData::make`] at the end of `Runner::run_one`.
-/// `allocated` therefore reflects the heap after that iteration's rewrites,
-/// while egg's `egraph_nodes`/`egraph_classes` fields describe its start.
-/// For row `k`, the four scheduler fields are the snapshot egg captured before
-/// hooks and rewrite search for `run_one(k)`, so they describe the ban state
-/// that governed iteration `k`, including when a hook stops that iteration.
-/// A stopped partial iteration records memory at the point `run_one` finishes.
-/// `allocated` is the absolute process live heap.
-#[derive(Debug, Clone, Copy, Serialize)]
+/// Per-iteration decision-point, scheduler, and peak-memory telemetry.
+///
+/// `iteration_start_allocated`, egg's egraph counts, and `scheduler` all
+/// describe the instant immediately before this iteration's hooks and search.
+/// The previous [`Iteration`]'s timings and applied counts are therefore the
+/// work history available to an online predictor at this boundary.
+///
+/// `allocated` remains the final live reading after rebuild, while
+/// `iteration_peak_allocated` retains transient search/application peaks even
+/// if their allocations were freed before the iteration ended.
+#[derive(Debug, Clone, Serialize)]
 pub struct HeapData {
+    /// Final live allocation sampled after rebuild/finalization.
     pub allocated: u64,
-    pub n_banned: usize,
-    pub n_unbanned_this_iter: usize,
-    pub min_ban_remaining: usize,
-    pub total_times_banned: usize,
+    pub iteration_start_allocated: u64,
+    pub iteration_peak_allocated: u64,
+    pub iteration_peak_phase: MemorySamplePhase,
+    pub iteration_peak_rule: Option<egg::Symbol>,
+    /// Exact upcoming state captured before hooks and rewrite search.
+    pub scheduler: SchedulerSnapshot,
 }
 
 impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
     fn make(runner: &Runner<L, N, Self>) -> Self {
-        let stats = runner.scheduler_stats;
+        let peak = runner
+            .iteration_memory_peak()
+            .expect("configured measurement runner has memory tracking");
         Self {
             allocated: runner
-                .sample_memory()
+                .memory_reading()
                 .expect("configured measurement runner has memory tracking"),
-            n_banned: stats.n_banned,
-            n_unbanned_this_iter: stats.n_unbanned_this_iter,
-            min_ban_remaining: stats.min_ban_remaining,
-            total_times_banned: stats.total_times_banned,
+            iteration_start_allocated: peak.iteration_start_allocated,
+            iteration_peak_allocated: peak.iteration_peak_allocated,
+            iteration_peak_phase: peak.peak_phase,
+            iteration_peak_rule: peak.peak_rule,
+            scheduler: runner.scheduler_snapshot.clone(),
         }
     }
 }

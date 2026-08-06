@@ -3,13 +3,14 @@
 //! The supplied model must be calibrated for the workload. Callers explicitly
 //! opt in with a model path; this is not a general-purpose egg memory model.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use egg::{Analysis, Iteration, IterationData, Language, Runner, SchedulerStats};
+use egg::{Analysis, Iteration, IterationData, Language, Runner, SchedulerSnapshot};
 use ort::{session::Session, value::Tensor};
 use serde::Deserialize;
 
-pub(crate) const FEATURE_NAMES: [&str; 20] = [
+const BASE_FEATURE_NAMES: [&str; 16] = [
     "egraph_nodes",
     "egraph_classes",
     "nodes_per_class",
@@ -26,22 +27,158 @@ pub(crate) const FEATURE_NAMES: [&str; 20] = [
     "n_rebuilds",
     "iter_index",
     "term_size",
+];
+const SCHEDULER_FEATURE_NAMES: [&str; 8] = [
+    "n_active",
     "n_banned",
-    "n_unbanned_this_iter",
+    "n_newly_unbanned",
     "min_ban_remaining",
     "total_times_banned",
+    "max_active_log2_match_limit",
+    "log2_active_match_limit_sum",
+    "max_active_times_banned",
 ];
-const FEATURE_COUNT: usize = FEATURE_NAMES.len();
+const RULE_FEATURE_SUFFIXES: [&str; 5] = [
+    "will_search",
+    "newly_unbanned",
+    "times_banned",
+    "ban_remaining",
+    "log2_match_limit",
+];
 
 #[derive(Debug, Deserialize)]
 struct ModelManifest {
+    schema_version: u32,
     features: Vec<String>,
+    scheduler: String,
+    rules: Vec<String>,
     safety_margin: f64,
+    rust_parity_sample: ParitySample,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParitySample {
+    features: Vec<f32>,
+    sklearn_prediction: f64,
+    onnx_prediction: f64,
+    absolute_tolerance: f64,
 }
 
 pub(crate) struct OnnxMemoryGrowthPredictor {
     session: Session,
     safety_margin: f64,
+    features: Vec<String>,
+    scheduler: String,
+    rules: Vec<String>,
+    parity_sample: ParitySample,
+}
+
+fn escape_rule_name(name: &str) -> String {
+    let mut escaped = String::new();
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' {
+            escaped.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            write!(escaped, "%{byte:02X}").expect("writing to String cannot fail");
+        }
+    }
+    escaped
+}
+
+fn rule_feature_name(rule: &str, suffix: &str) -> String {
+    format!("rule_{}_{}", escape_rule_name(rule), suffix)
+}
+
+fn expected_feature_names(rules: &[String]) -> Vec<String> {
+    BASE_FEATURE_NAMES
+        .into_iter()
+        .chain(SCHEDULER_FEATURE_NAMES)
+        .map(str::to_owned)
+        .chain(rules.iter().flat_map(|rule| {
+            RULE_FEATURE_SUFFIXES
+                .into_iter()
+                .map(move |suffix| rule_feature_name(rule, suffix))
+        }))
+        .collect()
+}
+
+fn validate_manifest(manifest: &ModelManifest, path: &Path) -> Result<(), String> {
+    if manifest.schema_version != 1 {
+        return Err(format!(
+            "unsupported memory-model schema version {} in {}; expected 1",
+            manifest.schema_version,
+            path.display()
+        ));
+    }
+    if manifest.scheduler != "backoff" {
+        return Err(format!(
+            "unsupported memory-model scheduler {:?} in {}; expected \"backoff\"",
+            manifest.scheduler,
+            path.display()
+        ));
+    }
+    if !manifest.safety_margin.is_finite() {
+        return Err(format!(
+            "memory-model safety margin in {} is non-finite",
+            path.display()
+        ));
+    }
+    let unique_rules: HashSet<_> = manifest.rules.iter().collect();
+    if unique_rules.len() != manifest.rules.len() {
+        return Err(format!(
+            "memory-model rule list in {} contains duplicates",
+            path.display()
+        ));
+    }
+    let mut sorted_rules = manifest.rules.clone();
+    sorted_rules.sort();
+    if sorted_rules != manifest.rules {
+        return Err(format!(
+            "memory-model rule list in {} is not deterministically sorted",
+            path.display()
+        ));
+    }
+    let expected = expected_feature_names(&manifest.rules);
+    if manifest.features != expected {
+        return Err(format!(
+            "memory-model feature schema mismatch in {}: Rust can produce {:?}, manifest lists {:?}",
+            path.display(),
+            expected,
+            manifest.features
+        ));
+    }
+    let unique_features: HashSet<_> = manifest.features.iter().collect();
+    if unique_features.len() != manifest.features.len() {
+        return Err(format!(
+            "memory-model feature schema in {} contains duplicate names",
+            path.display()
+        ));
+    }
+    if manifest.rust_parity_sample.features.len() != manifest.features.len() {
+        return Err(format!(
+            "memory-model parity sample in {} has {} values for {} features",
+            path.display(),
+            manifest.rust_parity_sample.features.len(),
+            manifest.features.len()
+        ));
+    }
+    if !manifest.rust_parity_sample.absolute_tolerance.is_finite()
+        || manifest.rust_parity_sample.absolute_tolerance < 0.0
+        || !manifest.rust_parity_sample.sklearn_prediction.is_finite()
+        || !manifest.rust_parity_sample.onnx_prediction.is_finite()
+        || manifest
+            .rust_parity_sample
+            .features
+            .iter()
+            .any(|value| !value.is_finite())
+    {
+        return Err(format!(
+            "memory-model parity sample in {} contains non-finite or invalid values",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 impl OnnxMemoryGrowthPredictor {
@@ -63,20 +200,7 @@ impl OnnxMemoryGrowthPredictor {
                 manifest_path.display()
             )
         })?;
-        if manifest.features != FEATURE_NAMES {
-            return Err(format!(
-                "memory-model feature order mismatch in {}: {:?}; \
-                 retraining and re-export are required",
-                manifest_path.display(),
-                manifest.features
-            ));
-        }
-        if !manifest.safety_margin.is_finite() {
-            return Err(format!(
-                "memory-model safety margin in {} is non-finite",
-                manifest_path.display()
-            ));
-        }
+        validate_manifest(&manifest, &manifest_path)?;
         let session = Session::builder()
             .map_err(|error| error.to_string())?
             .with_intra_threads(1)
@@ -91,6 +215,10 @@ impl OnnxMemoryGrowthPredictor {
         Ok(Self {
             session,
             safety_margin: manifest.safety_margin,
+            features: manifest.features,
+            scheduler: manifest.scheduler,
+            rules: manifest.rules,
+            parity_sample: manifest.rust_parity_sample,
         })
     }
 
@@ -99,12 +227,32 @@ impl OnnxMemoryGrowthPredictor {
     /// reading is taken against the ceiling.
     pub(crate) fn load_and_prewarm(model_path: &Path) -> Result<Self, String> {
         let mut predictor = Self::load(model_path)?;
-        predictor.predict_log_growth(&[0.0; FEATURE_COUNT])?;
+        let sample = predictor.parity_sample.features.clone();
+        let predicted = predictor.predict_log_growth(&sample)?;
+        let expected_onnx = predictor.parity_sample.onnx_prediction;
+        let expected_sklearn = predictor.parity_sample.sklearn_prediction;
+        let tolerance = predictor.parity_sample.absolute_tolerance;
+        if (predicted - expected_onnx).abs() > tolerance
+            || (predicted - expected_sklearn).abs() > tolerance
+        {
+            return Err(format!(
+                "Rust/sklearn/ONNX parity prewarm failed for {}: Rust {predicted}, \
+                 sklearn {expected_sklearn}, ONNX {expected_onnx} (tolerance {tolerance})",
+                model_path.display()
+            ));
+        }
         Ok(predictor)
     }
 
-    fn predict_log_growth(&mut self, features: &[f32; FEATURE_COUNT]) -> Result<f64, String> {
-        let input = Tensor::from_array(([1_usize, FEATURE_COUNT], features.to_vec()))
+    fn predict_log_growth(&mut self, features: &[f32]) -> Result<f64, String> {
+        if features.len() != self.features.len() {
+            return Err(format!(
+                "memory-model input has {} values for {} manifest features",
+                features.len(),
+                self.features.len()
+            ));
+        }
+        let input = Tensor::from_array(([1_usize, features.len()], features.to_vec()))
             .map_err(|error| error.to_string())?;
         let outputs = self
             .session
@@ -124,7 +272,6 @@ impl OnnxMemoryGrowthPredictor {
 #[derive(Debug, Clone, Copy)]
 struct IterationSnapshot {
     egraph_nodes: usize,
-    egraph_classes: usize,
     total_applied: usize,
     hook_time: f64,
     search_time: f64,
@@ -142,7 +289,6 @@ impl<D> From<&Iteration<D>> for IterationSnapshot {
     fn from(iteration: &Iteration<D>) -> Self {
         Self {
             egraph_nodes: iteration.egraph_nodes,
-            egraph_classes: iteration.egraph_classes,
             total_applied: sum_applied_counts(iteration.applied.values()),
             hook_time: iteration.hook_time,
             search_time: iteration.search_time,
@@ -159,53 +305,111 @@ fn finite_ratio(numerator: f64, denominator: f64) -> f64 {
     if ratio.is_finite() { ratio } else { 1.0 }
 }
 
+fn validate_scheduler_compatibility(
+    scheduler: &SchedulerSnapshot,
+    expected_scheduler: &str,
+    expected_rules: &[String],
+) -> Result<(), String> {
+    if scheduler.scheduler != expected_scheduler {
+        return Err(format!(
+            "memory model requires {expected_scheduler:?} scheduler state, runner exposes {:?}",
+            scheduler.scheduler
+        ));
+    }
+    let actual_rules: HashSet<_> = scheduler
+        .rules
+        .iter()
+        .map(|rule| rule.name.as_str())
+        .collect();
+    if actual_rules.len() != scheduler.rules.len() {
+        return Err("runner scheduler snapshot contains duplicate rule names".to_owned());
+    }
+    let expected_rule_set: HashSet<_> = expected_rules.iter().map(String::as_str).collect();
+    if actual_rules != expected_rule_set {
+        let mut actual: Vec<_> = actual_rules.into_iter().collect();
+        actual.sort_unstable();
+        return Err(format!(
+            "memory-model rule-set compatibility error: manifest requires {:?}, runner exposes {:?}",
+            expected_rules, actual
+        ));
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     reason = "the deployed ONNX interface intentionally uses float32 features"
 )]
 fn build_features(
-    last: IterationSnapshot,
-    previous: Option<IterationSnapshot>,
+    previous_iteration: IterationSnapshot,
+    current_egraph_nodes: usize,
+    current_egraph_classes: usize,
     allocated: u64,
     previous_allocated: Option<u64>,
     iter_index: usize,
     term_size: usize,
-    scheduler_stats: SchedulerStats,
-) -> [f32; FEATURE_COUNT] {
-    let nodes = last.egraph_nodes as f64;
-    let classes = last.egraph_classes as f64;
+    scheduler: &SchedulerSnapshot,
+    expected_scheduler: &str,
+    expected_rules: &[String],
+) -> Result<Vec<f32>, String> {
+    validate_scheduler_compatibility(scheduler, expected_scheduler, expected_rules)?;
+    let by_name: HashMap<_, _> = scheduler
+        .rules
+        .iter()
+        .map(|rule| (rule.name.as_str(), rule))
+        .collect();
+
+    let nodes = current_egraph_nodes as f64;
+    let classes = current_egraph_classes as f64;
     let allocated_f64 = allocated as f64;
-    let values = [
+    let mut values = vec![
         nodes,
         classes,
         finite_ratio(nodes, classes),
         allocated_f64,
         finite_ratio(allocated_f64, nodes),
         previous_allocated.map_or(1.0, |value| finite_ratio(allocated_f64, value as f64)),
-        previous.map_or(1.0, |value| finite_ratio(nodes, value.egraph_nodes as f64)),
-        last.total_applied as f64,
-        last.hook_time,
-        last.search_time,
-        last.apply_time,
-        last.rebuild_time,
-        last.total_time,
-        last.n_rebuilds as f64,
+        finite_ratio(nodes, previous_iteration.egraph_nodes as f64),
+        previous_iteration.total_applied as f64,
+        previous_iteration.hook_time,
+        previous_iteration.search_time,
+        previous_iteration.apply_time,
+        previous_iteration.rebuild_time,
+        previous_iteration.total_time,
+        previous_iteration.n_rebuilds as f64,
         iter_index as f64,
         term_size as f64,
-        scheduler_stats.n_banned as f64,
-        scheduler_stats.n_unbanned_this_iter as f64,
-        scheduler_stats.min_ban_remaining as f64,
-        scheduler_stats.total_times_banned as f64,
+        scheduler.n_active as f64,
+        scheduler.n_banned as f64,
+        scheduler.n_newly_unbanned as f64,
+        scheduler.min_ban_remaining as f64,
+        scheduler.total_times_banned as f64,
+        scheduler.max_active_log2_match_limit,
+        scheduler.log2_active_match_limit_sum,
+        scheduler.max_active_times_banned as f64,
     ];
-    values.map(|value| {
-        let converted = value as f32;
-        if converted.is_finite() {
-            converted
-        } else {
-            1.0
-        }
-    })
+    for rule_name in expected_rules {
+        let rule = by_name[rule_name.as_str()];
+        values.extend([
+            if rule.will_search { 1.0 } else { 0.0 },
+            if rule.newly_unbanned { 1.0 } else { 0.0 },
+            rule.times_banned as f64,
+            rule.ban_remaining as f64,
+            rule.log2_match_limit,
+        ]);
+    }
+    Ok(values
+        .into_iter()
+        .map(|value| {
+            let converted = value as f32;
+            if converted.is_finite() {
+                converted
+            } else {
+                1.0
+            }
+        })
+        .collect())
 }
 
 #[expect(
@@ -214,9 +418,9 @@ fn build_features(
     clippy::cast_sign_loss,
     reason = "bounds and finiteness are checked before the saturating byte conversion"
 )]
-/// Project the next iteration's absolute live heap. `allocated` is already an
-/// absolute reading, and the model predicts growth as a ratio against it, so
-/// the result is absolute without rebasing.
+/// Project the upcoming iteration's absolute peak live heap. `allocated` is
+/// already an absolute pre-search reading, and the model predicts peak growth
+/// as a ratio against it, so the result is absolute without rebasing.
 fn predicted_next_absolute(allocated: u64, predicted_log_growth: f64, safety_margin: f64) -> u64 {
     let upper_log_growth = predicted_log_growth + safety_margin;
     if !upper_log_growth.is_finite() {
@@ -239,9 +443,9 @@ fn predictive_decision(
     (predicted >= absolute_limit).then_some(predicted)
 }
 
-/// Hook invoked before iteration `i + 1`, using iteration `i`'s completed egg
-/// metadata. The scheduler fields are the snapshot already captured for
-/// iteration `i + 1`, the iteration whose memory use is being predicted.
+/// Hook invoked before upcoming iteration `k`, using iteration `k - 1`'s
+/// completed work metadata, the runner's actual current egraph/allocation, and
+/// the scheduler snapshot already captured for iteration `k`.
 pub(crate) fn hook<L, N, D>(
     term_size: usize,
     mut predictor: OnnxMemoryGrowthPredictor,
@@ -253,21 +457,35 @@ where
 {
     let mut previous_allocated = None;
     move |runner| {
-        let Some((last, earlier)) = runner.iterations.split_last() else {
-            return Ok(());
-        };
+        // This runs even for iteration zero, before the first rewrite search,
+        // so incompatible schedulers/rule sets fail before eqsat work begins.
+        validate_scheduler_compatibility(
+            &runner.scheduler_snapshot,
+            &predictor.scheduler,
+            &predictor.rules,
+        )?;
         let allocated = runner
             .memory_reading()
             .expect("predictive runner has memory tracking");
+        let Some(previous_iteration) = runner.iterations.last() else {
+            // Iteration zero is not predictable (there is no prior work), but
+            // its decision-boundary allocation is the history needed for the
+            // first supervised/online row at iteration one.
+            previous_allocated = Some(allocated);
+            return Ok(());
+        };
         let features = build_features(
-            last.into(),
-            earlier.last().map(Into::into),
+            previous_iteration.into(),
+            runner.egraph.total_size(),
+            runner.egraph.number_of_classes(),
             allocated,
             previous_allocated,
-            earlier.len(),
+            runner.iterations.len(),
             term_size,
-            runner.scheduler_stats,
-        );
+            &runner.scheduler_snapshot,
+            &predictor.scheduler,
+            &predictor.rules,
+        )?;
         previous_allocated = Some(allocated);
 
         let absolute_limit = runner
@@ -282,7 +500,7 @@ where
             safety_margin,
         ) {
             return Err(format!(
-                "predicted next-iteration memory limit crossing \
+                "predicted upcoming-iteration peak memory limit crossing \
                  ({predicted} >= {absolute_limit} bytes)"
             ));
         }
@@ -293,11 +511,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egg::SchedulerRuleState;
 
-    fn iteration(nodes: usize, classes: usize, applied: usize) -> IterationSnapshot {
+    fn iteration(nodes: usize, applied: usize) -> IterationSnapshot {
         IterationSnapshot {
             egraph_nodes: nodes,
-            egraph_classes: classes,
             total_applied: applied,
             hook_time: 0.1,
             search_time: 0.2,
@@ -308,106 +526,147 @@ mod tests {
         }
     }
 
+    fn scheduler() -> SchedulerSnapshot {
+        SchedulerSnapshot {
+            scheduler: "backoff",
+            n_active: 1,
+            n_banned: 0,
+            n_newly_unbanned: 1,
+            min_ban_remaining: 0,
+            total_times_banned: 2,
+            max_active_log2_match_limit: 5.0,
+            log2_active_match_limit_sum: 5.044_394,
+            max_active_times_banned: 2,
+            rules: vec![SchedulerRuleState {
+                name: "assoc_add".into(),
+                will_search: true,
+                newly_unbanned: true,
+                times_banned: 2,
+                ban_remaining: 0,
+                match_limit: 32,
+                log2_match_limit: 5.0,
+            }],
+        }
+    }
+
+    fn features(
+        previous_nodes: usize,
+        current_nodes: usize,
+        classes: usize,
+        allocated: u64,
+        previous_allocated: Option<u64>,
+    ) -> Vec<f32> {
+        build_features(
+            iteration(previous_nodes, 7),
+            current_nodes,
+            classes,
+            allocated,
+            previous_allocated,
+            3,
+            11,
+            &scheduler(),
+            "backoff",
+            &["assoc_add".to_owned()],
+        )
+        .unwrap()
+    }
+
     fn assert_feature(actual: f32, expected: f32) {
         assert!((actual - expected).abs() <= f32::EPSILON);
     }
 
     #[test]
-    fn feature_order_and_count_are_stable() {
-        assert_eq!(FEATURE_COUNT, 20);
-        assert_eq!(FEATURE_NAMES[0], "egraph_nodes");
-        assert_eq!(FEATURE_NAMES[15], "term_size");
+    fn deterministic_schema_escapes_arbitrary_rule_names() {
+        let names = expected_feature_names(&["assoc-add".to_owned(), "x_y/λ".to_owned()]);
+        assert_eq!(names[0], "egraph_nodes");
+        assert_eq!(names[15], "term_size");
         assert_eq!(
-            &FEATURE_NAMES[16..],
+            &names[16..24],
             &[
+                "n_active",
                 "n_banned",
-                "n_unbanned_this_iter",
+                "n_newly_unbanned",
                 "min_ban_remaining",
                 "total_times_banned",
+                "max_active_log2_match_limit",
+                "log2_active_match_limit_sum",
+                "max_active_times_banned",
             ]
         );
+        assert_eq!(names[24], "rule_assoc-add_will_search");
+        assert_eq!(names[29], "rule_x%5Fy%2F%CE%BB_will_search");
     }
 
     #[test]
-    fn first_completed_iteration_uses_growth_defaults() {
-        let features = build_features(
-            iteration(20, 4, 7),
-            None,
-            1_000,
-            None,
-            0,
-            11,
-            SchedulerStats::default(),
-        );
+    fn missing_allocation_history_defaults_but_current_egraph_is_live() {
+        let features = features(20, 30, 5, 1_000, None);
         assert_feature(features[5], 1.0);
-        assert_feature(features[6], 1.0);
+        assert_feature(features[0], 30.0);
+        assert_feature(features[1], 5.0);
+        assert_feature(features[6], 1.5);
     }
 
     #[test]
     fn subsequent_iteration_calculates_both_growth_features() {
-        let features = build_features(
-            iteration(30, 5, 7),
-            Some(iteration(20, 4, 3)),
-            1_500,
-            Some(1_000),
-            1,
-            11,
-            SchedulerStats::default(),
-        );
+        let features = features(20, 30, 5, 1_500, Some(1_000));
         assert_feature(features[5], 1.5);
         assert_feature(features[6], 1.5);
     }
 
     #[test]
-    fn applied_counts_are_summed_without_rule_names() {
+    fn online_vector_matches_equivalent_offline_decision_row() {
         assert_eq!(sum_applied_counts([&2, &5, &10].into_iter()), 17);
-        let features = build_features(
-            iteration(20, 4, 17),
-            None,
-            1_000,
-            None,
-            0,
-            11,
-            SchedulerStats::default(),
-        );
-        assert_feature(features[7], 17.0);
+        let features = features(20, 30, 5, 1_500, Some(1_000));
+        let offline_decision_row = vec![
+            // Current pre-search egraph/allocation.
+            30.0, 5.0, 6.0, 1_500.0, 50.0, 1.5, 1.5,
+            // Previous iteration's completed work.
+            7.0, 0.1, 0.2, 0.3, 0.4, 1.0, 2.0,
+            // Upcoming identity and scheduler snapshot.
+            3.0, 11.0, 1.0, 0.0, 1.0, 0.0, 2.0, 5.0, 5.044_394, 2.0,
+            // Upcoming assoc_add state.
+            1.0, 1.0, 2.0, 0.0, 5.0,
+        ];
+        assert_eq!(features, offline_decision_row);
     }
 
     #[test]
     fn zero_sizes_and_allocation_produce_only_finite_features() {
-        let features = build_features(
-            iteration(0, 0, 0),
-            Some(iteration(0, 0, 0)),
-            0,
-            Some(0),
-            1,
-            0,
-            SchedulerStats::default(),
-        );
+        let features = features(0, 0, 0, 0, Some(0));
         assert!(features.into_iter().all(f32::is_finite));
-        assert_feature(features[2], 1.0);
-        assert_feature(features[4], 1.0);
-        assert_feature(features[5], 1.0);
-        assert_feature(features[6], 1.0);
     }
 
     #[test]
-    fn scheduler_aggregates_have_fixed_feature_indices() {
-        let features = build_features(
-            iteration(0, 0, 0),
+    fn incompatible_scheduler_or_rule_set_is_an_error() {
+        let snapshot = scheduler();
+        let scheduler_error = build_features(
+            iteration(1, 0),
+            1,
+            1,
+            1,
             None,
-            0,
+            1,
+            1,
+            &snapshot,
+            "generic",
+            &["assoc_add".to_owned()],
+        )
+        .unwrap_err();
+        assert!(scheduler_error.contains("requires"));
+        let rule_error = build_features(
+            iteration(1, 0),
+            1,
+            1,
+            1,
             None,
-            0,
-            0,
-            SchedulerStats {
-                n_banned: 2,
-                n_unbanned_this_iter: 3,
-                min_ban_remaining: 4,
-                total_times_banned: 5,
-            },
-        );
-        assert_eq!(&features[16..], &[2.0, 3.0, 4.0, 5.0]);
+            1,
+            1,
+            &snapshot,
+            "backoff",
+            &["different".to_owned()],
+        )
+        .unwrap_err();
+        assert!(rule_error.contains("rule-set compatibility"));
     }
 
     #[test]
@@ -435,12 +694,9 @@ mod tests {
     }
 
     #[test]
-    fn stale_manifest_reports_retraining_before_parity_sample_shape() {
+    fn checked_in_model_loads_prewarms_and_matches_parity_sample() {
         let model_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("models/memory_growth.onnx");
-        let error = OnnxMemoryGrowthPredictor::load_and_prewarm(&model_path)
-            .err()
-            .expect("the checked-in 16-feature model should be stale");
-        assert!(error.contains("feature order mismatch"));
-        assert!(error.contains("retraining and re-export are required"));
+        OnnxMemoryGrowthPredictor::load_and_prewarm(&model_path)
+            .expect("checked-in model and manifest must load and prewarm");
     }
 }

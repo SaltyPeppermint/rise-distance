@@ -4,11 +4,13 @@ The Rust ``generate plan`` command supplies the distribution plan and
 ``generate one`` produces one term per invocation. This coordinator provides
 deterministic per-slot seeds,
 bounded process concurrency, deduplication, telemetry, and resumable JSONL
-checkpoints. Workers are not externally memory-contained; Rust's
-``--max-memory`` remains a between-iterations early-stop hint, so a single
-rewrite application can overshoot it substantially before the next check.
-Reported allocation figures are absolute process live heap (jemalloc
-``stats.allocated``), directly comparable to ``--max-memory``.
+checkpoints. Workers are not externally memory-contained. Rust samples
+``--max-memory`` immediately before hooks, after every individual rule search
+and application, and after rebuild/finalization. The trace retains each
+iteration's peak and responsible rule even when transient allocations are
+freed before iteration end. Reported allocation figures are absolute process
+live heap (jemalloc ``stats.allocated``), directly comparable to
+``--max-memory``.
 Per-slot BLAKE2 seeds intentionally replace (and differ from) the old
 monolithic ChaCha stream. Term assignment is stable across worker counts;
 measured wall times and allocator statistics in payloads remain observational.
@@ -78,7 +80,7 @@ class Args:
     max_nodes: int = 100_000
     max_time: float = 1.0
     max_memory: str | None = None
-    """Rust's between-iterations live-heap early-stop hint."""
+    """Absolute live-heap ceiling checked at egg's sampled rule boundaries."""
     predict_next_memory: Path | None = None
 
     workers: int = 4
