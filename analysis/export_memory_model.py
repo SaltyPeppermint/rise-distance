@@ -27,7 +27,7 @@ TARGET = "y_log_peak_growth"
 MODEL_PARAMETERS = memory_model.BOOSTED_PARAMETERS
 SAFETY_QUANTILE = 0.99
 FLOAT32_PARITY_ATOL = 1e-5
-DEFAULT_CEILINGS = (64 << 20, 128 << 20, 256 << 20, 400 << 20, 500 << 20)
+DEFAULT_CEILINGS = (64 << 20, 128 << 20, 256 << 20, 500 << 20, 1000 << 20, 2000 << 20)
 
 
 @dataclass(frozen=True)
@@ -72,9 +72,7 @@ def _validate_conversion(X, y, groups, features) -> dict:
     onnx_prediction = _ort_predict(_onnx_bytes(model, features), X[held_out])
     error = np.abs(sklearn_prediction - onnx_prediction)
     max_error = float(error.max())
-    if not np.allclose(
-        sklearn_prediction, onnx_prediction, rtol=0.0, atol=FLOAT32_PARITY_ATOL
-    ):
+    if not np.allclose(sklearn_prediction, onnx_prediction, rtol=0.0, atol=FLOAT32_PARITY_ATOL):
         raise AssertionError(
             f"ONNX parity failed: max error {max_error:g} > {FLOAT32_PARITY_ATOL:g}"
         )
@@ -175,8 +173,7 @@ def _classifier_comparison(decisions, features, ceilings, regression_replay):
         reg = next(
             row
             for row in regression_replay
-            if row["boundary"] == "conservative"
-            and row["ceiling_mib"] == ceiling / 2**20
+            if row["boundary"] == "conservative" and row["ceiling_mib"] == ceiling / 2**20
         )
         improved = score["caught"] > reg["caught"] and score["false_stops"] <= reg["false_stops"]
         rows.append(
@@ -194,7 +191,11 @@ def _classifier_comparison(decisions, features, ceilings, regression_replay):
             }
         )
     retained = bool(rows) and all(row.get("materially_improved", False) for row in rows)
-    return {"retained": retained, "reason": "retained only on consistent first-stop wins", "rows": rows}
+    return {
+        "retained": retained,
+        "reason": "retained only on consistent first-stop wins",
+        "rows": rows,
+    }
 
 
 def main() -> None:
