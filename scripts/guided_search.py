@@ -161,7 +161,7 @@ class Args:
 
     size_distribution: str = "greedy"
     """How `sample` allocates the candidate budget across root term sizes:
-    `greedy`, `uniform`, `proportional:<min>`, or `normal:<sigma>`."""
+    `greedy`, `uniform`, or `proportional:<min>`."""
 
     jobs: int | None = None
     """Max concurrent `verify` legs (one seed/goal pair per worker). Each pair's

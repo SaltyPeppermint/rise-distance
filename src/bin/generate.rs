@@ -4,7 +4,7 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use egg::{RecExpr, Rewrite, StopReason};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
-use rise_distance::sampling::Distribution;
+use rise_distance::sampling::uniform_samples_per_size;
 use serde::Serialize;
 
 use rise_distance::eqsat::{EqsatConfig, HeapData, Measurement};
@@ -17,7 +17,7 @@ use rise_distance::{MyAnalysis, MyLanguage};
     about = "Plan seed allocation or generate one exact-size validated term",
     after_help = "\
 Examples:
-  generate plan --total-samples 1000 --min-size 5 --max-size 50 --distribution uniform
+  generate plan --total-samples 1000 --min-size 5 --max-size 50
 
   generate one --size 17 --seed 42 --language math \\
     --max-iters 50 --max-nodes 100000 --max-time 10
@@ -49,10 +49,6 @@ struct PlanArgs {
     /// Maximum term size (inclusive)
     #[arg(long)]
     max_size: usize,
-
-    /// Size distribution used to allocate samples across sizes
-    #[arg(long)]
-    distribution: Distribution,
 }
 
 #[derive(ClapArgs)]
@@ -88,9 +84,7 @@ fn main() {
 
 fn emit_plan(args: &PlanArgs) {
     let sizes = (args.min_size..=args.max_size).collect::<Vec<_>>();
-    let plan = args
-        .distribution
-        .samples_per_size(&sizes, args.total_samples);
+    let plan = uniform_samples_per_size(&sizes, args.total_samples);
     serde_json::to_writer(std::io::stdout().lock(), &plan).unwrap();
     println!();
 }

@@ -44,7 +44,7 @@ sizes; only those that pass the eqsat validity check are kept.
 ```bash
 uv run scripts/generate_seeds.py \
     --total-samples 100 --min-size 10 --max-size 50 \
-    --distribution uniform --language math --seed 42 \
+    --language math --seed 42 \
     --max-memory 8G \
     --max-iters 200 --max-nodes 1000000 --max-time 10 \
     --backoff-scheduler

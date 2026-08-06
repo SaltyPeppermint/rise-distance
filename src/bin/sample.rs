@@ -24,7 +24,7 @@ use time::OffsetDateTime;
 use rise_distance::cli::{GuideExpr, SeedSamples, Strategy};
 use rise_distance::eqsat::{EqsatConfig, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
-use rise_distance::sampling::{PrecomputePackage, TermSampleDist};
+use rise_distance::sampling::{Distribution, PrecomputePackage};
 use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
 
 #[derive(Parser)]
@@ -57,8 +57,8 @@ struct Args {
     eqsat: EqsatConfig,
 
     /// How to distribute the guide sample budget across sizes.
-    #[arg(long, default_value_t = TermSampleDist::GREEDY)]
-    size_distribution: TermSampleDist,
+    #[arg(long, default_value_t = Distribution::Greedy)]
+    size_distribution: Distribution,
 
     /// How many guide candidates to draw per sampling strategy. The menu must be
     /// large enough for the driver to pick its widest `k` and to reshuffle

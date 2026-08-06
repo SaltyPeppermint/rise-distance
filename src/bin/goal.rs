@@ -21,7 +21,7 @@ use rise_distance::cli::GoalGenMetadata;
 use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::lower;
-use rise_distance::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
+use rise_distance::sampling::{Distribution, PrecomputePackage, SampleStrategy};
 use rise_distance::{MyAnalysis, MyLanguage, eqsat};
 
 #[derive(Parser)]
@@ -53,8 +53,8 @@ struct Args {
     goals: usize,
 
     /// How to distribute the sample budget across sizes.
-    #[arg(long, default_value_t = TermSampleDist::GREEDY)]
-    size_distribution: TermSampleDist,
+    #[arg(long, default_value_t = Distribution::Greedy)]
+    size_distribution: Distribution,
 
     /// How to sample the GOAL terms.
     #[arg(long, default_value_t = SampleStrategy::Independent)]

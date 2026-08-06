@@ -15,7 +15,7 @@ use egg::{Language, RecExpr, Rewrite};
 
 use crate::Counter;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
-use crate::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
+use crate::sampling::{Distribution, PrecomputePackage, SampleStrategy};
 use crate::sketch::Sketch;
 use crate::{MyAnalysis, MyLanguage, OriginLang, id0, lower};
 
@@ -163,7 +163,7 @@ where
 
     let Some(sampled) = pp.sample_frontier_terms(
         args.sample_count,
-        TermSampleDist::GREEDY,
+        Distribution::Greedy,
         SampleStrategy::Independent,
         [args.cut_iters as u64, 0],
     ) else {

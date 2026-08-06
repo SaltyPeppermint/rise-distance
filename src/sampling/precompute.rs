@@ -10,7 +10,7 @@ use crate::sampling::sampler::{
     BalancedFrontierSampler, CountWeigher, IndependentFrontierSampler, NaiveWeigher, PlainSampler,
     Sampler,
 };
-use crate::sampling::{SampleStrategy, TermSampleDist};
+use crate::sampling::{Distribution, SampleStrategy};
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
 pub struct PrecomputePackage<'a, C, L, N>
@@ -170,7 +170,7 @@ where
     pub fn sample_frontier_terms(
         &self,
         count: usize,
-        distribution: TermSampleDist,
+        distribution: Distribution,
         sample_strategy: SampleStrategy,
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
@@ -205,7 +205,7 @@ where
     pub fn sample_balanced_frontier_terms(
         &self,
         count: usize,
-        distribution: TermSampleDist,
+        distribution: Distribution,
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let histogram = self.tc.data().get(&self.root)?;
@@ -221,7 +221,7 @@ where
     pub fn sample_balanced_frontier_terms_with_config(
         &self,
         count: usize,
-        distribution: TermSampleDist,
+        distribution: Distribution,
         seed: [u64; 2],
         config: crate::sampling::BalanceConfig,
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
@@ -322,7 +322,7 @@ mod tests {
         let package =
             PrecomputePackage::<BigUint, _, _>::precompute(&result, 3).expect("frontier package");
         let terms = package
-            .sample_frontier_terms(3, TermSampleDist::GREEDY, SampleStrategy::Balanced, [5, 8])
+            .sample_frontier_terms(3, Distribution::Greedy, SampleStrategy::Balanced, [5, 8])
             .expect("balanced frontier terms");
         let lowered = terms
             .into_iter()

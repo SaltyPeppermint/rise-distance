@@ -1,6 +1,6 @@
 """Generate validated seed terms in isolated Rust processes.
 
-The Rust ``generate plan`` command supplies the distribution plan and
+The Rust ``generate plan`` command supplies the uniform size-allocation plan and
 ``generate one`` produces one term per invocation. This coordinator provides
 deterministic per-slot seeds,
 bounded process concurrency, deduplication, telemetry, and resumable JSONL
@@ -18,7 +18,7 @@ measured wall times and allocator statistics in payloads remain observational.
 Example:
     cargo build --release --bin generate
     uv run scripts/generate_seeds.py --total-samples 10 --min-size 10 \
-      --max-size 12 --distribution uniform --language math --seed 42
+      --max-size 12 --language math --seed 42
 """
 
 import dataclasses
@@ -71,7 +71,6 @@ class Args:
     total_samples: int = tyro.MISSING
     min_size: int = tyro.MISSING
     max_size: int = tyro.MISSING
-    distribution: str = tyro.MISSING
     language: str = tyro.MISSING
     seed: int = tyro.MISSING
     retry_limit: int = 10000
@@ -123,7 +122,6 @@ def semantic_config(args: Args) -> dict[str, Any]:
         "total_samples": args.total_samples,
         "min_size": args.min_size,
         "max_size": args.max_size,
-        "distribution": args.distribution,
         "language": args.language,
         "seed": args.seed,
         "retry_limit": args.retry_limit,
@@ -192,8 +190,6 @@ def request_plan(args: Args) -> list[tuple[int, int]]:
         str(args.min_size),
         "--max-size",
         str(args.max_size),
-        "--distribution",
-        args.distribution,
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:

@@ -10,7 +10,7 @@ use rise_distance::langs::diospyros::cost::VecCostFn;
 use rise_distance::langs::diospyros::rewriteconcats::list_to_concats;
 use rise_distance::langs::diospyros::rules::{filter_applicable_rules, rules};
 use rise_distance::langs::diospyros::stringconversion::convert_string;
-use rise_distance::sampling::{PrecomputePackage, SampleStrategy, TermSampleDist};
+use rise_distance::sampling::{Distribution, PrecomputePackage, SampleStrategy};
 use rise_distance::{eqsat, lower};
 
 #[derive(Parser)]
@@ -250,7 +250,7 @@ fn run_cut(
 
     let Some(sampled) = pp.sample_frontier_terms(
         args.sample_count,
-        TermSampleDist::GREEDY,
+        Distribution::Greedy,
         SampleStrategy::Independent,
         [args.cut_iters as u64, 0],
     ) else {
