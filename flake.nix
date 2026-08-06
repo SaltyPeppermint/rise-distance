@@ -62,6 +62,8 @@
             lld
             pkg-config
             uv
+            fish
+            util-linux
             cargo-nextest
             cargo-expand
             cargo-show-asm
