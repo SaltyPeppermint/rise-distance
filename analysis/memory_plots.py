@@ -1,4 +1,4 @@
-"""Altair charts for the next-iteration memory model."""
+"""Altair charts for the upcoming-iteration peak-memory model."""
 
 import json
 from pathlib import Path
@@ -48,15 +48,11 @@ def _parse_size(value: str | float) -> float:
 
 
 def maximum_egraph_memory(iterations: pl.DataFrame, seed_dir: Path) -> ChartType:
-    """Plot each term's peak heap with its distribution and configured limit.
-
-    Stop iterations are excluded because their heap reading is a post-run
-    total rather than a mid-run egraph measurement.
-    """
+    """Plot each term's sampled iteration peak and configured limit."""
     maxima = (
-        iterations.filter(~pl.col("is_stop_iter") & (pl.col("allocated") > 0))
+        iterations.filter(pl.col("iteration_peak_allocated") > 0)
         .group_by("term", "term_size")
-        .agg((pl.col("allocated").max() / 2**20).alias("max_memory_mib"))
+        .agg((pl.col("iteration_peak_allocated").max() / 2**20).alias("max_memory_mib"))
     )
     summary = (
         maxima.group_by("term_size")
@@ -236,7 +232,7 @@ def predicted_vs_actual(predictions: pl.DataFrame, target: str, sample: int = 40
 
 
 def growth_histogram(
-    transitions: pl.DataFrame, col: str = "y_log_growth", bins: int = 80
+    transitions: pl.DataFrame, col: str = "y_log_peak_growth", bins: int = 80
 ) -> ChartType:
     """Distribution of the growth target, binned in Polars.
 
@@ -264,7 +260,7 @@ def growth_histogram(
         alt.Chart(counts)
         .mark_bar()
         .encode(
-            x=alt.X("bin_start:Q", bin="binned", title="log memory growth ratio"),
+            x=alt.X("bin_start:Q", bin="binned", title="log peak growth ratio"),
             x2="bin_end:Q",
             y=alt.Y("transitions:Q", title="transitions"),
         )
@@ -272,7 +268,7 @@ def growth_histogram(
             width=520,
             height=200,
             title=alt.TitleParams(
-                "Distribution of memory growth",
+                "Distribution of upcoming peak growth",
                 subtitle=["0 means memory held steady · 0.69 means it doubled"],
                 subtitleColor="#7a7a77",
             ),
@@ -518,8 +514,8 @@ def importance_bars(importance: pl.DataFrame) -> ChartType:
         .properties(width=340, height=alt.Step(16))
         .properties(
             title=alt.TitleParams(
-                "Permutation importance (growth target)",
-                subtitle=["measured on held-out terms · rule = one rewrite's application count"],
+                "Permutation importance (peak-growth target)",
+                subtitle=["measured on held-out terms · rule = upcoming scheduler state"],
                 subtitleColor="#7a7a77",
             )
         )

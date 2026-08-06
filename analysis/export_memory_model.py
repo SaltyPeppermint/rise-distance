@@ -1,16 +1,7 @@
-"""Train, export, and evaluate the scalar next-iteration memory model.
+"""Train/export the scheduler-aware upcoming-iteration peak-memory model.
 
-The generated ONNX file is embedded by the Rust predictive-memory hook. Run:
-
-    uv run python analysis/export_memory_model.py
-
-Pass ``--seed-dir`` to select a trace set instead of the newest seed-term run.
-
-``allocated`` is the absolute process live heap, matching what the hook reads at
-inference time and the coordinate system ``--max-memory`` is expressed in. The
-replay section of the evaluation report scores the model as the hook uses it:
-how many ceiling crossings it stops before they happen, at what cost in runs
-stopped needlessly.
+Run ``uv run python analysis/export_memory_model.py --seed-dir TRACE`` after
+regenerating traces with iteration-local peaks and per-rule scheduler state.
 """
 
 import json
@@ -26,66 +17,43 @@ import sklearn
 import tyro
 from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType
-from sklearn.model_selection import GroupKFold, cross_val_predict
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.model_selection import GroupKFold
 
 import iteration_data as data
 import memory_model
 
-FEATURES = (
-    "egraph_nodes",
-    "egraph_classes",
-    "nodes_per_class",
-    "allocated",
-    "bytes_per_node",
-    "prev_growth",
-    "prev_node_growth",
-    "total_applied",
-    "hook_time",
-    "search_time",
-    "apply_time",
-    "rebuild_time",
-    "total_time",
-    "n_rebuilds",
-    "iter_index",
-    "term_size",
-    "n_banned",
-    "n_unbanned_this_iter",
-    "min_ban_remaining",
-    "total_times_banned",
-)
-TARGET = "y_log_growth"
+TARGET = "y_log_peak_growth"
 MODEL_PARAMETERS = memory_model.BOOSTED_PARAMETERS
 SAFETY_QUANTILE = 0.99
 FLOAT32_PARITY_ATOL = 1e-5
-# Spans the ceilings actually used in generation runs. The largest matters
-# most: crossings there are the ones the deployed hook has to catch.
-DEFAULT_CEILINGS = (64 << 20, 128 << 20, 256 << 20, 500 << 20)
+DEFAULT_CEILINGS = (64 << 20, 128 << 20, 256 << 20, 400 << 20, 500 << 20)
 
 
 @dataclass(frozen=True)
 class Args:
     seed_dir: Path | None = None
-    """Trace directory. Defaults to the newest seed-term run."""
+    """Scheduler/peak-aware trace directory. Defaults to the newest trace."""
 
     output_dir: Path = Path("models")
-    """Directory for the model, manifest, and evaluation report."""
+    """Directory for model, manifest, and evaluation report."""
 
     n_jobs: int = 5
-    """Number of parallel cross-validation jobs."""
+    """Parallelism hint for analysis (fold fitting is deterministic)."""
 
     ceilings: tuple[int, ...] = DEFAULT_CEILINGS
-    """Memory ceilings in bytes to use during replay evaluation."""
+    """Absolute process-memory ceilings used for first-stop replay."""
 
 
-def _model():
-    return memory_model.make_models(FEATURES, ())["gradient boosting"]
+def _model(features):
+    return memory_model.make_models(features, ())["gradient boosting"]
 
 
-def _onnx_bytes(model) -> bytes:
+def _onnx_bytes(model, features) -> bytes:
     graph = convert_sklearn(
         model,
-        name="rise-distance scalar memory growth",
-        initial_types=[("features", FloatTensorType([None, len(FEATURES)]))],
+        name="rise-distance scheduler-aware peak memory growth",
+        initial_types=[("features", FloatTensorType([None, len(features)]))],
         target_opset=18,
     )
     return graph.SerializeToString()
@@ -97,15 +65,16 @@ def _ort_predict(model_bytes: bytes, X: np.ndarray) -> np.ndarray:
     return np.asarray(output).reshape(-1)
 
 
-def _validate_conversion(X: np.ndarray, y: np.ndarray, groups: np.ndarray) -> dict:
-    """Compare sklearn and ONNX on a group-held-out fold."""
+def _validate_conversion(X, y, groups, features) -> dict:
     train, held_out = next(GroupKFold(n_splits=5).split(X, y, groups))
-    model = _model().fit(X[train], y[train])
+    model = _model(features).fit(X[train], y[train])
     sklearn_prediction = model.predict(X[held_out])
-    onnx_prediction = _ort_predict(_onnx_bytes(model), X[held_out])
+    onnx_prediction = _ort_predict(_onnx_bytes(model, features), X[held_out])
     error = np.abs(sklearn_prediction - onnx_prediction)
     max_error = float(error.max())
-    if not np.allclose(sklearn_prediction, onnx_prediction, rtol=0.0, atol=FLOAT32_PARITY_ATOL):
+    if not np.allclose(
+        sklearn_prediction, onnx_prediction, rtol=0.0, atol=FLOAT32_PARITY_ATOL
+    ):
         raise AssertionError(
             f"ONNX parity failed: max error {max_error:g} > {FLOAT32_PARITY_ATOL:g}"
         )
@@ -117,34 +86,7 @@ def _validate_conversion(X: np.ndarray, y: np.ndarray, groups: np.ndarray) -> di
     }
 
 
-def _replay(
-    transitions,
-    predictions: np.ndarray,
-    safety_margin: float,
-    ceilings: tuple[int, ...],
-) -> list[dict]:
-    """Evaluate one-step boundary decisions and distance to later crossings.
-
-    Delegates to `memory_model.ceiling_decisions` so the exported report and
-    the notebook score stop decisions with identical logic.
-    """
-    return memory_model.ceiling_decisions(
-        transitions,
-        predictions,
-        ceilings,
-        margins=(("raw", 0.0), ("conservative", safety_margin)),
-    ).to_dicts()
-
-
-def _measure_overhead(
-    model_bytes: bytes,
-    X: np.ndarray,
-    predictions: np.ndarray,
-    transitions,
-    safety_margin: float,
-    ceilings: tuple[int, ...],
-) -> dict:
-    """Time single-row inference and estimate hook_time feedback."""
+def _measure_overhead(model_bytes, X, predictions, decisions, features, margin, ceilings):
     session = ort.InferenceSession(model_bytes, providers=["CPUExecutionProvider"])
     sample = X[: min(len(X), 2_000)].astype(np.float32)
     for row in sample[:10]:
@@ -156,59 +98,137 @@ def _measure_overhead(
     per_inference = seconds / len(sample)
 
     perturbed = X.copy()
-    perturbed[:, FEATURES.index("hook_time")] += per_inference
-    perturbed_predictions = _ort_predict(model_bytes, perturbed)
-    changed = {}
-    allocated = transitions["allocated"].to_numpy().astype(np.float64)
-    before = allocated * np.exp(predictions + safety_margin)
-    after = allocated * np.exp(perturbed_predictions + safety_margin)
-    for ceiling in ceilings:
-        changed[str(ceiling)] = int(((before >= ceiling) != (after >= ceiling)).sum())
+    perturbed[:, features.index("hook_time")] += per_inference
+    changed_predictions = _ort_predict(model_bytes, perturbed)
+    allocated = decisions.filter(pl.col("target_trainable"))["allocated"].to_numpy()
+    before = allocated * np.exp(predictions + margin)
+    after = allocated * np.exp(changed_predictions + margin)
     return {
         "sample_rows": len(sample),
         "total_seconds": seconds,
         "mean_seconds_per_inference": per_inference,
         "prediction_mean_absolute_change": float(
-            np.mean(np.abs(perturbed_predictions - predictions))
+            np.mean(np.abs(changed_predictions - predictions))
         ),
-        "changed_stop_decisions_by_ceiling": changed,
+        "changed_stop_decisions_by_ceiling": {
+            str(ceiling): int(((before >= ceiling) != (after >= ceiling)).sum())
+            for ceiling in ceilings
+        },
     }
+
+
+def _classifier_comparison(decisions, features, ceilings, regression_replay):
+    """Test a separate crossing classifier and retain it only on clear wins."""
+    X = memory_model.design_matrix(decisions, features).astype(np.float32)
+    groups = decisions["term"].to_numpy()
+    peaks = decisions["iteration_peak_allocated"].to_numpy()
+    allocated = decisions["allocated"].to_numpy().astype(np.float64)
+    rows = []
+    for ceiling in ceilings:
+        eligible = allocated < ceiling
+        labels = peaks >= ceiling
+        if int((eligible & labels).sum()) < 5:
+            rows.append(
+                {
+                    "ceiling_mib": ceiling / 2**20,
+                    "evaluated": False,
+                    "reason": "fewer than five crossing decision rows",
+                }
+            )
+            continue
+        probabilities = np.zeros(len(decisions))
+        valid = True
+        for train, test in GroupKFold(n_splits=5).split(X, labels, groups):
+            fit = train[eligible[train]]
+            if np.unique(labels[fit]).size < 2:
+                valid = False
+                break
+            classifier = HistGradientBoostingClassifier(
+                **{
+                    key: value
+                    for key, value in MODEL_PARAMETERS.items()
+                    if key != "l2_regularization"
+                },
+                l2_regularization=MODEL_PARAMETERS["l2_regularization"],
+            ).fit(X[fit], labels[fit])
+            probabilities[test] = classifier.predict_proba(X[test])[:, 1]
+        if not valid:
+            rows.append(
+                {
+                    "ceiling_mib": ceiling / 2**20,
+                    "evaluated": False,
+                    "reason": "a grouped training fold had no crossing examples",
+                }
+            )
+            continue
+        stop = probabilities >= 0.5
+        artificial_log_growth = np.where(
+            stop,
+            np.log(np.maximum(ceiling / allocated, 1.0)),
+            -100.0,
+        )
+        score = memory_model.ceiling_decisions(
+            decisions,
+            artificial_log_growth,
+            (ceiling,),
+        ).to_dicts()[0]
+        reg = next(
+            row
+            for row in regression_replay
+            if row["boundary"] == "conservative"
+            and row["ceiling_mib"] == ceiling / 2**20
+        )
+        improved = score["caught"] > reg["caught"] and score["false_stops"] <= reg["false_stops"]
+        rows.append(
+            {
+                "ceiling_mib": ceiling / 2**20,
+                "evaluated": True,
+                "threshold": 0.5,
+                "classifier_caught": score["caught"],
+                "classifier_missed": score["missed"],
+                "classifier_false_stops": score["false_stops"],
+                "regressor_caught": reg["caught"],
+                "regressor_missed": reg["missed"],
+                "regressor_false_stops": reg["false_stops"],
+                "materially_improved": improved,
+            }
+        )
+    retained = bool(rows) and all(row.get("materially_improved", False) for row in rows)
+    return {"retained": retained, "reason": "retained only on consistent first-stop wins", "rows": rows}
 
 
 def main() -> None:
     args = tyro.cli(Args, description=__doc__)
-
     seed_dir = args.seed_dir or data.resolve_seed_dir()
     try:
         trace_name = str(seed_dir.resolve().relative_to(Path.cwd().resolve()))
     except ValueError:
         trace_name = str(seed_dir.resolve())
-    # Stop transitions are kept so the replay below has ceiling crossings to
-    # score -- a crossing is by construction a stop iteration. They are excluded
-    # from training just below, because their heap reading is a post-run total.
-    all_transitions = data.build_transitions(
-        data.load_iterations(seed_dir), keep_stop_transitions=True
-    )
-    transitions = all_transitions.filter(pl.col("next_is_stop_iter").not_())
-    scalar_features, _ = data.feature_columns(transitions)
-    if tuple(scalar_features) != FEATURES:
-        raise AssertionError(f"feature mismatch: {scalar_features!r}")
 
-    # Training in the deployed input precision keeps tree thresholds on the
-    # same side of borderline values in sklearn and ONNX Runtime.
-    X = memory_model.design_matrix(transitions, FEATURES).astype(np.float32)
-    y = transitions[TARGET].to_numpy()
-    groups = transitions["term"].to_numpy()
-    cv = GroupKFold(n_splits=5)
-    oof = cross_val_predict(_model(), X, y, cv=cv, groups=groups, n_jobs=args.n_jobs)
-    # Positive residual means the model underpredicted actual log growth.
-    residuals = y - oof
+    iterations = data.load_iterations(seed_dir)
+    decisions = data.build_decision_rows(iterations)
+    rules = data.rules_from_frame(decisions)
+    features = data.feature_schema(rules)
+    scalar_features, per_rule_features = data.feature_columns(decisions)
+    if (*scalar_features, *per_rule_features) != features:
+        raise AssertionError("Python feature blocks disagree with deterministic schema")
+    if decisions["scheduler_kind"].unique().to_list() != ["backoff"]:
+        raise AssertionError("deployed model requires BackoffScheduler traces")
+
+    trainable = decisions.filter(pl.col("target_trainable"))
+    X = memory_model.design_matrix(trainable, features).astype(np.float32)
+    y = trainable[TARGET].to_numpy()
+    groups = trainable["term"].to_numpy()
+
+    oof_all, trainable_mask = memory_model.grouped_oof_predictions(decisions, features)
+    actual_all = decisions[TARGET].to_numpy()
+    residuals = actual_all[trainable_mask] - oof_all[trainable_mask]
     safety_margin = float(np.quantile(residuals, SAFETY_QUANTILE))
     observed_miss_rate = float(np.mean(residuals > safety_margin))
 
-    parity = _validate_conversion(X, y, groups)
-    fitted = _model().fit(X, y)
-    model_bytes = _onnx_bytes(fitted)
+    parity = _validate_conversion(X, y, groups, features)
+    fitted = _model(features).fit(X, y)
+    model_bytes = _onnx_bytes(fitted, features)
     full_onnx_predictions = _ort_predict(model_bytes, X)
     rust_parity_sample = {
         "features": X[0].tolist(),
@@ -217,56 +237,100 @@ def main() -> None:
         "absolute_tolerance": FLOAT32_PARITY_ATOL,
     }
 
+    replay = memory_model.ceiling_decisions(
+        decisions,
+        oof_all,
+        args.ceilings,
+        margins=(("raw", 0.0), ("conservative", safety_margin)),
+    ).to_dicts()
+    rule_replay = memory_model.crossing_by_responsible_rule(
+        decisions, oof_all, args.ceilings, safety_margin
+    ).to_dicts()
+    ablation_regression, ablation_replay = memory_model.scheduler_feature_ablation(
+        decisions,
+        rules,
+        args.ceilings,
+        safety_quantile=SAFETY_QUANTILE,
+        n_jobs=args.n_jobs,
+    )
+    classifier = _classifier_comparison(decisions, features, args.ceilings, replay)
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
     model_path = args.output_dir / "memory_growth.onnx"
     manifest_path = args.output_dir / "memory_growth.json"
     report_path = args.output_dir / "memory_growth_evaluation.json"
     model_path.write_bytes(model_bytes)
     manifest = {
-        "features": list(FEATURES),
+        "schema_version": 1,
+        "features": list(features),
+        "scheduler": "backoff",
+        "rules": rules,
         "target": TARGET,
         "model": "sklearn.ensemble.HistGradientBoostingRegressor",
         "model_parameters": MODEL_PARAMETERS,
         "safety_margin": safety_margin,
         "safety_quantile": SAFETY_QUANTILE,
         "observed_oof_miss_rate": observed_miss_rate,
-        "training_rows": len(transitions),
-        "training_groups": int(transitions["term"].n_unique()),
+        "training_rows": len(trainable),
+        "decision_rows": len(decisions),
+        "training_groups": int(trainable["term"].n_unique()),
         "training_trace": trace_name,
         "sklearn_version": sklearn.__version__,
         "skl2onnx_version": skl2onnx.__version__,
+        "onnx_input_dtype": "float32",
         "float32_parity": parity,
         "rust_parity_sample": rust_parity_sample,
+        "scope": "single-term generation/guide replay; verification remains disabled",
         "distribution_warning": (
-            "Trained only on rise-distance seed-term eqsat traces; enable explicitly "
-            "and do not assume calibration transfers to unrelated workloads."
+            "Trained only on rise-distance seed-term eqsat traces; a different or "
+            "incomplete scheduler rule set is a compatibility error."
         ),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
+    crossing_rows = {
+        str(ceiling): int(
+            (
+                (decisions["allocated"] < ceiling)
+                & (decisions["iteration_peak_allocated"] >= ceiling)
+            ).sum()
+        )
+        for ceiling in args.ceilings
+    }
     report = {
+        "training_trace": trace_name,
+        "decision_rows": len(decisions),
+        "training_rows": len(trainable),
+        "crossing_rows_by_ceiling": crossing_rows,
         "safety_margin": {
             "quantile": SAFETY_QUANTILE,
-            "log_growth": safety_margin,
+            "log_peak_growth": safety_margin,
             "growth_multiplier": float(np.exp(safety_margin)),
             "observed_oof_miss_rate": observed_miss_rate,
         },
         "parity": parity,
-        # Scored on every transition, including the stop rows held out of
-        # training, so the crossings the hook exists to prevent are counted.
-        "replay": _replay(
-            all_transitions,
-            _ort_predict(model_bytes, memory_model.design_matrix(all_transitions, FEATURES)),
-            safety_margin,
-            tuple(args.ceilings),
+        "replay": replay,
+        "responsible_rule_replay": rule_replay,
+        "remaining_missed_catastrophic_rules": sorted(
+            {
+                row["responsible_rule"]
+                for row in rule_replay
+                if row["missed_runs"] > 0 and row["responsible_rule"] is not None
+            }
         ),
+        "scheduler_feature_ablation": {
+            "regression": ablation_regression.to_dicts(),
+            "replay": ablation_replay.to_dicts(),
+        },
+        "crossing_classifier_comparison": classifier,
         "inference_overhead": _measure_overhead(
             model_bytes,
             X,
             full_onnx_predictions,
-            transitions,
+            trainable,
+            list(features),
             safety_margin,
-            tuple(args.ceilings),
+            args.ceilings,
         ),
     }
     report_path.write_text(json.dumps(report, indent=2) + "\n")

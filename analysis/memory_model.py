@@ -28,6 +28,10 @@ LOG_SCALARS = frozenset(
         "apply_time",
         "rebuild_time",
         "total_time",
+        "times_banned",
+        "ban_remaining",
+        "log2_match_limit",
+        "log2_active_match_limit_sum",
     }
 )
 
@@ -57,21 +61,14 @@ class Target:
 
     def naive(self, df: pl.DataFrame) -> np.ndarray:
         """Carry-forward baseline in the target's own units."""
-        if self.key == "y_log_next":
-            return np.log(df["allocated"].to_numpy().astype(np.float64))
         return np.zeros(len(df), dtype=np.float64)
 
 
 TARGETS = (
     Target(
-        "y_log_next",
-        "log next-iteration memory",
-        "Log memory in the next iteration.",
-    ),
-    Target(
-        "y_log_growth",
-        "log memory growth ratio",
-        "Log ratio of next-iteration to current memory.",
+        "y_log_peak_growth",
+        "log upcoming peak-growth ratio",
+        "Log ratio of iteration peak to allocation at the pre-search decision boundary.",
     ),
 )
 
@@ -155,16 +152,16 @@ def evaluate(
 
 
 def crossing_labels(df: pl.DataFrame, ceiling: float) -> tuple[np.ndarray, np.ndarray]:
-    """Rows sitting below `ceiling` and, of those, which ones cross it next.
+    """Decision rows below `ceiling` whose upcoming iteration peak crosses it.
 
     A run can only be stopped from below, so rows already at or above the
     ceiling are outside the decision problem entirely and are excluded rather
     than counted as easy negatives.
     """
     allocated = df["allocated"].to_numpy().astype(np.float64)
-    next_allocated = df["next_allocated"].to_numpy().astype(np.float64)
+    peak_allocated = df["iteration_peak_allocated"].to_numpy().astype(np.float64)
     below = allocated < ceiling
-    return below, below & (next_allocated >= ceiling)
+    return below, below & (peak_allocated >= ceiling)
 
 
 def ceiling_decisions(
@@ -211,6 +208,7 @@ def ceiling_decisions(
 
             crossings = caught = missed = false_stops = 0
             warning = []
+            missed_overshoot = []
             for start, end in zip(starts, ends, strict=True):
                 crossing_at = np.flatnonzero(actual_crossing[start:end])
                 stop_at = np.flatnonzero(predicted_stop[start:end])
@@ -223,10 +221,12 @@ def ceiling_decisions(
                         warning.append(int(iteration[start + crossing] - iteration[start + stop]))
                     else:
                         missed += 1
+                        peak = float(ordered["iteration_peak_allocated"][start + crossing])
+                        missed_overshoot.append(peak / ceiling)
                 elif stop is not None:
                     false_stops += 1
 
-            runs_at_risk = crossings + false_stops
+            predicted_stop_runs = caught + false_stops
             rows.append(
                 {
                     "boundary": label,
@@ -240,12 +240,78 @@ def ceiling_decisions(
                     # Of every run we stopped, the share that really would have
                     # crossed. This is the cost side: a false stop throws away
                     # work that would have completed fine.
-                    "precision": caught / runs_at_risk if runs_at_risk else None,
+                    "precision": caught / predicted_stop_runs if predicted_stop_runs else None,
                     "iters_warning_mean": float(np.mean(warning)) if warning else None,
                     "iters_warning_max": max(warning, default=None),
+                    "missed_peak_overshoot_x_median": (
+                        float(np.median(missed_overshoot)) if missed_overshoot else None
+                    ),
+                    "missed_peak_overshoot_x_max": max(missed_overshoot, default=None),
                 }
             )
     return pl.DataFrame(rows)
+
+
+def crossing_by_responsible_rule(
+    df: pl.DataFrame,
+    predictions: np.ndarray,
+    ceilings: Sequence[float],
+    safety_margin: float,
+) -> pl.DataFrame:
+    """Expose exact first-stop replay by the rule responsible for a crossing."""
+    scored = df.with_columns(pl.Series("_prediction", predictions)).sort("term", "iter_index")
+    term = scored["term"].to_numpy()
+    allocated = scored["allocated"].to_numpy().astype(np.float64)
+    peak = scored["iteration_peak_allocated"].to_numpy().astype(np.float64)
+    prediction = scored["_prediction"].to_numpy()
+    peak_rules = scored["iteration_peak_rule"].to_list()
+    starts = np.r_[0, np.flatnonzero(term[1:] != term[:-1]) + 1]
+    ends = np.r_[starts[1:], len(term)]
+    grouped = {}
+    for ceiling in ceilings:
+        below = allocated < ceiling
+        crossings = below & (peak >= ceiling)
+        stops = below & (allocated * np.exp(prediction + safety_margin) >= ceiling)
+        for start, end in zip(starts, ends, strict=True):
+            crossing_at = np.flatnonzero(crossings[start:end])
+            if not len(crossing_at):
+                continue
+            crossing = int(crossing_at[0])
+            stop_at = np.flatnonzero(stops[start:end])
+            stop = int(stop_at[0]) if len(stop_at) else None
+            index = start + crossing
+            key = (ceiling, peak_rules[index])
+            record = grouped.setdefault(
+                key,
+                {
+                    "ceiling_mib": ceiling / 2**20,
+                    "responsible_rule": peak_rules[index],
+                    "crossing_runs": 0,
+                    "caught_runs": 0,
+                    "missed_runs": 0,
+                    "max_peak_mib": 0.0,
+                },
+            )
+            record["crossing_runs"] += 1
+            caught = stop is not None and stop <= crossing
+            record["caught_runs"] += int(caught)
+            record["missed_runs"] += int(not caught)
+            record["max_peak_mib"] = max(record["max_peak_mib"], peak[index] / 2**20)
+    rows = []
+    for record in grouped.values():
+        record["recall"] = record["caught_runs"] / record["crossing_runs"]
+        rows.append(record)
+    return pl.DataFrame(rows) if rows else pl.DataFrame(
+        schema={
+            "ceiling_mib": pl.Float64,
+            "responsible_rule": pl.String,
+            "crossing_runs": pl.Int64,
+            "caught_runs": pl.Int64,
+            "missed_runs": pl.Int64,
+            "recall": pl.Float64,
+            "max_peak_mib": pl.Float64,
+        }
+    )
 
 
 def ceiling_sweep(
@@ -260,9 +326,9 @@ def ceiling_sweep(
 ) -> tuple[pl.DataFrame, float]:
     """Cross-validate the boosted model, then score its ceiling decisions.
 
-    Fits on rows with a trustworthy growth target (`next_is_stop_iter` false,
-    when that column is present) so post-run heap totals never enter training,
-    but *scores* decisions on every row including the crossings themselves.
+    Fits on explicitly trainable peak targets. Memory-limit stop iterations are
+    retained because their sampled peak is the positive example of interest;
+    pre-work time/node/iteration/hook stops are excluded.
 
     Returns the per-ceiling decision table and the safety margin, the
     `safety_quantile` of held-out residuals. The margin is what buys recall:
@@ -270,10 +336,10 @@ def ceiling_sweep(
     this much converts most of those near-misses into catches.
     """
     trainable = (
-        df.filter(pl.col("next_is_stop_iter").not_()) if "next_is_stop_iter" in df.columns else df
+        df.filter(pl.col("target_trainable")) if "target_trainable" in df.columns else df
     )
     X_train = design_matrix(trainable, features)
-    y_train = trainable["y_log_growth"].to_numpy()
+    y_train = trainable["y_log_peak_growth"].to_numpy()
     cv = GroupKFold(n_splits=n_splits)
     oof = cross_val_predict(
         make_models(features, rules)["gradient boosting"],
@@ -286,9 +352,8 @@ def ceiling_sweep(
     # Positive residual means the model underpredicted actual log growth.
     safety_margin = float(np.quantile(y_train - oof, safety_quantile))
 
-    # Score every row, including the stop transitions held out of training.
-    fitted = make_models(features, rules)["gradient boosting"].fit(X_train, y_train)
-    scored = fitted.predict(design_matrix(df, features))
+    # Replay every row with a prediction from a model held out by seed term.
+    scored, _ = grouped_oof_predictions(df, features, n_splits=n_splits)
 
     decisions = ceiling_decisions(
         df,
@@ -299,6 +364,111 @@ def ceiling_sweep(
     return decisions, safety_margin
 
 
+def grouped_oof_predictions(
+    df: pl.DataFrame,
+    features: Sequence[str],
+    *,
+    n_splits: int = 5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Predict every decision row from a model that did not see its seed term.
+
+    Returns predictions for all rows plus the boolean mask of rows eligible for
+    residual calibration/training.
+    """
+    X = design_matrix(df, features).astype(np.float32)
+    groups = df["term"].to_numpy()
+    trainable = (
+        df["target_trainable"].to_numpy().astype(bool)
+        if "target_trainable" in df.columns
+        else np.ones(len(df), dtype=bool)
+    )
+    y = df["y_log_peak_growth"].to_numpy()
+    predictions = np.empty(len(df), dtype=np.float64)
+    for train_index, test_index in GroupKFold(n_splits=n_splits).split(X, y, groups):
+        eligible_train = train_index[trainable[train_index]]
+        model = make_models(features, ())["gradient boosting"].fit(
+            X[eligible_train], y[eligible_train]
+        )
+        predictions[test_index] = model.predict(X[test_index])
+    return predictions, trainable
+
+
+def scheduler_feature_ablation(
+    df: pl.DataFrame,
+    rules: Sequence[str],
+    ceilings: Sequence[float],
+    *,
+    safety_quantile: float = 0.99,
+    n_splits: int = 5,
+    n_jobs: int = 1,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Run the four required scheduler/match-pressure feature ablations."""
+    import iteration_data as data
+
+    _ = n_jobs
+    identity = [
+        data.rule_feature_name(rule, suffix)
+        for rule in rules
+        for suffix in ("will_search", "newly_unbanned")
+    ]
+    all_rule_state = [
+        data.rule_feature_name(rule, suffix)
+        for rule in rules
+        for suffix in data.RULE_FEATURE_SUFFIXES
+    ]
+    variants = {
+        "1 scalar": list(data.BASE_FEATURES),
+        "2 scalar + scheduler aggregates": [
+            *data.BASE_FEATURES,
+            *data.SCHEDULER_FEATURES,
+        ],
+        "3 + per-rule active/unbanned": [
+            *data.BASE_FEATURES,
+            *data.SCHEDULER_FEATURES,
+            *identity,
+        ],
+        "4 + per-rule effective limits": [
+            *data.BASE_FEATURES,
+            *data.SCHEDULER_FEATURES,
+            *all_rule_state,
+        ],
+    }
+
+    regression_rows = []
+    replay_frames = []
+    actual = df["y_log_peak_growth"].to_numpy()
+    for label, features in variants.items():
+        predictions, trainable = grouped_oof_predictions(df, features, n_splits=n_splits)
+        residuals = actual[trainable] - predictions[trainable]
+        margin = float(np.quantile(residuals, safety_quantile))
+        regression_rows.append(
+            {
+                "feature_set": label,
+                "n_features": len(features),
+                "trainable_rows": int(trainable.sum()),
+                "MAE_log_peak_growth": mean_absolute_error(
+                    actual[trainable], predictions[trainable]
+                ),
+                "RMSE_log_peak_growth": float(
+                    np.sqrt(np.mean((actual[trainable] - predictions[trainable]) ** 2))
+                ),
+                "R2_log_peak_growth": r2_score(
+                    actual[trainable], predictions[trainable]
+                ),
+                "safety_margin": margin,
+            }
+        )
+        replay_frames.append(
+            ceiling_decisions(
+                df,
+                predictions,
+                ceilings,
+                margins=(("conservative", margin),),
+            ).with_columns(pl.lit(label).alias("feature_set"))
+        )
+    return pl.DataFrame(regression_rows), pl.concat(replay_frames, how="vertical")
+
+
 def rule_feature_ablation(
     df: pl.DataFrame,
     scalar_features: Sequence[str],
@@ -307,47 +477,21 @@ def rule_feature_ablation(
     n_splits: int = 5,
     n_jobs: int = 5,
 ) -> pl.DataFrame:
-    """Compare boosted models with and without per-rule application counts.
+    """Compatibility wrapper returning regression rows for all four ablations."""
+    import iteration_data as data
 
-    Both variants use the same grouped folds and hyperparameters. This isolates
-    the value of the rule-count block from model and train/test-split effects.
-    """
-    groups = df["term"].to_numpy()
-    cv = GroupKFold(n_splits=n_splits)
-    variants = {
-        "scalars only": list(scalar_features),
-        "scalars + rules": [*scalar_features, *rules],
-    }
-
-    rows = []
-    for target in TARGETS:
-        y = df[target.key].to_numpy()
-        for feature_set, features in variants.items():
-            X = design_matrix(df, features)
-            model = make_models(features, rules if feature_set == "scalars + rules" else ())[
-                "gradient boosting"
-            ]
-            pred = cross_val_predict(model, X, y, cv=cv, groups=groups, n_jobs=n_jobs)
-            rows.append(
-                {
-                    "target": target.label,
-                    "feature set": feature_set,
-                    "n_features": len(features),
-                    "MAE (log)": mean_absolute_error(y, pred),
-                    "RMSE (log)": float(np.sqrt(np.mean((y - pred) ** 2))),
-                    "R2": r2_score(y, pred),
-                    "median error x": float(np.exp(np.median(np.abs(y - pred)))),
-                }
-            )
-
-    return pl.DataFrame(rows)
+    _ = scalar_features, rules
+    regression, _ = scheduler_feature_ablation(
+        df, data.rules_from_frame(df), (), n_splits=n_splits, n_jobs=n_jobs
+    )
+    return regression
 
 
 def importances(
     df: pl.DataFrame,
     features: Sequence[str],
     rules: Sequence[str],
-    target: str = "y_log_growth",
+    target: str = "y_log_peak_growth",
     *,
     n_repeats: int = 5,
     top: int = 20,
