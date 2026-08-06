@@ -58,8 +58,23 @@ def _short_strategy(strategy: str) -> str:
     return strategy.removeprefix("no_replacement_").removeprefix("with_replacement_")
 
 
+def _format_memory_limit(value: int | None) -> str:
+    if value is None:
+        return "unbounded"
+    for unit, size in (("TiB", 2**40), ("GiB", 2**30), ("MiB", 2**20), ("KiB", 2**10)):
+        if value >= size and value % size == 0:
+            return f"{value // size} {unit}"
+    return f"{value} B"
+
+
 def _run_label(directory: Path, config: dict) -> str:
-    return f"{_short_strategy(config['strategy'])} · k={config['k']} · {directory.name}"
+    limits = config.get("effective_limits", {})
+    memory = _format_memory_limit(limits.get("max_memory"))
+    predictive = "on" if limits.get("predict_next_memory") is not None else "off"
+    return (
+        f"{_short_strategy(config['strategy'])} · k={config['k']} · "
+        f"memory={memory} · predictive={predictive} · {directory.name}"
+    )
 
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
@@ -187,6 +202,67 @@ def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
         .group_by("mode", "outcome")
         .agg(pl.len().alias("count"))
         .with_columns((pl.col("count") / pl.col("count").sum().over("mode")).alias("share"))
+    )
+
+
+def _stop_category(reason: pl.Expr) -> pl.Expr:
+    """Collapse detailed egg stop strings into stable analysis categories."""
+    return (
+        pl.when(reason.is_null())
+        .then(pl.lit("unknown"))
+        .when(reason.str.starts_with("NodeLimit"))
+        .then(pl.lit("node limit"))
+        .when(reason.str.starts_with("MemoryLimit"))
+        .then(pl.lit("memory limit"))
+        .when(reason.str.starts_with("TimeLimit"))
+        .then(pl.lit("time limit"))
+        .when(reason.str.starts_with("IterationLimit"))
+        .then(pl.lit("iteration limit"))
+        .when(reason.str.starts_with('Other("predicted upcoming-iteration'))
+        .then(pl.lit("predictive memory stop"))
+        .when(reason == "Saturated")
+        .then(pl.lit("saturated without goal"))
+        .otherwise(pl.lit("other"))
+    )
+
+
+def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
+    """Pair-level, mutually exclusive failure categories for both methods.
+
+    Guided setup failures take precedence over any panic observed in the
+    attempt workflow; panic then takes precedence over the terminal stop
+    reason. Unguided runs have no guide-sampling setup stage.
+    """
+    guided = frame.filter(~pl.col("guided_success").fill_null(False)).select(
+        "mode",
+        pl.lit("guided").alias("method"),
+        pl.when(pl.col("setup_status") != "ok")
+        .then(pl.lit("setup failure"))
+        .when(pl.col("guided_panic").fill_null(False))
+        .then(pl.lit("panic"))
+        .otherwise(_stop_category(pl.col("guided_stop_reason")))
+        .alias("failure"),
+    )
+    unguided = frame.filter(~pl.col("unguided_success").fill_null(False)).select(
+        "mode",
+        pl.lit("unguided").alias("method"),
+        pl.when(pl.col("unguided_panic").fill_null(False))
+        .then(pl.lit("panic"))
+        .otherwise(_stop_category(pl.col("unguided_stop_reason")))
+        .alias("failure"),
+    )
+    planned = frame.group_by("mode").agg(pl.len().alias("planned_pairs"))
+    return (
+        pl.concat([guided, unguided])
+        .group_by("mode", "method", "failure")
+        .agg(pl.len().alias("count"))
+        .with_columns(pl.col("count").sum().over("mode", "method").alias("method_failures"))
+        .join(planned, on="mode", how="left")
+        .with_columns(
+            (pl.col("count") / pl.col("method_failures")).alias("share_of_failures"),
+            (pl.col("count") / pl.col("planned_pairs")).alias("share_of_planned"),
+        )
+        .sort("mode", "method", "count", descending=[False, False, True])
     )
 
 
