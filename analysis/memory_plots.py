@@ -482,6 +482,53 @@ def ceiling_decisions_chart(decisions: pl.DataFrame) -> ChartType:
     )
 
 
+CEILING_BREAK_PHASE_ORDER = [
+    "before hooks",
+    "during hook",
+    "after rule search",
+    "after rule application",
+    "after rebuild finalization",
+]
+
+
+def ceiling_break_phase_chart(first_breaks: pl.DataFrame) -> ChartType:
+    """Plot when and in which sampled phase each run first breaks a ceiling."""
+    return (
+        alt.Chart(first_breaks)
+        .mark_circle(opacity=0.85)
+        .encode(
+            x=alt.X(
+                "first_break_iteration:Q",
+                title="first breach iteration",
+                axis=alt.Axis(tickMinStep=1),
+            ),
+            y=alt.Y(
+                "break_phase:N",
+                title=None,
+                sort=CEILING_BREAK_PHASE_ORDER,
+            ),
+            size=alt.Size(
+                "count():Q",
+                title="runs",
+                scale=alt.Scale(range=[35, 500]),
+            ),
+            color=alt.Color(
+                "count():Q",
+                title="runs",
+                scale=alt.Scale(scheme="blues"),
+            ),
+            tooltip=[
+                alt.Tooltip("ceiling_mib:N", title="ceiling (MiB)"),
+                alt.Tooltip("first_break_iteration:Q", title="iteration"),
+                alt.Tooltip("break_phase:N", title="phase"),
+                alt.Tooltip("count():Q", title="runs"),
+            ],
+        )
+        .properties(width=170, height=115)
+        .facet(column=alt.Column("ceiling_mib:N", title="ceiling (MiB)"))
+    )
+
+
 def importance_bars(importance: pl.DataFrame) -> ChartType:
     """Permutation importance on held-out terms, scalars vs rewrite rules."""
     order = importance["feature"].to_list()
