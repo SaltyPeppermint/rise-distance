@@ -2,17 +2,17 @@
 
 Guided-search experiments plus the eqsat memory model.
 
-- `success.ipynb` compares explicitly selected individual
-  `data/guided_search/run.*` directories, including cost and baseline plots.
-- `grid_search.ipynb` analyzes a `data/guided_search_grid/run.*` experiment.
-  It intentionally contains only the reachability summary and reachability
-  heatmap. Select a cumulative candidate budget in its `BUDGET` cell.
+- `success.ipynb` compares success and whole-process peak RSS for selected
+  `data/guided_search/run.*` directories. Peak-memory ratios use only
+  seed/goal pairs reached by both guided and pair-matched unguided runs.
+- `grid_search.ipynb` compares grid-policy success across cumulative attempt
+  budgets and full-budget peak RSS.
 - `memory_prediction.ipynb` explores upcoming-iteration memory prediction from
   the per-iteration traces in `data/seed_terms/*/terms.json`. The deployed
   pipeline in `iteration_data.py` builds explicit pre-search decision rows and
   predicts the iteration-local peak, not the later final live allocation.
 
-Shared loading and plotting code lives in `helpers.py` and `plots.py`.
+Shared statistics and plotting code lives in `helpers.py` and `plots.py`.
 The memory model has its own `iteration_data.py` (trace loading),
 `memory_model.py` (fitting and scoring), and `memory_plots.py`, since it reads
 seed-term traces rather than guided-search runs.

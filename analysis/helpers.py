@@ -1,462 +1,348 @@
-"""Load guided-search runs into frames used by the analysis plots."""
+"""Load and summarize guided/unguided peak-memory experiments."""
 
 import json
+import math
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import polars as pl
 
+REQUIRED_COMPARISON_COLUMNS = {
+    "seed",
+    "goal",
+    "guided_success",
+    "unguided_success",
+    "guided_peak_rss_bytes",
+    "unguided_peak_rss_bytes",
+    "attempts_run",
+    "success_attempt",
+    "setup_status",
+    "predictor_scope",
+}
+MEMORY_SUMMARY_SCHEMA = {
+    "mode": pl.String,
+    "n_paired_successes": pl.Int64,
+    "guided_median_peak_mib": pl.Float64,
+    "unguided_median_peak_mib": pl.Float64,
+    "guided_p90_peak_mib": pl.Float64,
+    "unguided_p90_peak_mib": pl.Float64,
+    "median_peak_ratio": pl.Float64,
+    "median_memory_saved_pct": pl.Float64,
+    "guided_lower_peak_share": pl.Float64,
+}
+
 
 @dataclass(frozen=True)
 class Run:
-    pattern: str
     directory: Path
     label: str
-    k: int
-    attempts: int
-    strategy: str
-    limits: dict[str, dict[str, float]]
+    config: dict
 
 
-def _list_runs(pattern: str = "", subdir: str = "guided_search") -> list[Path]:
-    """Run directories matching `pattern` under `data/<subdir>`, oldest first."""
-    data_dir = Path(__file__).parent / ".." / "data" / subdir
-    if not data_dir.is_dir():
+def _data_dir(subdir: str) -> Path:
+    return Path(__file__).parent / ".." / "data" / subdir
+
+
+def _run_dirs(pattern: str, subdir: str) -> list[Path]:
+    base = _data_dir(subdir)
+    if not base.is_dir():
         return []
     return sorted(
-        (f for f in data_dir.iterdir() if f.is_dir() and pattern in f.name),
-        key=lambda p: p.stat().st_mtime,
+        (path for path in base.iterdir() if path.is_dir() and pattern in path.name),
+        key=lambda path: path.stat().st_mtime,
     )
 
 
-def _load_leg_frame(run_dir: Path) -> pl.DataFrame:
-    """Load legs, folding guide-egraph overhead into their costs."""
-    df = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
-    return df.with_columns(
-        pl.when(pl.col("nodes").is_not_null())
-        .then(pl.max_horizontal("nodes", "guide_nodes"))
-        .alias("nodes"),
-        pl.when(pl.col("classes").is_not_null())
-        .then(pl.max_horizontal("classes", "guide_classes"))
-        .alias("classes"),
-        pl.when(pl.col("total_time").is_not_null())
-        .then(pl.col("total_time") + pl.col("guide_time"))
-        .alias("total_time"),
-        pl.when(pl.col("memory").is_not_null())
-        .then(pl.max_horizontal("memory", "guide_memory"))
-        .alias("memory"),
-    ).with_columns((pl.col("nodes") / pl.col("classes")).alias("nodes_per_class"))
+def _short_strategy(strategy: str) -> str:
+    return strategy.removeprefix("no_replacement_").removeprefix("with_replacement_")
 
 
-def _baseline_frame(run_dir: Path) -> pl.DataFrame:
-    """Load each seed's unguided full-eqsat baseline."""
-    config = json.loads((run_dir / "config.json").read_text())
-    repo_root = Path(__file__).parent / ".."
-    terms = json.loads((repo_root / config["path"] / "goal_terms.json").read_text())
-
-    rows = []
-    for _size, inner in terms:
-        for seed, payload in inner.items():
-            if "Ok" not in payload:
-                continue
-            ok = payload["Ok"]
-            e = ok["goal_egraph"]
-            rows.append(
-                {
-                    "seed": seed,
-                    "base_iters": e["iters"],
-                    "base_nodes": e["nodes"],
-                    "base_classes": e["classes"],
-                    "base_nodes_per_class": e["nodes"] / e["classes"],
-                    "base_total_time": e["time"],
-                    # base_memory sits beside goal_egraph in the payload.
-                    "base_memory": ok["base_memory"],
-                    "base_stop_reason": ok["stop_reason"],
-                }
-            )
-    if not rows:
-        raise ValueError(f"No Ok seeds with a goal_egraph baseline in {config['path']}")
-    return pl.DataFrame(rows)
-
-
-def load_runs(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
-    """Stack runs into a leg frame and return it with plot metadata."""
-    frames, modes, k_by_mode, strategy_by_mode = [], [], {}, {}
-    n_goals = n_trials = 0
-    for run in runs:
-        run_dir = run.directory
-        config = json.loads((run_dir / "config.json").read_text())
-
-        legs = _load_leg_frame(run_dir)
-        strategies = legs["strategy"].unique().to_list()
-        if strategies != [run.strategy]:
-            raise ValueError(
-                f"{run_dir.name}: config strategy={run.strategy!r}, "
-                f"result strategies={sorted(strategies)!r}"
-            )
-        ks = legs["k"].unique().to_list()
-        if len(ks) != 1:
-            raise ValueError(f"{run_dir.name}: expected a single k, found {sorted(ks)}")
-        k = ks[0]
-        if k != run.k:
-            raise ValueError(f"{run_dir.name}: resolved k={run.k}, found k={k}")
-        label = run.label
-
-        base = _baseline_frame(run_dir)
-        df = legs.join(base, on="seed", how="left").with_columns(
-            pl.lit(label).alias("mode"),
-            pl.concat_str(["seed", "goal"], separator="│").alias("pair"),
-        )
-        frames.append(df)
-        modes.append(label)
-        k_by_mode[label] = k
-        strategy_by_mode[label] = run.strategy
-        n_goals = max(n_goals, df["goal"].n_unique())
-        n_trials = max(n_trials, config["attempts"])
-
-        n_reached = int(df["reached"].sum())
-        print(
-            f"{label}: {run_dir.name} strategy={config['strategy']}: "
-            f"{len(df)} rows, {n_reached} reached"
-        )
-
-    df = pl.concat(frames, how="diagonal_relaxed")
-    meta = {
-        "modes": modes,
-        "k": k_by_mode,
-        "strategy": strategy_by_mode,
-        "n_goals": n_goals,
-        "n_trials": n_trials,
-        "defaults": _render_fields(_partition_fields(runs)[0]),
-    }
-    print(
-        f"\nk per mode: {k_by_mode}\n"
-        f"strategy per mode: {strategy_by_mode}   "
-        f"(n_goals={n_goals}, n_trials={n_trials})"
-    )
-    return df, meta
-
-
-# Eqsat-config ceilings. Classes are not bounded separately.
-LIMIT_KEYS = {
-    "iters": "max_iters",
-    "nodes": "max_nodes",
-    "total_time": "max_time",
-    "memory": "max_memory",
-}
-
-LIMIT_LABELS = {
-    "iters": "iters",
-    "nodes": "nodes",
-    "total_time": "time",
-    "memory": "memory",
-}
-
-
-def _compact_number(value: float) -> str:
-    """Format a config value compactly without hiding meaningful precision."""
-    for scale, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "k")):
-        scaled = value / scale
-        if value >= scale and scaled.is_integer():
-            return f"{int(scaled)}{suffix}"
-    return f"{value:g}"
-
-
-def _format_limit(metric: str, value: float | None) -> str:
-    if value is None:
-        return "unlimited"
-    if metric == "memory":
-        for scale, suffix in ((1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB")):
-            scaled = value / scale
-            if value >= scale and scaled.is_integer():
-                return f"{int(scaled)}{suffix}"
-    formatted = _compact_number(float(value))
-    return f"{formatted}s" if metric == "total_time" else formatted
-
-
-def _run_fields(limits: dict[str, dict[str, float]], attempts: int, k: int, strategy: str) -> dict:
-    """Format the fields used to compare and label runs."""
-    replay = limits["leg"]
-    baseline = limits["baseline"]
-    fields = {}
-    for metric in LIMIT_KEYS:
-        if replay.get(metric) != baseline.get(metric):
-            fields[LIMIT_LABELS[metric]] = (
-                f"{_format_limit(metric, replay.get(metric))} vs "
-                f"{_format_limit(metric, baseline.get(metric))}"
-            )
-        else:
-            fields[LIMIT_LABELS[metric]] = "baseline"
-    fields["attempts"] = _compact_number(float(attempts))
-    fields["k"] = str(k)
-    fields["strategy"] = strategy
-    return fields
-
-
-def _render_fields(fields: dict) -> str:
-    """Render run fields as a plot-label fragment."""
-    parts = []
-    for name, value in fields.items():
-        if name in LIMIT_LABELS.values():
-            if value != "baseline":
-                parts.append(f"{name} {value}")
-        else:
-            parts.append(f"{name}={value}")
-    return " · ".join(parts) if parts else "baseline limits"
+def _run_label(directory: Path, config: dict) -> str:
+    return f"{_short_strategy(config['strategy'])} · k={config['k']} · {directory.name}"
 
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
-    """Resolve run patterns and derive collision-safe plot labels.
-
-    With no patterns, resolve every `run.*` directory instead.
-    """
-    if not patterns:
-        patterns = [d.name for d in _list_runs("run.")]
+    """Resolve completed individual runs; empty selects every new-schema run."""
+    candidates = (
+        [path for path in _run_dirs("run.", "guided_search")]
+        if not patterns
+        else [
+            matches[-1] for pattern in patterns if (matches := _run_dirs(pattern, "guided_search"))
+        ]
+    )
+    if patterns and len(candidates) != len(patterns):
+        found = {path.name for path in candidates}
+        raise FileNotFoundError(f"Could not resolve all run patterns; found {sorted(found)}")
 
     runs = []
-    seen: set[Path] = set()
-    for pattern in patterns:
-        matches = _list_runs(pattern)
-        if not matches:
-            raise FileNotFoundError(f"No run directory matching {pattern!r}")
-        run_dir = matches[-1]
-        if run_dir in seen:
+    for directory in dict.fromkeys(candidates):
+        comparison = directory / "comparison.parquet"
+        config_path = directory / "config.json"
+        if not comparison.is_file() or not config_path.is_file():
+            if patterns:
+                raise ValueError(f"{directory} predates the peak-memory comparison schema")
             continue
-        seen.add(run_dir)
-        config = json.loads((run_dir / "config.json").read_text())
-        legs = pl.read_parquet(run_dir / "results.parquet").filter(pl.col("k") > 0)
-        ks = legs["k"].unique().to_list()
-        if len(ks) != 1:
-            raise ValueError(f"{run_dir.name}: expected a single k, found {sorted(ks)}")
-        k = ks[0]
-        runs.append(
-            Run(
-                pattern=pattern,
-                directory=run_dir,
-                label="",
-                k=k,
-                attempts=config["attempts"],
-                strategy=config["strategy"],
-                limits=_governing_limits(run_dir),
-            )
-        )
-
-    _, differing = _partition_fields(runs)
-    for i, fields in enumerate(differing):
-        runs[i] = replace(runs[i], label=_render_fields(fields))
-
-    labels = [run.label for run in runs]
-    for label in set(labels):
-        indexes = [i for i, candidate in enumerate(labels) if candidate == label]
-        if len(indexes) < 2:
-            continue
-        for i in indexes:
-            runs[i] = replace(runs[i], label=f"{runs[i].label} · {runs[i].directory.name}")
+        config = json.loads(config_path.read_text())
+        runs.append(Run(directory, _run_label(directory, config), config))
+    if not runs:
+        raise FileNotFoundError("No completed peak-memory guided-search runs")
     return runs
 
 
-def _partition_fields(runs: Sequence[Run]) -> tuple[dict, list[dict]]:
-    """Split run fields into shared defaults and per-run differences."""
-    all_fields = [_run_fields(run.limits, run.attempts, run.k, run.strategy) for run in runs]
-    if not all_fields:
-        return {}, []
-    shared_names = {name for name in all_fields[0] if len({f[name] for f in all_fields}) == 1}
-    shared = {name: all_fields[0][name] for name in all_fields[0] if name in shared_names}
-    differing = [
-        {name: v for name, v in fields.items() if name not in shared_names} for fields in all_fields
-    ]
-    return shared, differing
+def _validate_comparison(frame: pl.DataFrame, source: Path) -> None:
+    missing = REQUIRED_COMPARISON_COLUMNS - set(frame.columns)
+    if missing:
+        raise ValueError(f"{source} is missing comparison fields: {sorted(missing)}")
 
 
-def _governing_limits(run_dir: Path) -> dict[str, dict[str, float]]:
-    """Resolve guide, leg, and baseline limits for one run."""
-    config = json.loads((run_dir / "config.json").read_text())
-    goal_args = json.loads(
-        (Path(__file__).parent / ".." / config["path"] / "goal_args.json").read_text()
-    )
-    base = {dim: goal_args.get(key) for dim, key in LIMIT_KEYS.items()}
-
-    stop = {
-        "iters": config.get("stop_iters"),
-        "nodes": config.get("stop_nodes"),
-        "total_time": config.get("stop_time"),
-        "memory": config.get("stop_memory"),
-    }
-    replay = {dim: (stop[dim] if stop[dim] is not None else base[dim]) for dim in base}
-
-    limits = {"guide": dict(replay), "leg": dict(replay), "baseline": dict(base)}
-    return {
-        egraph: {dim: lim for dim, lim in dims.items() if lim is not None}
-        for egraph, dims in limits.items()
-    }
-
-
-# Limit family used by each plotted series.
-SERIES_EGRAPH = {"leg": "leg", "baseline": "baseline", "guide": "guide"}
-
-
-def series_limit_frame(
-    runs: Sequence[Run],
-    metrics: Sequence[str],
-    series: Sequence[str] = ("leg", "baseline", "guide"),
-) -> pl.DataFrame:
-    """Return ``(mode, series, metric, limit)`` rows for plotted ceilings.
-
-    Series may have different ceilings; unbounded metrics are omitted.
-    """
-    rows = [
-        {"mode": mode, "series": s, "metric": m, "limit": float(lims[SERIES_EGRAPH[s]][m])}
-        for mode, lims in ((run.label, run.limits) for run in runs)
-        for s in series
-        for m in metrics
-        if m in LIMIT_KEYS and m in lims.get(SERIES_EGRAPH[s], {})
-    ]
-    return pl.DataFrame(
-        rows,
-        schema={"mode": pl.String, "series": pl.String, "metric": pl.String, "limit": pl.Float64},
-    )
-
-
-def goal_reach(df: pl.DataFrame) -> pl.DataFrame:
-    """Aggregate reach and empty-pool rates by seed/goal pair."""
-    empty = pl.col("stop_reason") == "empty_pool"
-    return (
-        df.group_by("mode", "seed", "goal", "pair")
-        .agg(
-            pl.col("reached").mean().alias("reach_rate"),
-            (pl.col("reached").sum() / empty.not_().sum()).alias("cond_reach_rate"),
-            empty.mean().alias("empty_pool_rate"),
+def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
+    """Stack one-row-per-pair comparison files from individual runs."""
+    frames = []
+    for run in runs:
+        frame = pl.read_parquet(run.directory / "comparison.parquet")
+        _validate_comparison(frame, run.directory)
+        frames.append(
+            frame.with_columns(
+                pl.lit(run.label).alias("mode"),
+                pl.lit(run.directory.name).alias("run"),
+                pl.concat_str(["seed", "goal"], separator="│").alias("pair"),
+            )
         )
-        .sort("mode", "goal")
+    data = pl.concat(frames, how="diagonal_relaxed")
+    scopes = sorted(data["predictor_scope"].drop_nulls().unique().to_list())
+    meta = {
+        "modes": [run.label for run in runs],
+        "n_pairs": data.select("seed", "goal").unique().height,
+        "subtitle": [
+            f"{data.height} planned pair observations",
+            f"predictor scope: {', '.join(scopes)}",
+        ],
+    }
+    return data, meta
+
+
+def _wilson(successes: int, total: int, z: float = 1.959963984540054) -> tuple[float, float]:
+    if total == 0:
+        return math.nan, math.nan
+    p = successes / total
+    denominator = 1 + z**2 / total
+    center = (p + z**2 / (2 * total)) / denominator
+    margin = z * math.sqrt(p * (1 - p) / total + z**2 / (4 * total**2)) / denominator
+    return center - margin, center + margin
+
+
+def _rate_rows(
+    frame: pl.DataFrame,
+    group_columns: Sequence[str],
+    success_column: str,
+) -> list[dict]:
+    rows = []
+    for keys, group in frame.group_by(*group_columns, maintain_order=True):
+        key_values = keys if isinstance(keys, tuple) else (keys,)
+        total = len(group)
+        successes = int(group[success_column].fill_null(False).sum())
+        lower, upper = _wilson(successes, total)
+        rows.append(
+            {
+                **dict(zip(group_columns, key_values, strict=True)),
+                "successes": successes,
+                "n": total,
+                "success_rate": successes / total if total else None,
+                "ci_low": lower,
+                "ci_high": upper,
+            }
+        )
+    return rows
+
+
+def success_rates(frame: pl.DataFrame) -> pl.DataFrame:
+    """Guided and unguided success rates with Wilson intervals."""
+    rows = []
+    for method, column in (
+        ("guided", "guided_success"),
+        ("unguided", "unguided_success"),
+    ):
+        for row in _rate_rows(frame, ["mode"], column):
+            rows.append({**row, "method": method})
+    return pl.DataFrame(rows).sort("mode", "method")
+
+
+def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
+    """Counts for the four paired success outcomes."""
+    return (
+        frame.with_columns(
+            pl.when(pl.col("guided_success") & pl.col("unguided_success"))
+            .then(pl.lit("both"))
+            .when(pl.col("guided_success"))
+            .then(pl.lit("guided only"))
+            .when(pl.col("unguided_success"))
+            .then(pl.lit("unguided only"))
+            .otherwise(pl.lit("neither"))
+            .alias("outcome")
+        )
+        .group_by("mode", "outcome")
+        .agg(pl.len().alias("count"))
+        .with_columns((pl.col("count") / pl.col("count").sum().over("mode")).alias("share"))
     )
+
+
+def paired_successes(frame: pl.DataFrame) -> pl.DataFrame:
+    """Pairs reached by both methods with valid positive peak-RSS readings."""
+    return (
+        frame.filter(pl.col("guided_success") & pl.col("unguided_success"))
+        .drop_nulls(["guided_peak_rss_bytes", "unguided_peak_rss_bytes"])
+        .filter((pl.col("guided_peak_rss_bytes") > 0) & (pl.col("unguided_peak_rss_bytes") > 0))
+        .with_columns(
+            (pl.col("guided_peak_rss_bytes") / 2**20).alias("guided_peak_mib"),
+            (pl.col("unguided_peak_rss_bytes") / 2**20).alias("unguided_peak_mib"),
+            (pl.col("guided_peak_rss_bytes") / pl.col("unguided_peak_rss_bytes")).alias(
+                "peak_ratio"
+            ),
+        )
+        .with_columns(((1 - pl.col("peak_ratio")) * 100).alias("memory_saved_pct"))
+    )
+
+
+def memory_summary(paired: pl.DataFrame) -> pl.DataFrame:
+    """Peak-RSS statistics conditional on both methods succeeding."""
+    if paired.is_empty():
+        return pl.DataFrame(schema=MEMORY_SUMMARY_SCHEMA)
+    return (
+        paired.group_by("mode", maintain_order=True)
+        .agg(
+            pl.len().alias("n_paired_successes"),
+            pl.col("guided_peak_mib").median().alias("guided_median_peak_mib"),
+            pl.col("unguided_peak_mib").median().alias("unguided_median_peak_mib"),
+            pl.col("guided_peak_mib").quantile(0.9).alias("guided_p90_peak_mib"),
+            pl.col("unguided_peak_mib").quantile(0.9).alias("unguided_p90_peak_mib"),
+            pl.col("peak_ratio").median().alias("median_peak_ratio"),
+            pl.col("memory_saved_pct").median().alias("median_memory_saved_pct"),
+            (pl.col("peak_ratio") < 1).mean().alias("guided_lower_peak_share"),
+        )
+        .with_columns(pl.exclude("mode", "n_paired_successes").round(3))
+    )
+
+
+def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
+    """One compact success and paired-memory row per mode."""
+    rates = success_rates(frame).pivot(
+        on="method",
+        index="mode",
+        values=["successes", "n", "success_rate", "ci_low", "ci_high"],
+        separator="_",
+    )
+    memory = memory_summary(paired_successes(frame))
+    return rates.join(memory, on="mode", how="left").sort("mode")
 
 
 def resolve_grid(pattern: str = "") -> Path:
-    """Resolve the newest guided-search grid directory matching ``pattern``."""
     matches = [
         directory
-        for directory in _list_runs(pattern, subdir="guided_search_grid")
+        for directory in _run_dirs(pattern, "guided_search_grid")
         if (directory / "grid_config.json").is_file()
     ]
     if not matches:
-        suffix = f" matching {pattern!r}" if pattern else ""
-        raise FileNotFoundError(f"No guided-search grid directory{suffix}")
+        raise FileNotFoundError(f"No guided-search grid matching {pattern!r}")
     return matches[-1]
 
 
 def grid_prefix_budgets(grid_dir: Path) -> list[int]:
-    """Return the cumulative candidate budgets recorded by a grid run."""
     config = json.loads((grid_dir / "grid_config.json").read_text())
-    return [int(budget) for budget in config["prefix_budgets"]]
+    return [int(value) for value in config["prefix_budgets"]]
 
 
 def _grid_mode(distribution: str, strategy: str) -> str:
-    """Compact, stable label for one grid policy."""
-    short_strategy = strategy.removeprefix("no_replacement_").removeprefix("with_replacement_")
-    return f"{short_strategy} · {distribution}"
+    return f"{_short_strategy(strategy)} · {distribution}"
 
 
-def load_grid(grid_dir: Path, budget: int) -> tuple[pl.DataFrame, dict]:
-    """Load a grid as reached-by-prefix observations.
-
-    Each output row represents one ``(mode, sampling seed, seed, goal)`` unit.
-    ``reached`` is true iff that pair reached the goal before ``budget``
-    candidates. This is the correct unit for averaging over repeated sampling
-    seeds despite each underlying verification loop stopping at its first
-    success.
-    """
-    grid_config = json.loads((grid_dir / "grid_config.json").read_text())
-    max_attempts = int(grid_config["attempts"])
-    if budget < 1 or budget > max_attempts:
-        raise ValueError(f"budget must be between 1 and {max_attempts}, got {budget}")
-
-    distributions = list(grid_config["distributions_expanded"])
-    sampling_seeds = [int(seed) for seed in grid_config["sampling_seeds_expanded"]]
-    strategies = list(grid_config["strategies_expanded"])
-    expected = {
-        (distribution, sampling_seed, strategy)
-        for distribution in distributions
-        for sampling_seed in sampling_seeds
-        for strategy in strategies
-    }
-
+def load_grid(grid_dir: Path) -> tuple[pl.DataFrame, dict]:
+    """Load completed grid cells using their pair-level comparison files."""
+    config = json.loads((grid_dir / "grid_config.json").read_text())
     frames = []
     loaded = set()
-    for result_path in sorted(grid_dir.glob("distribution.*/sampling_seed.*/*/results.parquet")):
-        run_dir = result_path.parent
-        config = json.loads((run_dir / "config.json").read_text())
-        distribution = str(config["size_distribution"])
-        sampling_seed = int(config["sampling_seed"])
-        strategy = str(config["strategy"])
-        key = (distribution, sampling_seed, strategy)
-        if key not in expected:
-            continue
-
-        frame = (
-            pl.read_parquet(result_path, columns=["seed", "goal", "attempt", "reached"])
-            .group_by("seed", "goal")
-            .agg(((pl.col("attempt") < budget) & pl.col("reached")).any().alias("reached"))
-            .with_columns(
+    for path in sorted(grid_dir.glob("distribution.*/sampling_seed.*/*/comparison.parquet")):
+        run_config = json.loads((path.parent / "config.json").read_text())
+        distribution = str(run_config["size_distribution"])
+        sampling_seed = int(run_config["sampling_seed"])
+        strategy = str(run_config["strategy"])
+        frame = pl.read_parquet(path)
+        _validate_comparison(frame, path)
+        frames.append(
+            frame.with_columns(
                 pl.lit(distribution).alias("distribution"),
                 pl.lit(sampling_seed).alias("sampling_seed"),
                 pl.lit(strategy).alias("strategy"),
-                pl.lit(budget).alias("budget"),
                 pl.lit(_grid_mode(distribution, strategy)).alias("mode"),
                 pl.concat_str(["seed", "goal"], separator="│").alias("pair"),
             )
         )
-        frames.append(frame)
-        loaded.add(key)
-
-    missing = expected - loaded
-    if missing:
-        preview = ", ".join(
-            f"({distribution}, {seed}, {strategy})"
-            for distribution, seed, strategy in sorted(missing)[:5]
-        )
-        more = f", … {len(missing) - 5} more" if len(missing) > 5 else ""
-        print(f"WARNING: grid is incomplete; missing {len(missing)} cells: {preview}{more}")
+        loaded.add((distribution, sampling_seed, strategy))
     if not frames:
-        raise FileNotFoundError(f"No completed result cells under {grid_dir}")
+        raise FileNotFoundError(f"No completed comparison cells under {grid_dir}")
 
-    df = pl.concat(frames, how="vertical")
+    expected = {
+        (distribution, int(seed), strategy)
+        for distribution in config["distributions_expanded"]
+        for seed in config["sampling_seeds_expanded"]
+        for strategy in config["strategies_expanded"]
+    }
     modes = [
         _grid_mode(distribution, strategy)
-        for distribution in distributions
-        for strategy in strategies
-        if (distribution, strategy) in set(df.select("distribution", "strategy").iter_rows())
+        for distribution in config["distributions_expanded"]
+        for strategy in config["strategies_expanded"]
     ]
-    completed_sampling_seeds = df["sampling_seed"].n_unique()
-    n_pairs = df.select("seed", "goal").unique().height
+    data = pl.concat(frames, how="diagonal_relaxed")
     meta = {
         "modes": modes,
-        "n_goals": n_pairs,
-        "n_trials": budget,
-        "defaults": "",
+        "n_pairs": data.select("seed", "goal").unique().height,
+        "max_attempts": int(config["attempts"]),
+        "sampling_seeds": data["sampling_seed"].n_unique(),
+        "missing_cells": len(expected - loaded),
         "subtitle": [
-            f"{n_pairs} seed/goal pairs",
-            f"first {budget} candidates · {completed_sampling_seeds} sampling seeds",
+            f"{len(loaded)}/{len(expected)} grid cells",
+            f"{data['sampling_seed'].n_unique()} sampling seeds",
         ],
-        "reach_rate_title": "reach rate over sampling seeds",
-        "leg_rate_label": "mean pair reachability",
-        "coverage_label": "coverage across sampling seeds",
         "grid_dir": grid_dir,
-        "budget": budget,
-        "sampling_seeds": completed_sampling_seeds,
-        "missing_cells": len(missing),
     }
-    print(
-        f"Loaded {len(loaded)}/{len(expected)} cells from {grid_dir.name}: "
-        f"{len(df)} pair/seed observations at prefix budget {budget}"
-    )
-    return df, meta
+    return data, meta
 
 
-def grid_goal_reach(df: pl.DataFrame) -> pl.DataFrame:
-    """Average reached-by-prefix observations over grid sampling seeds."""
-    return (
-        df.group_by("mode", "seed", "goal", "pair")
-        .agg(pl.col("reached").mean().alias("reach_rate"))
-        .sort("mode", "goal")
+def grid_success_by_budget(grid_dir: Path, budgets: Sequence[int]) -> pl.DataFrame:
+    """Success observations at cumulative attempt budgets, including setup failures."""
+    frames = []
+    for comparison_path in sorted(
+        grid_dir.glob("distribution.*/sampling_seed.*/*/comparison.parquet")
+    ):
+        run_dir = comparison_path.parent
+        config = json.loads((run_dir / "config.json").read_text())
+        distribution = str(config["size_distribution"])
+        sampling_seed = int(config["sampling_seed"])
+        strategy = str(config["strategy"])
+        base = pl.read_parquet(comparison_path, columns=["seed", "goal"])
+        attempts = pl.read_parquet(run_dir / "results.parquet")
+        for budget in budgets:
+            reached = (
+                attempts.filter(pl.col("attempt") < budget)
+                .group_by("seed", "goal")
+                .agg(pl.col("reached").any().alias("guided_success"))
+            )
+            frames.append(
+                base.join(reached, on=["seed", "goal"], how="left").with_columns(
+                    pl.col("guided_success").fill_null(False),
+                    pl.lit(distribution).alias("distribution"),
+                    pl.lit(sampling_seed).alias("sampling_seed"),
+                    pl.lit(strategy).alias("strategy"),
+                    pl.lit(_grid_mode(distribution, strategy)).alias("mode"),
+                    pl.lit(int(budget)).alias("budget"),
+                )
+            )
+    observations = pl.concat(frames, how="vertical")
+    return pl.DataFrame(_rate_rows(observations, ["mode", "budget"], "guided_success")).sort(
+        "mode", "budget"
     )
+
+
+def grid_policy_summary(frame: pl.DataFrame) -> pl.DataFrame:
+    """Full-budget success and paired peak-RSS statistics by grid policy."""
+    return success_summary(frame)

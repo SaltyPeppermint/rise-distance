@@ -1,32 +1,34 @@
-"""Altair charts for the guided-search frames from ``helpers``."""
+"""Altair plots for guided/unguided success and peak-memory comparisons."""
 
 from collections.abc import Sequence
 
 import altair as alt
 import polars as pl
 
-# Modes take colors in this fixed order.
 PALETTE = [
-    "#2a78d6",  # blue
-    "#008300",  # green
-    "#e87ba4",  # magenta
-    "#eda100",  # yellow
-    "#1baf7a",  # aqua
-    "#eb6834",  # orange
-    "#4a3aa7",  # violet
-    "#e34948",  # red
+    "#2a78d6",
+    "#eb6834",
+    "#008300",
+    "#e87ba4",
+    "#4a3aa7",
+    "#eda100",
+    "#1baf7a",
+    "#e34948",
+    "#7f6d5f",
+    "#5e9ed6",
 ]
+OUTCOME_ORDER = ["both", "guided only", "unguided only", "neither"]
+OUTCOME_COLORS = ["#4c9f70", "#2a78d6", "#eb6834", "#b8b8b4"]
 
 THEME = {
     "config": {
-        "view": {"continuousWidth": 320, "continuousHeight": 260, "strokeOpacity": 0},
+        "view": {"continuousWidth": 360, "continuousHeight": 260, "strokeOpacity": 0},
         "axis": {
             "grid": True,
             "gridColor": "#e8e8e6",
             "domainColor": "#c9c9c6",
             "tickColor": "#c9c9c6",
         },
-        "axisX": {"labelAngle": 0},
         "legend": {"orient": "top", "titleFontSize": 11, "labelFontSize": 11},
         "title": {"fontSize": 13, "anchor": "start"},
         "range": {"category": PALETTE},
@@ -34,608 +36,223 @@ THEME = {
 }
 
 
-def _color(modes: Sequence[str]) -> alt.Color:
-    """Stable mode->hue mapping (domain fixes slot order across runs)."""
+def _title(text: str, meta: dict) -> alt.TitleParams:
+    return alt.TitleParams(text, subtitle=meta.get("subtitle", []), subtitleColor="#777")
+
+
+def _mode_color(modes: Sequence[str]) -> alt.Color:
     return alt.Color(
         "mode:N",
+        sort=list(modes),
         scale=alt.Scale(domain=list(modes), range=PALETTE[: len(modes)]),
         legend=alt.Legend(title=None),
     )
 
 
-def _pair_x() -> alt.X:
-    """Rank-ordered pair axis: each pair a slot, no labels (hundreds of pairs)."""
-    return alt.X(
-        "rank:Q",
-        title="seed/goal pair (sorted by value)",
-        axis=alt.Axis(labels=False, ticks=False),
-    )
-
-
-def _title(title: str, meta: dict) -> alt.TitleParams:
-    subtitle = list(
-        meta.get("subtitle", [f"{meta['n_goals']} goals × {meta['n_trials']} attempts"])
-    )
-    if meta.get("defaults"):
-        subtitle.append(meta["defaults"])
-    return alt.TitleParams(
-        title,
-        subtitle=subtitle,
-        subtitleColor="#7a7a77",
-    )
-
-
-SERIES_COLORS = {
-    "leg": PALETTE[0],
-    "baseline": PALETTE[5],
-    "guide": PALETTE[1],
-}  # blue/orange/green
-
-
-def abs_pair_strip(
-    df: pl.DataFrame,
-    meta: dict,
-    *,
-    title: str,
-    y_title: str,
-    metrics: Sequence[str],
-    limits: pl.DataFrame | None = None,
-    group_by: Sequence[str] = ("seed", "goal"),
-    group_reduce: str = "median",
-    log_y: bool = True,
-) -> alt.Chart:
-    """Plot leg, guide, and baseline costs in native units.
-
-    Input is long-form with ``mode``, ``metric``, ``series``, pair keys, and
-    ``value``. Pairs share the rank of their leg value. Optional per-series
-    limits become matching dashed rules; unbounded metrics have no rule.
-    """
-    per_pair = (
-        df.drop_nulls("value")
-        .filter(pl.col("value") > 0 if log_y else pl.lit(True))
-        .group_by("mode", "metric", "series", *group_by)
-        .agg(getattr(pl.col("value"), group_reduce)().alias("v"))
-    )
-    # Give all series the rank of their pair's leg value.
-    leg_rank = (
-        per_pair.filter(pl.col("series") == "leg")
-        .with_columns((pl.col("v").rank("ordinal").over("mode", "metric") - 1).alias("rank"))
-        .select("mode", "metric", *group_by, "rank")
-    )
-    per_pair = per_pair.join(leg_rank, on=["mode", "metric", *group_by], how="left")
-
-    scale = alt.Scale(type="log") if log_y else alt.Scale()
-    color = alt.Color(
-        "series:N",
-        scale=alt.Scale(domain=list(SERIES_COLORS), range=list(SERIES_COLORS.values())),
-        legend=alt.Legend(title=None),
-    )
-    modes = [m for m in meta["modes"] if m in per_pair["mode"].unique().to_list()]
-
-    # Layered facets need one dataset, so tag point and limit rows by kind.
-    points_rows = per_pair.with_columns(pl.lit("point").alias("kind"))
-    if limits is not None:
-        drawn = per_pair.select("mode", "series", "metric").unique()
-        limit_rows = limits.join(drawn, on=["mode", "series", "metric"], how="inner").with_columns(
-            pl.lit("limit").alias("kind")
-        )
-        data = pl.concat([points_rows, limit_rows], how="diagonal_relaxed")
-    else:
-        data = points_rows
-
-    base = alt.Chart(data)
+def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Success rates with Wilson intervals."""
     points = (
-        base.transform_filter(alt.datum.kind == "point")
-        .mark_circle(size=18, opacity=0.55)
+        alt.Chart(rates)
+        .mark_point(filled=True, size=75)
         .encode(
-            x=_pair_x(),
-            y=alt.Y("v:Q", title=y_title, scale=scale),
-            color=color,
-            tooltip=[
-                "mode:N",
-                "series:N",
-                "metric:N",
-                *[f"{g}:N" for g in group_by],
-                alt.Tooltip("v:Q", format=".3s"),
-            ],
-        )
-    )
-    layers = [points]
-    if limits is not None:
-        layers.append(
-            base.transform_filter(alt.datum.kind == "limit")
-            .mark_rule(strokeDash=[4, 4], opacity=0.8)
-            .encode(y=alt.Y("limit:Q", scale=scale), color=color)
-        )
-
-    return (
-        alt.layer(*layers)
-        .properties(width=260, height=200)
-        .facet(
-            row=alt.Row("mode:N", title=None, sort=modes),
-            column=alt.Column("metric:N", title=None, sort=list(metrics)),
-        )
-        .properties(title=_title(title, meta))
-        .resolve_scale(y="independent", x="independent")
-    )
-
-
-def rel_cost_ecdf(
-    df: pl.DataFrame,
-    meta: dict,
-    *,
-    title: str,
-    y_title: str,
-    metrics: Sequence[str],
-    group_by: Sequence[str] = ("seed", "goal"),
-    group_reduce: str = "median",
-) -> alt.Chart:
-    """Plot ECDFs of leg and guide cost relative to the unguided baseline.
-
-    Each curve gives the cumulative share of seed/goal pairs at or below a
-    relative-cost ratio. The baseline becomes a dashed ``x = 1`` rule; values
-    left of it are cheaper than unguided. The x scale is logarithmic.
-    """
-    # Pivot to divide each series by its pair's baseline, then return to long form.
-    wide = (
-        df.drop_nulls("value")
-        .pivot(on="series", index=["mode", "metric", *group_by], values="value")
-        .filter(pl.col("baseline") > 0)
-    )
-    ratios = wide.select(
-        "mode",
-        "metric",
-        *group_by,
-        *[(pl.col(s) / pl.col("baseline")).alias(s) for s in ("leg", "guide") if s in wide.columns],
-    ).unpivot(
-        index=["mode", "metric", *group_by],
-        variable_name="series",
-        value_name="value",
-    )
-
-    per_pair = (
-        ratios.drop_nulls("value")
-        .filter(pl.col("value") > 0)
-        .group_by("mode", "metric", "series", *group_by)
-        .agg(getattr(pl.col("value"), group_reduce)().alias("v"))
-        .with_columns(
-            (
-                pl.col("v").rank("max").over("mode", "metric", "series")
-                / pl.len().over("mode", "metric", "series")
-            ).alias("cdf")
-        )
-    )
-
-    color = alt.Color(
-        "series:N",
-        scale=alt.Scale(
-            domain=["leg", "guide"],
-            range=[SERIES_COLORS["leg"], SERIES_COLORS["guide"]],
-        ),
-        legend=alt.Legend(title=None),
-    )
-    modes = [m for m in meta["modes"] if m in per_pair["mode"].unique().to_list()]
-
-    # A data-free rule draws in every facet without creating null-keyed facets.
-    curves = (
-        alt.Chart()
-        .mark_line(interpolate="step-after", strokeWidth=2)
-        .encode(
-            x=alt.X("v:Q", title="cost / baseline (log)", scale=alt.Scale(type="log")),
-            y=alt.Y(
-                "cdf:Q",
-                title=y_title,
-                scale=alt.Scale(domain=[0, 1]),
-                axis=alt.Axis(format="%"),
-            ),
-            color=color,
-            order=alt.Order("v:Q"),
-            tooltip=[
-                "mode:N",
-                "series:N",
-                "metric:N",
-                *[f"{g}:N" for g in group_by],
-                alt.Tooltip("v:Q", format=".3g"),
-                alt.Tooltip("cdf:Q", title="cumulative share", format=".1%"),
-            ],
-        )
-    )
-    ref = (
-        alt.Chart()
-        .mark_rule(strokeDash=[4, 4], color="#7a7a77", opacity=0.8)
-        .encode(x=alt.X("datum:Q", scale=alt.Scale(type="log")))
-        .transform_calculate(datum="1")
-    )
-
-    return (
-        alt.layer(curves, ref)
-        .properties(width=260, height=200)
-        .facet(
-            row=alt.Row("mode:N", title=None, sort=modes),
-            column=alt.Column("metric:N", title=None, sort=list(metrics)),
-            data=per_pair,
-        )
-        .properties(title=_title(title, meta))
-        .resolve_scale(x="independent")
-    )
-
-
-def baseline_vs_soft_limits(
-    df: pl.DataFrame,
-    meta: dict,
-    *,
-    metrics: Sequence[str],
-    limits: pl.DataFrame,
-) -> alt.Chart:
-    """Compare each pair's unguided baseline with guided-leg soft limits.
-
-    Never-reached and reached pairs form separate sorted blocks. When a baseline
-    stopped on the plotted metric, its stop-reason value replaces the final
-    measurement so it remains comparable with the limit.
-    """
-    base_cols = [f"base_{metric}" for metric in metrics]
-    leg_stop_kind = (
-        pl.when(pl.col("reached"))
-        .then(pl.lit("reached"))
-        .when(pl.col("panic"))
-        .then(pl.lit("panic"))
-        .when(pl.col("stop_reason") == "Saturated")
-        .then(pl.lit("saturated"))
-        .when(pl.col("stop_reason").str.starts_with("NodeLimit"))
-        .then(pl.lit("node limit"))
-        .when(pl.col("stop_reason").str.starts_with("TimeLimit"))
-        .then(pl.lit("time limit"))
-        .when(pl.col("stop_reason").str.starts_with("IterationLimit"))
-        .then(pl.lit("iteration limit"))
-        .when(pl.col("stop_reason").str.contains("memory limit exceeded", literal=True))
-        .then(pl.lit("memory limit"))
-        .otherwise(pl.lit("other"))
-        .alias("leg_stop_kind")
-    )
-    per_pair = (
-        df.with_columns(leg_stop_kind)
-        .group_by("mode", "seed", "goal", "pair")
-        .agg(
-            pl.col("reached").sum().alias("n_reached"),
-            pl.len().alias("n_attempts"),
-            *[
-                (pl.col("leg_stop_kind") == kind).sum().alias(f"n_{kind.replace(' ', '_')}")
-                for kind in (
-                    "node limit",
-                    "saturated",
-                    "time limit",
-                    "iteration limit",
-                    "memory limit",
-                    "panic",
-                    "other",
-                )
-            ],
-            *[pl.col(col).first().alias(col) for col in base_cols],
-            pl.col("base_stop_reason").first(),
-        )
-        .unpivot(
-            index=[
-                "mode",
-                "seed",
-                "goal",
-                "pair",
-                "n_reached",
-                "n_attempts",
-                "n_node_limit",
-                "n_saturated",
-                "n_time_limit",
-                "n_iteration_limit",
-                "n_memory_limit",
-                "n_panic",
-                "n_other",
-                "base_stop_reason",
-            ],
-            on=base_cols,
-            variable_name="metric",
-            value_name="baseline_final",
-        )
-        .with_columns(
-            pl.col("metric").str.strip_prefix("base_"),
-            pl.when(pl.col("n_reached") == 0)
-            .then(pl.lit("never reached"))
-            .otherwise(pl.lit("reached at least once"))
-            .alias("reachability"),
-            pl.when(pl.col("n_reached") > 0)
-            .then(pl.lit("reached"))
-            .when(pl.col("n_node_limit") == pl.col("n_attempts"))
-            .then(pl.lit("unreachable: node limit"))
-            .when(pl.col("n_saturated") == pl.col("n_attempts"))
-            .then(pl.lit("unreachable: saturated"))
-            .when(pl.col("n_time_limit") == pl.col("n_attempts"))
-            .then(pl.lit("unreachable: time limit"))
-            .when(pl.col("n_iteration_limit") == pl.col("n_attempts"))
-            .then(pl.lit("unreachable: iteration limit"))
-            .when(pl.col("n_memory_limit") == pl.col("n_attempts"))
-            .then(pl.lit("unreachable: memory limit"))
-            .otherwise(pl.lit("unreachable: mixed/other"))
-            .alias("leg_outcome"),
-        )
-        .with_columns(
-            pl.when(
-                (pl.col("metric") == "nodes")
-                & pl.col("base_stop_reason").str.starts_with("NodeLimit")
-            )
-            .then(pl.col("base_stop_reason").str.extract(r"^NodeLimit\((\d+)\)$", 1))
-            .when(
-                (pl.col("metric") == "iters")
-                & pl.col("base_stop_reason").str.starts_with("IterationLimit")
-            )
-            .then(pl.col("base_stop_reason").str.extract(r"^IterationLimit\((\d+)\)$", 1))
-            .when(
-                (pl.col("metric") == "total_time")
-                & pl.col("base_stop_reason").str.starts_with("TimeLimit")
-            )
-            .then(pl.col("base_stop_reason").str.extract(r"^TimeLimit\(([^)]+)\)$", 1))
-            .when(
-                (pl.col("metric") == "memory")
-                & pl.col("base_stop_reason").str.contains("memory limit exceeded", literal=True)
-            )
-            .then(
-                pl.col("base_stop_reason").str.extract(
-                    r"memory limit exceeded \((\d+) > \d+ bytes\)", 1
-                )
-            )
-            .otherwise(None)
-            .cast(pl.Float64)
-            .alias("baseline_stop_value")
-        )
-        .with_columns(
-            pl.coalesce("baseline_stop_value", "baseline_final").alias("baseline"),
-            pl.when(pl.col("baseline_stop_value").is_not_null())
-            .then(pl.lit("stop-reason measurement"))
-            .otherwise(pl.lit("final measurement"))
-            .alias("measurement"),
-        )
-    )
-    soft_limits = limits.filter(pl.col("series") == "leg").select("mode", "metric", "limit")
-    plot = (
-        per_pair.join(soft_limits, on=["mode", "metric"], how="inner")
-        .drop_nulls("baseline")
-        .filter((pl.col("baseline") > 0) & (pl.col("limit") > 0))
-        .with_columns(
-            (pl.col("baseline").rank("ordinal").over("mode", "metric", "reachability") - 1).alias(
-                "group_rank"
-            ),
-            (pl.col("reachability") == "never reached")
-            .sum()
-            .over("mode", "metric")
-            .alias("n_unreachable"),
-            (pl.col("reachability") == "reached at least once")
-            .sum()
-            .over("mode", "metric")
-            .alias("n_reachable"),
-        )
-        .with_columns(
-            pl.when(pl.col("reachability") == "never reached")
-            .then(pl.col("group_rank"))
-            .otherwise(pl.col("n_unreachable") + pl.col("group_rank"))
-            .alias("rank"),
-            (pl.col("n_unreachable") - 0.5).alias("split_rank"),
-        )
-    )
-    modes = [m for m in meta["modes"] if m in plot["mode"].unique().to_list()]
-    outcome_order = [
-        "unreachable: node limit",
-        "unreachable: saturated",
-        "unreachable: time limit",
-        "unreachable: iteration limit",
-        "unreachable: memory limit",
-        "unreachable: mixed/other",
-        "reached",
-    ]
-    outcome_colors = ["#d62728", "#eb6834", "#eda100", "#4a3aa7", "#e87ba4", "#35383d", "#a8adb4"]
-    drawn_outcomes = set(plot["leg_outcome"].unique().to_list())
-    outcome_order = [outcome for outcome in outcome_order if outcome in drawn_outcomes]
-    outcome_colors = [
-        color
-        for outcome, color in zip(
-            [
-                "unreachable: node limit",
-                "unreachable: saturated",
-                "unreachable: time limit",
-                "unreachable: iteration limit",
-                "unreachable: memory limit",
-                "unreachable: mixed/other",
-                "reached",
-            ],
-            outcome_colors,
-            strict=True,
-        )
-        if outcome in drawn_outcomes
-    ]
-    scale = alt.Scale(type="log")
-
-    points = (
-        alt.Chart()
-        .mark_circle(opacity=0.72)
-        .encode(
-            x=alt.X(
-                "rank:Q",
-                title="pairs: never reached (left) | reached (right); sorted within each",
-                axis=alt.Axis(labels=False, ticks=False),
-            ),
-            y=alt.Y("baseline:Q", title="baseline stop/final measurement (log)", scale=scale),
+            x=alt.X("success_rate:Q", title="success rate", axis=alt.Axis(format="%")),
+            y=alt.Y("mode:N", title=None, sort=list(meta["modes"])),
             color=alt.Color(
-                "leg_outcome:N",
-                sort=outcome_order,
-                scale=alt.Scale(domain=outcome_order, range=outcome_colors),
-                legend=alt.Legend(title="guided-leg outcome"),
-            ),
-            size=alt.Size(
-                "reachability:N",
-                scale=alt.Scale(domain=["never reached", "reached at least once"], range=[52, 18]),
-                legend=None,
+                "method:N",
+                scale=alt.Scale(domain=["guided", "unguided"], range=[PALETTE[0], PALETTE[1]]),
+                legend=alt.Legend(title=None),
             ),
             tooltip=[
                 "mode:N",
-                "metric:N",
-                "reachability:N",
-                "leg_outcome:N",
-                "seed:N",
-                "goal:N",
-                "base_stop_reason:N",
-                "measurement:N",
-                alt.Tooltip("baseline:Q", title="plotted baseline", format=".3s"),
-                alt.Tooltip("baseline_final:Q", title="final baseline", format=".3s"),
-                alt.Tooltip("limit:Q", title="soft limit", format=".3s"),
-                "n_reached:Q",
-                "n_attempts:Q",
-                "n_node_limit:Q",
-                "n_saturated:Q",
-                "n_time_limit:Q",
-                "n_iteration_limit:Q",
-                "n_memory_limit:Q",
-                "n_panic:Q",
-                "n_other:Q",
+                "method:N",
+                "successes:Q",
+                "n:Q",
+                alt.Tooltip("success_rate:Q", format=".1%"),
             ],
         )
     )
-    limit_rule = (
-        alt.Chart()
-        .transform_aggregate(soft_limit="max(limit)", groupby=["mode", "metric"])
-        .mark_rule(strokeDash=[5, 4], color="#35383d", opacity=0.85)
-        .encode(y=alt.Y("soft_limit:Q", scale=scale))
-    )
-    group_divider = (
-        alt.Chart()
-        .transform_aggregate(
-            split_rank="max(split_rank)",
-            n_unreachable="max(n_unreachable)",
-            n_reachable="max(n_reachable)",
-            groupby=["mode", "metric"],
-        )
-        .transform_filter((alt.datum.n_unreachable > 0) & (alt.datum.n_reachable > 0))
-        .mark_rule(color="#7a7a77", opacity=0.7)
-        .encode(x="split_rank:Q")
-    )
+    intervals = points.mark_rule().encode(x="ci_low:Q", x2="ci_high:Q")
+    return (intervals + points).properties(title=_title("Success rate", meta), height=alt.Step(32))
 
+
+def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Distribution of paired success outcomes."""
     return (
-        alt.layer(points, limit_rule, group_divider)
-        .properties(width=260, height=200)
-        .facet(
-            row=alt.Row("mode:N", title=None, sort=modes),
-            column=alt.Column("metric:N", title=None, sort=list(metrics)),
-            data=plot,
-        )
-        .properties(title=_title("Unguided baseline vs guided soft limits", meta))
-        .resolve_scale(y="independent", x="independent")
-    )
-
-
-def reachability(df: pl.DataFrame, gr: pl.DataFrame, meta: dict) -> alt.VConcatChart:
-    """Plot per-pair reach rates and per-mode summaries."""
-    modes = meta["modes"]
-    color = _color(modes)
-    reach_rate_title = meta.get("reach_rate_title", "reach rate over attempts")
-    leg_rate_label = meta.get("leg_rate_label", "leg reach rate")
-    coverage_label = meta.get("coverage_label", "goal coverage")
-
-    strip_df = gr.with_columns(
-        (pl.col("reach_rate").rank("ordinal").over("mode") - 1).alias("rank")
-    )
-    strip = (
-        alt.Chart(strip_df)
-        .mark_circle(size=16, opacity=0.6)
-        .encode(
-            x=_pair_x(),
-            y=alt.Y("reach_rate:Q", title=reach_rate_title, scale=alt.Scale(domain=[0, 1])),
-            color=color,
-            tooltip=[
-                "mode:N",
-                "seed:N",
-                "goal:N",
-                alt.Tooltip("reach_rate:Q", format=".0%"),
-            ],
-        )
-        .properties(title="Per-pair reach rate (sorted)")
-    )
-
-    summ = pl.concat(
-        [
-            df.group_by("mode")
-            .agg((pl.col("reached").mean() * 100).alias("pct"))
-            .with_columns(pl.lit(leg_rate_label).alias("kind")),
-            gr.group_by("mode")
-            .agg(((pl.col("reach_rate") > 0).mean() * 100).alias("pct"))
-            .with_columns(pl.lit(coverage_label).alias("kind")),
-        ],
-        how="vertical",
-    )
-    summary = (
-        alt.Chart(summ)
+        alt.Chart(outcomes)
         .mark_bar()
         .encode(
-            x=alt.X("pct:Q", title="%", scale=alt.Scale(domain=[0, 100])),
-            y=alt.Y("mode:N", title=None, sort=list(modes)),
-            color=color,
-            tooltip=["mode:N", "kind:N", alt.Tooltip("pct:Q", format=".1f")],
-        )
-        .properties(height=alt.Step(18))
-        .facet(row=alt.Row("kind:N", title=None))
-        .properties(title="Reachability summary by mode")
-    )
-
-    return alt.vconcat(strip, summary).properties(title=_title("Reachability summary", meta))
-
-
-def cost_boxplots(df: pl.DataFrame, meta: dict, metrics: Sequence[str]) -> alt.Chart:
-    """Box plots of reached-leg cost by mode, one facet per metric."""
-    modes = meta["modes"]
-    long = (
-        df.filter(pl.col("reached"))
-        .unpivot(index=["mode"], on=list(metrics), variable_name="metric", value_name="v")
-        .drop_nulls("v")
-    )
-    return (
-        alt.Chart(long)
-        .mark_boxplot()
-        .encode(
-            x=alt.X("mode:N", title=None, axis=alt.Axis(labelAngle=-40)),
-            y=alt.Y("v:Q", title=None),
-            color=_color(modes),
-        )
-        .properties(width=140, height=180)
-        .facet(column=alt.Column("metric:N", sort=list(metrics), title=None))
-        .resolve_scale(y="independent")
-        .properties(title=_title("Cost distribution by mode", meta))
-    )
-
-
-def reach_heatmap(gr: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Plot goal × mode reachability, with the hardest goals at top."""
-    order = (
-        gr.group_by("goal")
-        .agg(pl.col("reach_rate").mean().alias("avg"))
-        .with_columns(pl.col("avg").rank("ordinal").alias("gy"))
-    )
-    plot = gr.join(order.select("goal", "gy"), on="goal").with_columns(
-        (pl.col("gy") - 1).alias("gy0"), pl.col("gy").alias("gy1")
-    )
-    n_goals = plot.select(pl.col("gy").max()).item()
-    return (
-        alt.Chart(plot)
-        .mark_rect(stroke=None, strokeWidth=0)
-        .encode(
-            x=alt.X("mode:N", title=None, sort=list(meta["modes"]), axis=alt.Axis(labelAngle=-40)),
-            y=alt.Y(
-                "gy0:Q",
-                title="goal (sorted by reachability, hardest at top)",
-                scale=alt.Scale(domain=[0, n_goals], reverse=True, nice=False),
-                axis=alt.Axis(labels=False, ticks=False, grid=False),
-            ),
-            y2="gy1:Q",
+            x=alt.X("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
+            y=alt.Y("mode:N", title=None, sort=list(meta["modes"])),
             color=alt.Color(
-                "reach_rate:Q",
-                scale=alt.Scale(scheme="redyellowgreen", domain=[0, 1]),
-                legend=alt.Legend(title="reach rate", format="%"),
+                "outcome:N",
+                sort=OUTCOME_ORDER,
+                scale=alt.Scale(domain=OUTCOME_ORDER, range=OUTCOME_COLORS),
+                legend=alt.Legend(title=None),
             ),
-            tooltip=["mode:N", "goal:N", alt.Tooltip("reach_rate:Q", format=".0%")],
+            order=alt.Order("outcome:N", sort="ascending"),
+            tooltip=[
+                "mode:N",
+                "outcome:N",
+                "count:Q",
+                alt.Tooltip("share:Q", format=".1%"),
+            ],
         )
-        .properties(width=alt.Step(46), height=460)
-        .properties(title=_title("Goal-level reachability heatmap", meta))
+        .properties(title=_title("Paired outcomes", meta), height=alt.Step(30))
+    )
+
+
+def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Guided versus unguided whole-process peak RSS for paired successes."""
+    points = (
+        alt.Chart(paired)
+        .mark_circle(size=45, opacity=0.58)
+        .encode(
+            x=alt.X(
+                "unguided_peak_mib:Q",
+                title="unguided peak RSS (MiB, log)",
+                scale=alt.Scale(type="log"),
+            ),
+            y=alt.Y(
+                "guided_peak_mib:Q",
+                title="guided peak RSS (MiB, log)",
+                scale=alt.Scale(type="log"),
+            ),
+            color=_mode_color(meta["modes"]),
+            tooltip=[
+                "mode:N",
+                "seed:N",
+                "goal:N",
+                alt.Tooltip("guided_peak_mib:Q", format=".1f"),
+                alt.Tooltip("unguided_peak_mib:Q", format=".1f"),
+                alt.Tooltip("peak_ratio:Q", format=".3f"),
+            ],
+        )
+    )
+    if paired.is_empty():
+        return points.properties(
+            title=_title("Peak RSS for pairs reached by both methods", meta),
+            width=420,
+            height=380,
+        )
+    bounds = paired.select(
+        pl.min_horizontal("guided_peak_mib", "unguided_peak_mib").min().alias("lo"),
+        pl.max_horizontal("guided_peak_mib", "unguided_peak_mib").max().alias("hi"),
+    ).row(0, named=True)
+    diagonal = (
+        alt.Chart(pl.DataFrame({"x": [bounds["lo"], bounds["hi"]]}))
+        .mark_line(strokeDash=[5, 4], color="#777")
+        .encode(
+            x=alt.X("x:Q", scale=alt.Scale(type="log")), y=alt.Y("x:Q", scale=alt.Scale(type="log"))
+        )
+    )
+    return (diagonal + points).properties(
+        title=_title("Peak RSS for pairs reached by both methods", meta),
+        width=420,
+        height=380,
+    )
+
+
+def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
+    """ECDF of guided/unguided peak RSS among paired successes."""
+    data = paired.with_columns(
+        (pl.col("peak_ratio").rank("max").over("mode") / pl.len().over("mode")).alias("cdf")
+    ).sort("mode", "peak_ratio")
+    curves = (
+        alt.Chart(data)
+        .mark_line(interpolate="step-after", strokeWidth=2)
+        .encode(
+            x=alt.X(
+                "peak_ratio:Q",
+                title="guided / unguided peak RSS (log)",
+                scale=alt.Scale(type="log"),
+            ),
+            y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
+            color=_mode_color(meta["modes"]),
+            order="peak_ratio:Q",
+            tooltip=[
+                "mode:N",
+                alt.Tooltip("peak_ratio:Q", format=".3f"),
+                alt.Tooltip("cdf:Q", format=".1%"),
+            ],
+        )
+    )
+    parity = (
+        alt.Chart(pl.DataFrame({"ratio": [1.0]}))
+        .mark_rule(strokeDash=[5, 4], color="#777")
+        .encode(x=alt.X("ratio:Q", scale=alt.Scale(type="log")))
+    )
+    return (curves + parity).properties(title=_title("Peak RSS ratio", meta), width=460)
+
+
+def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Distribution of the successful guided attempt."""
+    data = frame.filter(pl.col("guided_success")).drop_nulls("success_attempt")
+    return (
+        alt.Chart(data)
+        .mark_bar(opacity=0.75)
+        .encode(
+            x=alt.X("success_attempt:O", title="attempt of first success"),
+            y=alt.Y("count():Q", title="successful pairs"),
+            color=_mode_color(meta["modes"]),
+            column=alt.Column("mode:N", title=None, sort=list(meta["modes"])),
+            tooltip=["mode:N", "success_attempt:O", "count():Q"],
+        )
+        .properties(title=_title("Attempts to success", meta), width=180, height=180)
+    )
+
+
+def grid_success_curve(curves: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Grid success rate over cumulative attempt budget."""
+    band = (
+        alt.Chart(curves)
+        .mark_area(opacity=0.12)
+        .encode(
+            x=alt.X("budget:Q", title="attempt budget", scale=alt.Scale(type="log")),
+            y=alt.Y("ci_low:Q", title="success rate", axis=alt.Axis(format="%")),
+            y2="ci_high:Q",
+            color=_mode_color(meta["modes"]),
+        )
+    )
+    line = (
+        alt.Chart(curves)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("budget:Q", scale=alt.Scale(type="log")),
+            y="success_rate:Q",
+            color=_mode_color(meta["modes"]),
+            tooltip=[
+                "mode:N",
+                "budget:Q",
+                "successes:Q",
+                "n:Q",
+                alt.Tooltip("success_rate:Q", format=".1%"),
+            ],
+        )
+    )
+    return (band + line).properties(title=_title("Success by attempt budget", meta), width=520)
+
+
+def success_memory_pareto(summary: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Full-budget success rate versus median guided peak RSS."""
+    data = summary.drop_nulls(["success_rate_guided", "guided_median_peak_mib"])
+    return (
+        alt.Chart(data)
+        .mark_circle(size=100)
+        .encode(
+            x=alt.X("guided_median_peak_mib:Q", title="median guided peak RSS (MiB)"),
+            y=alt.Y(
+                "success_rate_guided:Q",
+                title="guided success rate",
+                axis=alt.Axis(format="%"),
+            ),
+            color=_mode_color(meta["modes"]),
+            tooltip=[
+                "mode:N",
+                alt.Tooltip("success_rate_guided:Q", format=".1%"),
+                alt.Tooltip("guided_median_peak_mib:Q", format=".1f"),
+                alt.Tooltip("median_peak_ratio:Q", format=".3f"),
+                "n_paired_successes:Q",
+            ],
+        )
+        .properties(title=_title("Full-budget success and peak RSS", meta), width=460)
     )
