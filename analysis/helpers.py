@@ -79,9 +79,12 @@ def resolve_runs(patterns: Sequence[str]) -> list[Run]:
     for directory in dict.fromkeys(candidates):
         comparison = directory / "comparison.parquet"
         config_path = directory / "config.json"
-        if not comparison.is_file() or not config_path.is_file():
+        missing = [path.name for path in (comparison, config_path) if not path.is_file()]
+        if missing:
             if patterns:
-                raise ValueError(f"{directory} predates the peak-memory comparison schema")
+                raise ValueError(
+                    f"{directory} is incomplete; missing final artifacts: {', '.join(missing)}"
+                )
             continue
         config = json.loads(config_path.read_text())
         runs.append(Run(directory, _run_label(directory, config), config))
