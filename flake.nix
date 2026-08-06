@@ -78,9 +78,6 @@
           ]);
 
           buildInputs = with pkgs; [
-            fontconfig
-            freetype
-            expat
             cbc
             openssl
           ];
@@ -88,11 +85,6 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
             with pkgs;
             [
-              fontconfig
-              freetype
-              expat
-              vulkan-loader
-              libGL
               cbc
               openssl
               stdenv.cc.cc.lib

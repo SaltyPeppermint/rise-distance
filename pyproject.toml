@@ -5,36 +5,31 @@ requires-python = ">=3.14"
 dependencies = [
     "polars",
     "scikit-learn",
-    "onnx",
+    "numpy",
     "onnxruntime",
     # Includes the ONNX 1.22 tree-attribute fix from upstream PR #1256.
     "skl2onnx @ git+https://github.com/onnx/sklearn-onnx.git@7d25c71ce24b2797e7a4bf3f518efef0e2397e9a",
-    "scipy",
+    # "scipy",
     "jupyter",
-    "torch",
-    "transformers",
-    "accelerate",
-    "tensorboard",
     "tqdm",
     "diceware",
     "tyro",
-    # "causal-conv1d",
     "altair>=6.2.2",
     "vl-convert-python>=1.9.0.post1",
 ]
 
 [dependency-groups]
-dev = ["pre-commit>=4.5.1", "nbstripout>=0.9.1", "ruff", "ty"]
+dev = ["pre-commit>=4.5.1", "ruff", "ty"]
 
 
-[[tool.uv.index]]
-name = "pytorch"
-url = "https://download.pytorch.org/whl/cu132"
+# [[tool.uv.index]]
+# name = "pytorch"
+# url = "https://download.pytorch.org/whl/cu132"
 # default = true
 
 [tool.ruff]
 line-length = 100
-src = [".", "analysis", "ranker", "scripts"]
+src = [".", "analysis", "scripts"]
 
 [tool.ty.environment]
-extra-paths = ["analysis", "ranker", "scripts"]
+extra-paths = ["analysis", "scripts"]
