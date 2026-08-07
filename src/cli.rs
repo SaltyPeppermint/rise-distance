@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use clap::ValueEnum;
 use egg::RecExpr;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
@@ -12,33 +13,34 @@ use crate::eqsat::EqsatMetadata;
 use crate::sampling::SampleStrategy;
 use crate::{MyLanguage, OriginLang};
 
-/// The five guide-sampling strategies. Sampling variants always draw frontier
-/// terms; only `Smallest` exposes the novel/overall choice. Mirrors the enum
-/// that used to live in `guide.rs`.
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub enum Strategy {
-    Sample(SampleStrategy),
-    Smallest { novel: bool },
+/// One candidate pool emitted by `sample`.
+///
+/// The CLI and JSON names are identical so the Rust sampler and Python driver
+/// share one vocabulary.
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidatePool {
+    #[value(name = "sample_independent")]
+    SampleIndependent,
+    #[value(name = "sample_naive")]
+    SampleNaive,
+    #[value(name = "sample_balanced")]
+    SampleBalanced,
+    #[value(name = "smallest_overall")]
+    SmallestOverall,
+    #[value(name = "smallest_novel")]
+    SmallestNovel,
 }
 
-impl Strategy {
-    /// Every guide strategy emitted by the `sample` binary.
-    pub const ALL: [Strategy; 5] = [
-        Strategy::Sample(SampleStrategy::Independent),
-        Strategy::Sample(SampleStrategy::Naive),
-        Strategy::Sample(SampleStrategy::Balanced),
-        Strategy::Smallest { novel: false },
-        Strategy::Smallest { novel: true },
-    ];
-
+impl CandidatePool {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Strategy::Sample(SampleStrategy::Independent) => "sample_independent",
-            Strategy::Sample(SampleStrategy::Naive) => "sample_naive",
-            Strategy::Sample(SampleStrategy::Balanced) => "sample_balanced",
-            Strategy::Smallest { novel: true } => "smallest_novel",
-            Strategy::Smallest { novel: false } => "smallest_overall",
+            Self::SampleIndependent => "sample_independent",
+            Self::SampleNaive => "sample_naive",
+            Self::SampleBalanced => "sample_balanced",
+            Self::SmallestOverall => "smallest_overall",
+            Self::SmallestNovel => "smallest_novel",
         }
     }
 
@@ -47,10 +49,20 @@ impl Strategy {
     #[must_use]
     pub const fn seed_of(&self) -> u64 {
         match self {
-            Strategy::Sample(SampleStrategy::Independent) => 1,
-            Strategy::Sample(SampleStrategy::Naive) => 2,
-            Strategy::Sample(SampleStrategy::Balanced) => 3,
-            Strategy::Smallest { .. } => 0,
+            Self::SampleIndependent => 1,
+            Self::SampleNaive => 2,
+            Self::SampleBalanced => 3,
+            Self::SmallestOverall | Self::SmallestNovel => 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn sample_strategy(self) -> Option<SampleStrategy> {
+        match self {
+            Self::SampleIndependent => Some(SampleStrategy::Independent),
+            Self::SampleNaive => Some(SampleStrategy::Naive),
+            Self::SampleBalanced => Some(SampleStrategy::Balanced),
+            Self::SmallestOverall | Self::SmallestNovel => None,
         }
     }
 }
@@ -67,11 +79,11 @@ pub struct GuideExpr<L: MyLanguage> {
 }
 
 impl<L: MyLanguage> GuideExpr<L> {
+    /// Consume a sampled expression and reuse its node allocation for the wire
+    /// representation.
     #[must_use]
-    pub fn from_recexpr(expr: &RecExpr<OriginLang<L>>) -> Self {
-        Self {
-            nodes: expr.as_ref().to_vec(),
-        }
+    pub fn from_recexpr(expr: RecExpr<OriginLang<L>>) -> Self {
+        Self { nodes: expr.into() }
     }
 
     #[must_use]
@@ -89,8 +101,9 @@ impl<L: MyLanguage> GuideExpr<L> {
 #[serde(bound = "L: MyLanguage")]
 pub struct SeedSamples<L: MyLanguage> {
     pub seed: String,
-    /// Guide candidates keyed by [`Strategy::name`]. Sampling strategies hold up
-    /// to `samples_per_strategy` terms; `Smallest` holds exactly one.
+    /// Requested guide candidates keyed by [`CandidatePool::name`]. Sampling
+    /// strategies hold up to `samples_per_strategy` terms; `Smallest` holds
+    /// exactly one.
     pub candidates: BTreeMap<String, Vec<GuideExpr<L>>>,
     pub guide_nodes: usize,
     pub guide_classes: usize,
@@ -137,8 +150,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn guide_strategy_menu_includes_balanced_frontier_sampling() {
-        let names = Strategy::ALL.map(Strategy::name);
+    fn candidate_pool_names_include_balanced_frontier_sampling() {
+        let names = [
+            CandidatePool::SampleIndependent,
+            CandidatePool::SampleNaive,
+            CandidatePool::SampleBalanced,
+            CandidatePool::SmallestOverall,
+            CandidatePool::SmallestNovel,
+        ]
+        .map(CandidatePool::name);
         assert_eq!(
             names,
             [
@@ -149,6 +169,10 @@ mod tests {
                 "smallest_novel",
             ]
         );
-        assert_eq!(Strategy::Sample(SampleStrategy::Balanced).seed_of(), 3);
+        assert_eq!(CandidatePool::SampleBalanced.seed_of(), 3);
+        assert_eq!(
+            serde_json::to_string(&CandidatePool::SampleBalanced).unwrap(),
+            "\"sample_balanced\""
+        );
     }
 }

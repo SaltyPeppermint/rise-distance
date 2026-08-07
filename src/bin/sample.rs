@@ -2,8 +2,10 @@
 //!
 //! This is the "first half" of the old `guide` binary: it replays the
 //! guide-phase eqsat for one seed, builds a [`PrecomputePackage`], and samples
-//! the five-strategy guide menu. The individual search legs (the second half)
-//! are driven by `guided_search.py`, which feeds chosen guide subsets to `verify`.
+//! the requested guide-candidate pools. The individual search legs (the second
+//! half) are driven by `guided_search.py`, which feeds chosen guide subsets to
+//! `verify`. Candidate pools are explicit: callers must pass at least one
+//! `--candidate-pool`.
 //!
 //! Touches no files and reads no stdin: everything comes on argv. `guided_search.py`
 //! owns all file I/O — it computes the effective replay limits (search-phase
@@ -21,7 +23,7 @@ use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 use time::OffsetDateTime;
 
-use rise_distance::cli::{GuideExpr, SeedSamples, Strategy};
+use rise_distance::cli::{CandidatePool, GuideExpr, SeedSamples};
 use rise_distance::eqsat::{EqsatConfig, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::sampling::{Distribution, PrecomputePackage};
@@ -39,7 +41,8 @@ passing the effective replay limits (search-phase limits overridden by its
 Example:
   sample --language math --seed '(+ x 0)' \\
     --max-iters 38 --max-nodes 1000000 --max-time 10 \\
-    --max-memory 2000000000
+    --max-memory 2000000000 \\
+    --candidate-pool sample_balanced
 "
 )]
 struct Args {
@@ -85,6 +88,10 @@ struct Args {
     /// the `sample_sizes`-th one).
     #[arg(long, default_value_t = 5)]
     sample_sizes: usize,
+
+    /// Candidate pool to emit. Repeat for a shared multi-pool manifest.
+    #[arg(long = "candidate-pool", value_enum, required = true)]
+    candidate_pools: Vec<CandidatePool>,
 }
 
 fn main() {
@@ -182,11 +189,14 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     eprint!("{root_log}");
 
     let mut candidates = BTreeMap::new();
-    for strategy in Strategy::ALL {
-        let terms = draw_candidates(args, strategy, &pc);
+    for pool in args.candidate_pools.iter().copied() {
+        if candidates.contains_key(pool.name()) {
+            continue;
+        }
+        let terms = draw_candidates(args, pool, &pc);
         candidates.insert(
-            strategy.name().to_owned(),
-            terms.iter().map(GuideExpr::from_recexpr).collect(),
+            pool.name().to_owned(),
+            terms.into_iter().map(GuideExpr::from_recexpr).collect(),
         );
     }
 
@@ -208,28 +218,28 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
 /// the one smallest (novel or overall) root term.
 fn draw_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
-    strategy: Strategy,
+    pool: CandidatePool,
     pc: &PrecomputePackage<BigUint, L, N>,
 ) -> Vec<RecExpr<OriginLang<L>>> {
-    match strategy {
+    match pool.sample_strategy() {
         // Replacement is a driver concern (how it re-draws subsets from the
         // pool across restarts); the pool itself is one novel sampled batch
         // either way. Sampling strategies always draw novel terms.
-        Strategy::Sample(s) => pc
+        Some(strategy) => pc
             .sample_frontier_terms(
                 args.samples_per_strategy,
                 args.size_distribution,
-                s,
-                [args.sampling_seed, strategy.seed_of()],
+                strategy,
+                [args.sampling_seed, pool.seed_of()],
             )
             .unwrap_or_else(|| {
                 eprintln!(
                     "WARNING: strategy {} drew 0 candidates (empty novel frontier); \
                      driver legs for this strategy will have no guides to pick from",
-                    strategy.name()
+                    pool.name()
                 );
                 Vec::new()
             }),
-        Strategy::Smallest { novel } => vec![pc.smallest(pc.root(), novel)],
+        None => vec![pc.smallest(pc.root(), matches!(pool, CandidatePool::SmallestNovel))],
     }
 }

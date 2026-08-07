@@ -109,6 +109,7 @@ plotting.
 | `--k <ints…>` | Guide-set sizes to sweep (guides unioned per leg). |
 | `--attempts N` | Legs per `(seed, goal, k)`; each resamples a fresh subset. Counts the first try. |
 | `--strategy` | Candidate pool: `no_replacement_independent`, `with_replacement_independent`, `no_replacement_naive`, `with_replacement_naive`, `no_replacement_balanced`, `with_replacement_balanced`, `smallest_novel`, `smallest_overall`. |
+| `--candidate-pools` | Pools to generate in a shared manifest. Defaults to only the pool selected by `--strategy`; the grid driver supplies all pools needed by its paired strategies. |
 | `--full-union` | Union guide nodes by their origin e-class (experimental; helped reachability historically). |
 | `--samples-per-strategy N` | Menu size `sample` draws per strategy (default 1000). Keep ≥ largest `k`. Values below ~30 can trip a pre-existing bigint sampler panic. |
 | `--jobs N` | Concurrent `verify` legs (default `os.cpu_count()`). Lower it if the large leg egraphs exhaust RAM. |

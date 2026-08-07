@@ -38,7 +38,7 @@ from common import (
     run_json_subprocess_measured,
 )
 
-# Strategy names emitted by `sample` (see Strategy::name in src/cli.rs).
+# Candidate-pool names emitted by `sample` (see CandidatePool::name in src/cli.rs).
 # The `with_replacement_*` pools are re-drawn *with* replacement across a leg's
 # `k` picks; everything else is drawn without replacement.
 SamplingStrategy = Literal[
@@ -52,6 +52,13 @@ SamplingStrategy = Literal[
 SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
 Strategy = Literal[SamplingStrategy, SmallestStrategy]
 SMALLEST_STRATEGIES = get_args(SmallestStrategy)
+CandidatePool = Literal[
+    "sample_independent",
+    "sample_naive",
+    "sample_balanced",
+    "smallest_novel",
+    "smallest_overall",
+]
 
 # Fields copied straight out of a `verify` LegResult onto a result row, with the
 # polars dtype to pin for each. `verify` omits these on an unreached leg
@@ -162,6 +169,10 @@ class Args:
     """How `sample` allocates the candidate budget across root term sizes:
     `greedy`, `uniform`, or `proportional:<min>`."""
 
+    candidate_pools: tuple[CandidatePool, ...] = ()
+    """Candidate pools to generate. Defaults to the pool selected by `strategy`;
+    grid runs provide the pools shared by a cell."""
+
     jobs: int | None = None
     """Max concurrent `verify` legs (one seed/goal pair per worker). Each pair's
     attempt loop stays sequential, so this parallelises across pairs. Defaults to
@@ -178,7 +189,7 @@ class WorkItem:
     guide_meta: dict
 
 
-def pool_key(strategy: str) -> str:
+def pool_key(strategy: Strategy) -> CandidatePool:
     """Map a driver strategy to the candidate-pool key `sample` writes.
 
     The replacement prefix is a Python-side draw policy (`pick_subset`), not a
@@ -194,7 +205,13 @@ def pool_key(strategy: str) -> str:
         return "sample_naive"
     if strategy.endswith("_balanced"):
         return "sample_balanced"
-    return strategy
+    raise ValueError(f"unknown strategy {strategy!r}")
+
+
+def requested_candidate_pools(args: Args) -> list[CandidatePool]:
+    """Resolve and deduplicate the candidate pools the Rust sampler should emit."""
+    pools = args.candidate_pools or (pool_key(args.strategy),)
+    return list(dict.fromkeys(pools))
 
 
 def replay_limits(args: Args, cfg: dict) -> dict:
@@ -247,7 +264,12 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
 
 
 def run_sample_shard(
-    args: Args, base_flags: list[str], limits: dict, menu_size: int, spec: SeedSpec
+    args: Args,
+    base_flags: list[str],
+    limits: dict,
+    menu_size: int,
+    pools: list[str],
+    spec: SeedSpec,
 ) -> list[dict]:
     """Run ``sample`` for one seed and attach its goals to each output record."""
     cmd = [
@@ -259,6 +281,8 @@ def run_sample_shard(
         "--samples-per-strategy",
         str(menu_size),
     ]
+    for pool in pools:
+        cmd.extend(["--candidate-pool", pool])
     measured = run_json_subprocess_measured(cmd, what=f"sample for seed {spec.seed!r}")
     records = measured.payload
     if not records:
@@ -284,6 +308,7 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     Merge results in seed order and write ``samples.json`` for provenance.
     """
     specs = flatten_enriched_seeds(args)
+    pools = requested_candidate_pools(args)
     sample_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
     sample_flags = [
@@ -299,7 +324,8 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     # k distinct guides per attempt across `attempts` disjoint attempts.
     menu_size = args.k * args.attempts
     print(
-        f"Sampling guide menu ({menu_size}/strategy) for {len(specs)} seed(s) "
+        f"Sampling guide menu ({menu_size}/strategy, pools={','.join(pools)}) "
+        f"for {len(specs)} seed(s) "
         f"-> {sample_out} ({jobs} workers)",
         file=sys.stderr,
     )
@@ -307,7 +333,9 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     shard_records: dict[int, list] = {}
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = {
-            pool_exec.submit(run_sample_shard, args, sample_flags, limits, menu_size, spec): i
+            pool_exec.submit(
+                run_sample_shard, args, sample_flags, limits, menu_size, pools, spec
+            ): i
             for i, spec in enumerate(specs)
         }
         for fut in tqdm(as_completed(futures), total=len(futures), desc="sampling", unit="seed"):

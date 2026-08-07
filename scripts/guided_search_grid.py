@@ -113,6 +113,7 @@ def driver_command(
     distribution: str,
     sampling_seed: int,
     strategy: str,
+    candidate_pools: list[str],
     output: Path,
     samples_input: Path | None,
     unguided_input: Path | None,
@@ -132,6 +133,8 @@ def driver_command(
         str(args.attempts),
         "--strategy",
         strategy,
+        "--candidate-pools",
+        *candidate_pools,
         "--k",
         str(args.k),
         "--rng-seed",
@@ -155,6 +158,16 @@ def driver_command(
     return cmd
 
 
+def candidate_pool(strategy: str) -> str:
+    """Map a driver strategy to the candidate key emitted by `sample`."""
+    if strategy.startswith("smallest_"):
+        return strategy
+    for suffix in ("independent", "naive", "balanced"):
+        if strategy.endswith(f"_{suffix}"):
+            return f"sample_{suffix}"
+    raise ValueError(f"unknown strategy {strategy!r}")
+
+
 def main() -> int:
     args = tyro.cli(Args, description=__doc__)
     if all(v is None for v in (args.stop_iters, args.stop_nodes, args.stop_time, args.stop_memory)):
@@ -174,6 +187,7 @@ def main() -> int:
         sampling_seeds = [
             int(value) for value in comma_values(args.sampling_seeds, "sampling_seeds")
         ]
+        candidate_pools = list(dict.fromkeys(candidate_pool(strategy) for strategy in strategies))
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2
@@ -264,6 +278,7 @@ def main() -> int:
                     distribution=distribution,
                     sampling_seed=sampling_seed,
                     strategy=strategy,
+                    candidate_pools=candidate_pools,
                     output=strategy_out,
                     samples_input=samples_input,
                     unguided_input=unguided_input,
