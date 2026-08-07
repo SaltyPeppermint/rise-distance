@@ -24,17 +24,12 @@ pub(crate) struct PrevIndex<L: Language> {
 
 impl<L: Language> PrevIndex<L> {
     /// Reconstruct an earlier hashcons relation from the final raw-node
-    /// history and an owned effective-union log.
-    ///
-    /// The event vector is consumed and dropped immediately after replay,
-    /// before the memo table is allocated, to keep the reconstruction peak
-    /// bounded to `current graph + events + replay` or
-    /// `current graph + replay + index`, rather than all four.
+    /// history and a borrowed effective-union log.
     pub(crate) fn from_union_history(
         raw_nodes: &[L],
         raw_node_count: usize,
         union_event_count: usize,
-        events: Vec<UnionEvent>,
+        events: &[UnionEvent],
     ) -> Self {
         assert!(
             raw_node_count <= raw_nodes.len(),
@@ -46,7 +41,7 @@ impl<L: Language> PrevIndex<L> {
         );
 
         let mut replay = DenseUnionFind::<Id>::new(raw_node_count);
-        for event in events.iter().take(union_event_count) {
+        for event in &events[..union_event_count] {
             let left = usize::from(event.left);
             let right = usize::from(event.right);
             assert!(
@@ -55,8 +50,6 @@ impl<L: Language> PrevIndex<L> {
             );
             replay.union(event.left, event.right);
         }
-        drop(events);
-
         let mut memo = HashMap::with_capacity(raw_node_count);
         for (raw_index, raw_node) in raw_nodes[..raw_node_count].iter().enumerate() {
             let mut node = raw_node.clone();
@@ -77,21 +70,6 @@ impl<L: Language> PrevIndex<L> {
             }
         }
 
-        Self { memo }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_egraph<N: Analysis<L>>(egraph: &EGraph<L, N>) -> Self {
-        assert!(egraph.clean, "test oracle e-graph must be rebuilt");
-        let mut memo = HashMap::with_capacity(egraph.nodes().len());
-        for (raw_index, raw_node) in egraph.nodes().iter().enumerate() {
-            let mut node = raw_node.clone();
-            node.for_each_mut(|child| *child = egraph.find(*child));
-            let owner = egraph.find(Id::from(raw_index));
-            if let Some(previous_owner) = memo.insert(node, owner) {
-                assert_eq!(egraph.find(previous_owner), owner);
-            }
-        }
         Self { memo }
     }
 
@@ -141,8 +119,12 @@ mod tests {
 
         let event_count = graph.union_event_count();
         let raw_count = graph.nodes().len();
-        let events = graph.take_union_events();
-        let index = PrevIndex::from_union_history(graph.nodes(), raw_count, event_count, events);
+        let index = PrevIndex::from_union_history(
+            graph.nodes(),
+            raw_count,
+            event_count,
+            graph.union_events(),
+        );
 
         assert_eq!(
             index.lookup_expr(&"a".parse().unwrap()),
@@ -168,8 +150,12 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let events = graph.take_union_events();
-        let index = PrevIndex::from_union_history(graph.nodes(), raw_count, event_count, events);
+        let index = PrevIndex::from_union_history(
+            graph.nodes(),
+            raw_count,
+            event_count,
+            graph.union_events(),
+        );
         assert!(index.lookup(sym("a")).is_some());
         assert!(index.lookup(sym("b")).is_none());
     }

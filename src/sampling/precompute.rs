@@ -32,14 +32,13 @@ where
     C: Counter,
 {
     /// Enumerate all frontier terms not present at the selected previous
-    /// boundary. This consumes the result's compact previous-state index, so
-    /// only one precomputation can be started from a given result.
+    /// boundary.
     #[must_use]
     pub fn precompute(
         result: &'a EqsatResult<L, N>,
         max_size: usize,
     ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let prev = result.take_prev_index()?;
+        let prev = result.prev_index();
         let matches = enumerate_matches(result.curr(), &prev);
         drop(prev);
         Self::precompute_with_matches(result, max_size, matches)
@@ -74,8 +73,7 @@ where
 
     /// Like [`precompute`](Self::precompute), but searches for the smallest
     /// `max_size` that yields at least `sizes` distinct novel term sizes at
-    /// the root. Like `precompute`, this consumes the result's previous-state
-    /// index.
+    /// the root.
     ///
     /// An exact, root-restricted counting pass advances one size layer at a
     /// time and stops at the `sizes`-th novel size. That size is then used to
@@ -108,15 +106,11 @@ where
     ) -> Result<(usize, Self), usize> {
         assert!(sizes > 0, "sizes must be nonzero");
 
+        // Match enumeration is independent of max_size and is shared by the
+        // size scan and package construction.
+        let prev = result.prev_index();
         let curr = result.curr();
         let root = curr.find(result.root());
-        // Match enumeration is independent of max_size and is shared by the
-        // size scan and package construction. Consume and drop the compact
-        // previous index before either layered DP is allocated.
-        let Some(prev) = result.take_prev_index() else {
-            writeln!(log, "previous-boundary index was already consumed").unwrap();
-            return Err(start_size + max_retries * retry_step);
-        };
         let matches = enumerate_matches(curr, &prev);
         drop(prev);
         let cap = start_size + max_retries * retry_step;
@@ -289,16 +283,19 @@ mod tests {
         // `a` and (+ a b) already exist in prev, so the novel sizes are
         // 5, 7, 9, ... asking for 3 sizes must yield max_size = 9.
         let mut curr = EGraph::<Math, ()>::new(());
+        curr.enable_union_event_recording();
         let a = curr.add(sym("a"));
         let b = curr.add(sym("b"));
         let apb = curr.add(Math::Add([a, b]));
         curr.rebuild();
-        let prev = curr.clone();
+        let prev_raw_node_count = curr.nodes().len();
+        let prev_union_event_count = curr.union_event_count();
 
         curr.union(a, apb);
         curr.rebuild();
 
-        let result = EqsatResult::new_for_tests(&prev, curr, apb);
+        let result =
+            EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
         let mut log = String::new();
         let (used_max_size, pp) =
             PrecomputePackage::<BigUint, _, _>::backoff_precompute(&result, 3, 10, 2, 3, &mut log)
@@ -320,15 +317,18 @@ mod tests {
     #[test]
     fn balanced_sample_strategy_covers_union_profiles() {
         let mut curr = EGraph::<Math, ()>::new(());
+        curr.enable_union_event_recording();
         let a = curr.add(sym("a"));
         let b = curr.add(sym("b"));
         let root = curr.add(Math::Add([a, b]));
         curr.rebuild();
-        let prev = curr.clone();
+        let prev_raw_node_count = curr.nodes().len();
+        let prev_union_event_count = curr.union_event_count();
         curr.union(a, b);
         curr.rebuild();
 
-        let result = EqsatResult::new_for_tests(&prev, curr, root);
+        let result =
+            EqsatResult::new_for_tests(curr, root, prev_raw_node_count, prev_union_event_count);
         let package =
             PrecomputePackage::<BigUint, _, _>::precompute(&result, 3).expect("frontier package");
         let terms = package

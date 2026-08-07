@@ -18,7 +18,7 @@ use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 
 use rise_distance::cli::GoalGenMetadata;
-use rise_distance::eqsat::{EqsatConfig, SplitMetadata};
+use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::lower;
 use rise_distance::sampling::{Distribution, PrecomputePackage, SampleStrategy};
@@ -135,20 +135,9 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let base_peak_live_heap = result.peak_allocated();
 
     let stop_reason = format!("{:?}", result.stop_reason());
-    let SplitMetadata { guide, goal } = result.split_metadata();
+    let goal = result.metadata();
 
-    writeln!(
-        log,
-        "goal_iters={} guide_iters={} stop={stop_reason}",
-        goal.iters, guide.iters
-    )
-    .unwrap();
-    writeln!(
-        log,
-        "guide egraph: {} nodes, {} classes in {:.2}s",
-        guide.nodes, guide.classes, guide.time
-    )
-    .unwrap();
+    writeln!(log, "goal_iters={} stop={stop_reason}", goal.iters).unwrap();
     writeln!(
         log,
         "goal egraph:  {} nodes, {} classes in {:.2}s",
@@ -204,7 +193,6 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     Ok(GoalGenMetadata {
         max_size: used_max_size,
         goal_egraph: goal,
-        guide_egraph: guide,
         base_memory,
         base_peak_live_heap,
         goals: goal_strings,

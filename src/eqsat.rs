@@ -102,10 +102,10 @@ impl EqsatConfig {
     }
 }
 
-/// Result of running eqsat. Holds the final e-graph and a compact lookup index
-/// for the selected previous boundary, plus per-iteration metadata in
-/// `iter_data` (timings, `egraph_nodes`, etc.). `root` is the id returned by the
-/// initial `add`, so it may not be canonical in later iterations.
+/// Result of running eqsat. Holds the final e-graph and the compact marker
+/// needed to reconstruct the selected previous boundary, plus per-iteration
+/// metadata in `iter_data` (timings, `egraph_nodes`, etc.). `root` is the id
+/// returned by the initial `add`, so it may not be canonical in later iterations.
 /// It also canonicalizes with `egraph.find(root)` before using it as a `HashMap` key.
 pub struct EqsatResult<L, N>
 where
@@ -113,7 +113,7 @@ where
     N: Analysis<L>,
 {
     iter_data: Vec<Iteration<()>>,
-    prev: RefCell<Option<PrevIndex<L>>>,
+    prev_boundary: Boundary,
     curr: EGraph<L, N>,
     root: Id,
     stop_reason: StopReason,
@@ -126,14 +126,21 @@ where
     L: Language,
     N: Analysis<L>,
 {
-    /// Test-only constructor so downstream code (e.g. sampling) can be
-    /// exercised on hand-built egraph pairs without running eqsat.
+    /// Test-only constructor for a hand-built final e-graph whose union log
+    /// contains the supplied previous-boundary marker.
     #[cfg(test)]
-    pub(crate) fn new_for_tests(prev: &EGraph<L, N>, curr: EGraph<L, N>, root: Id) -> Self {
-        let prev = PrevIndex::from_egraph(prev);
+    pub(crate) fn new_for_tests(
+        curr: EGraph<L, N>,
+        root: Id,
+        prev_raw_node_count: usize,
+        prev_union_event_count: usize,
+    ) -> Self {
         Self {
             iter_data: Vec::new(),
-            prev: RefCell::new(Some(prev)),
+            prev_boundary: Boundary {
+                raw_node_count: prev_raw_node_count,
+                union_event_count: prev_union_event_count,
+            },
             curr,
             root,
             stop_reason: StopReason::Saturated,
@@ -152,11 +159,15 @@ where
         &self.curr
     }
 
-    /// Consume the previous-boundary index. Match enumeration is the last
-    /// phase that needs it, so callers should drop it before allocating
-    /// counting tables.
-    pub(crate) fn take_prev_index(&self) -> Option<PrevIndex<L>> {
-        self.prev.borrow_mut().take()
+    /// Reconstruct the previous-boundary index without changing the final
+    /// e-graph or its retained union log.
+    pub(crate) fn prev_index(&self) -> PrevIndex<L> {
+        PrevIndex::from_union_history(
+            self.curr.nodes(),
+            self.prev_boundary.raw_node_count,
+            self.prev_boundary.union_event_count,
+            self.curr.union_events(),
+        )
     }
 
     /// Per-iteration metadata only (timings, `egraph_nodes`, `egraph_classes`,
@@ -197,47 +208,17 @@ where
         (self.curr, self.root)
     }
 
-    /// Split this run into guide- and goal-phase metadata. The guide phase is
-    /// the first half of the applied iterations (`iters() / 2`); the goal phase
-    /// is the whole run.
-    ///
-    /// egg's `Iteration` records `egraph_nodes`/`egraph_classes` at the *start*
-    /// of each iteration, so iter K+1's start equals iter K's end. The guide
-    /// node/class counts therefore read from `data()[guide_iters + 1]`.
+    /// Summarize the complete run. Node and class counts come from the rebuilt
+    /// final e-graph rather than egg's iteration-boundary snapshots.
     #[must_use]
-    pub fn split_metadata(&self) -> SplitMetadata {
-        let goal_iters = self.iters();
-        let guide_iters = goal_iters / 2;
-
-        let guide_time = self.iter_data[..=guide_iters]
-            .iter()
-            .map(|i| i.total_time)
-            .sum();
-        let goal_time = self.iter_data.iter().map(|i| i.total_time).sum();
-
-        let guide_iter_end = &self.iter_data[guide_iters + 1];
-        SplitMetadata {
-            guide: EqsatMetadata {
-                nodes: guide_iter_end.egraph_nodes,
-                classes: guide_iter_end.egraph_classes,
-                time: guide_time,
-                iters: guide_iters,
-            },
-            goal: EqsatMetadata {
-                nodes: self.curr.total_number_of_nodes(),
-                classes: self.curr.classes().len(),
-                time: goal_time,
-                iters: goal_iters,
-            },
+    pub fn metadata(&self) -> EqsatMetadata {
+        EqsatMetadata {
+            nodes: self.curr.total_number_of_nodes(),
+            classes: self.curr.classes().len(),
+            time: self.iter_data.iter().map(|i| i.total_time).sum(),
+            iters: self.iters(),
         }
     }
-}
-
-/// Guide- and goal-phase metadata for a single eqsat run. See
-/// [`EqsatResult::split_metadata`].
-pub struct SplitMetadata {
-    pub guide: EqsatMetadata,
-    pub goal: EqsatMetadata,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -429,17 +410,9 @@ where
         prev_boundary, final_boundary,
         "previous and final boundary must be distinct"
     );
-    let events = curr.take_union_events();
-    let prev = PrevIndex::from_union_history(
-        curr.nodes(),
-        prev_boundary.raw_node_count,
-        prev_boundary.union_event_count,
-        events,
-    );
-
     Some(EqsatResult {
         iter_data,
-        prev: RefCell::new(Some(prev)),
+        prev_boundary,
         curr,
         root,
         stop_reason,
@@ -749,7 +722,13 @@ mod tests {
 
         let result = run_eqsat::<Math, (), _>(&start, rules.iter(), &config)
             .expect("three boundary states should produce a previous index");
-        let prev = result.take_prev_index().expect("previous index");
+        let union_event_count = result.curr().union_event_count();
+        let prev = result.prev_index();
+        assert_eq!(
+            result.curr().union_event_count(),
+            union_event_count,
+            "reconstructing the previous index must not drain the final e-graph"
+        );
 
         let a = prev.lookup(sym("a")).expect("a existed at the boundary");
         let b = prev.lookup(sym("b")).expect("b existed at the boundary");
@@ -758,6 +737,10 @@ mod tests {
             prev.lookup(sym("c")).is_none(),
             "c was added only in the final distinct state"
         );
+
+        let prev_again = result.prev_index();
+        assert!(prev_again.lookup(sym("a")).is_some());
+        assert!(prev_again.lookup(sym("c")).is_none());
     }
 
     #[test]

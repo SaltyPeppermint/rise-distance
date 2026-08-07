@@ -123,12 +123,10 @@ pub struct GoalGenMetadata<C: Counter> {
     /// auto-convert numeric strings back to `usize` on read.
     pub frontier_histogram: HashMap<String, C>,
     pub stop_reason: String,
-    pub guide_egraph: EqsatMetadata,
     pub goal_egraph: EqsatMetadata,
     /// Eqsat's absolute live allocation (bytes): jemalloc `stats.allocated`
     /// for the whole process, the same coordinate system the configured memory
-    /// ceiling is expressed in. A single combined reading, not splittable into
-    /// `guide_egraph`/`goal_egraph` halves.
+    /// ceiling is expressed in.
     pub base_memory: u64,
     /// Largest sampled absolute live heap during the unguided goal run.
     pub base_peak_live_heap: u64,
