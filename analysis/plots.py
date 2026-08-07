@@ -49,6 +49,13 @@ def _mode_color(modes: Sequence[str]) -> alt.Color:
     )
 
 
+def _guided_peak_scope(paired: pl.DataFrame) -> str:
+    if "guided_peak_scope" not in paired.columns:
+        return "guided workflow"
+    scopes = paired["guided_peak_scope"].drop_nulls().unique().to_list()
+    return str(scopes[0]) if len(scopes) == 1 else "guided"
+
+
 def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
     """Success rates with Wilson intervals."""
     points = (
@@ -102,7 +109,9 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
 
 
 def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Guided versus unguided whole-process peak RSS for paired successes."""
+    """One explicitly scoped guided peak versus unguided verification."""
+    guided_scope = _guided_peak_scope(paired)
+    title = f"{guided_scope.title()} vs unguided verification"
     points = (
         alt.Chart(paired)
         .mark_circle(size=45, opacity=0.58)
@@ -114,7 +123,7 @@ def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
             ),
             y=alt.Y(
                 "guided_peak_mib:Q",
-                title="guided peak RSS (MiB, log)",
+                title=f"{guided_scope} peak RSS (MiB, log)",
                 scale=alt.Scale(type="log"),
             ),
             color=_mode_color(meta["modes"]),
@@ -130,7 +139,7 @@ def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
     )
     if paired.is_empty():
         return points.properties(
-            title=_title("Peak RSS for pairs reached by both methods", meta),
+            title=_title(title, meta),
             width=420,
             height=380,
         )
@@ -146,14 +155,15 @@ def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         )
     )
     return (diagonal + points).properties(
-        title=_title("Peak RSS for pairs reached by both methods", meta),
+        title=_title(title, meta),
         width=420,
         height=380,
     )
 
 
 def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
-    """ECDF of guided/unguided peak RSS among paired successes."""
+    """ECDF of one explicitly scoped guided peak versus unguided verification."""
+    guided_scope = _guided_peak_scope(paired)
     data = paired.with_columns(
         (pl.col("peak_ratio").rank("max").over("mode") / pl.len().over("mode")).alias("cdf")
     ).sort("mode", "peak_ratio")
@@ -163,7 +173,7 @@ def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(
             x=alt.X(
                 "peak_ratio:Q",
-                title="guided / unguided peak RSS (log)",
+                title=f"{guided_scope} / unguided verification peak RSS (log)",
                 scale=alt.Scale(type="log"),
             ),
             y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
@@ -181,7 +191,65 @@ def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_rule(strokeDash=[5, 4], color="#777")
         .encode(x=alt.X("ratio:Q", scale=alt.Scale(type="log")))
     )
-    return (curves + parity).properties(title=_title("Peak RSS ratio", meta), width=460)
+    return (curves + parity).properties(
+        title=_title(f"{guided_scope.title()} peak RSS ratio", meta), width=460
+    )
+
+
+def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Absolute guided/unguided verification RSS, excluding sampler setup."""
+    data = pl.concat(
+        [
+            paired.select(
+                "mode",
+                (pl.col("guided_peak_mib")).alias("peak_mib"),
+                pl.lit("guided verification").alias("method"),
+            ),
+            paired.select(
+                "mode",
+                (pl.col("unguided_peak_mib")).alias("peak_mib"),
+                pl.lit("unguided verification").alias("method"),
+            ),
+        ]
+    ).with_columns(
+        (
+            pl.col("peak_mib").rank("max").over("mode", "method")
+            / pl.len().over("mode", "method")
+        ).alias("cdf")
+    )
+    return (
+        alt.Chart(data)
+        .mark_line(interpolate="step-after", strokeWidth=2)
+        .encode(
+            x=alt.X(
+                "peak_mib:Q",
+                title="verification peak RSS (MiB, log)",
+                scale=alt.Scale(type="log"),
+            ),
+            y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
+            color=alt.Color(
+                "method:N",
+                scale=alt.Scale(
+                    domain=["guided verification", "unguided verification"],
+                    range=[PALETTE[0], PALETTE[1]],
+                ),
+                legend=alt.Legend(title=None),
+            ),
+            column=alt.Column("mode:N", title=None, sort=list(meta["modes"])),
+            order="peak_mib:Q",
+            tooltip=[
+                "mode:N",
+                "method:N",
+                alt.Tooltip("peak_mib:Q", format=".1f"),
+                alt.Tooltip("cdf:Q", format=".1%"),
+            ],
+        )
+        .properties(
+            title=_title("Verification-only peak RSS (sampling excluded)", meta),
+            width=300,
+            height=240,
+        )
+    )
 
 
 def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:

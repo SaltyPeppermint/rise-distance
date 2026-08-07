@@ -13,6 +13,8 @@ REQUIRED_COMPARISON_COLUMNS = {
     "goal",
     "guided_success",
     "unguided_success",
+    "sample_peak_rss_bytes",
+    "verify_peak_rss_bytes",
     "guided_peak_rss_bytes",
     "unguided_peak_rss_bytes",
     "attempts_run",
@@ -22,6 +24,7 @@ REQUIRED_COMPARISON_COLUMNS = {
 }
 MEMORY_SUMMARY_SCHEMA = {
     "mode": pl.String,
+    "guided_peak_scope": pl.String,
     "n_paired_successes": pl.Int64,
     "guided_median_peak_mib": pl.Float64,
     "unguided_median_peak_mib": pl.Float64,
@@ -30,6 +33,13 @@ MEMORY_SUMMARY_SCHEMA = {
     "median_peak_ratio": pl.Float64,
     "median_memory_saved_pct": pl.Float64,
     "guided_lower_peak_share": pl.Float64,
+}
+MEMORY_COMPONENT_SUMMARY_SCHEMA = {
+    "mode": pl.String,
+    "component": pl.String,
+    "n": pl.Int64,
+    "median_peak_mib": pl.Float64,
+    "p90_peak_mib": pl.Float64,
 }
 
 
@@ -266,20 +276,82 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def paired_successes(frame: pl.DataFrame) -> pl.DataFrame:
-    """Pairs reached by both methods with valid positive peak-RSS readings."""
+def _paired_successes_for_peak(
+    frame: pl.DataFrame, guided_peak_column: str, guided_peak_scope: str
+) -> pl.DataFrame:
+    """Build a guided/unguided comparison for one explicitly named guided peak."""
     return (
         frame.filter(pl.col("guided_success") & pl.col("unguided_success"))
-        .drop_nulls(["guided_peak_rss_bytes", "unguided_peak_rss_bytes"])
-        .filter((pl.col("guided_peak_rss_bytes") > 0) & (pl.col("unguided_peak_rss_bytes") > 0))
+        .drop_nulls([guided_peak_column, "unguided_peak_rss_bytes"])
+        .filter((pl.col(guided_peak_column) > 0) & (pl.col("unguided_peak_rss_bytes") > 0))
         .with_columns(
-            (pl.col("guided_peak_rss_bytes") / 2**20).alias("guided_peak_mib"),
+            pl.lit(guided_peak_scope).alias("guided_peak_scope"),
+            (pl.col(guided_peak_column) / 2**20).alias("guided_peak_mib"),
             (pl.col("unguided_peak_rss_bytes") / 2**20).alias("unguided_peak_mib"),
-            (pl.col("guided_peak_rss_bytes") / pl.col("unguided_peak_rss_bytes")).alias(
-                "peak_ratio"
-            ),
+            (pl.col(guided_peak_column) / pl.col("unguided_peak_rss_bytes")).alias("peak_ratio"),
         )
         .with_columns(((1 - pl.col("peak_ratio")) * 100).alias("memory_saved_pct"))
+    )
+
+
+def paired_verification_successes(frame: pl.DataFrame) -> pl.DataFrame:
+    """Paired successes comparing guided verification with unguided verification."""
+    return _paired_successes_for_peak(frame, "verify_peak_rss_bytes", "guided verification")
+
+
+def paired_workflow_successes(frame: pl.DataFrame) -> pl.DataFrame:
+    """Paired successes comparing the complete guided workflow with unguided verification."""
+    return _paired_successes_for_peak(frame, "guided_peak_rss_bytes", "guided workflow")
+
+
+def paired_successes(frame: pl.DataFrame) -> pl.DataFrame:
+    """Backward-compatible complete-workflow comparison for grid analyses."""
+    return paired_workflow_successes(frame)
+
+
+def memory_component_summary(frame: pl.DataFrame) -> pl.DataFrame:
+    """Peak RSS for setup, verification, and the complete workflow.
+
+    Every component is conditional on both methods reporting success. Null
+    telemetry is excluded per component, so `n` makes incomplete old runs
+    visible rather than silently substituting another phase's measurement.
+    """
+    paired = frame.filter(pl.col("guided_success") & pl.col("unguided_success"))
+    components = (
+        ("sampler setup", "sample_peak_rss_bytes"),
+        ("guided verification", "verify_peak_rss_bytes"),
+        ("guided workflow", "guided_peak_rss_bytes"),
+        ("unguided verification", "unguided_peak_rss_bytes"),
+    )
+    summaries = []
+    for component, column in components:
+        valid = paired.drop_nulls(column).filter(pl.col(column) > 0)
+        if valid.is_empty():
+            summaries.append(
+                paired.select("mode")
+                .unique(maintain_order=True)
+                .with_columns(
+                    pl.lit(component).alias("component"),
+                    pl.lit(0, dtype=pl.UInt32).alias("n"),
+                    pl.lit(None, dtype=pl.Float64).alias("median_peak_mib"),
+                    pl.lit(None, dtype=pl.Float64).alias("p90_peak_mib"),
+                )
+            )
+            continue
+        summaries.append(
+            valid.group_by("mode", maintain_order=True).agg(
+                pl.lit(component).first().alias("component"),
+                pl.len().alias("n"),
+                (pl.col(column) / 2**20).median().alias("median_peak_mib"),
+                (pl.col(column) / 2**20).quantile(0.9).alias("p90_peak_mib"),
+            )
+        )
+    if not summaries:
+        return pl.DataFrame(schema=MEMORY_COMPONENT_SUMMARY_SCHEMA)
+    return (
+        pl.concat(summaries)
+        .with_columns(pl.col("median_peak_mib", "p90_peak_mib").round(3))
+        .sort("mode", "component")
     )
 
 
@@ -287,8 +359,10 @@ def memory_summary(paired: pl.DataFrame) -> pl.DataFrame:
     """Peak-RSS statistics conditional on both methods succeeding."""
     if paired.is_empty():
         return pl.DataFrame(schema=MEMORY_SUMMARY_SCHEMA)
+    if "guided_peak_scope" not in paired.columns:
+        paired = paired.with_columns(pl.lit("guided workflow").alias("guided_peak_scope"))
     return (
-        paired.group_by("mode", maintain_order=True)
+        paired.group_by("mode", "guided_peak_scope", maintain_order=True)
         .agg(
             pl.len().alias("n_paired_successes"),
             pl.col("guided_peak_mib").median().alias("guided_median_peak_mib"),
@@ -299,20 +373,18 @@ def memory_summary(paired: pl.DataFrame) -> pl.DataFrame:
             pl.col("memory_saved_pct").median().alias("median_memory_saved_pct"),
             (pl.col("peak_ratio") < 1).mean().alias("guided_lower_peak_share"),
         )
-        .with_columns(pl.exclude("mode", "n_paired_successes").round(3))
+        .with_columns(pl.exclude("mode", "guided_peak_scope", "n_paired_successes").round(3))
     )
 
 
 def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
-    """One compact success and paired-memory row per mode."""
-    rates = success_rates(frame).pivot(
+    """One compact success-only row per mode."""
+    return success_rates(frame).pivot(
         on="method",
         index="mode",
         values=["successes", "n", "success_rate", "ci_low", "ci_high"],
         separator="_",
-    )
-    memory = memory_summary(paired_successes(frame))
-    return rates.join(memory, on="mode", how="left").sort("mode")
+    ).sort("mode")
 
 
 def resolve_grid(pattern: str = "") -> Path:
@@ -424,4 +496,6 @@ def grid_success_by_budget(grid_dir: Path, budgets: Sequence[int]) -> pl.DataFra
 
 def grid_policy_summary(frame: pl.DataFrame) -> pl.DataFrame:
     """Full-budget success and paired peak-RSS statistics by grid policy."""
-    return success_summary(frame)
+    success = success_summary(frame)
+    memory = memory_summary(paired_workflow_successes(frame)).drop("guided_peak_scope")
+    return success.join(memory, on="mode", how="left").sort("mode")
