@@ -1,4 +1,4 @@
-use egg::{Id, RecExpr};
+use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
 
 use crate::Counter;
@@ -13,31 +13,41 @@ use crate::sampling::sampler::{
 use crate::sampling::{Distribution, SampleStrategy};
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
-pub struct PrecomputePackage<'a, C, L, N>
+/// Final e-graph together with the immutable counting tables used to sample
+/// its novel frontier.
+///
+/// Construction consumes [`EqsatResult`]: after match enumeration reconstructs
+/// the previous boundary, the package retains the final e-graph and drops the
+/// run metadata and boundary marker.
+pub struct PrecomputePackage<C, L, N>
 where
     L: MyLanguage,
     N: MyAnalysis<L>,
     C: Counter,
 {
-    tc: NovelTermCount<'a, C, L, N>,
+    egraph: EGraph<L, N>,
+    tc: NovelTermCount<C>,
     min_size: usize,
     max_size: usize,
     root: Id,
 }
 
-impl<'a, C, L, N> PrecomputePackage<'a, C, L, N>
+impl<C, L, N> PrecomputePackage<C, L, N>
 where
     L: MyLanguage,
     N: MyAnalysis<L>,
     C: Counter,
 {
-    /// Enumerate all frontier terms not present at the selected previous
-    /// boundary.
+    /// Consume an eqsat result and enumerate all frontier terms not present at
+    /// its selected previous boundary.
+    ///
+    /// The result is consumed even when the frontier is empty and this returns
+    /// `None`.
     #[must_use]
     pub fn precompute(
-        result: &'a EqsatResult<L, N>,
+        result: EqsatResult<L, N>,
         max_size: usize,
-    ) -> Option<PrecomputePackage<'a, C, L, N>> {
+    ) -> Option<PrecomputePackage<C, L, N>> {
         let prev = result.prev_index();
         let matches = enumerate_matches(result.curr(), &prev);
         drop(prev);
@@ -48,22 +58,24 @@ where
     /// enumeration precomputed by the caller, so repeated runs on the same
     /// egraph pair don't redo it.
     fn precompute_with_matches(
-        result: &'a EqsatResult<L, N>,
+        result: EqsatResult<L, N>,
         max_size: usize,
         matches: NodeMatches,
-    ) -> Option<PrecomputePackage<'a, C, L, N>> {
+    ) -> Option<PrecomputePackage<C, L, N>> {
+        let (egraph, root) = result.into_curr();
         let tc = NovelTermCount::with_matches(
             max_size,
-            result.curr(),
-            PlainTermCount::rooted(max_size, result.curr(), &[result.root()]),
+            &egraph,
+            PlainTermCount::rooted(max_size, &egraph, &[root]),
             matches,
         );
 
-        let root = result.curr().find(result.root());
+        let root = egraph.find(root);
         let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
         Some(PrecomputePackage {
+            egraph,
             tc,
             min_size,
             max_size,
@@ -71,9 +83,9 @@ where
         })
     }
 
-    /// Like [`precompute`](Self::precompute), but searches for the smallest
-    /// `max_size` that yields at least `sizes` distinct novel term sizes at
-    /// the root.
+    /// Like [`precompute`](Self::precompute), but consumes the result while
+    /// searching for the smallest `max_size` that yields at least `sizes`
+    /// distinct novel term sizes at the root.
     ///
     /// An exact, root-restricted counting pass advances one size layer at a
     /// time and stops at the `sizes`-th novel size. That size is then used to
@@ -97,7 +109,7 @@ where
     ///
     /// Panics if `sizes` is zero or writing to `log` fails.
     pub fn backoff_precompute<W: std::fmt::Write>(
-        result: &'a EqsatResult<L, N>,
+        result: EqsatResult<L, N>,
         start_size: usize,
         max_retries: usize,
         retry_step: usize,
@@ -185,15 +197,17 @@ where
 
         match sample_strategy {
             SampleStrategy::Naive => {
-                IndependentFrontierSampler::new(&self.tc, self.root, NaiveWeigher)
+                IndependentFrontierSampler::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
                     .sample_batch_root(&samples_per_size, seed)
             }
             SampleStrategy::Independent => {
-                IndependentFrontierSampler::new(&self.tc, self.root, CountWeigher)
+                IndependentFrontierSampler::new(&self.tc, &self.egraph, self.root, CountWeigher)
                     .sample_batch_root(&samples_per_size, seed)
             }
-            SampleStrategy::Balanced => BalancedFrontierSampler::new(&self.tc, self.root)
-                .sample_batch_root(&samples_per_size, seed),
+            SampleStrategy::Balanced => {
+                BalancedFrontierSampler::new(&self.tc, &self.egraph, self.root)
+                    .sample_batch_root(&samples_per_size, seed)
+            }
         }
     }
 
@@ -216,7 +230,8 @@ where
         let samples_per_size =
             distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
 
-        BalancedFrontierSampler::new(&self.tc, self.root).sample_batch_root(&samples_per_size, seed)
+        BalancedFrontierSampler::new(&self.tc, &self.egraph, self.root)
+            .sample_batch_root(&samples_per_size, seed)
     }
 
     /// [`Self::sample_balanced_frontier_terms`] with explicit coverage
@@ -233,16 +248,17 @@ where
         let samples_per_size =
             distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
 
-        BalancedFrontierSampler::with_config(&self.tc, self.root, config)
+        BalancedFrontierSampler::with_config(&self.tc, &self.egraph, self.root, config)
             .sample_batch_root(&samples_per_size, seed)
     }
 
     #[must_use]
     pub fn smallest(&self, id: Id, novel: bool) -> RecExpr<OriginLang<L>> {
         if novel {
-            IndependentFrontierSampler::new(&self.tc, self.root, NaiveWeigher).smallest(id)
+            IndependentFrontierSampler::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
+                .smallest(id)
         } else {
-            PlainSampler::new(self.tc.plain(), self.tc.curr(), self.root, NaiveWeigher).smallest(id)
+            PlainSampler::new(self.tc.plain(), &self.egraph, self.root, NaiveWeigher).smallest(id)
         }
     }
 
@@ -298,7 +314,7 @@ mod tests {
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
         let mut log = String::new();
         let (used_max_size, pp) =
-            PrecomputePackage::<BigUint, _, _>::backoff_precompute(&result, 3, 10, 2, 3, &mut log)
+            PrecomputePackage::<BigUint, _, _>::backoff_precompute(result, 3, 10, 2, 3, &mut log)
                 .expect("backoff_precompute should succeed");
 
         assert_eq!(used_max_size, 9, "log:\n{log}");
@@ -330,7 +346,7 @@ mod tests {
         let result =
             EqsatResult::new_for_tests(curr, root, prev_raw_node_count, prev_union_event_count);
         let package =
-            PrecomputePackage::<BigUint, _, _>::precompute(&result, 3).expect("frontier package");
+            PrecomputePackage::<BigUint, _, _>::precompute(result, 3).expect("frontier package");
         let terms = package
             .sample_frontier_terms(3, Distribution::Greedy, SampleStrategy::Balanced, [5, 8])
             .expect("balanced frontier terms");

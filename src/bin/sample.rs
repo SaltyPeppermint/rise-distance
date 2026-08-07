@@ -144,7 +144,8 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     // Replay the guide phase under the effective limits the driver computed;
     // the replay ends at whichever limit trips first.
     let result = run_eqsat(&seed_expr, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
-    eprintln!("Guide replay stop reason: {:?}", result.stop_reason());
+    let stop_reason = format!("{:?}", result.stop_reason());
+    eprintln!("Guide replay stop reason: {stop_reason}");
 
     // Absolute process live heap, sampled before precompute and sampling below
     // allocate further.
@@ -163,7 +164,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
 
     let start_size = AstSize.cost_rec(&seed_expr);
     let (max_size, pc) = PrecomputePackage::<BigUint, _, _>::backoff_precompute(
-        &result,
+        result,
         start_size,
         args.max_retries,
         args.retry_step,
@@ -198,7 +199,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
         guide_time,
         guide_memory,
         guide_peak_live_heap,
-        stop_reason: format!("{:?}", result.stop_reason()),
+        stop_reason,
     })
 }
 

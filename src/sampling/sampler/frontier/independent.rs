@@ -7,7 +7,7 @@
 //! lives in [`super::space::FrontierSpace`] and is shared with other
 //! frontier sampling policies.
 
-use egg::{Id, RecExpr};
+use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
@@ -49,9 +49,14 @@ where
     W: Weigher<C>,
 {
     #[must_use]
-    pub const fn new(counts: &'a NovelTermCount<'g, C, L, N>, root: Id, weigher: W) -> Self {
+    pub const fn new(
+        counts: &'a NovelTermCount<C>,
+        graph: &'g EGraph<L, N>,
+        root: Id,
+        weigher: W,
+    ) -> Self {
         Self {
-            space: FrontierSpace::new(counts),
+            space: FrontierSpace::new(counts, graph),
             root,
             weigher,
         }
@@ -155,7 +160,7 @@ mod tests {
 
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
         let novel = NovelTermCount::new(5, &curr, &prev, plain);
-        let sampler = IndependentFrontierSampler::new(&novel, root, CountWeigher);
+        let sampler = IndependentFrontierSampler::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..50_u64 {
             let mut rng = combined_rng([seed]);
@@ -181,7 +186,7 @@ mod tests {
 
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
         let novel = NovelTermCount::new(5, &curr, &prev, plain);
-        let sampler = IndependentFrontierSampler::new(&novel, root, CountWeigher);
+        let sampler = IndependentFrontierSampler::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..100_u64 {
             let mut rng = combined_rng([seed]);
@@ -202,7 +207,7 @@ mod tests {
 
         let plain = PlainTermCount::<BigUint>::new(5, &graph);
         let novel = NovelTermCount::new(5, &graph, &graph, plain);
-        let sampler = IndependentFrontierSampler::new(&novel, a, CountWeigher);
+        let sampler = IndependentFrontierSampler::new(&novel, &graph, a, CountWeigher);
 
         assert!(!sampler.possible_size(a, 1, 0));
     }

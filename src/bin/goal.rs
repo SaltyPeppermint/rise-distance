@@ -149,7 +149,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
 
     let start_size = AstSize.cost_rec(seed_expr);
     let (used_max_size, pp) = PrecomputePackage::<BigUint, L, _>::backoff_precompute(
-        &result,
+        result,
         start_size,
         args.max_retries,
         args.retry_step,

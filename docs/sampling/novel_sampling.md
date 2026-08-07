@@ -416,7 +416,7 @@ let plain = PlainTermCount::<C>::new(max_size, &curr);
 let novel = NovelTermCount::new(max_size, &curr, &prev, plain);
 
 // Independent weighted sampling (in src/sampling/sampler/frontier/independent.rs):
-let sampler = IndependentFrontierSampler::new(&novel, root, weigher);
+let sampler = IndependentFrontierSampler::new(&novel, &curr, root, weigher);
 
 if sampler.possible_size(root, size, /* samples */ 0) {
     let term = sampler.sample(root, size, &mut rng);

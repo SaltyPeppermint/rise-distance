@@ -6,7 +6,7 @@
 //! choice still comes from [`FrontierSpace`], so balancing cannot weaken the
 //! frontier constraint.
 
-use egg::{Id, RecExpr};
+use egg::{EGraph, Id, RecExpr};
 use hashbrown::{HashMap, HashSet};
 use rand::distributions::{Distribution, WeightedIndex};
 use rand_chacha::ChaCha12Rng;
@@ -61,9 +61,10 @@ where
     N: MyAnalysis<L>,
 {
     #[must_use]
-    pub const fn new(counts: &'a NovelTermCount<'g, C, L, N>, root: Id) -> Self {
+    pub const fn new(counts: &'a NovelTermCount<C>, graph: &'g EGraph<L, N>, root: Id) -> Self {
         Self::with_config(
             counts,
+            graph,
             root,
             BalanceConfig {
                 node_penalty: 2,
@@ -75,12 +76,13 @@ where
 
     #[must_use]
     pub const fn with_config(
-        counts: &'a NovelTermCount<'g, C, L, N>,
+        counts: &'a NovelTermCount<C>,
+        graph: &'g EGraph<L, N>,
         root: Id,
         config: BalanceConfig,
     ) -> Self {
         Self {
-            space: FrontierSpace::new(counts),
+            space: FrontierSpace::new(counts, graph),
             root,
             config,
         }
@@ -340,7 +342,7 @@ mod tests {
 
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
         let counts = NovelTermCount::new(5, &curr, &prev, plain);
-        let sampler = BalancedFrontierSampler::new(&counts, root);
+        let sampler = BalancedFrontierSampler::new(&counts, &curr, root);
         let terms = sampler
             .sample_size(root, 3, 3, [17, 23])
             .expect("three frontier terms");
@@ -372,7 +374,7 @@ mod tests {
 
         let plain = PlainTermCount::<BigUint>::new(5, &curr);
         let counts = NovelTermCount::new(5, &curr, &prev, plain);
-        let sampler = BalancedFrontierSampler::new(&counts, root);
+        let sampler = BalancedFrontierSampler::new(&counts, &curr, root);
         let terms = sampler
             .sample_size(root, 3, 3, [0, 0])
             .expect("non-empty frontier");
@@ -407,7 +409,7 @@ mod tests {
             profile_penalty: 0,
             child_size_penalty: 0,
         };
-        let sampler = BalancedFrontierSampler::with_config(&counts, root, config);
+        let sampler = BalancedFrontierSampler::with_config(&counts, &curr, root, config);
         let seed = [17, 23];
 
         let mut rng = utils::combined_rng([3, seed[0], seed[1]]);
@@ -447,7 +449,7 @@ mod tests {
 
         let plain = PlainTermCount::<BigUint>::new(3, &curr);
         let counts = NovelTermCount::new(3, &curr, &prev, plain);
-        let sampler = BalancedFrontierSampler::new(&counts, root);
+        let sampler = BalancedFrontierSampler::new(&counts, &curr, root);
         let terms = sampler
             .sample_size(root, 3, 400, [31, 41])
             .expect("large frontier terms");

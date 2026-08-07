@@ -239,9 +239,9 @@ fn run_cut(
         cut_result.stop_reason()
     );
     let cut_meta = EqsatMetadata::from_iterations(cut_result.data());
+    let cut_iters = cut_result.iters();
 
-    let Some(pp) =
-        PrecomputePackage::<BigUint, VecLang, ()>::precompute(&cut_result, args.max_size)
+    let Some(pp) = PrecomputePackage::<BigUint, VecLang, ()>::precompute(cut_result, args.max_size)
     else {
         warn("Precompute returned None (empty frontier)");
         return None;
@@ -260,7 +260,7 @@ fn run_cut(
     println!(
         "Cut: sampled {} frontier terms after {} iters",
         sampled.len(),
-        cut_result.iters()
+        cut_iters
     );
 
     // Phase 2: run eqsat from each sampled term and keep the best cost.

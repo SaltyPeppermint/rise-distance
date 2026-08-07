@@ -58,13 +58,10 @@ type JointTable<C> = HashMap<(Id, Id), HashMap<usize, C>>;
 /// Joint extractability table + per-node prev matches + derived novel
 /// histograms.
 #[derive(Debug)]
-pub struct NovelTermCount<'g, C, L, N>
+pub struct NovelTermCount<C>
 where
     C: Counter,
-    L: Language,
-    N: Analysis<L>,
 {
-    curr: &'g EGraph<L, N>,
     plain: PlainTermCount<C>,
 
     /// Per `(curr_class, prev_class)` pair: histogram of size -> count of
@@ -84,17 +81,21 @@ where
     data: HashMap<Id, HashMap<usize, C>>,
 }
 
-impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
+impl<C: Counter> NovelTermCount<C> {
     /// Convenience constructor that enumerates the matches itself; the
     /// production path goes through [`with_matches`](Self::with_matches).
     #[cfg(test)]
     #[must_use]
-    pub fn new(
+    pub fn new<L, N>(
         max_size: usize,
-        curr: &'g EGraph<L, N>,
-        prev: &'g EGraph<L, N>,
+        curr: &EGraph<L, N>,
+        prev: &EGraph<L, N>,
         plain: PlainTermCount<C>,
-    ) -> Self {
+    ) -> Self
+    where
+        L: Language,
+        N: Analysis<L>,
+    {
         Self::with_matches(max_size, curr, plain, enumerate_matches(curr, prev))
     }
 
@@ -103,18 +104,21 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
     /// so callers that run several analyses on the same egraph pair (see
     /// `PrecomputePackage::backoff_precompute`) can share one enumeration.
     #[must_use]
-    pub(crate) fn with_matches(
+    pub(crate) fn with_matches<L, N>(
         max_size: usize,
-        curr: &'g EGraph<L, N>,
+        curr: &EGraph<L, N>,
         plain: PlainTermCount<C>,
         matches: NodeMatches,
-    ) -> Self {
+    ) -> Self
+    where
+        L: Language,
+        N: Analysis<L>,
+    {
         let joint = compute_joint(max_size, curr, &matches);
         let cover = build_cover(&joint);
         let data = derive_novel(plain.data(), &joint);
 
         Self {
-            curr,
             plain,
             joint,
             cover,
@@ -135,27 +139,48 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
         &self.plain
     }
 
-    #[must_use]
-    pub const fn curr(&self) -> &'g EGraph<L, N> {
-        self.curr
-    }
-
     /// Joint histogram for a `(curr_class, prev_class)` pair. `None` if the
     /// two classes share no extraction.
-    pub(crate) fn joint_histogram(&self, curr_id: Id, prev_id: Id) -> Option<&HashMap<usize, C>> {
-        let curr_canon = self.curr.find(curr_id);
+    pub(crate) fn joint_histogram<L, N>(
+        &self,
+        curr: &EGraph<L, N>,
+        curr_id: Id,
+        prev_id: Id,
+    ) -> Option<&HashMap<usize, C>>
+    where
+        L: Language,
+        N: Analysis<L>,
+    {
+        let curr_canon = curr.find(curr_id);
         self.joint.get(&(curr_canon, prev_id))
     }
 
     /// Novel histogram for a curr class. `None` if every extraction is
     /// representable in some prev class.
-    pub(crate) fn novel_histogram(&self, curr_id: Id) -> Option<&HashMap<usize, C>> {
-        let canon = self.curr.find(curr_id);
+    pub(crate) fn novel_histogram<L, N>(
+        &self,
+        curr: &EGraph<L, N>,
+        curr_id: Id,
+    ) -> Option<&HashMap<usize, C>>
+    where
+        L: Language,
+        N: Analysis<L>,
+    {
+        let canon = curr.find(curr_id);
         self.data.get(&canon)
     }
 
-    pub(crate) fn matches_of(&self, curr_class: Id, node_idx: usize) -> &[NodeMatch] {
-        let canon = self.curr.find(curr_class);
+    pub(crate) fn matches_of<L, N>(
+        &self,
+        curr: &EGraph<L, N>,
+        curr_class: Id,
+        node_idx: usize,
+    ) -> &[NodeMatch]
+    where
+        L: Language,
+        N: Analysis<L>,
+    {
+        let canon = curr.find(curr_class);
         self.matches
             .get(&(canon, node_idx))
             .map_or(&[][..], Vec::as_slice)
@@ -164,8 +189,12 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
     /// Set of prev classes that share at least one extraction with the given
     /// curr class. Used by the sampler to enumerate per-slot agreement
     /// options (any prev class in this set, plus NOVEL).
-    pub(crate) fn cover_of(&self, curr_class: Id) -> &[Id] {
-        let canon = self.curr.find(curr_class);
+    pub(crate) fn cover_of<L, N>(&self, curr: &EGraph<L, N>, curr_class: Id) -> &[Id]
+    where
+        L: Language,
+        N: Analysis<L>,
+    {
+        let canon = curr.find(curr_class);
         self.cover.get(&canon).map_or(&[][..], Vec::as_slice)
     }
 }

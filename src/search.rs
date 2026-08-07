@@ -149,8 +149,9 @@ where
     );
 
     let cut_meta = EqsatMetadata::from_iterations(result.data());
+    let cut_iters = result.iters();
 
-    let Some(pp) = PrecomputePackage::<C, _, _>::precompute(&result, args.max_size) else {
+    let Some(pp) = PrecomputePackage::<C, _, _>::precompute(result, args.max_size) else {
         println!("{search_name}: precompute returned None (empty frontier)");
         return ReachResult {
             reached: None,
@@ -177,7 +178,7 @@ where
     println!(
         "Sampled {} terms after {} iterations!",
         sampled.len(),
-        result.iters()
+        cut_iters
     );
     for s in &sampled {
         println!("{}", lower(s.to_owned()));

@@ -86,7 +86,8 @@ where
     L: MyLanguage,
     N: MyAnalysis<L>,
 {
-    counts: &'a NovelTermCount<'g, C, L, N>,
+    counts: &'a NovelTermCount<C>,
+    graph: &'g EGraph<L, N>,
 }
 
 impl<'a, 'g, C, L, N> FrontierSpace<'a, 'g, C, L, N>
@@ -95,15 +96,15 @@ where
     L: MyLanguage,
     N: MyAnalysis<L>,
 {
-    pub const fn new(counts: &'a NovelTermCount<'g, C, L, N>) -> Self {
-        Self { counts }
+    pub const fn new(counts: &'a NovelTermCount<C>, graph: &'g EGraph<L, N>) -> Self {
+        Self { counts, graph }
     }
 
     pub const fn graph(&self) -> &'g EGraph<L, N> {
-        self.counts.curr()
+        self.graph
     }
 
-    pub const fn counts(&self) -> &'a NovelTermCount<'g, C, L, N> {
+    pub const fn counts(&self) -> &'a NovelTermCount<C> {
         self.counts
     }
 
@@ -225,7 +226,7 @@ where
             .enumerate()
             .flat_map(|(node_idx, node)| {
                 self.counts
-                    .matches_of(curr, node_idx)
+                    .matches_of(self.graph, curr, node_idx)
                     .iter()
                     .filter(move |m| m.prev_class == prev)
                     .filter_map(move |m| {
@@ -233,7 +234,7 @@ where
                             .children()
                             .iter()
                             .zip(m.prev_children.iter())
-                            .map(|(child, &pc)| self.counts.joint_histogram(*child, pc))
+                            .map(|(child, &pc)| self.counts.joint_histogram(self.graph, *child, pc))
                             .collect::<Option<Vec<_>>>()?;
                         let count = convolve_at::<C>(&child_hists, child_budget)?;
                         Some(FrontierBranch {
@@ -261,7 +262,7 @@ where
             .iter()
             .enumerate()
             .flat_map(|(node_idx, node)| {
-                let matches = self.counts.matches_of(curr, node_idx);
+                let matches = self.counts.matches_of(self.graph, curr, node_idx);
                 let children = node.children();
                 let slot_options = children
                     .iter()
@@ -269,7 +270,7 @@ where
                         let mut options = vec![FrontierState::OutsidePrev];
                         options.extend(
                             self.counts
-                                .cover_of(*child)
+                                .cover_of(self.graph, *child)
                                 .iter()
                                 .copied()
                                 .map(FrontierState::InsidePrev),
@@ -286,9 +287,11 @@ where
                             .iter()
                             .zip(child_states.iter())
                             .map(|(child, state)| match state {
-                                FrontierState::OutsidePrev => self.counts.novel_histogram(*child),
+                                FrontierState::OutsidePrev => {
+                                    self.counts.novel_histogram(self.graph, *child)
+                                }
                                 FrontierState::InsidePrev(pc) => {
-                                    self.counts.joint_histogram(*child, *pc)
+                                    self.counts.joint_histogram(self.graph, *child, *pc)
                                 }
                             })
                             .collect::<Option<Vec<_>>>()?;
