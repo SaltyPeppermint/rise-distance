@@ -63,7 +63,6 @@ class Args:
     stop_nodes: int | None = None
     stop_time: float | None = None
     stop_memory: str | None = None
-    predict_next_memory: Path | None = None
     """Path to the ONNX next-iteration memory model forwarded to every guided
     search. Requires an effective memory ceiling."""
 
@@ -151,7 +150,6 @@ def driver_command(
     optional_flag(cmd, "--stop-nodes", args.stop_nodes)
     optional_flag(cmd, "--stop-time", args.stop_time)
     optional_flag(cmd, "--stop-memory", args.stop_memory)
-    optional_flag(cmd, "--predict-next-memory", args.predict_next_memory)
     optional_flag(cmd, "--samples-input", samples_input)
     optional_flag(cmd, "--unguided-input", unguided_input)
     return cmd

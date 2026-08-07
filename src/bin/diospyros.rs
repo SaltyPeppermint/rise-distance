@@ -179,7 +179,6 @@ const fn config(max_iters: usize, max_nodes: usize, timeout: f64) -> EqsatConfig
         max_nodes,
         max_time: timeout,
         max_memory: None,
-        predict_next_memory: None,
     }
 }
 

@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -14,7 +13,6 @@ use thiserror::Error;
 
 use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::{OriginLang, lower};
-use crate::predictive_memory;
 use crate::sketch::{self, Sketch};
 use crate::utils::live_heap_bytes;
 
@@ -82,24 +80,11 @@ pub struct EqsatConfig {
     #[serde(default)]
     #[arg(long)]
     pub max_memory: Option<u64>,
-
-    /// Path to an ONNX model used to predict whether the next eqsat iteration
-    /// will cross `max_memory`. The adjacent same-stem JSON manifest supplies
-    /// the feature order and safety margin. Disabled when unset and ignored
-    /// unless `max_memory` is set.
-    #[serde(default)]
-    #[arg(long, value_name = "MODEL.onnx")]
-    pub predict_next_memory: Option<PathBuf>,
 }
 
 impl EqsatConfig {
     /// Build a [`Runner`] configured with this config's limits, process-memory
     /// tracker, and scheduler.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the requested predictive ONNX model or its manifest cannot be
-    /// loaded, validated, or prewarmed.
     #[must_use]
     pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> Runner<L, N, D>
     where
@@ -107,31 +92,12 @@ impl EqsatConfig {
         N: MyAnalysis<L>,
         D: IterationData<L, N>,
     {
-        let predictor = self
-            .max_memory
-            .and(self.predict_next_memory.as_deref())
-            .map(|model_path| {
-                predictive_memory::OnnxMemoryGrowthPredictor::load_and_prewarm(model_path)
-                    .expect("failed to initialize predictive memory model")
-            });
-        // Load the model before the Runner exists so the ONNX session's own
-        // allocation is not mistaken for eqsat growth mid-run.
-        let term_size = expr.as_ref().len();
-        let runner = Runner::<L, N, D>::new_with_memory_tracker(
-            N::default(),
-            live_heap_bytes,
-            self.max_memory,
-        )
-        .with_expr(expr)
-        .with_iter_limit(self.max_iters)
-        .with_node_limit(self.max_nodes)
-        .with_time_limit(Duration::from_secs_f64(self.max_time))
-        .with_scheduler(BackoffScheduler::default());
-        if let Some(predictor) = predictor {
-            runner.with_hook(predictive_memory::hook(term_size, predictor))
-        } else {
-            runner
-        }
+        Runner::<L, N, D>::new_with_memory_tracker(N::default(), live_heap_bytes, self.max_memory)
+            .with_expr(expr)
+            .with_iter_limit(self.max_iters)
+            .with_node_limit(self.max_nodes)
+            .with_time_limit(Duration::from_secs_f64(self.max_time))
+            .with_scheduler(BackoffScheduler::default())
     }
 }
 
@@ -391,14 +357,6 @@ where
     }));
     let hook_slots = Rc::clone(&slots);
 
-    let predictor = config
-        .max_memory
-        .and(config.predict_next_memory.as_deref())
-        .map(|model_path| {
-            predictive_memory::OnnxMemoryGrowthPredictor::load_and_prewarm(model_path)
-                .expect("failed to initialize predictive memory model")
-        });
-    let term_size = start.as_ref().len();
     let mut runner =
         Runner::new_with_memory_tracker(N::default(), live_heap_bytes, config.max_memory)
             .with_time_limit(Duration::try_from_secs_f64(config.max_time).unwrap_or(Duration::MAX))
@@ -418,9 +376,6 @@ where
                 }
                 Ok(())
             });
-    if let Some(predictor) = predictor {
-        runner = runner.with_hook(predictive_memory::hook(term_size, predictor));
-    }
 
     runner = runner.run(rules);
 
@@ -757,7 +712,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::sync::Mutex;
 
     use clap::Parser;
@@ -789,7 +743,6 @@ mod tests {
             max_nodes: usize::MAX,
             max_time: 60.0,
             max_memory: Some(0),
-            predict_next_memory: None,
         };
 
         let result = verify_reachability::<Math, ConstantFold>(
@@ -817,7 +770,6 @@ mod tests {
             max_nodes: 10_000,
             max_time: 60.0,
             max_memory: None,
-            predict_next_memory: None,
         };
 
         let result = verify_unguided::<Math, ConstantFold>(&seed, &goal, &math::rules(), &config);
@@ -832,47 +784,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(StopReason::MemoryLimit(123)).unwrap(),
             serde_json::json!({"MemoryLimit": 123})
-        );
-    }
-
-    #[test]
-    fn legacy_backoff_key_is_ignored_and_not_serialized() {
-        let config: EqsatConfig = serde_json::from_value(serde_json::json!({
-            "max_iters": 10,
-            "max_nodes": 1000,
-            "max_time": 1.0,
-            "max_memory": 1_000_000,
-            "backoff_scheduler": false
-        }))
-        .unwrap();
-        assert!(config.predict_next_memory.is_none());
-        assert!(
-            serde_json::to_value(config)
-                .unwrap()
-                .get("backoff_scheduler")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn predictive_model_path_is_read_from_the_cli_flag() {
-        let args = TestCli::try_parse_from([
-            "test",
-            "--max-iters",
-            "10",
-            "--max-nodes",
-            "1000",
-            "--max-time",
-            "1",
-            "--max-memory",
-            "1000000",
-            "--predict-next-memory",
-            "models/custom.onnx",
-        ])
-        .unwrap();
-        assert_eq!(
-            args.eqsat.predict_next_memory,
-            Some(PathBuf::from("models/custom.onnx"))
         );
     }
 
@@ -927,7 +838,6 @@ mod tests {
             max_nodes: usize::MAX,
             max_time: 60.0,
             max_memory: None,
-            predict_next_memory: None,
         };
         let runner = config.build_runner::<_, ConstantFold, HeapData>(&expr);
         let runner = runner.run(&[]);
@@ -960,7 +870,6 @@ mod tests {
             max_nodes: usize::MAX,
             max_time: 60.0,
             max_memory: None,
-            predict_next_memory: None,
         };
         let runner = config.build_runner::<_, ConstantFold, ()>(&expr);
         std::hint::black_box(&runner);

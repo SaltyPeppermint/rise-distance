@@ -73,9 +73,7 @@ LEG_RESULT_DTYPES = {
 # `verify_peak_rss_bytes` is Python-side subprocess telemetry, not a field in
 # Rust's `LegResult`. Keep its dtype in the output schema, but never look it up
 # in the Rust payload: doing so would overwrite the measured value with None.
-LEG_RESULT_FIELDS = tuple(
-    field for field in LEG_RESULT_DTYPES if field != "verify_peak_rss_bytes"
-)
+LEG_RESULT_FIELDS = tuple(field for field in LEG_RESULT_DTYPES if field != "verify_peak_rss_bytes")
 ATTEMPT_SCHEMA = {
     "seed": pl.String,
     "goal": pl.String,
@@ -131,10 +129,6 @@ class Args:
     """Guide-replay absolute process live-heap ceiling (jemalloc
     `stats.allocated`, e.g. `4G`), enforced directly against the process live
     heap with nothing subtracted out."""
-    predict_next_memory: Path | None = None
-    """Path to an ONNX next-iteration memory model. Requires an effective
-    memory ceiling from `--stop-memory` or `goal_args.json`; the hard memory
-    hook remains enabled."""
 
     # search policy
     attempts: int = 5
@@ -218,8 +212,6 @@ def replay_limits(args: Args, cfg: dict) -> dict:
         limits["max_time"] = args.stop_time
     if args.stop_memory is not None:
         limits["max_memory"] = parse_size(args.stop_memory)
-    if args.predict_next_memory is not None:
-        limits["predict_next_memory"] = args.predict_next_memory
     return limits
 
 
@@ -545,8 +537,6 @@ def summarize_pairs(
     args: Args,
     seed_records: list[dict],
     rows: list[dict],
-    *,
-    predictor_enabled: bool,
 ) -> list[dict]:
     """Collapse attempt rows to one guided workflow row per planned pair."""
     attempts_by_pair: dict[tuple[str, str], list[dict]] = {}
@@ -591,9 +581,6 @@ def summarize_pairs(
                 "verify_peak_rss_bytes": verify_peak,
                 "guided_peak_rss_bytes": max(rss_peaks) if rss_peaks else None,
                 "guided_peak_live_heap_bytes": max(live_peaks) if live_peaks else None,
-                "predictor_scope": (
-                    "guide_replay_and_unguided" if predictor_enabled else "disabled"
-                ),
             }
         )
     return summary
@@ -616,7 +603,6 @@ def report_results(
         args,
         seed_records,
         rows,
-        predictor_enabled=limits.get("predict_next_memory") is not None,
     )
     pairs = pl.DataFrame(pair_rows)
     unguided = pl.DataFrame(unguided_rows)
@@ -627,7 +613,6 @@ def report_results(
     config = {
         **dataclasses.asdict(args),
         "effective_limits": limits,
-        "memory_model": memory_model_provenance(limits.get("predict_next_memory")),
     }
     (out / "config.json").write_text(json.dumps(config, indent=2, default=str))
 
@@ -678,13 +663,6 @@ def main() -> int:
 
     cfg = json.loads((args.path / "goal_args.json").read_text())
     limits = replay_limits(args, cfg)
-    if limits["predict_next_memory"] is not None and limits["max_memory"] is None:
-        print(
-            "--predict-next-memory requires --stop-memory or a max_memory "
-            "ceiling in goal_args.json.",
-            file=sys.stderr,
-        )
-        return 2
     args.k = 1 if args.strategy in SMALLEST_STRATEGIES else args.k
     base_flags = ["--language", str(cfg["language"]), *limit_flags(limits)]
     out = resolve_output_dir(args)
