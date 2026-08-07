@@ -8,6 +8,52 @@ use hashbrown::{HashMap, HashSet};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 
+/// Minimal union-find for dense index types.
+///
+/// Storage is one index per element. `find` applies path halving, and `union`
+/// deliberately makes the left representative the new root; callers that
+/// only care about the partition need not reproduce another union-find's
+/// representative choices.
+#[derive(Debug)]
+pub(crate) struct DenseUnionFind<I> {
+    parents: Vec<I>,
+}
+
+impl<I> DenseUnionFind<I>
+where
+    I: Copy + Eq + From<usize>,
+    usize: From<I>,
+{
+    pub(crate) fn new(len: usize) -> Self {
+        Self {
+            parents: (0..len).map(I::from).collect(),
+        }
+    }
+
+    pub(crate) fn find(&mut self, mut id: I) -> I {
+        loop {
+            let parent = self.parents[usize::from(id)];
+            if parent == id {
+                return id;
+            }
+            let grandparent = self.parents[usize::from(parent)];
+            self.parents[usize::from(id)] = grandparent;
+            id = grandparent;
+        }
+    }
+
+    pub(crate) fn union(&mut self, left: I, right: I) -> bool {
+        let left = self.find(left);
+        let right = self.find(right);
+        if left == right {
+            false
+        } else {
+            self.parents[usize::from(right)] = left;
+            true
+        }
+    }
+}
+
 /// A data structure to maintain a queue of unique elements.
 ///
 /// Notably, insert/pop operations have O(1) expected amortized runtime complexity.
@@ -174,4 +220,20 @@ pub fn live_heap_bytes() -> u64 {
 #[must_use]
 pub fn sym(name: &str) -> crate::langs::math::Math {
     crate::langs::math::Math::Symbol(name.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DenseUnionFind;
+
+    #[test]
+    fn dense_union_find_tracks_partitions_and_noops() {
+        let mut sets = DenseUnionFind::<usize>::new(5);
+
+        assert!(sets.union(0, 1));
+        assert!(sets.union(1, 2));
+        assert!(!sets.union(0, 2));
+        assert_eq!(sets.find(0), sets.find(2));
+        assert_ne!(sets.find(0), sets.find(3));
+    }
 }

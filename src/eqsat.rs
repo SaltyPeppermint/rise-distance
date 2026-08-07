@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::{OriginLang, lower};
+use crate::previous::PrevIndex;
 use crate::sketch::{self, Sketch};
 use crate::utils::live_heap_bytes;
 
@@ -101,19 +102,18 @@ impl EqsatConfig {
     }
 }
 
-/// Result of running eqsat. Holds only the last two egraphs (`prev` and
-/// `curr`), plus per-iteration metadata in `iter_data` (timings,
-/// `egraph_nodes`, etc.). `root` is the id returned by the
+/// Result of running eqsat. Holds the final e-graph and a compact lookup index
+/// for the selected previous boundary, plus per-iteration metadata in
+/// `iter_data` (timings, `egraph_nodes`, etc.). `root` is the id returned by the
 /// initial `add`, so it may not be canonical in later iterations.
 /// It also canonicalizes with `egraph.find(root)` before using it as a `HashMap` key.
 pub struct EqsatResult<L, N>
 where
     L: Language,
-    N: Analysis<L> + Clone,
-    N::Data: Clone,
+    N: Analysis<L>,
 {
     iter_data: Vec<Iteration<()>>,
-    prev: EGraph<L, N>,
+    prev: RefCell<Option<PrevIndex<L>>>,
     curr: EGraph<L, N>,
     root: Id,
     stop_reason: StopReason,
@@ -124,16 +124,16 @@ where
 impl<L, N> EqsatResult<L, N>
 where
     L: Language,
-    N: Analysis<L> + Clone,
-    N::Data: Clone,
+    N: Analysis<L>,
 {
     /// Test-only constructor so downstream code (e.g. sampling) can be
     /// exercised on hand-built egraph pairs without running eqsat.
     #[cfg(test)]
-    pub(crate) fn new_for_tests(prev: EGraph<L, N>, curr: EGraph<L, N>, root: Id) -> Self {
+    pub(crate) fn new_for_tests(prev: &EGraph<L, N>, curr: EGraph<L, N>, root: Id) -> Self {
+        let prev = PrevIndex::from_egraph(prev);
         Self {
             iter_data: Vec::new(),
-            prev,
+            prev: RefCell::new(Some(prev)),
             curr,
             root,
             stop_reason: StopReason::Saturated,
@@ -152,9 +152,11 @@ where
         &self.curr
     }
 
-    #[must_use]
-    pub const fn prev(&self) -> &EGraph<L, N> {
-        &self.prev
+    /// Consume the previous-boundary index. Match enumeration is the last
+    /// phase that needs it, so callers should drop it before allocating
+    /// counting tables.
+    pub(crate) fn take_prev_index(&self) -> Option<PrevIndex<L>> {
+        self.prev.borrow_mut().take()
     }
 
     /// Per-iteration metadata only (timings, `egraph_nodes`, `egraph_classes`,
@@ -238,20 +240,28 @@ pub struct SplitMetadata {
     pub goal: EqsatMetadata,
 }
 
-/// Holds the latest two *distinct* egraph snapshots seen by the hook. A
-/// snapshot is taken only when the egraph differs from the previous snapshot
-/// (`same_egraph` lineage check), so trailing no-op iterations don't shift
-/// the slots.
-#[derive(Debug)]
-struct DistinctSlots<L, N>
-where
-    L: Language,
-    N: Analysis<L>,
-{
-    /// Latest distinct egraph snapshot.
-    distinct: Option<EGraph<L, N>>,
-    /// The one before that.
-    prev_distinct: Option<EGraph<L, N>>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Boundary {
+    raw_node_count: usize,
+    union_event_count: usize,
+}
+
+/// Latest two distinct topology boundaries. Each marker is only two cursors;
+/// the final e-graph's raw-node history plus the union log reconstructs either
+/// boundary after the run.
+#[derive(Debug, Default)]
+struct FrontierHistory {
+    latest_distinct: Option<Boundary>,
+    previous_distinct: Option<Boundary>,
+}
+
+impl FrontierHistory {
+    fn observe(&mut self, boundary: Boundary) {
+        if self.latest_distinct != Some(boundary) {
+            self.previous_distinct = self.latest_distinct;
+            self.latest_distinct = Some(boundary);
+        }
+    }
 }
 
 /// Minimum number of iterations the runner must complete for `run_eqsat` to
@@ -329,8 +339,8 @@ impl Measurement {
 }
 
 /// Run equality saturation up to `config` maximums and return the
-/// final egraph (`curr`) together with the last meaningfully different
-/// earlier egraph (`prev`).
+/// final egraph (`curr`) together with a compact lookup index for the last
+/// meaningfully different earlier boundary.
 ///
 /// Returns `None` if fewer than 3 iterations completed or if the
 /// runner never produced a distinct earlier egraph (e.g. saturated with no
@@ -347,33 +357,28 @@ pub fn run_eqsat<'a, L, N, R>(
 ) -> Option<EqsatResult<L, N>>
 where
     L: MyLanguage + 'static,
-    N: MyAnalysis<L> + Default + Clone + 'static,
-    N::Data: Clone,
+    N: MyAnalysis<L> + Default + 'static,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
-    let slots = Rc::new(RefCell::new(DistinctSlots {
-        distinct: None,
-        prev_distinct: None,
-    }));
-    let hook_slots = Rc::clone(&slots);
+    let history = Rc::new(RefCell::new(FrontierHistory::default()));
+    let hook_history = Rc::clone(&history);
 
+    // Analysis hooks may union while the initial expression is inserted, so
+    // recording must precede `with_expr`.
     let mut runner =
         Runner::new_with_memory_tracker(N::default(), live_heap_bytes, config.max_memory)
             .with_time_limit(Duration::try_from_secs_f64(config.max_time).unwrap_or(Duration::MAX))
             .with_node_limit(config.max_nodes)
             .with_iter_limit(config.max_iters)
+            .with_union_event_recording()
             .with_expr(start)
             .with_scheduler(BackoffScheduler::default())
             .with_hook(move |runner| {
-                let mut s = hook_slots.borrow_mut();
-                let unchanged = s
-                    .distinct
-                    .as_ref()
-                    .is_some_and(|d| same_egraph(d, &runner.egraph));
-                if !unchanged {
-                    s.prev_distinct = s.distinct.take();
-                    s.distinct = Some(runner.egraph.clone());
-                }
+                debug_assert!(runner.egraph.clean, "iteration boundary must be clean");
+                hook_history.borrow_mut().observe(Boundary {
+                    raw_node_count: runner.egraph.nodes().len(),
+                    union_event_count: runner.egraph.union_event_count(),
+                });
                 Ok(())
             });
 
@@ -385,7 +390,7 @@ where
     let stop_reason = runner.stop_reason.unwrap();
 
     let root = runner.roots[0];
-    // Drop hook closures so the slot's Rc has only our local clone left.
+    // Drop hook closures so the history Rc has only our local clone left.
     runner.hooks.clear();
     let iter_data = runner.iterations;
     let mut curr = runner.egraph;
@@ -394,34 +399,47 @@ where
         return None;
     }
 
-    let DistinctSlots {
-        distinct,
-        prev_distinct,
-    } = Rc::try_unwrap(slots)
-        .expect("hooks cleared, slot Rc should be unique")
-        .into_inner();
-
-    let prev = match distinct {
-        Some(d) if same_egraph(&d, &curr) => prev_distinct,
-        d => d,
+    // A stop may occur after application but before another hook. Rebuild to
+    // make the final boundary clean and include any resulting congruence
+    // unions in the log.
+    curr.rebuild();
+    let final_boundary = Boundary {
+        raw_node_count: curr.nodes().len(),
+        union_event_count: curr.union_event_count(),
     };
 
-    let Some(mut prev) = prev else {
+    let FrontierHistory {
+        latest_distinct,
+        previous_distinct,
+    } = Rc::try_unwrap(history)
+        .expect("hooks cleared, history Rc should be unique")
+        .into_inner();
+
+    let prev_boundary = match latest_distinct {
+        Some(latest) if latest == final_boundary => previous_distinct,
+        latest => latest,
+    };
+
+    let Some(prev_boundary) = prev_boundary else {
         eprintln!("Egraph never produced a distinct earlier state");
         return None;
     };
 
-    debug_assert!(
-        !same_egraph(&prev, &curr),
-        "prev/curr should be distinct after selection"
+    assert_ne!(
+        prev_boundary, final_boundary,
+        "previous and final boundary must be distinct"
     );
-
-    prev.rebuild();
-    curr.rebuild();
+    let events = curr.take_union_events();
+    let prev = PrevIndex::from_union_history(
+        curr.nodes(),
+        prev_boundary.raw_node_count,
+        prev_boundary.union_event_count,
+        events,
+    );
 
     Some(EqsatResult {
         iter_data,
-        prev,
+        prev: RefCell::new(Some(prev)),
         curr,
         root,
         stop_reason,
@@ -688,28 +706,6 @@ fn add_uncanon_remember<L: MyLanguage, N: MyAnalysis<L>>(
     rec(graph, guide, origin_to_new_ids, guide.root())
 }
 
-/// Check whether two egraphs from the same lineage (one cloned from the other,
-/// possibly with further `add` / `union` calls) are still identical.
-///
-/// Egg only ever grows an egraph: `add` increases the node count, `union`
-/// decreases the class count (never the other way around). So for a shared
-/// lineage, equal class count *and* equal node count implies no rewrite took
-/// effect.
-/// The canonical ids in `a` and `b` agree on every class, and the
-/// node sets coincide.
-///
-/// Not valid for comparing independent egraphs: those need a full e-class
-/// isomorphism check, since canonical ids depend on union-find history.
-#[must_use]
-pub fn same_egraph<L, N>(a: &EGraph<L, N>, b: &EGraph<L, N>) -> bool
-where
-    L: Language,
-    N: Analysis<L>,
-{
-    a.number_of_classes() == b.number_of_classes()
-        && a.total_number_of_nodes() == b.total_number_of_nodes()
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -718,11 +714,14 @@ mod tests {
     use egg::{MemoryReport, RecExpr, StopReason};
 
     use super::{
-        EqsatConfig, Goal, GuideError, HeapData, Measurement, verify_reachability, verify_unguided,
+        EqsatConfig, Goal, GuideError, HeapData, Measurement, run_eqsat, verify_reachability,
+        verify_unguided,
     };
     use crate::OriginLang;
     use crate::langs::math::{self, ConstantFold, Math};
+    use crate::previous::PreviousLookup;
     use crate::utils::live_heap_bytes;
+    use crate::utils::sym;
 
     // jemalloc stats are process-wide, so keep allocation-sensitive tests from
     // perturbing one another.
@@ -732,6 +731,33 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         eqsat: EqsatConfig,
+    }
+
+    #[test]
+    fn run_eqsat_reconstructs_the_boundary_before_trailing_noop() {
+        let start: RecExpr<Math> = "a".parse().unwrap();
+        let rules = [
+            egg::rewrite!("a-to-b"; "a" => "b"),
+            egg::rewrite!("b-to-c"; "b" => "c"),
+        ];
+        let config = EqsatConfig {
+            max_iters: 10,
+            max_nodes: 100,
+            max_time: 60.0,
+            max_memory: None,
+        };
+
+        let result = run_eqsat::<Math, (), _>(&start, rules.iter(), &config)
+            .expect("three boundary states should produce a previous index");
+        let prev = result.take_prev_index().expect("previous index");
+
+        let a = prev.lookup(sym("a")).expect("a existed at the boundary");
+        let b = prev.lookup(sym("b")).expect("b existed at the boundary");
+        assert_eq!(a, b, "a and b were already unioned at the boundary");
+        assert!(
+            prev.lookup(sym("c")).is_none(),
+            "c was added only in the final distinct state"
+        );
     }
 
     #[test]

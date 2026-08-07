@@ -20,7 +20,7 @@ use super::space::{
 use crate::Counter;
 use crate::sampling::count::NovelTermCount;
 use crate::sampling::sampler::{Sampler, Weigher};
-use crate::{MyAnalysis, MyLanguage, OriginLang, lower};
+use crate::{MyAnalysis, MyLanguage, OriginLang};
 
 /// Draws each frontier term independently using the supplied local weighting
 /// policy.
@@ -120,18 +120,8 @@ where
         let mut policy = IndependentPolicy {
             weigher: &self.weigher,
         };
-        let sample = self
-            .space
-            .construct(id, size, FrontierState::OutsidePrev, &mut policy, rng);
-        debug_assert!(
-            self.space
-                .counts()
-                .prev()
-                .lookup_expr(&lower(sample.clone()))
-                .is_none(),
-            "frontier sampler produced a term extractable from the previous graph"
-        );
-        sample
+        self.space
+            .construct(id, size, FrontierState::OutsidePrev, &mut policy, rng)
     }
 }
 
@@ -142,6 +132,7 @@ mod tests {
 
     use super::*;
     use crate::langs::math::Math;
+    use crate::lower;
     use crate::sampling::count::PlainTermCount;
     use crate::sampling::sampler::CountWeigher;
     use crate::utils::{combined_rng, sym};

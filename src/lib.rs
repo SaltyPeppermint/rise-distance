@@ -13,6 +13,7 @@ pub mod eqsat;
 pub mod generator;
 pub mod langs;
 mod origin;
+mod previous;
 pub mod sampling;
 pub mod search;
 pub mod sketch;

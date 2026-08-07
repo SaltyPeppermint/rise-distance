@@ -31,13 +31,17 @@ where
     N: MyAnalysis<L>,
     C: Counter,
 {
-    /// Enumerate all frontier terms from `egraph` that are NOT present in `prev_raw_egg` for the sampling process later
+    /// Enumerate all frontier terms not present at the selected previous
+    /// boundary. This consumes the result's compact previous-state index, so
+    /// only one precomputation can be started from a given result.
     #[must_use]
     pub fn precompute(
         result: &'a EqsatResult<L, N>,
         max_size: usize,
     ) -> Option<PrecomputePackage<'a, C, L, N>> {
-        let matches = enumerate_matches(result.curr(), result.prev());
+        let prev = result.take_prev_index()?;
+        let matches = enumerate_matches(result.curr(), &prev);
+        drop(prev);
         Self::precompute_with_matches(result, max_size, matches)
     }
 
@@ -52,7 +56,6 @@ where
         let tc = NovelTermCount::with_matches(
             max_size,
             result.curr(),
-            result.prev(),
             PlainTermCount::rooted(max_size, result.curr(), &[result.root()]),
             matches,
         );
@@ -71,7 +74,8 @@ where
 
     /// Like [`precompute`](Self::precompute), but searches for the smallest
     /// `max_size` that yields at least `sizes` distinct novel term sizes at
-    /// the root.
+    /// the root. Like `precompute`, this consumes the result's previous-state
+    /// index.
     ///
     /// An exact, root-restricted counting pass advances one size layer at a
     /// time and stops at the `sizes`-th novel size. That size is then used to
@@ -107,8 +111,14 @@ where
         let curr = result.curr();
         let root = curr.find(result.root());
         // Match enumeration is independent of max_size and is shared by the
-        // size scan and package construction.
-        let matches = enumerate_matches(curr, result.prev());
+        // size scan and package construction. Consume and drop the compact
+        // previous index before either layered DP is allocated.
+        let Some(prev) = result.take_prev_index() else {
+            writeln!(log, "previous-boundary index was already consumed").unwrap();
+            return Err(start_size + max_retries * retry_step);
+        };
+        let matches = enumerate_matches(curr, &prev);
+        drop(prev);
         let cap = start_size + max_retries * retry_step;
 
         let novel_sizes = find_novel_root_sizes(cap, curr, root, &matches, sizes);
@@ -288,7 +298,7 @@ mod tests {
         curr.union(a, apb);
         curr.rebuild();
 
-        let result = EqsatResult::new_for_tests(prev, curr, apb);
+        let result = EqsatResult::new_for_tests(&prev, curr, apb);
         let mut log = String::new();
         let (used_max_size, pp) =
             PrecomputePackage::<BigUint, _, _>::backoff_precompute(&result, 3, 10, 2, 3, &mut log)
@@ -318,7 +328,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let result = EqsatResult::new_for_tests(prev, curr, root);
+        let result = EqsatResult::new_for_tests(&prev, curr, root);
         let package =
             PrecomputePackage::<BigUint, _, _>::precompute(&result, 3).expect("frontier package");
         let terms = package

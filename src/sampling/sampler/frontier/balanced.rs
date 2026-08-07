@@ -18,7 +18,7 @@ use super::space::{
 use crate::Counter;
 use crate::sampling::count::NovelTermCount;
 use crate::sampling::sampler::{MAX_OVERSAMPLE, Sampler};
-use crate::{MyAnalysis, MyLanguage, OriginLang, lower, utils};
+use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
 /// Relative penalties used when balancing local derivation choices.
 ///
@@ -93,18 +93,8 @@ where
         coverage: &mut CoveragePolicy,
         rng: &mut ChaCha12Rng,
     ) -> RecExpr<OriginLang<L>> {
-        let sample = self
-            .space
-            .construct(id, size, FrontierState::OutsidePrev, coverage, rng);
-        debug_assert!(
-            self.space
-                .counts()
-                .prev()
-                .lookup_expr(&lower(sample.clone()))
-                .is_none(),
-            "balanced frontier sampler produced a term extractable from the previous graph"
-        );
-        sample
+        self.space
+            .construct(id, size, FrontierState::OutsidePrev, coverage, rng)
     }
 }
 
@@ -329,6 +319,7 @@ mod tests {
 
     use super::*;
     use crate::langs::math::Math;
+    use crate::lower;
     use crate::sampling::count::PlainTermCount;
     use crate::utils::sym;
 

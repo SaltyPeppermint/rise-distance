@@ -21,6 +21,7 @@ use num::BigUint;
 use smallvec::SmallVec;
 
 use crate::Counter;
+use crate::previous::PreviousLookup;
 use crate::sampling::count::{LayeredDp, PlainTermCount, plain_dp};
 
 /// Inline-allocated list of child class ids. Sized for the typical e-node
@@ -64,7 +65,6 @@ where
     N: Analysis<L>,
 {
     curr: &'g EGraph<L, N>,
-    prev: &'g EGraph<L, N>,
     plain: PlainTermCount<C>,
 
     /// Per `(curr_class, prev_class)` pair: histogram of size -> count of
@@ -95,7 +95,7 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
         prev: &'g EGraph<L, N>,
         plain: PlainTermCount<C>,
     ) -> Self {
-        Self::with_matches(max_size, curr, prev, plain, enumerate_matches(curr, prev))
+        Self::with_matches(max_size, curr, plain, enumerate_matches(curr, prev))
     }
 
     /// Run the joint counting analysis, with the match enumeration
@@ -106,7 +106,6 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
     pub(crate) fn with_matches(
         max_size: usize,
         curr: &'g EGraph<L, N>,
-        prev: &'g EGraph<L, N>,
         plain: PlainTermCount<C>,
         matches: NodeMatches,
     ) -> Self {
@@ -116,7 +115,6 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
 
         Self {
             curr,
-            prev,
             plain,
             joint,
             cover,
@@ -142,17 +140,11 @@ impl<'g, C: Counter, L: Language, N: Analysis<L>> NovelTermCount<'g, C, L, N> {
         self.curr
     }
 
-    #[must_use]
-    pub const fn prev(&self) -> &'g EGraph<L, N> {
-        self.prev
-    }
-
     /// Joint histogram for a `(curr_class, prev_class)` pair. `None` if the
     /// two classes share no extraction.
     pub(crate) fn joint_histogram(&self, curr_id: Id, prev_id: Id) -> Option<&HashMap<usize, C>> {
         let curr_canon = self.curr.find(curr_id);
-        let prev_canon = self.prev.find(prev_id);
-        self.joint.get(&(curr_canon, prev_canon))
+        self.joint.get(&(curr_canon, prev_id))
     }
 
     /// Novel histogram for a curr class. `None` if every extraction is
@@ -209,10 +201,12 @@ fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
 ///
 /// The result is independent of any size limit and can be shared across
 /// several counting runs on the same egraph pair.
-pub fn enumerate_matches<L: Language, N: Analysis<L>>(
-    curr: &EGraph<L, N>,
-    prev: &EGraph<L, N>,
-) -> NodeMatches {
+pub fn enumerate_matches<L, N, P>(curr: &EGraph<L, N>, prev: &P) -> NodeMatches
+where
+    L: Language,
+    N: Analysis<L>,
+    P: PreviousLookup<L> + ?Sized,
+{
     let mut cover = MatchCover::new();
     let mut matches = NodeMatches::new();
     let mut seen = MatchKeys::new();
@@ -239,18 +233,17 @@ pub fn enumerate_matches<L: Language, N: Analysis<L>>(
                             *child = pc;
                         }
                     });
-                    if let Some(pc_class) = prev.lookup(translated) {
-                        let pc_canon = prev.find(pc_class);
-                        if seen.insert((c, idx, pc_canon, combo.clone())) {
-                            matches.entry((c, idx)).or_default().push(NodeMatch {
-                                prev_class: pc_canon,
-                                prev_children: combo,
-                            });
-                            // Newly discovered cover entry; another pass
-                            // might find more matches via this class.
-                            cover.entry(c).or_default().insert(pc_canon);
-                            changed = true;
-                        }
+                    if let Some(pc_class) = prev.lookup(translated)
+                        && seen.insert((c, idx, pc_class, combo.clone()))
+                    {
+                        matches.entry((c, idx)).or_default().push(NodeMatch {
+                            prev_class: pc_class,
+                            prev_children: combo,
+                        });
+                        // Newly discovered cover entry; another pass
+                        // might find more matches via this class.
+                        cover.entry(c).or_default().insert(pc_class);
+                        changed = true;
                     }
                 }
             }
