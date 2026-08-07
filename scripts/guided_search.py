@@ -70,7 +70,12 @@ LEG_RESULT_DTYPES = {
     "verify_peak_rss_bytes": pl.Int64,
     "stop_reason": pl.String,
 }
-LEG_RESULT_FIELDS = tuple(LEG_RESULT_DTYPES)
+# `verify_peak_rss_bytes` is Python-side subprocess telemetry, not a field in
+# Rust's `LegResult`. Keep its dtype in the output schema, but never look it up
+# in the Rust payload: doing so would overwrite the measured value with None.
+LEG_RESULT_FIELDS = tuple(
+    field for field in LEG_RESULT_DTYPES if field != "verify_peak_rss_bytes"
+)
 ATTEMPT_SCHEMA = {
     "seed": pl.String,
     "goal": pl.String,

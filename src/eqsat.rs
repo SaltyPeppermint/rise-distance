@@ -487,18 +487,18 @@ pub enum Goal<L: MyLanguage> {
 }
 
 impl<L: MyLanguage> Goal<L> {
-    /// True once this goal is reached in `egraph`. `root` must be the canonical
-    /// id of the unioned guide root. For `Sketches` the egraph must be clean
-    /// (rebuilt); [`eclass_contains`] asserts this.
+    /// True once this goal is reached in `egraph`. `root` may be a stale id
+    /// retained by the runner after a union, so canonicalize it here before
+    /// either goal representation uses it.
+    /// For `Sketches` the egraph must be clean (rebuilt);
+    /// [`eclass_contains`] asserts this.
     fn reached<N: Analysis<L>>(&self, egraph: &EGraph<L, N>, root: Id) -> bool {
+        let root = egraph.find(root);
         match self {
             Goal::Expr(e) => egraph
                 .lookup_expr(e)
                 .is_some_and(|e| egraph.find(e) == root),
-            Goal::Sketches(sketch) => {
-                let root = egraph.find(root);
-                sketch::eclass_contains(sketch, egraph, root)
-            }
+            Goal::Sketches(sketch) => sketch::eclass_contains(sketch, egraph, root),
         }
     }
 
@@ -763,7 +763,9 @@ mod tests {
     use clap::Parser;
     use egg::{MemoryReport, RecExpr, StopReason};
 
-    use super::{EqsatConfig, Goal, GuideError, HeapData, Measurement, verify_reachability};
+    use super::{
+        EqsatConfig, Goal, GuideError, HeapData, Measurement, verify_reachability, verify_unguided,
+    };
     use crate::OriginLang;
     use crate::langs::math::{self, ConstantFold, Math};
     use crate::utils::live_heap_bytes;
@@ -804,6 +806,25 @@ mod tests {
                 ..
             }) if observed > 0
         ));
+    }
+
+    #[test]
+    fn unguided_reachability_canonicalizes_a_stale_root() {
+        let seed = "(+ x 0)".parse().unwrap();
+        let goal = Goal::Expr("x".parse().unwrap());
+        let config = EqsatConfig {
+            max_iters: 10,
+            max_nodes: 10_000,
+            max_time: 60.0,
+            max_memory: None,
+            predict_next_memory: None,
+        };
+
+        let result = verify_unguided::<Math, ConstantFold>(&seed, &goal, &math::rules(), &config);
+        assert!(
+            result.is_ok(),
+            "(+ x 0) and x share the root e-class even after x becomes its representative"
+        );
     }
 
     #[test]
