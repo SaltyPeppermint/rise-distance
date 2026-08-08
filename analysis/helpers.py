@@ -20,7 +20,6 @@ REQUIRED_COMPARISON_COLUMNS = {
     "attempts_run",
     "success_attempt",
     "setup_status",
-    "predictor_scope",
 }
 MEMORY_SUMMARY_SCHEMA = {
     "mode": pl.String,
@@ -80,10 +79,9 @@ def _format_memory_limit(value: int | None) -> str:
 def _run_label(directory: Path, config: dict) -> str:
     limits = config.get("effective_limits", {})
     memory = _format_memory_limit(limits.get("max_memory"))
-    predictive = "on" if limits.get("predict_next_memory") is not None else "off"
     return (
         f"{_short_strategy(config['strategy'])} · k={config['k']} · "
-        f"memory={memory} · predictive={predictive} · {directory.name}"
+        f"memory={memory} · {directory.name}"
     )
 
 
@@ -138,14 +136,10 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
             )
         )
     data = pl.concat(frames, how="diagonal_relaxed")
-    scopes = sorted(data["predictor_scope"].drop_nulls().unique().to_list())
     meta = {
         "modes": [run.label for run in runs],
         "n_pairs": data.select("seed", "goal").unique().height,
-        "subtitle": [
-            f"{data.height} planned pair observations",
-            f"predictor scope: {', '.join(scopes)}",
-        ],
+        "subtitle": [f"{data.height} planned pair observations"],
     }
     return data, meta
 
