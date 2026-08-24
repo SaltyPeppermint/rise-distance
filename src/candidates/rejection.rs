@@ -371,8 +371,8 @@ where
     root: Id,
     classes: Vec<Id>,
     dense: HashMap<Id, usize>,
-    words_per_class: usize,
-    bits: Vec<u64>,
+    bytes_per_class: usize,
+    bits: Vec<u8>,
 }
 
 impl<'a, L, N> FeasibilityEngine<'a, L, N>
@@ -388,15 +388,15 @@ where
             .enumerate()
             .map(|(index, &id)| (id, index))
             .collect::<HashMap<_, _>>();
-        let words_per_class = (domain.limit() + 64) / 64;
+        let bytes_per_class = (domain.limit() + 8) / 8;
         let mut engine = Self {
             egraph,
             domain,
             root: egraph.find(root),
-            bits: vec![0; classes.len() * words_per_class],
+            bits: vec![0; classes.len() * bytes_per_class],
             classes,
             dense,
-            words_per_class,
+            bytes_per_class,
         };
         for size in 1..=domain.limit() {
             for dense_index in 0..engine.classes.len() {
@@ -417,8 +417,8 @@ where
     }
 
     fn set(&mut self, dense_index: usize, size: usize) {
-        let index = dense_index * self.words_per_class + size / 64;
-        self.bits[index] |= 1u64 << (size % 64);
+        let index = dense_index * self.bytes_per_class + size / 8;
+        self.bits[index] |= 1u8 << (size % 8);
     }
 
     fn reachable(&self, id: Id, size: usize) -> bool {
@@ -429,8 +429,8 @@ where
         let Some(&dense_index) = self.dense.get(&id) else {
             return false;
         };
-        let index = dense_index * self.words_per_class + size / 64;
-        self.bits[index] & (1u64 << (size % 64)) != 0
+        let index = dense_index * self.bytes_per_class + size / 8;
+        self.bits[index] & (1u8 << (size % 8)) != 0
     }
 
     fn node_feasible(&self, node: &L, size: usize) -> bool {
