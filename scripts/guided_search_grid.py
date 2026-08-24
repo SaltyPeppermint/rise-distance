@@ -1,16 +1,16 @@
-"""Run a paired guided-search grid over sampling policies and size allocations.
+"""Run a paired guided-search grid over candidate policies and size allocations.
 
-For each (size distribution, sampling seed) cell, this runner asks
+For each (size allocation, candidate seed) cell, this runner asks
 ``guided_search.py`` to generate one maximum-size candidate manifest. Every
 strategy in that cell then reuses the exact same manifest. A cell is run once
 at ``--attempts``; cumulative prefixes of its result rows give the outcomes at
 smaller budgets without regenerating incompatible candidate pools.
 
-The defaults run independent and balanced sampling over greedy, uniform, and
-proportional root-size allocation with ten sampling seeds. This is intentionally
-a substantial experiment. Build the release binaries before starting:
+The defaults run independent and balanced exact drawing over greedy, uniform,
+and proportional root-size allocation with several candidate seeds. This is
+intentionally a substantial experiment. Build the release binaries before starting:
 
-    cargo build --release --bin sample --bin verify
+    cargo build --release --bin candidates --bin verify
     uv run scripts/guided_search_grid.py data/seed_terms/inert-angel \
         --stop-nodes 10000 --full-union
 
@@ -39,11 +39,17 @@ class Args:
     """Grid output directory. Auto-numbered under `data/guided_search_grid/`
     when omitted."""
 
-    distributions: str = "greedy,uniform,proportional:1"
-    """Comma-separated root-size distributions accepted by `sample`."""
+    size_allocations: str = "greedy,uniform,proportional:1"
+    """Comma-separated root-size allocations accepted by `candidates`."""
 
-    sampling_seeds: str = "0,1,2"
-    """Comma-separated Rust candidate-sampling seeds."""
+    candidate_seeds: str = "0,1,2"
+    """Comma-separated Rust candidate-construction seeds."""
+
+    novel_size_goal: int = 5
+    rejection_walk_backtrack: int = 512
+    rejection_attempts_per_size: int = 4096
+    rejection_global_attempts: int = 100_000
+    rejection_max_time: float = 60.0
 
     strategies: str = "no_replacement_independent,no_replacement_balanced"
     """Comma-separated guided-search strategies. All strategies in a cell
@@ -66,7 +72,7 @@ class Args:
     """Path to the ONNX next-iteration memory model forwarded to every guided
     search. Requires an effective memory ceiling."""
 
-    sample_binary: Path = Path("target/release/sample")
+    candidates_binary: Path = Path("target/release/candidates")
     verify_binary: Path = Path("target/release/verify")
     driver: Path = Path("scripts/guided_search.py")
 
@@ -110,12 +116,12 @@ def optional_flag(cmd: list[str], name: str, value: object | None) -> None:
 def driver_command(
     args: Args,
     *,
-    distribution: str,
-    sampling_seed: int,
+    size_allocation: str,
+    candidate_seed: int,
     strategy: str,
     candidate_pools: list[str],
     output: Path,
-    samples_input: Path | None,
+    candidates_input: Path | None,
     unguided_input: Path | None,
 ) -> list[str]:
     """Construct one guided_search.py invocation."""
@@ -125,8 +131,8 @@ def driver_command(
         str(args.path),
         "--output",
         str(output),
-        "--sample-binary",
-        str(args.sample_binary),
+        "--candidates-binary",
+        str(args.candidates_binary),
         "--verify-binary",
         str(args.verify_binary),
         "--attempts",
@@ -139,10 +145,20 @@ def driver_command(
         str(args.k),
         "--rng-seed",
         str(args.rng_seed),
-        "--sampling-seed",
-        str(sampling_seed),
-        "--size-distribution",
-        distribution,
+        "--candidate-seed",
+        str(candidate_seed),
+        "--size-allocation",
+        size_allocation,
+        "--novel-size-goal",
+        str(args.novel_size_goal),
+        "--rejection-walk-backtrack",
+        str(args.rejection_walk_backtrack),
+        "--rejection-attempts-per-size",
+        str(args.rejection_attempts_per_size),
+        "--rejection-global-attempts",
+        str(args.rejection_global_attempts),
+        "--rejection-max-time",
+        str(args.rejection_max_time),
     ]
     if args.full_union:
         cmd.append("--full-union")
@@ -153,18 +169,22 @@ def driver_command(
     optional_flag(cmd, "--stop-nodes", args.stop_nodes)
     optional_flag(cmd, "--stop-time", args.stop_time)
     optional_flag(cmd, "--stop-memory", args.stop_memory)
-    optional_flag(cmd, "--samples-input", samples_input)
+    optional_flag(cmd, "--candidates-input", candidates_input)
     optional_flag(cmd, "--unguided-input", unguided_input)
     return cmd
 
 
 def candidate_pool(strategy: str) -> str:
-    """Map a driver strategy to the candidate key emitted by `sample`."""
+    """Map a driver strategy to the candidate key emitted by `candidates`."""
     if strategy.startswith("smallest_"):
         return strategy
+    if strategy.endswith("_rejection_walk"):
+        return "rejection_walk"
+    if strategy.endswith("_rejection_feasible"):
+        return "rejection_feasible"
     for suffix in ("independent", "naive", "balanced"):
         if strategy.endswith(f"_{suffix}"):
-            return f"sample_{suffix}"
+            return f"exact_{suffix}"
     raise ValueError(f"unknown strategy {strategy!r}")
 
 
@@ -182,10 +202,10 @@ def main() -> int:
         return 2
 
     try:
-        distributions = comma_values(args.distributions, "distributions")
+        size_allocations = comma_values(args.size_allocations, "size_allocations")
         strategies = comma_values(args.strategies, "strategies")
-        sampling_seeds = [
-            int(value) for value in comma_values(args.sampling_seeds, "sampling_seeds")
+        candidate_seeds = [
+            int(value) for value in comma_values(args.candidate_seeds, "candidate_seeds")
         ]
         candidate_pools = list(dict.fromkeys(candidate_pool(strategy) for strategy in strategies))
     except ValueError as error:
@@ -199,8 +219,8 @@ def main() -> int:
                 {
                     **dataclasses.asdict(args),
                     "output": str(out),
-                    "distributions_expanded": distributions,
-                    "sampling_seeds_expanded": sampling_seeds,
+                    "size_allocations_expanded": size_allocations,
+                    "candidate_seeds_expanded": candidate_seeds,
                     "strategies_expanded": strategies,
                     "prefix_budgets": sorted(
                         {
@@ -218,24 +238,24 @@ def main() -> int:
             )
         )
 
-    total = len(distributions) * len(sampling_seeds) * len(strategies)
+    total = len(size_allocations) * len(candidate_seeds) * len(strategies)
     first_output = (
         out
-        / f"distribution.{safe_component(distributions[0])}"
-        / f"sampling_seed.{sampling_seeds[0]}"
+        / f"allocation.{safe_component(size_allocations[0])}"
+        / f"candidate_seed.{candidate_seeds[0]}"
         / safe_component(strategies[0])
     )
     unguided_manifest = first_output / "unguided_results.parquet"
     cell_number = 0
-    for distribution in distributions:
-        for sampling_seed in sampling_seeds:
+    for size_allocation in size_allocations:
+        for candidate_seed in candidate_seeds:
             cell = (
                 out
-                / f"distribution.{safe_component(distribution)}"
-                / f"sampling_seed.{sampling_seed}"
+                / f"allocation.{safe_component(size_allocation)}"
+                / f"candidate_seed.{candidate_seed}"
             )
             producer_out = cell / safe_component(strategies[0])
-            manifest = producer_out / "sample_run" / "samples.json"
+            manifest = producer_out / "candidate_run" / "candidates.json"
 
             for strategy_index, strategy in enumerate(strategies):
                 cell_number += 1
@@ -256,7 +276,7 @@ def main() -> int:
 
                 # The first strategy creates the manifest. On resume it can also
                 # reuse an already-created manifest if verification was interrupted.
-                samples_input = manifest if manifest.is_file() or strategy_index > 0 else None
+                candidates_input = manifest if manifest.is_file() or strategy_index > 0 else None
                 if strategy_index > 0 and not manifest.is_file() and not args.dry_run:
                     print(
                         f"Missing producer manifest {manifest}; cannot run paired strategy "
@@ -275,23 +295,23 @@ def main() -> int:
 
                 cmd = driver_command(
                     args,
-                    distribution=distribution,
-                    sampling_seed=sampling_seed,
+                    size_allocation=size_allocation,
+                    candidate_seed=candidate_seed,
                     strategy=strategy,
                     candidate_pools=candidate_pools,
                     output=strategy_out,
-                    samples_input=samples_input,
+                    candidates_input=candidates_input,
                     unguided_input=unguided_input,
                 )
                 print(
-                    f"[{cell_number}/{total}] distribution={distribution} "
-                    f"sampling_seed={sampling_seed} strategy={strategy}"
+                    f"[{cell_number}/{total}] allocation={size_allocation} "
+                    f"candidate_seed={candidate_seed} strategy={strategy}"
                 )
                 if args.dry_run:
                     # Show the path the producer will create to make the pairing
                     # explicit even though it does not exist during a dry run.
-                    if strategy_index > 0 and samples_input is None:
-                        cmd.extend(["--samples-input", str(manifest)])
+                    if strategy_index > 0 and candidates_input is None:
+                        cmd.extend(["--candidates-input", str(manifest)])
                     print(shlex.join(cmd))
                     continue
 

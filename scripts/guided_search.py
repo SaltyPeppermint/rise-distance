@@ -1,14 +1,14 @@
 """Drive the guide search from Python.
 
-This driver reads enriched seeds, samples a guide menu per seed, and verifies
-one attempt loop per seed/goal pair. It owns the JSON/parquet I/O; the Rust
-``sample`` and ``verify`` binaries communicate through argv, stdin, and stdout.
+This driver reads enriched seeds, constructs a guide-candidate menu per seed,
+and verifies one attempt loop per seed/goal pair. It owns the JSON/parquet I/O; the Rust
+``candidates`` and ``verify`` binaries communicate through argv, stdin, and stdout.
 
 Guide replay and leg search share the required ``--stop-*`` budget. Dimensions
 without an override retain their search-phase limits from ``goal_args.json``.
 
 Example:
-    cargo build --release --bin sample --bin verify
+    cargo build --release --bin candidates --bin verify
     uv run scripts/guided_search.py data/seed_terms/dusky-cramp \\
         --stop-memory 4G \\
         --attempts 5 --k 10 \\
@@ -38,24 +38,30 @@ from common import (
     run_json_subprocess_measured,
 )
 
-# Candidate-pool names emitted by `sample` (see CandidatePool::name in src/cli.rs).
+# Candidate-pool names emitted by `candidates` (see CandidatePool::name in src/cli.rs).
 # The `with_replacement_*` pools are re-drawn *with* replacement across a leg's
 # `k` picks; everything else is drawn without replacement.
-SamplingStrategy = Literal[
+CandidateStrategy = Literal[
     "no_replacement_independent",
     "no_replacement_naive",
     "no_replacement_balanced",
+    "no_replacement_rejection_walk",
+    "no_replacement_rejection_feasible",
     "with_replacement_independent",
     "with_replacement_naive",
     "with_replacement_balanced",
+    "with_replacement_rejection_walk",
+    "with_replacement_rejection_feasible",
 ]
 SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
-Strategy = Literal[SamplingStrategy, SmallestStrategy]
-SMALLEST_STRATEGIES = get_args(SmallestStrategy)
+Strategy = Literal[CandidateStrategy, SmallestStrategy]
+SINGLE_CANDIDATE_STRATEGIES = get_args(SmallestStrategy)
 CandidatePool = Literal[
-    "sample_independent",
-    "sample_naive",
-    "sample_balanced",
+    "exact_independent",
+    "exact_naive",
+    "exact_balanced",
+    "rejection_walk",
+    "rejection_feasible",
     "smallest_novel",
     "smallest_overall",
 ]
@@ -96,7 +102,7 @@ ATTEMPT_SCHEMA = {
     "guide_time": pl.Float64,
     "guide_memory": pl.Int64,
     "guide_peak_live_heap": pl.Int64,
-    "sample_peak_rss_bytes": pl.Int64,
+    "candidate_peak_rss_bytes": pl.Int64,
     "guide_stop_reason": pl.String,
 }
 
@@ -112,16 +118,16 @@ class Args:
     """Run folder for `results.parquet`/`results.json`. Auto-created under
     `data/guided_search/` if omitted."""
 
-    samples_input: Path | None = None
-    """Existing `samples.json` candidate manifest to reuse. When set, skip
-    guide replay and candidate sampling. This permits paired strategy runs over
+    candidates_input: Path | None = None
+    """Existing `candidates.json` candidate manifest to reuse. When set, skip
+    guide replay and candidate construction. This permits paired strategy runs over
     exactly the same per-seed menus."""
 
     unguided_input: Path | None = None
     """Existing `unguided_results.parquet` to reuse. The pair universe and
     effective limits must match this run."""
 
-    sample_binary: Path = Path("target/release/sample")
+    candidates_binary: Path = Path("target/release/candidates")
     verify_binary: Path = Path("target/release/verify")
 
     # guide-replay budget: at least one must be given; the replay ends at
@@ -161,13 +167,28 @@ class Args:
     rng_seed: int = 0
     """RNG seed for subset selection (offset per attempt)."""
 
-    sampling_seed: int = 0
-    """Rust candidate-sampling seed. Unlike `rng_seed`, this controls which
+    candidate_seed: int = 0
+    """Rust candidate-construction seed. Unlike `rng_seed`, this controls which
     terms enter each strategy's candidate menu."""
 
-    size_distribution: str = "greedy"
-    """How `sample` allocates the candidate budget across root term sizes:
+    size_allocation: str = "greedy"
+    """How `candidates` allocates the candidate budget across root term sizes:
     `greedy`, `uniform`, or `proportional:<min>`."""
+
+    novel_size_goal: int = 5
+    """Number of empirically observed novel sizes used by rejection pools."""
+
+    rejection_walk_backtrack: int = 512
+    """Recursive state/partition visits allowed per rejection-walk proposal."""
+
+    rejection_attempts_per_size: int = 4096
+    """Proposal attempts allowed per target size for rejection pools."""
+
+    rejection_global_attempts: int = 100_000
+    """Proposal attempts allowed for one rejection pool."""
+
+    rejection_max_time: float = 60.0
+    """Wall-clock seconds allowed for one rejection pool."""
 
     candidate_pools: tuple[CandidatePool, ...] = ()
     """Candidate pools to generate. Defaults to the pool selected by `strategy`;
@@ -190,32 +211,36 @@ class WorkItem:
 
 
 def pool_key(strategy: Strategy) -> CandidatePool:
-    """Map a driver strategy to the candidate-pool key `sample` writes.
+    """Map a driver strategy to the candidate-pool key `candidates` writes.
 
     The replacement prefix is a Python-side draw policy (`pick_subset`), not a
-    pool: `sample` emits `sample_independent`, `sample_naive`, and
-    `sample_balanced`, so collapse the prefix to hit one of those.
+    pool: `candidates` emits `exact_independent`, `exact_naive`, and
+    `exact_balanced`, so collapse the prefix to hit one of those.
     `smallest_*` keys pass through unchanged.
     """
-    if strategy in SMALLEST_STRATEGIES:
+    if strategy in SINGLE_CANDIDATE_STRATEGIES:
         return strategy
     if strategy.endswith("_independent"):
-        return "sample_independent"
+        return "exact_independent"
     if strategy.endswith("_naive"):
-        return "sample_naive"
+        return "exact_naive"
     if strategy.endswith("_balanced"):
-        return "sample_balanced"
+        return "exact_balanced"
+    if strategy.endswith("_rejection_walk"):
+        return "rejection_walk"
+    if strategy.endswith("_rejection_feasible"):
+        return "rejection_feasible"
     raise ValueError(f"unknown strategy {strategy!r}")
 
 
 def requested_candidate_pools(args: Args) -> list[CandidatePool]:
-    """Resolve and deduplicate the candidate pools the Rust sampler should emit."""
+    """Resolve and deduplicate the candidate pools the Rust builder should emit."""
     pools = args.candidate_pools or (pool_key(args.strategy),)
     return list(dict.fromkeys(pools))
 
 
 def replay_limits(args: Args, cfg: dict) -> dict:
-    """Build the guide-replay limits for `sample`: the search-phase
+    """Build the guide-replay limits for `candidates`: the search-phase
     (brute-force) limits from `goal_args.json`, with each given `--stop-*`
     budget overriding its dimension. The replay ends at whichever limit trips
     first.
@@ -234,7 +259,7 @@ def replay_limits(args: Args, cfg: dict) -> dict:
 
 @dataclass
 class SeedSpec:
-    """One seed's `sample` input (`seed`) and its goals, merged back onto the
+    """One seed's `candidates` input (`seed`) and its goals, merged back onto the
     output record Python-side."""
 
     seed: str
@@ -263,7 +288,7 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
     return specs
 
 
-def run_sample_shard(
+def build_candidate_shard(
     args: Args,
     base_flags: list[str],
     limits: dict,
@@ -271,19 +296,19 @@ def run_sample_shard(
     pools: list[str],
     spec: SeedSpec,
 ) -> list[dict]:
-    """Run ``sample`` for one seed and attach its goals to each output record."""
+    """Run ``candidates`` for one seed and attach its goals to the result."""
     cmd = [
-        str(args.sample_binary),
+        str(args.candidates_binary),
         *base_flags,
         *limit_flags(limits),
         "--seed",
         spec.seed,
-        "--samples-per-strategy",
+        "--candidates-per-pool",
         str(menu_size),
     ]
     for pool in pools:
         cmd.extend(["--candidate-pool", pool])
-    measured = run_json_subprocess_measured(cmd, what=f"sample for seed {spec.seed!r}")
+    measured = run_json_subprocess_measured(cmd, what=f"candidates for seed {spec.seed!r}")
     records = measured.payload
     if not records:
         return [
@@ -291,42 +316,52 @@ def run_sample_shard(
                 "seed": spec.seed,
                 "goals": spec.goals,
                 "candidates": {},
-                "sample_status": "failed",
-                "sample_peak_rss_bytes": measured.peak_rss_bytes,
+                "candidate_status": "failed",
+                "candidate_peak_rss_bytes": measured.peak_rss_bytes,
             }
         ]
     for record in records:
         record["goals"] = spec.goals
-        record["sample_status"] = "ok"
-        record["sample_peak_rss_bytes"] = measured.peak_rss_bytes
+        record["candidate_status"] = "ok"
+        record["candidate_peak_rss_bytes"] = measured.peak_rss_bytes
     return records
 
 
-def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
-    """Sample the guide menu in parallel, one `sample` subprocess per seed.
+def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path:
+    """Construct guide menus in parallel, one `candidates` subprocess per seed.
 
-    Merge results in seed order and write ``samples.json`` for provenance.
+    Merge results in seed order and write ``candidates.json`` for provenance.
     """
     specs = flatten_enriched_seeds(args)
     pools = requested_candidate_pools(args)
-    sample_out.mkdir(parents=True, exist_ok=True)
+    candidate_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
-    sample_flags = [
+    candidate_flags = [
         "--language",
         str(cfg["language"]),
-        "--size-distribution",
-        args.size_distribution,
-        "--sampling-seed",
-        str(args.sampling_seed),
+        "--size-allocation",
+        args.size_allocation,
+        "--candidate-seed",
+        str(args.candidate_seed),
+        "--novel-size-goal",
+        str(args.novel_size_goal),
+        "--rejection-walk-backtrack",
+        str(args.rejection_walk_backtrack),
+        "--rejection-attempts-per-size",
+        str(args.rejection_attempts_per_size),
+        "--rejection-global-attempts",
+        str(args.rejection_global_attempts),
+        "--rejection-max-time",
+        str(args.rejection_max_time),
     ]
     limits = replay_limits(args, cfg)
     # Menu size = exactly what the attempt loop consumes: no_replacement_* needs
     # k distinct guides per attempt across `attempts` disjoint attempts.
     menu_size = args.k * args.attempts
     print(
-        f"Sampling guide menu ({menu_size}/strategy, pools={','.join(pools)}) "
+        f"Constructing guide-candidate menu ({menu_size}/strategy, pools={','.join(pools)}) "
         f"for {len(specs)} seed(s) "
-        f"-> {sample_out} ({jobs} workers)",
+        f"-> {candidate_out} ({jobs} workers)",
         file=sys.stderr,
     )
 
@@ -334,15 +369,26 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
     with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
         futures = {
             pool_exec.submit(
-                run_sample_shard, args, sample_flags, limits, menu_size, pools, spec
+                build_candidate_shard,
+                args,
+                candidate_flags,
+                limits,
+                menu_size,
+                pools,
+                spec,
             ): i
             for i, spec in enumerate(specs)
         }
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="sampling", unit="seed"):
+        for fut in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="candidates",
+            unit="seed",
+        ):
             shard_records[futures[fut]] = fut.result()
 
     merged = [rec for i in range(len(specs)) for rec in shard_records[i]]
-    merged_path = sample_out / "samples.json"
+    merged_path = candidate_out / "candidates.json"
     merged_path.write_text(json.dumps(merged))
     return merged_path
 
@@ -350,7 +396,7 @@ def run_sample(args: Args, cfg: dict, sample_out: Path) -> Path:
 def build_attempt_subsets(
     pool: list, strategy: str, k: int, attempts: int, rng: random.Random
 ) -> list[list]:
-    """Precompute each attempt's guide subset for one seed/goal pair.
+    """Prepare each attempt's guide subset for one seed/goal pair.
 
     `smallest_*` yields a single term per attempt; `with_replacement_*` makes `k`
     picks with replacement per attempt.
@@ -359,7 +405,7 @@ def build_attempt_subsets(
     out of a shuffled pool, so the attempts are disjoint until the pool is
     exhausted (`attempts * eff_k > len(pool)`), where a fresh pass is appended.
     """
-    if strategy in SMALLEST_STRATEGIES:
+    if strategy in SINGLE_CANDIDATE_STRATEGIES:
         return [pool[:1] for _ in range(attempts)]
     if not pool:
         return [[] for _ in range(attempts)]
@@ -451,14 +497,14 @@ def resolve_output_dir(args: Args) -> Path:
 
 
 def build_work_items(seed_records: list, strategy: str) -> list[WorkItem]:
-    """Flatten `sample`'s seed records into independent (seed, goal) items.
+    """Flatten `candidates`'s seed records into independent (seed, goal) items.
 
     Each item runs its own sequential attempt loop (early-stops on first reach);
     items run concurrently.
     """
     items: list[WorkItem] = []
     for record in seed_records:
-        if record.get("sample_status") != "ok":
+        if record.get("candidate_status") != "ok":
             continue
         pool = record["candidates"].get(pool_key(strategy), [])
         guide_meta = {
@@ -467,7 +513,7 @@ def build_work_items(seed_records: list, strategy: str) -> list[WorkItem]:
             "guide_time": record["guide_time"],
             "guide_memory": record["guide_memory"],
             "guide_peak_live_heap": record["guide_peak_live_heap"],
-            "sample_peak_rss_bytes": record["sample_peak_rss_bytes"],
+            "candidate_peak_rss_bytes": record["candidate_peak_rss_bytes"],
             "guide_stop_reason": record["stop_reason"],
         }
         for goal in record["goals"]:
@@ -512,13 +558,13 @@ def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> l
 
 
 def expected_pairs(seed_records: list[dict]) -> list[dict]:
-    """Return every planned pair, including seeds whose sampling failed."""
+    """Return every planned pair, including seeds whose construction failed."""
     return [
         {
             "seed": record["seed"],
             "goal": goal,
-            "sample_status": record.get("sample_status", "ok"),
-            "sample_peak_rss_bytes": record.get("sample_peak_rss_bytes"),
+            "candidate_status": record["candidate_status"],
+            "candidate_peak_rss_bytes": record["candidate_peak_rss_bytes"],
             "guide_peak_live_heap": record.get("guide_peak_live_heap"),
             "guide_stop_reason": record.get("stop_reason"),
         }
@@ -578,9 +624,9 @@ def summarize_pairs(
             key=lambda row: row["attempt"],
         )
         successes = [row for row in attempts if row["reached"]]
-        sample_peak = pair["sample_peak_rss_bytes"]
+        candidate_peak = pair["candidate_peak_rss_bytes"]
         verify_peak = attempts[0]["verify_peak_rss_bytes"] if attempts else None
-        rss_peaks = [peak for peak in (sample_peak, verify_peak) if peak is not None]
+        rss_peaks = [peak for peak in (candidate_peak, verify_peak) if peak is not None]
         live_peaks = [
             peak
             for peak in (
@@ -589,7 +635,7 @@ def summarize_pairs(
             )
             if peak is not None
         ]
-        setup_status = pair["sample_status"]
+        setup_status = pair["candidate_status"]
         if setup_status == "ok" and not attempts:
             setup_status = "empty_pool"
         summary.append(
@@ -687,39 +733,23 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    exit_if_missing(args.sample_binary, args.verify_binary)
+    exit_if_missing(args.candidates_binary, args.verify_binary)
 
     cfg = json.loads((args.path / "goal_args.json").read_text())
     limits = replay_limits(args, cfg)
-    args.k = 1 if args.strategy in SMALLEST_STRATEGIES else args.k
+    args.k = 1 if args.strategy in SINGLE_CANDIDATE_STRATEGIES else args.k
     base_flags = ["--language", str(cfg["language"]), *limit_flags(limits)]
     out = resolve_output_dir(args)
 
-    if args.samples_input is None:
-        samples_path = run_sample(args, cfg, out / "sample_run")
+    if args.candidates_input is None:
+        candidates_path = build_candidate_manifest(args, cfg, out / "candidate_run")
     else:
-        samples_path = args.samples_input
-        if not samples_path.is_file():
-            print(f"Candidate manifest not found: {samples_path}", file=sys.stderr)
+        candidates_path = args.candidates_input
+        if not candidates_path.is_file():
+            print(f"Candidate manifest not found: {candidates_path}", file=sys.stderr)
             return 2
-        print(f"Reusing candidate manifest {samples_path}", file=sys.stderr)
-    seed_records = json.loads(samples_path.read_text())
-    for record in seed_records:
-        # Reused manifests from the new schema retain measured setup metadata.
-        record.setdefault("sample_status", "ok")
-        if record["sample_status"] == "ok":
-            missing = {
-                "guide_peak_live_heap",
-                "sample_peak_rss_bytes",
-            } - set(record)
-            if missing:
-                print(
-                    f"Candidate manifest predates peak-memory telemetry; missing "
-                    f"{sorted(missing)} for seed {record.get('seed')!r}.",
-                    file=sys.stderr,
-                )
-                return 2
-
+        print(f"Reusing candidate manifest {candidates_path}", file=sys.stderr)
+    seed_records = json.loads(candidates_path.read_text())
     items = build_work_items(seed_records, args.strategy)
     warn_pool_shortfall(items, args.strategy, args.k, args.attempts)
 
