@@ -1,85 +1,163 @@
-# Finding the smallest novel sizes
+# Root-restricted novel-size search and precompute
 
-`backoff_precompute` finds the `sizes`-th smallest novel term size at the
-root in one exact, size-incremental scan. It then builds the sampling package
-at exactly that size.
-
-This document is the implementation and correctness reference for that search.
-For the generic recurrence it builds on, read
-[size-layered term counting](layered_counting.md).
+`PrecomputePackage::backoff_precompute` finds the requested novel root sizes
+and builds all sampler data without enumerating or counting classes, e-nodes,
+or current/previous pairs that the selected root cannot use.
 
 The relevant code is:
 
-- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) — the
-  generic `LayeredDp` kernel shared by plain and joint counting.
-- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — layered
-  joint counting and `find_novel_root_sizes`.
-- [src/sampling/precompute.rs](../../src/sampling/precompute.rs) — cap handling
-  and package construction.
+- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) — shared
+  current-root budgets and the generic layered DP.
+- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — rooted
+  match enumeration, pruning, joint counting, and the exact scan.
+- [src/sampling/precompute.rs](../../src/sampling/precompute.rs) — phase
+  ordering, package retention, and telemetry.
 
-## Why the search is incremental
+For the counting recurrence, first read
+[size-layered term counting](layered_counting.md).
 
-For both plain and joint counting, a term of size `s` depends only on child
-terms whose sizes are strictly below `s`: the root e-node itself contributes
-one to the size. Counts are therefore stratified by size even when the
-e-graph contains cycles.
+## Control flow
 
-The joint recurrence uses `(curr_class, prev_class)` as its key. For a match
-of a current e-node against a previous class, its child keys are the zipped
-current and previous children. Apart from that different key shape, it is
-the same layered recurrence as plain counting. `LayeredDp` evaluates each
-`(key, size)` cell once, in size order.
+The final sampling size is not known until the exact scan completes. The scan
+cap bounds the first rooted match enumeration; the result is tightened after
+the final size is selected:
 
-After layer `s` completes, the root's exact novel count at that size is final:
+```text
+cap = start_size + max_retries * retry_step
+
+prev_lookup = reconstruct_previous_boundary()
+cap_budgets = root_budgets(curr, root, cap)
+matches = enumerate_matches_rooted(curr, prev_lookup, cap_budgets)
+drop(prev_lookup)
+
+novel_sizes = find_novel_root_sizes_rooted(
+    curr, root, matches, stop_after=sizes, cap_budgets
+)
+
+if fewer than sizes were found:
+    return Err(cap)
+
+final_max_size = novel_sizes[sizes - 1]
+final_budgets = root_budgets(curr, root, final_max_size)
+prune_matches(curr, matches, final_budgets)
+
+plain = count_plain_rooted(curr, final_budgets)
+joint = count_joint_rooted(curr, matches, final_budgets)
+package = derive_novel_and_retain_sampler_data(plain, joint, matches)
+```
+
+`PrecomputePackage::precompute(result, max_size)` already knows its final
+limit. It computes final budgets immediately, enumerates matches inside that
+domain, and builds the package without the cap scan.
+
+`start_size`, `max_retries`, and `retry_step` define only the scan cap. There
+is no retry schedule. On success, both the returned size and the package limit
+are the `sizes`-th smallest novel root size.
+
+## Budget-aware match enumeration
+
+For each relevant current class `c`, rooted enumeration visits only nodes
+whose cheapest possible realization fits:
+
+```text
+1 + sum(min_size(canonical_child)) <= budget(c)
+```
+
+It retains the bottom-up fixpoint used to discover matches. A current node
+`n(c_1, ..., c_k)` tries the Cartesian product of the previous classes in each
+child's discovered cover. Replacing current children by one such tuple gives a
+translated node that can be queried in the complete previous lookup. A
+successful lookup records:
+
+```text
+(current_class, node_index, previous_class, previous_children)
+```
+
+and grows the current class's cover. Passes continue until no match is added.
+
+Previous classes are never filtered by a previous-root notion. A previous
+class remains eligible whenever it witnesses a relevant current term.
+
+### Why rooted enumeration is complete
+
+Take a non-novel term `t` of size at most `budget(c)` extractable from relevant
+current class `c`.
+
+- If `t` is a leaf, the rooted pass queries that leaf directly.
+- Otherwise every child subtree is smaller than `t`, is shared by its current
+  and previous child classes, and fits the child current class's propagated
+  root budget.
+- By induction on term size, every child cover entry needed to translate the
+  parent is discovered.
+- The Cartesian product therefore visits the parent tuple and discovers its
+  previous witness.
+
+Cycles do not affect this argument because a finite extracted tree strictly
+decreases in size from parent to child.
+
+## Exact incremental scan
+
+Plain and joint counts advance together one size layer at a time. The joint
+key is `(current_class, previous_class)`, and every pair inherits its current
+class budget. After layer `s`, the root count is final:
 
 ```text
 novel(root, s) = plain(root, s)
-               - sum over pc of joint((root, pc), s)
+               - sum_pc joint((root, pc), s)
 ```
 
-Later layers cannot change it. `find_novel_root_sizes` can record nonzero
-sizes in ascending order and stop as soon as it has recorded `sizes` of them.
-Nothing above the answer is computed during the scan.
+The scan uses `BigUint`, so nonzero detection is exact. It records nonzero
+sizes in ascending order and stops at the requested count; no larger scan
+layer or sampler suffix cache is constructed.
 
-## Exact arithmetic
+The final package is a separate pass because sampling needs complete rooted
+histograms and plain suffix tables through `final_max_size`, potentially with
+the caller's counter type rather than `BigUint`.
 
-The scan uses `BigUint` throughout. A size is reported exactly when its novel
-count is nonzero; there are no modular fingerprints, collisions, or fallback
-verification paths.
+## Final-size pruning and retained data
 
-The scan is root-restricted. The plain DP computes only classes reachable
-from the root within the global size cap. Each joint pair `(c, pc)` inherits
-the budget of its current class `c`; pairs whose current class is unreachable
-are omitted. This is sound because every joint term of `(c, pc)` is also a
-plain term of `c`, so the plain subterm budget bounds every joint dependency
-needed by a root query.
+Cap enumeration can retain nodes that fit the scan cap but cannot participate
+at the selected final size. Before package counting, `prune_matches` removes:
 
-The package build remains a separate pass because it produces the complete
-novel histograms and suffix caches needed by the sampler. Match enumeration
-is independent of the size cap and is reused by both passes.
+- entries whose current class is absent from the final budgets; and
+- entries whose current e-node minimum exceeds its final class budget.
 
-## `backoff_precompute` control flow
+Every previous witness attached to a surviving current node is retained.
+Rooted joint counting decides which current/previous pairs have nonzero cells
+within budget. The package retains only:
 
-```text
-matches = enumerate_matches(curr, prev)
-cap = start_size + max_retries * retry_step
-novel_sizes = find_novel_root_sizes(cap, ..., stop_after=sizes)
+- rooted plain histograms and sampler suffix tables;
+- nonempty rooted joint histograms;
+- cover entries derived from nonempty joint keys;
+- the final-budget-pruned node-match table; and
+- novel histograms derived from those rooted counts.
 
-if fewer than `sizes` were found:
-    return Err(cap)
+## Correctness invariant
 
-max_size = novel_sizes[sizes - 1]
-build and return the package at max_size
-```
+For a selected root `r` and final limit `M`, every query reachable while
+constructing a term of size at most `M` remains available:
 
-`start_size`, `max_retries`, and `retry_step` retain their command-line/API
-meaning only through the cap. There is no sequence of retries at those
-bounds. On success, both the returned `usize` and the package's `max_size`
-are the `sizes`-th smallest novel size.
+- the exact novel histogram at `r` through `M`;
+- recursive plain and joint histogram lookups;
+- covers and node matches needed by every feasible frontier state; and
+- suffix tables needed to split child sizes.
+
+The restriction removes only data no root derivation can query. Every sampled
+term remains extractable from the current graph and absent from the previous
+boundary.
+
+## Diagnostics
+
+`backoff_precompute` writes a diagnostic to its supplied log only when it
+cannot build a package with the requested number of novel sizes. A successful
+call does not write a structural or live-heap summary. Call `log_root`
+explicitly after success when a sorted frontier-size histogram is needed.
 
 ## Verification
 
-Tests compare the root-restricted scan with the full exact novel histogram
-for every class in several graph shapes, including a cyclic graph. The
-end-to-end backoff test has novel sizes `5, 7, 9, ...`; requesting three
-sizes returns and builds the package at `9`.
+Tests exercise acyclic and cyclic graphs, empty novel frontiers, merged and
+repeated children, a parent match discovered through child cover information,
+unreachable matching classes, oversized nodes removed by final pruning, and
+multiple previous witness classes for one current class. The end-to-end
+backoff fixture has novel sizes `5, 7, 9, ...`; requesting three sizes selects
+and builds the package at `9`.

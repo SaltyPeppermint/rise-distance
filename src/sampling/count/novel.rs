@@ -22,7 +22,11 @@ use smallvec::SmallVec;
 
 use crate::Counter;
 use crate::previous::PreviousLookup;
-use crate::sampling::count::{LayeredDp, PlainTermCount, plain_dp};
+#[cfg(test)]
+use crate::sampling::count::count_terms_rooted;
+#[cfg(test)]
+use crate::sampling::count::root_budgets;
+use crate::sampling::count::{CountData, LayeredDp, RootBudgets, plain_dp_rooted};
 
 /// Inline-allocated list of child class ids. Sized for the typical e-node
 /// arity (0–2); higher-arity nodes spill to the heap transparently.
@@ -62,7 +66,7 @@ pub struct NovelTermCount<C>
 where
     C: Counter,
 {
-    plain: PlainTermCount<C>,
+    plain: CountData<C>,
 
     /// Per `(curr_class, prev_class)` pair: histogram of size -> count of
     /// extractions rooted at curr's class that are also extractable from
@@ -82,41 +86,41 @@ where
 }
 
 impl<C: Counter> NovelTermCount<C> {
-    /// Convenience constructor that enumerates the matches itself; the
-    /// production path goes through [`with_matches`](Self::with_matches).
+    /// Test convenience around the production rooted pipeline.
     #[cfg(test)]
-    #[must_use]
-    pub fn new<L, N>(
+    pub(crate) fn rooted_for_tests<L, N, P>(
         max_size: usize,
         curr: &EGraph<L, N>,
-        prev: &EGraph<L, N>,
-        plain: PlainTermCount<C>,
+        prev: &P,
+        root: Id,
     ) -> Self
     where
         L: Language,
         N: Analysis<L>,
+        P: PreviousLookup<L> + ?Sized,
     {
-        Self::with_matches(max_size, curr, plain, enumerate_matches(curr, prev))
+        let budgets = root_budgets(curr, root, max_size);
+        let matches = enumerate_matches_rooted(curr, prev, &budgets);
+        let plain = count_terms_rooted(curr, &budgets);
+        Self::from_rooted_matches(curr, plain, matches, &budgets)
     }
 
-    /// Run the joint counting analysis, with the match enumeration
-    /// precomputed by the caller. The matches are independent of `max_size`,
-    /// so callers that run several analyses on the same egraph pair (see
-    /// `PrecomputePackage::backoff_precompute`) can share one enumeration.
+    /// Run root-restricted joint counting using the same current-class
+    /// budgets that produced `plain` and `matches`.
     #[must_use]
-    pub(crate) fn with_matches<L, N>(
-        max_size: usize,
+    pub(crate) fn from_rooted_matches<L, N>(
         curr: &EGraph<L, N>,
-        plain: PlainTermCount<C>,
+        plain: CountData<C>,
         matches: NodeMatches,
+        budgets: &RootBudgets,
     ) -> Self
     where
         L: Language,
         N: Analysis<L>,
     {
-        let joint = compute_joint(max_size, curr, &matches);
+        let joint = compute_joint_rooted(curr, &matches, budgets);
         let cover = build_cover(&joint);
-        let data = derive_novel(plain.data(), &joint);
+        let data = derive_novel(&plain.data, &joint);
 
         Self {
             plain,
@@ -135,7 +139,7 @@ impl<C: Counter> NovelTermCount<C> {
     }
 
     #[must_use]
-    pub const fn plain(&self) -> &PlainTermCount<C> {
+    pub const fn plain(&self) -> &CountData<C> {
         &self.plain
     }
 
@@ -201,9 +205,10 @@ impl<C: Counter> NovelTermCount<C> {
 
 // The exposed `cover` is built from the *joint* keys, not from match
 // enumeration's internal `cover`. The two can differ: a `(c, pc)` pair whose
-// matches all involve some child with empty `joint` within `max_size` ends up
-// dropped in `compute_joint`. That's fine for sampling: a missing `pc` had
-// joint count 0 anyway, so neither slot enumeration nor `completes_some_match`
+// matches all involve some child with empty `joint` within its root budget
+// ends up dropped by rooted joint counting. That's fine for sampling: a
+// missing `pc` had joint count 0 anyway, so neither slot enumeration nor
+// `completes_some_match`
 // can be fooled by its absence.
 fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
     let mut out: HashMap<Id, Vec<Id>> = HashMap::new();
@@ -220,17 +225,14 @@ fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
 // Phase 1: match enumeration.
 // ============================================================================
 
-/// Enumerate all matches of every curr e-node in `prev`.
-///
-/// Bottom-up fixpoint: per curr e-node `n` with children `c_1..c_k`, try every
-/// combination `(pc_1, .., pc_k)` from `cover[c_i]` (the set of prev classes
-/// that share a term with `c_i`). For each combo, look up the translated node
-/// in `prev`; if found, record the match and add the discovered prev class to
-/// `cover[curr_class_of_n]`. Iterate until no new matches/cover entries.
-///
-/// The result is independent of any size limit and can be shared across
-/// several counting runs on the same egraph pair.
-pub fn enumerate_matches<L, N, P>(curr: &EGraph<L, N>, prev: &P) -> NodeMatches
+/// Enumerate only matches that can participate in an extraction from the
+/// selected current root within its size limit. Previous classes are queried
+/// through the complete lookup and are deliberately not root-filtered.
+pub(crate) fn enumerate_matches_rooted<L, N, P>(
+    curr: &EGraph<L, N>,
+    prev: &P,
+    budgets: &RootBudgets,
+) -> NodeMatches
 where
     L: Language,
     N: Analysis<L>,
@@ -240,19 +242,18 @@ where
     let mut matches = NodeMatches::new();
     let mut seen = MatchKeys::new();
 
-    let mut changed = true;
-    while changed {
-        changed = false;
-
-        for class in curr.classes() {
-            let c = curr.find(class.id);
-            for (idx, node) in class.nodes.iter().enumerate() {
-                let children = node.children();
-                let child_canons = children
+    loop {
+        let before = seen.len();
+        for &c in budgets.budgets().keys() {
+            for (idx, node) in curr[c].nodes.iter().enumerate() {
+                if !budgets.node_fits(curr, c, node) {
+                    continue;
+                }
+                let child_canons = node
+                    .children()
                     .iter()
-                    .map(|cc| curr.find(*cc))
+                    .map(|&child| curr.find(child))
                     .collect::<ChildIds>();
-
                 let combos = child_combinations(&child_canons, &cover);
                 for combo in combos {
                     let mut translated = node.clone();
@@ -269,17 +270,36 @@ where
                             prev_class: pc_class,
                             prev_children: combo,
                         });
-                        // Newly discovered cover entry; another pass
-                        // might find more matches via this class.
                         cover.entry(c).or_default().insert(pc_class);
-                        changed = true;
                     }
                 }
             }
         }
-    }
 
+        let discovered = seen.len() - before;
+        if discovered == 0 {
+            break;
+        }
+    }
     matches
+}
+
+/// Tighten cap-scoped matches to a smaller final root budget.
+pub(crate) fn prune_matches<L, N>(
+    curr: &EGraph<L, N>,
+    matches: &mut NodeMatches,
+    budgets: &RootBudgets,
+) where
+    L: Language,
+    N: Analysis<L>,
+{
+    matches.retain(|&(c, idx), _| {
+        budgets.budget(c).is_some()
+            && curr[c]
+                .nodes
+                .get(idx)
+                .is_some_and(|node| budgets.node_fits(curr, c, node))
+    });
 }
 
 /// Cartesian product of `cover[child_i]` over `i`. For zero-arity nodes,
@@ -311,22 +331,20 @@ fn child_combinations(children: &[Id], cover: &MatchCover) -> Vec<ChildIds> {
 // Phase 2: joint counts, layered by size.
 // ============================================================================
 
-/// Compute `joint[(c, pc)]` for every pair appearing in matches, as a
-/// size-layered DP over `(curr_class, prev_class)` pairs: the matched e-node
-/// contributes 1 to a term's size, so a pair's count at `size` depends only
-/// on child-pair counts at sizes strictly below it — the same stratification
-/// [`count_terms`](super::count_terms) uses for the plain counts, and the
-/// same [`LayeredDp`] kernel (see `docs/counting/novel_size_search.md`). Each
-/// `(pair, size)` cell is computed exactly once, even on cyclic e-graphs.
-fn compute_joint<C: Counter, L: Language, N: Analysis<L>>(
-    max_size: usize,
+/// Compute rooted `joint[(c, pc)]` counts with each pair capped by the budget
+/// of its current class.
+fn compute_joint_rooted<C: Counter, L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     matches: &NodeMatches,
+    rooted: &RootBudgets,
 ) -> JointTable<C> {
     let children_of = joint_children_of(curr, matches);
-    let budgets = children_of.keys().map(|&pair| (pair, max_size)).collect();
+    let budgets = children_of
+        .keys()
+        .filter_map(|&(c, pc)| rooted.budget(c).map(|budget| ((c, pc), budget)))
+        .collect();
     let mut dp = LayeredDp::new(children_of, budgets);
-    for _ in 0..max_size {
+    for _ in 0..rooted.limit() {
         dp.step();
     }
     dp.into_parts().0
@@ -362,24 +380,18 @@ fn joint_children_of<L: Language, N: Analysis<L>>(
 // ============================================================================
 
 /// The first `stop_after` sizes (ascending) at which `root` has at least one
-/// novel term, up to `max_size`.
-///
-/// This runs the same plain/joint recurrence as
-/// [`NovelTermCount::with_matches`] with exact [`BigUint`] counts, but
-/// restricts both DPs to what `root` can reach. The DPs advance in lockstep;
-/// after layer `s`,
-/// `plain[root](s) - sum_pc joint[(root, pc)](s)` is final. The scan can
-/// therefore stop at the requested number of sizes without computing any
-/// larger layers or sampler-only caches. See `docs/counting/novel_size_search.md`.
-pub fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
-    max_size: usize,
+/// novel term, using the shared budgets that also constrained match
+/// enumeration. The exact plain and joint DPs advance in lockstep and can stop
+/// without constructing sampler caches above the selected layer.
+pub(crate) fn find_novel_root_sizes_rooted<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     root: Id,
     matches: &NodeMatches,
     stop_after: usize,
+    rooted: &RootBudgets,
 ) -> Vec<usize> {
     let root = curr.find(root);
-    let mut plain: LayeredDp<Id, BigUint> = plain_dp(max_size, curr, Some(&[root]));
+    let mut plain: LayeredDp<Id, BigUint> = plain_dp_rooted(curr, rooted);
 
     // Each pair inherits its curr class's rooted budget: joint terms are
     // plain terms of that class, and the budget recurrence relaxes with
@@ -400,7 +412,7 @@ pub fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     let mut joint: LayeredDp<(Id, Id), BigUint> = LayeredDp::new(children_of, budgets);
 
     let mut sizes = Vec::new();
-    for _ in 0..max_size {
+    for _ in 0..rooted.limit() {
         let size = plain.step();
         joint.step();
 
@@ -489,6 +501,18 @@ mod tests {
     use crate::langs::math::Math;
     use crate::utils::sym;
 
+    fn rooted_novel(
+        curr: &EGraph<Math, ()>,
+        prev: &EGraph<Math, ()>,
+        root: Id,
+        max_size: usize,
+    ) -> NovelTermCount<BigUint> {
+        let budgets = root_budgets(curr, root, max_size);
+        let matches = enumerate_matches_rooted(curr, prev, &budgets);
+        let plain = count_terms_rooted(curr, &budgets);
+        NovelTermCount::from_rooted_matches(curr, plain, matches, &budgets)
+    }
+
     #[test]
     fn no_novelty_yields_empty() {
         let mut graph = EGraph::<Math, ()>::new(());
@@ -497,8 +521,7 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(5, &graph);
-        let novel = NovelTermCount::new(5, &graph, &graph, plain);
+        let novel = rooted_novel(&graph, &graph, a, 5);
 
         assert!(novel.data().is_empty(), "expected empty novel data");
     }
@@ -518,8 +541,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let novel = NovelTermCount::new(5, &curr, &prev, plain);
+        let novel = rooted_novel(&curr, &prev, root, 5);
 
         // The merged a/b class at size 1 has 2 extractions in curr; only "a"
         // is extractable from prev's a-class and only "b" from prev's b-class
@@ -535,26 +557,33 @@ mod tests {
         assert_eq!(novel.data()[&root_canon][&2], BigUint::from(1u32));
     }
 
-    /// The root-restricted scan must agree with the full novel histogram for
-    /// every class taken as root.
+    /// The incremental scan and final rooted package pass must agree for every
+    /// class taken as root.
     fn assert_size_scan_agrees(curr: &EGraph<Math, ()>, prev: &EGraph<Math, ()>, max_size: usize) {
-        let plain = PlainTermCount::<BigUint>::new(max_size, curr);
-        let novel = NovelTermCount::new(max_size, curr, prev, plain);
-        let matches = enumerate_matches(curr, prev);
-
         for class in curr.classes() {
-            let mut expected = novel
+            let root = curr.find(class.id);
+            let budgets = root_budgets(curr, root, max_size);
+            let rooted_matches = enumerate_matches_rooted(curr, prev, &budgets);
+            let found =
+                find_novel_root_sizes_rooted(curr, root, &rooted_matches, usize::MAX, &budgets);
+            let rooted_plain = count_terms_rooted::<BigUint, _, _>(curr, &budgets);
+            let rooted =
+                NovelTermCount::from_rooted_matches(curr, rooted_plain, rooted_matches, &budgets);
+            let mut expected = rooted
                 .data()
-                .get(&curr.find(class.id))
+                .get(&root)
                 .map(|hist| hist.keys().copied().collect::<Vec<_>>())
                 .unwrap_or_default();
             expected.sort_unstable();
-            let found = find_novel_root_sizes(max_size, curr, class.id, &matches, usize::MAX);
             assert_eq!(
                 found, expected,
-                "novel sizes diverge for class {}",
+                "scan/package novel sizes diverge for class {}",
                 class.id
             );
+            for (&(c, _), histogram) in &rooted.joint {
+                let budget = budgets.budget(c).expect("joint current class is rooted");
+                assert!(histogram.keys().all(|&size| size <= budget));
+            }
         }
     }
 
@@ -617,12 +646,94 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let novel = NovelTermCount::new(5, &curr, &prev, plain);
+        let novel = rooted_novel(&curr, &prev, root, 5);
 
         let root_canon = curr.find(root);
         // Plain at size 3 = 4 (aa, ab, ba, bb). Only Add(a, b) was in prev.
         // So novel = 4 - 1 = 3.
         assert_eq!(novel.data()[&root_canon][&3], BigUint::from(3u32));
+    }
+
+    #[test]
+    fn rooted_match_fixpoint_builds_parent_from_child_cover() {
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let ln = curr.add(Math::Ln(a));
+        let root = curr.add(Math::Sqrt(ln));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        let budgets = root_budgets(&curr, root, 3);
+        let matches = enumerate_matches_rooted(&curr, &prev, &budgets);
+        let root = curr.find(root);
+        assert!(matches.keys().any(|(c, _)| *c == root));
+    }
+
+    #[test]
+    fn rooted_matches_skip_unreachable_classes() {
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let root = curr.add(Math::Ln(a));
+        let unreachable = curr.add(Math::Sqrt(b));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        let budgets = root_budgets(&curr, root, 2);
+        let matches = enumerate_matches_rooted(&curr, &prev, &budgets);
+
+        assert!(!matches.keys().any(|(c, _)| *c == curr.find(unreachable)));
+        assert!(!matches.keys().any(|(c, _)| *c == curr.find(b)));
+    }
+
+    #[test]
+    fn final_pruning_removes_oversized_node_matches() {
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let ln = curr.add(Math::Ln(a));
+        let oversized = curr.add(Math::Sqrt(ln));
+        curr.rebuild();
+        let prev = curr.clone();
+        curr.union(a, oversized);
+        curr.rebuild();
+        let root = curr.find(a);
+
+        let cap_budgets = root_budgets(&curr, root, 3);
+        let mut matches = enumerate_matches_rooted(&curr, &prev, &cap_budgets);
+        let before = matches.values().map(Vec::len).sum::<usize>();
+        let final_budgets = root_budgets(&curr, root, 1);
+        prune_matches(&curr, &mut matches, &final_budgets);
+        let after = matches.values().map(Vec::len).sum::<usize>();
+
+        assert!(before > after);
+        assert!(matches.keys().all(|&(c, idx)| final_budgets.node_fits(
+            &curr,
+            c,
+            &curr[c].nodes[idx]
+        )));
+    }
+
+    #[test]
+    fn rooted_matches_keep_all_previous_witness_classes() {
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        curr.rebuild();
+        let prev = curr.clone();
+        curr.union(a, b);
+        curr.rebuild();
+        let root = curr.find(a);
+
+        let budgets = root_budgets(&curr, root, 1);
+        let matches = enumerate_matches_rooted(&curr, &prev, &budgets);
+        let previous_classes = matches
+            .iter()
+            .filter(|((c, _), _)| *c == root)
+            .flat_map(|(_, ms)| ms.iter().map(|m| m.prev_class))
+            .collect::<HashSet<_>>();
+
+        assert_eq!(previous_classes.len(), 2);
+        assert!(previous_classes.contains(&prev.find(a)));
+        assert!(previous_classes.contains(&prev.find(b)));
     }
 }

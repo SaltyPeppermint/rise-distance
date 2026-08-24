@@ -1,17 +1,20 @@
 mod layered;
 mod novel;
-mod plain;
 
 use std::borrow::Borrow;
 
 use hashbrown::HashMap;
 
 use crate::Counter;
-use layered::{CountData, LayeredDp, count_terms, plain_dp};
+use layered::LayeredDp;
 
+pub(crate) use layered::{
+    CountData, RootBudgets, count_terms_rooted, plain_dp_rooted, root_budgets,
+};
+
+pub use novel::NodeMatches;
 pub use novel::{NodeMatch, NovelTermCount};
-pub use novel::{NodeMatches, enumerate_matches, find_novel_root_sizes};
-pub use plain::PlainTermCount;
+pub(crate) use novel::{enumerate_matches_rooted, find_novel_root_sizes_rooted, prune_matches};
 
 /// Convolve all child histograms into a single result (left-to-right).
 pub fn convolve<C: Counter, H: Borrow<HashMap<usize, C>>>(

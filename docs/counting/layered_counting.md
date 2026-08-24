@@ -1,206 +1,163 @@
-# Size-layered term counting
+# Size-layered, root-restricted term counting
 
-How the per-class term-size histograms (`plain(c)(s)` = number of distinct
-terms of size `s` extractable from e-class `c`) are computed by walking
-upward through size layers, optionally restricted to what a root can reach.
+The sampling precompute counts exact-size terms only for current e-classes and
+sizes that can participate in an extraction from the selected root. This
+document describes the shared size-layered kernel and the root budgets that
+bound every production counting phase.
 
-The relevant code lives in:
+The relevant code is:
 
-- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) — `count_terms`, `class_budgets`.
-- [src/sampling/count/plain.rs](../../src/sampling/count/plain.rs) — `PlainTermCount::{new, rooted}`.
-- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — the exact,
-  root-restricted novel-size scan.
-- [src/analysis/semilattice/ast_size.rs](../../src/analysis/semilattice/ast_size.rs) — the min-size analysis the budget pass reuses.
+- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) —
+  `RootBudgets`, `root_budgets`, and `LayeredDp`.
+- [src/sampling/sampler/plain.rs](../../src/sampling/sampler/plain.rs) —
+  top-down consumption of rooted plain histograms and suffix tables.
+- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — reuse of
+  the kernel for rooted joint counting and the novel-size scan.
+- [src/analysis/semilattice/ast_size.rs](../../src/analysis/semilattice/ast_size.rs)
+  — minimum extraction sizes used by the budget calculation.
 
----
+## Exact-size recurrence
 
-## 1. What is counted
+For a current e-class `c`, the sparse histogram
 
-For every e-class `c`, the result is a sparse histogram:
-
-```
-plain(c)(s) = number of distinct terms of exactly size s
-              extractable from c
-```
-
-Term size is AST node count. An e-node contributes 1 for itself, so a node
-`f(c_1, ..., c_k)` constructs a term of size `s` exactly when its children
-construct subterms whose sizes sum to the remaining budget `s - 1`.
-
-At each size layer, the question for every e-class is therefore:
-
-> What can the e-nodes in this class construct from their children using
-> exactly the remaining budget?
-
-Leaves initialize the process: a leaf has no children, so it constructs one
-term of size 1. Larger terms then become available layer by layer.
-
-The resulting histograms are used to answer which root sizes exist and to
-weight the choices made by the top-down samplers. Counting also produces the
-per-node suffix tables those samplers need.
-
-## 2. The layer-walking model
-
-A term of size `s` rooted at an e-node spends 1 on the node itself, so its
-child subterms have sizes `>= 1` summing to `s - 1` — every one of them is
-**strictly smaller than `s`**:
-
-```
-plain(c, s) = sum over e-nodes n in c of
-              |{ (s_1, ..., s_k) : s_i >= 1, sum = s - 1 }|   weighted by
-              product over i of plain(child_i, s_i)           with all s_i < s
+```text
+plain(c, s) = number of terms of exactly size s extractable from c
 ```
 
-So `plain(·, s)` depends only on `plain(·, < s)`. The computation walks:
+uses AST node count as size. For an e-node `f(c_1, ..., c_k)`, the node costs
+one and its children share the remaining `s - 1` nodes:
 
-```
-size 1  ->  size 2  ->  size 3  ->  ...  ->  limit
-```
-
-You can picture it as a table with one row per e-class and one column per
-term size:
-
-```
-              size 1   size 2   size 3   ...   size limit
-class A          ✓        ✓        ✓
-class B          ✓        ✓        ✓
-class C          ✓        ✓        ✓
+```text
+plain(c, s) = sum over nodes f(c_1, ..., c_k) in c
+              sum over s_1 + ... + s_k = s - 1
+              product_i plain(c_i, s_i)
 ```
 
-The algorithm completes an entire column before moving to the next one.
-When it is filling column `s`, every child count it can consult lies in a
-column strictly to the left and is already final.
+Every child size is strictly smaller than `s`. Counts at layer `s` therefore
+depend only on completed earlier layers, even if the e-graph contains cycles.
+For example, `X = {a, f(X)}` unfolds by size:
 
-This remains true for cyclic e-graphs. For example:
-
-```
-X = { a, f(X) }
-```
-
-The e-class points to itself, but one size layer lower:
-
-```
-(X, size s) depends on (X, size s - 1)
+```text
+size 1: a
+size 2: f(a)
+size 3: f(f(a))
+...
 ```
 
-The layers therefore unfold the cycle into an ordinary progression:
+There is a cycle between e-classes but no cycle between expanded
+`(e-class, size)` states.
 
-```
-(X, 1)        (X, 2)        (X, 3)        ...
-   a            f(a)          f(f(a))
-```
+## The `LayeredDp` kernel
 
-The cycle is still present between e-classes, but there is no cycle between
-the expanded `(e-class, size)` states. Leaves seed size 1, and each completed
-layer makes the next layer computable.
+`LayeredDp<K, C>` is generic over a state key `K` and counter type `C`. Plain
+counting uses `K = Id`; joint current/previous counting uses
+`K = (Id, Id)`.
 
-## 3. The layered DP
+For each key and node with children `k_1..k_n`, it retains suffix convolution
+tables:
 
-`count_terms` keeps, per `(class, node)` with children `c_1..c_k`, the suffix
-tables
-
-```
-S_i(t) = number of ways to fill children i..k with subterm sizes summing to t
-S_k    = {0: 1}    (empty product)
+```text
+S_i(t) = ways to fill children i..n with total size t
+S_n    = {0: 1}
 ```
 
-and processes `size = 1..=limit`. Each layer does two things:
+At size layer `s`, it extends each suffix by the single total `t = s - 1`:
 
-**Extend the suffix tables by the single new total `t = size - 1`** (from
-`i = k-1` down to `0`):
-
-```
-S_i(t) = sum over sigma of  plain(c_i, sigma) * S_{i+1}(t - sigma)
+```text
+S_i(t) = sum over sigma of histogram(k_i, sigma) * S_(i+1)(t - sigma)
 ```
 
-Both factors are already final: histogram entries are at sizes `<= size - 1 = t`
-(earlier layers), and since `sigma >= 1`, the lookup `S_{i+1}(t - sigma)`
-only touches totals `<= t - 1` from earlier layers — the `t`-entry that
-`S_{i+1}` gained moments ago in this same loop is provably never read.
-The two-map sum iterates whichever of the two maps is smaller
-(`convolve_entry`).
+Both factors are final. `sigma >= 1`, so even the suffix lookup is at a total
+strictly below the entry being added. After all suffixes have been extended,
+the key publishes its layer count by summing `S_0(s - 1)` over its nodes.
+Separating suffix extension from publication makes the result independent of
+hash-map iteration order.
 
-**Read off the layer**: `plain(c, size) = sum over nodes of S_0(size - 1)`
-(for leaves `S_0 = {0: 1}`, contributing exactly at `size = 1`).
+Plain counting retains these suffix tables because top-down sampling uses them
+to split a requested size among children without proposing infeasible
+remainders.
 
-The two phases of a layer are deliberately separate: every suffix entry for
-total `s - 1` is computed before any class publishes its count at size `s`.
-The result therefore cannot depend on hash-map iteration order.
+## Shared root budgets
 
-The suffix tables are also the cache used by the sampler. To choose child
-`i`, the sampler combines the number of terms available from that child with
-`S_{i+1}`, the number of ways the remaining children can consume the
-remaining budget. The DP therefore returns the histograms and suffix tables
-together in `CountData`.
+Production callers first construct one `RootBudgets` value for a canonical
+current root and limit. It owns:
 
-## 4. Root restriction: budgets
+- the maximum useful subterm size for each relevant canonical current class;
+- the minimum extraction size for every canonical current class; and
+- the root limit.
 
-The histograms are only ever consumed from very few classes — the roots —
-plus whatever top-down sampling reaches from them, and sampling can never ask
-a deep class for a large size: the size budget shrinks on the way down.
-`PlainTermCount::rooted` exploits that.
+Bundling these values prevents a global size limit from being passed where a
+per-class limit is required. The same value is consumed by plain counting,
+rooted match enumeration, the exact scan, and rooted joint counting.
 
-With `min(c)` = smallest extractable term size (the existing `AstSize`
-semilattice analysis — a cheap fixpoint over small integers), define the
-**budget** as the largest size a subterm rooted at `c` can take in *any*
-extraction of size `<= limit` from a root:
+Let `min(c)` be the smallest term extractable from `c`. The root starts with
+the full limit:
 
-```
+```text
 budget(root) = limit
-budget(c_i)  = max over parent positions (node n in class p, slot i) of
-               budget(p) - 1 - sum over j != i of min(c_j)
 ```
 
-computed by worklist relaxation. Budgets only grow, are bounded by `limit`,
-and strictly shrink along any cycle (each level costs the node plus the
-siblings' minima), so the relaxation terminates quickly. The DP then simply
-skips layers above a class's budget; classes that never receive a budget
-(unreachable, or unusable within `limit`) are skipped entirely. A deep class
-ends up with a handful of histogram entries instead of ~`limit`, which
-shrinks every convolution that touches it — including in the joint/novel
-counting built on top.
+For a parent node `f(c_1, ..., c_k)` in class `p`, child `c_i` can use whatever
+remains when the node and every sibling take their minimum sizes:
 
-**Why capped data is still exact for every root-driven query.** Capping never
-alters a kept count, it only drops sizes a root extraction cannot use:
+```text
+candidate_budget(c_i) = budget(p) - 1 - sum_(j != i) min(c_j)
+```
 
-- In any decomposition of a total `t <= budget(p) - 1` across *all* children
-  of a node, child `i` gets at most `t - sum(min of siblings)
-  <= budget(c_i)` — so `S_0`, the table both the layer read-off and the
-  sampler's initial node pick consult, never misses a contribution.
-- Mid-recursion the sampler looks up `S_{i+1}(r)` only at remainders `r`
-  left after children `0..i` drew real sizes (each `>= min`), and the same
-  bound applies to every child in the suffix. Inner tables can undercount
-  only at totals no reachable sampling state can produce, and the DP itself
-  reads inner tables only at reachable totals (same induction).
-- Recursive `sample(child, s)` calls therefore always satisfy
-  `s <= budget(child)`, where the child's histogram is complete. The min
-  sizes are plain minima, which lower-bound novel/joint terms too, so the
-  argument carries over to the novel sampler sitting on top of a rooted
-  plain count.
+A worklist relaxation retains the largest candidate received by each class.
+Nodes whose children cannot fit at their minima do not propagate budgets.
+Classes that never receive a budget cannot occur in any root extraction within
+the limit and are omitted.
 
-Everything answered *from a root* — histograms, `possible_size`, sampling,
-enumeration — is bit-identical to the unrooted analysis (tested). Direct
-queries against deeper classes see the capped data; that is the documented
-contract of `rooted`.
+The minimum feasible size of an individual e-node is
 
-## 5. Reuse for joint and novel counting
+```text
+1 + sum_i min(c_i)
+```
 
-`LayeredDp` is generic over its key type. Plain counting uses an e-class ID
-as the key. Joint counting uses `(current_class, previous_class)` pairs, but
-walks the same size layers with the same recurrence. The exact novel-size
-scan advances the plain and joint DPs together and can inspect a root as soon
-as each layer becomes final; see
-[smallest novel-size search](novel_size_search.md).
+Rooted match enumeration uses this second check to skip oversized nodes even
+inside a relevant class.
 
-## 6. Verification
+## Why capping is exact for root queries
 
-- Cycle tests cover `union(a, a+b)` graphs with exact counts at size 5
-  (1 and 16 respectively).
-- `rooted` ≡ unrooted at the root — histogram *and* suffix tables — on a
-  cyclic graph.
-- Budget caps: a cyclic class under a unary root loses exactly its
-  unreachable top size; sibling minima tighten budgets by the expected
-  amount (`+(x, f(f(b)))` caps `x` at `limit - 4`); unreachable classes are
-  absent.
-- Layered suffix tables compared entry-for-entry against
-  `suffix_convolutions` over full histograms.
+Suppose a parent extraction fits within `budget(p)`. After paying for the node
+and giving every sibling at least its minimum size, child `c_i` can receive no
+more than `budget(c_i)` by construction. Consequently:
+
+- every recursive plain-count lookup requested by the root is retained;
+- every suffix-table remainder reachable during sampling is retained;
+- every recursive sample call satisfies `size <= budget(child)`; and
+- joint terms are also safe because a joint term for `(c, pc)` is a plain term
+  of current class `c`.
+
+The restriction removes only states no extraction from the selected root can
+query. Direct histogram queries against deeper classes are intentionally
+capped; `PrecomputePackage` exposes root-driven sampling, not a global
+all-class analysis.
+
+## Rooted joint counting
+
+Matches turn the generic kernel into a joint DP. A key `(c, pc)` has one DP
+node for each match of an e-node in current class `c` against previous class
+`pc`; its child keys are zipped pairs `(current_child, previous_child)`.
+
+Only pairs whose current class appears in `RootBudgets` are created, and every
+pair receives exactly `budget(c)`. A child pair absent from that map has no
+terms, which is the standard `LayeredDp` contract. Previous classes are not
+assigned an independent reachability or size budget.
+
+See [finding the smallest novel sizes](novel_size_search.md) for the complete
+precompute flow.
+
+## Verification
+
+Tests cover:
+
+- cyclic e-graphs with finite witnesses at increasing sizes;
+- sibling minima tightening a deep child's budget;
+- unreachable classes and oversized e-nodes being excluded;
+- suffix tables checked entry-for-entry against direct convolutions;
+- scan and final package histograms agreeing for every selected root in small
+  acyclic and cyclic fixtures; and
+- recursive frontier sampling returning only terms absent from the previous
+  boundary.

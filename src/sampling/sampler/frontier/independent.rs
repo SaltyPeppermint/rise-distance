@@ -138,7 +138,6 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::lower;
-    use crate::sampling::count::PlainTermCount;
     use crate::sampling::sampler::CountWeigher;
     use crate::utils::{combined_rng, sym};
 
@@ -158,8 +157,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let novel = NovelTermCount::new(5, &curr, &prev, plain);
+        let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
         let sampler = IndependentFrontierSampler::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..50_u64 {
@@ -184,8 +182,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let novel = NovelTermCount::new(5, &curr, &prev, plain);
+        let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
         let sampler = IndependentFrontierSampler::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..100_u64 {
@@ -205,8 +202,7 @@ mod tests {
         let a = graph.add(sym("a"));
         graph.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(5, &graph);
-        let novel = NovelTermCount::new(5, &graph, &graph, plain);
+        let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &graph, &graph, a);
         let sampler = IndependentFrontierSampler::new(&novel, &graph, a, CountWeigher);
 
         assert!(!sampler.possible_size(a, 1, 0));

@@ -24,9 +24,9 @@ docs/
 
 The counting documents build on each other:
 
-1. [Size-layered term counting](counting/layered_counting.md) explains the
-   generic dynamic program for exact-size histograms, including cyclic
-   e-graphs and root-restricted budgets.
-2. [Finding the smallest novel sizes](counting/novel_size_search.md) explains
-   how `backoff_precompute` advances plain and joint counts together and stops
-   at the requested novel size.
+1. [Size-layered, root-restricted term counting](counting/layered_counting.md)
+   explains the shared budget primitive and generic exact-size dynamic program,
+   including cyclic e-graphs.
+2. [Root-restricted novel-size search and precompute](counting/novel_size_search.md)
+   explains budget-aware matching, cap-to-final pruning, rooted joint counting,
+   package retention, and telemetry.

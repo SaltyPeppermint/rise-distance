@@ -7,7 +7,7 @@ use rand_chacha::ChaCha12Rng;
 // TODO: reenable zs_min_distance sampler
 
 use crate::Counter;
-use crate::sampling::count::PlainTermCount;
+use crate::sampling::count::CountData;
 use crate::sampling::sampler::{Sampler, Weigher};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
@@ -18,7 +18,7 @@ where
     N: MyAnalysis<L>,
     W: Weigher<C>,
 {
-    term_count: &'a PlainTermCount<C>,
+    term_count: &'a CountData<C>,
     graph: &'b EGraph<L, N>,
     root: Id,
     weigher: W,
@@ -33,7 +33,7 @@ where
 {
     #[must_use]
     pub const fn new(
-        term_count: &'a PlainTermCount<C>,
+        term_count: &'a CountData<C>,
         graph: &'b EGraph<L, N>,
         root: Id,
         weigher: W,
@@ -63,14 +63,14 @@ where
     }
 
     fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, C>> {
-        self.term_count.data().get(&id)
+        self.term_count.data.get(&id)
     }
 
     fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
         let canon_id = self.graph.find(id);
         let eclass = &self.graph[canon_id];
         let child_budget = size - 1;
-        let cached = &self.term_count.suffix_cache()[&canon_id];
+        let cached = &self.term_count.suffix[&canon_id];
 
         let weights = cached
             .iter()
@@ -91,7 +91,7 @@ where
             .iter()
             .enumerate()
             .map(|(i, &c_id)| {
-                let histogram = self.term_count.child_histogram(c_id, self.graph);
+                let histogram = self.term_count.data.get(&self.graph.find(c_id));
                 let candidates = histogram
                     .into_iter()
                     .flatten()
@@ -122,9 +122,15 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::lower;
+    use crate::sampling::count::{CountData, count_terms_rooted, root_budgets};
     use crate::sampling::sampler::{CountWeigher, NaiveWeigher};
     use crate::utils::combined_rng;
     use crate::utils::sym;
+
+    fn rooted_counts(max_size: usize, graph: &EGraph<Math, ()>, root: Id) -> CountData<BigUint> {
+        let budgets = root_budgets(graph, root, max_size);
+        count_terms_rooted(graph, &budgets)
+    }
 
     #[test]
     fn naive_sample_single_leaf() {
@@ -132,7 +138,7 @@ mod tests {
         let root = graph.add(sym("a"));
         graph.rebuild();
 
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let tc = rooted_counts(10, &graph, root);
         let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
 
         let mut rng = combined_rng([42]);
@@ -148,7 +154,7 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let tc = rooted_counts(10, &graph, a);
         let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
 
         for s in 0..50_u64 {
@@ -165,7 +171,7 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let tc = rooted_counts(10, &graph, root);
         let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
 
         assert!(!sampler.possible_size(root, 1, 0));
@@ -188,7 +194,7 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let tc = rooted_counts(10, &graph, root);
         let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
 
         let result = sampler.sample_batch_root(&[(3, 5)], [1, 2]).unwrap();
@@ -201,7 +207,7 @@ mod tests {
         let root = graph.add(sym("a"));
         graph.rebuild();
 
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let tc = rooted_counts(10, &graph, root);
         let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
 
         let mut rng = combined_rng([42]);
@@ -217,7 +223,7 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let tc = rooted_counts(10, &graph, a);
         let sampler = PlainSampler::new(&tc, &graph, a, CountWeigher);
 
         for s in 0..50_u64 {
@@ -241,7 +247,7 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let tc = rooted_counts(10, &graph, root);
         let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
 
         let result = sampler.sample_batch_root(&[(3, 5)], [1, 2]).unwrap();
@@ -266,7 +272,7 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let tc = rooted_counts(10, &graph, root);
         let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
 
         let result = sampler
@@ -289,7 +295,7 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let tc = PlainTermCount::<BigUint>::new(10, &graph);
+        let tc = rooted_counts(10, &graph, root);
         let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
 
         let mixed = sampler

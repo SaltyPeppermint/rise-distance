@@ -322,7 +322,6 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::lower;
-    use crate::sampling::count::PlainTermCount;
     use crate::utils::sym;
 
     #[test]
@@ -340,8 +339,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let counts = NovelTermCount::new(5, &curr, &prev, plain);
+        let counts = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
         let sampler = BalancedFrontierSampler::new(&counts, &curr, root);
         let terms = sampler
             .sample_size(root, 3, 3, [17, 23])
@@ -372,8 +370,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(5, &curr);
-        let counts = NovelTermCount::new(5, &curr, &prev, plain);
+        let counts = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
         let sampler = BalancedFrontierSampler::new(&counts, &curr, root);
         let terms = sampler
             .sample_size(root, 3, 3, [0, 0])
@@ -402,8 +399,7 @@ mod tests {
         curr.union(a, c);
         curr.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(3, &curr);
-        let counts = NovelTermCount::new(3, &curr, &prev, plain);
+        let counts = NovelTermCount::<BigUint>::rooted_for_tests(3, &curr, &prev, root);
         let config = BalanceConfig {
             node_penalty: 0,
             profile_penalty: 0,
@@ -447,8 +443,7 @@ mod tests {
         }
         curr.rebuild();
 
-        let plain = PlainTermCount::<BigUint>::new(3, &curr);
-        let counts = NovelTermCount::new(3, &curr, &prev, plain);
+        let counts = NovelTermCount::<BigUint>::rooted_for_tests(3, &curr, &prev, root);
         let sampler = BalancedFrontierSampler::new(&counts, &curr, root);
         let terms = sampler
             .sample_size(root, 3, 400, [31, 41])

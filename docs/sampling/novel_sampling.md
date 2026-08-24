@@ -47,7 +47,7 @@ novel(c, s)     = plain(c, s) - non_novel(c, s)
 
 ## 2. Building `joint` — three phases
 
-### Phase 1: Match enumeration (no counts yet)
+### Phase 1: Root- and budget-aware match enumeration
 
 A **match** of a curr e-node `n` (in curr-class `c`) is a prev e-node `n'` (in prev-class `pc`) with the same operator/arity such that `n'`'s child classes can be picked consistently from each curr-child's `cover` set.
 
@@ -56,7 +56,7 @@ Concretely:
 ```
 NodeMatch {
     prev_class:    pc,           // the prev e-class containing n'
-    prev_children: [pc_1, ..., pc_k]   // n''s child classes (canonical, in prev)
+    prev_children: [pc_1, ..., pc_k]   // matched child classes (canonical, in prev)
 }
 ```
 
@@ -66,18 +66,25 @@ Where `pc_i` is some prev class that shares an extraction with curr's `child_i`.
 cover[c] = { pc : prev.lookup(some extraction of c) = Some(pc) }
 ```
 
-`cover` and `matches` mutually depend on each other (a match contributes to its parent's `cover`). They are computed jointly via a fixpoint.
+`cover` and `matches` mutually depend on each other (a match contributes to
+its parent's `cover`). They are computed jointly via a fixpoint, but only
+inside the selected current root's `RootBudgets`. Previous classes are always
+queried through the complete previous lookup; they are not independently
+root-filtered.
 
 #### Pseudocode
 
 ```
-function enumerate_matches(curr, prev):
+function enumerate_matches_rooted(curr, prev, budgets):
     cover   : Map<curr_class, Set<prev_class>> = empty
     matches : Map<(curr_class, node_idx), List<NodeMatch>> = empty
 
     repeat:
         changed = false
-        for each curr e-class c, e-node n at index idx in c:
+        for each current class c in budgets:
+          for each e-node n at index idx in c:
+            if 1 + sum(min_size(canonical child)) > budget(c):
+                continue
             children = canonical curr child class ids of n   // [c_1, ..., c_k]
             for each combo (pc_1, ..., pc_k) in cover[c_1] x ... x cover[c_k]:
                 // For zero-arity nodes, the cartesian product is a single
@@ -96,7 +103,16 @@ function enumerate_matches(curr, prev):
     return matches
 ```
 
-The implementation also builds `cover` from `joint` afterwards ([`build_cover`](../../src/sampling/count/novel.rs)) so the sampler can look it up by curr class.
+The restriction is complete for root sampling. Any shared finite parent term
+within `budget(c)` has strictly smaller shared child terms, and each child fits
+the budget propagated from the root. Induction on term size therefore supplies
+the child cover tuple needed to discover the parent match. Cycles do not break
+the argument because finite extracted trees still decrease in size from parent
+to child. See
+[root-restricted precompute](../counting/novel_size_search.md#why-rooted-enumeration-is-complete).
+
+The implementation builds the sampler-facing `cover` from nonempty `joint`
+keys afterwards ([`build_cover`](../../src/sampling/count/novel.rs)).
 
 ### Phase 2: Joint counts, layered by size
 
@@ -110,6 +126,11 @@ joint(c, pc)(s) =
 ```
 
 Where `c_i` is the i-th canonical curr child class of `n`. For zero-arity nodes the inner sum is `1` at `s = 1` (one extraction = the node itself).
+
+Only pairs whose current class `c` has a root budget are created, and pair
+`(c, pc)` receives `budget(c)`. The previous class has no separate budget: a
+joint term is a plain term of `c`, so the current root budget is the sound
+bound. Child pairs missing from the budget map contribute no terms.
 
 The matched e-node costs 1, so every child pair is evaluated at a size
 strictly below `s`: the recurrence is stratified by size exactly like the
@@ -297,7 +318,10 @@ function sample_children(children_ids, child_hists, states, child_budget, rng):
     return sampled
 ```
 
-The suffix convolution is built once per call from the chosen `child_hists`, so each child's size is sampled with awareness of the remaining children's joint feasibility. (Analogous to what `PlainTermCount::suffix_cache` precomputes for the plain sampler.)
+The suffix convolution is built once per call from the chosen `child_hists`,
+so each child's size is sampled with awareness of the remaining children's
+joint feasibility. Plain sampling consumes the corresponding rooted suffix
+tables retained directly in `CountData`.
 
 ---
 
@@ -312,7 +336,7 @@ We prove two statements together by induction on `size`:
 
 ### Base case (size 1, leaves)
 
-**(A)** A size-1 candidate in `construct_inside(c, 1, pc)` is a leaf node `n ∈ c` with a match `m` such that `m.prev_class = pc`. By construction of `enumerate_matches`, such a match exists iff `prev.lookup(n) = pc`. So the sampled term is a leaf `n` with `prev.lookup(n) = pc`. ✓
+**(A)** A size-1 candidate in `construct_inside(c, 1, pc)` is a leaf node `n ∈ c` with a match `m` such that `m.prev_class = pc`. By construction of `enumerate_matches_rooted`, such a match exists iff `prev.lookup(n) = pc`. So the sampled term is a leaf `n` with `prev.lookup(n) = pc`. ✓
 
 **(N)** A size-1 candidate in `construct_outside(c, 1)` is a leaf node `n ∈ c` whose empty profile `[]` does not complete any match — i.e., no leaf match exists for `n`. By the same construction, this means `prev.lookup(n) = None`. ✓
 
@@ -327,9 +351,9 @@ The chosen profile `(a_1, …, a_k)` and the IHs determine each `t_i`:
 - If `a_i = None`: by IH (N), `prev.lookup(t_i) = None`. But we just said `prev.lookup(t_i) = q_i`, a concrete prev class. Contradiction unless every `a_i ≠ None`.
 - If `a_i = Some(pc_i)`: by IH (A), `prev.lookup(t_i) = pc_i`. So `q_i = pc_i`.
 
-Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. The cartesian product loop in [`enumerate_matches`](../../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
+Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. Because this is a real recursive sampling query, `c`, its node, and every `c_i` fit the shared root budgets. The cartesian product loop in [`enumerate_matches_rooted`](../../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
 
-(The `cover_of` exposed to the sampler is a subset of match enumeration's internal cover — `compute_joint` drops `(c, pc)` pairs whose histogram is empty within `max_size`. That's harmless here: any `q_i` reached by a real sampled child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `FrontierSpace` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
+(The `cover_of` exposed to the sampler is a subset of match enumeration's internal cover — rooted joint counting drops `(c, pc)` pairs whose histogram is empty within the class budget. That's harmless here: any `q_i` reached by a real sampled child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `FrontierSpace` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
 
 So no `t` produced under `OutsidePrev` can have `prev.lookup(t) = Some(_)`, i.e., every produced term is novel. ✓
 
@@ -341,7 +365,12 @@ This is the partition argument used by `FrontierSpace`: the partition is by the 
 
 ### Termination
 
-The match-enumeration fixpoint adds entries monotonically to a finite set (bounded by `(curr classes) × (node indices) × (prev classes) × (prev class tuples)`), so it terminates. The joint counts need no convergence argument: the layered DP runs exactly one pass per size, `1..=max_size`. Sampling is non-recursive in `(c, s)` past the first call: every recursive call has strictly smaller `s` (children get `s_i ≤ s - 1`).
+The match-enumeration fixpoint adds entries monotonically to a finite rooted set
+(bounded by budgeted current nodes, previous classes, and previous child-class
+tuples), so it terminates. The joint counts need no convergence argument: the
+layered DP runs exactly one pass per size, skipping each pair above its current
+class budget. Sampling is non-recursive in `(c, s)` past the first call: every
+recursive call has strictly smaller `s` (children get `s_i ≤ s - 1`).
 
 ---
 
@@ -411,17 +440,13 @@ asserts.
 ## 6. API summary
 
 ```rust
-// Counting (in src/sampling/count/novel.rs):
-let plain = PlainTermCount::<C>::new(max_size, &curr);
-let novel = NovelTermCount::new(max_size, &curr, &prev, plain);
-
-// Independent weighted sampling (in src/sampling/sampler/frontier/independent.rs):
-let sampler = IndependentFrontierSampler::new(&novel, &curr, root, weigher);
-
-if sampler.possible_size(root, size, /* samples */ 0) {
-    let term = sampler.sample(root, size, &mut rng);
-    // term is novel: not extractable from any e-class in `prev`.
-}
+let package = PrecomputePackage::<C, _, _>::precompute(result, max_size)?;
+let terms = package.sample_frontier_terms(
+    count,
+    distribution,
+    strategy,
+    seed,
+)?;
 ```
 
 `IndependentFrontierSampler` implements the
@@ -430,8 +455,9 @@ if sampler.possible_size(root, size, /* samples */ 0) {
 trait but overrides `sample_size` so coverage state is shared across the terms
 in one size bucket; see [frontier_sampling.md](frontier_sampling.md).
 
-Note: the convenience entry points above (`PlainTermCount::new`, `NovelTermCount::new`,
-`Sampler::possible_size`) are compiled only under `#[cfg(test)]`. The production path is
-`PrecomputePackage` ([src/sampling/precompute.rs](../../src/sampling/precompute.rs)), which
-builds the analysis via `PlainTermCount::rooted` / `NovelTermCount::with_matches` so one
-match enumeration is shared across repeated analyses of the same e-graph pair.
+`PrecomputePackage` ([src/sampling/precompute.rs](../../src/sampling/precompute.rs))
+is the construction boundary. It reconstructs the complete previous lookup,
+computes current-root budgets, performs rooted matching and counting, retains
+only final-budget package data, and then drops the previous boundary. The
+independent and balanced policies consume the same rooted `NovelTermCount`
+inside that package.

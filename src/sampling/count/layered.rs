@@ -16,9 +16,9 @@
 //! at a time also lets the exact root-size scan stop as soon as it has seen
 //! enough novel sizes.
 //!
-//! When `roots` are given, the computation is further restricted to what
-//! extractions of size <= `limit` from a root can touch: only classes
-//! reachable from the roots are counted, each capped at its *budget* — the
+//! Production counting is restricted to what extractions of size <= `limit`
+//! from the selected root can touch: only reachable classes are counted, each
+//! capped at its *budget* — the
 //! largest size a subterm rooted at that class can take in any such
 //! extraction. Deep classes then carry a handful of histogram entries
 //! instead of ~`limit`, which shrinks every convolution touching them.
@@ -32,55 +32,120 @@ use crate::Counter;
 use crate::analysis::semilattice::SemiLatticeAnalysis;
 use crate::utils::UniqueQueue;
 
+/// Canonical current-class size bounds for extractions rooted at one selected
+/// e-class. This bundles the two pieces every rooted phase needs so a global
+/// size limit cannot accidentally be substituted for a per-class budget.
+#[derive(Debug, Clone)]
+pub(crate) struct RootBudgets {
+    budgets: HashMap<Id, usize>,
+    min_sizes: HashMap<Id, usize>,
+    limit: usize,
+}
+
+impl RootBudgets {
+    #[must_use]
+    pub(crate) fn budget(&self, id: Id) -> Option<usize> {
+        self.budgets.get(&id).copied()
+    }
+
+    #[must_use]
+    pub(crate) fn min_size(&self, id: Id) -> usize {
+        self.min_sizes[&id]
+    }
+
+    #[must_use]
+    pub(crate) const fn budgets(&self) -> &HashMap<Id, usize> {
+        &self.budgets
+    }
+
+    #[must_use]
+    pub(crate) const fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Whether the cheapest realization of `node` fits its class's rooted
+    /// budget. Children are canonicalized before their minima are queried.
+    #[must_use]
+    pub(crate) fn node_fits<L, N>(&self, egraph: &EGraph<L, N>, class: Id, node: &L) -> bool
+    where
+        L: Language,
+        N: Analysis<L>,
+    {
+        let Some(budget) = self.budget(class) else {
+            return false;
+        };
+        node.children()
+            .iter()
+            .try_fold(1usize, |size, &child| {
+                size.checked_add(self.min_size(egraph.find(child)))
+            })
+            .is_some_and(|minimum| minimum <= budget)
+    }
+}
+
+/// Compute canonical current-class budgets and minimum extraction sizes once
+/// for a selected root and size limit.
+pub(crate) fn root_budgets<L, N>(egraph: &EGraph<L, N>, root: Id, limit: usize) -> RootBudgets
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    assert!(egraph.clean);
+    let mut raw_min_sizes = HashMap::new();
+    AstSize.one_shot_analysis(egraph, &mut raw_min_sizes);
+    let min_sizes = egraph
+        .classes()
+        .map(|class| {
+            let id = egraph.find(class.id);
+            (id, raw_min_sizes[&id])
+        })
+        .collect();
+    let budgets = class_budgets(egraph, egraph.find(root), limit, &min_sizes);
+    RootBudgets {
+        budgets,
+        min_sizes,
+        limit,
+    }
+}
+
 /// Histograms and per-node suffix convolution tables from one counting run.
-pub struct CountData<C> {
+#[derive(Debug)]
+pub(crate) struct CountData<C> {
     /// Per canonical class: term-size histogram (size -> count of distinct
     /// terms). Classes without any term within their budget are absent.
-    pub data: HashMap<Id, HashMap<usize, C>>,
+    pub(crate) data: HashMap<Id, HashMap<usize, C>>,
     /// Per canonical class in `data`, per node index:
     /// `suffix[class][node][i]` maps a total to the number of ways children
     /// `i..` of that node can be filled with subterm sizes of that total.
     /// Same shape as [`suffix_convolutions`](super::suffix_convolutions),
     /// with `suffix[class][node][arity]` the empty-product base `{0: 1}`.
-    pub suffix: HashMap<Id, Vec<Vec<HashMap<usize, C>>>>,
+    pub(crate) suffix: HashMap<Id, Vec<Vec<HashMap<usize, C>>>>,
 }
 
-/// Count the distinct terms extractable from each e-class, by size.
-///
-/// With `roots: None` every class is counted up to `limit`; with roots, see
-/// the module docs: classes unreachable from the roots are skipped and the
-/// rest are capped at their budget, which keeps histograms and suffix tables
-/// exact for every query a root-driven consumer can make.
-pub fn count_terms<C, L, N>(
-    limit: usize,
+/// Count the distinct terms needed by a selected root, using an
+/// already-computed rooted budget map.
+pub(crate) fn count_terms_rooted<C, L, N>(
     egraph: &EGraph<L, N>,
-    roots: Option<&[Id]>,
+    rooted: &RootBudgets,
 ) -> CountData<C>
 where
     C: Counter,
     L: Language,
     N: Analysis<L>,
 {
-    let mut dp = plain_dp(limit, egraph, roots);
-    for _ in 0..limit {
+    let mut dp = plain_dp_rooted(egraph, rooted);
+    for _ in 0..rooted.limit() {
         dp.step();
     }
     let (data, mut suffix) = dp.into_parts();
-
-    // Suffix tables are only read for classes one can sample from, i.e.
-    // classes with a nonempty histogram.
     suffix.retain(|id, _| data.contains_key(id));
-
     CountData { data, suffix }
 }
 
-/// The plain-count instantiation of [`LayeredDp`]: keys are e-class ids,
-/// nodes are the class's e-nodes, budgets from `roots` as in
-/// [`count_terms`]. Not stepped yet — callers drive the layers themselves.
-pub fn plain_dp<C, L, N>(
-    limit: usize,
+/// Plain DP using shared root budgets. Not stepped yet.
+pub(crate) fn plain_dp_rooted<C, L, N>(
     egraph: &EGraph<L, N>,
-    roots: Option<&[Id]>,
+    rooted: &RootBudgets,
 ) -> LayeredDp<Id, C>
 where
     C: Counter,
@@ -88,30 +153,27 @@ where
     N: Analysis<L>,
 {
     assert!(egraph.clean);
+    let children_of = plain_children_of(egraph, rooted.budgets().keys().copied());
+    LayeredDp::new(children_of, rooted.budgets().clone())
+}
 
-    let budgets = match roots {
-        Some(roots) => {
-            let mut min_sizes = HashMap::new();
-            AstSize.one_shot_analysis(egraph, &mut min_sizes);
-            class_budgets(egraph, roots, limit, &min_sizes)
-        }
-        None => egraph.classes().map(|class| (class.id, limit)).collect(),
-    };
-
-    // Canonicalized children per (class, node), aligned with `nodes` order.
-    let children_of: HashMap<Id, Vec<Vec<Id>>> = budgets
-        .keys()
-        .map(|&id| {
-            let per_node = egraph[id]
-                .nodes
-                .iter()
-                .map(|node| node.children().iter().map(|&c| egraph.find(c)).collect())
-                .collect();
-            (id, per_node)
-        })
-        .collect();
-
-    LayeredDp::new(children_of, budgets)
+fn plain_children_of<L, N>(
+    egraph: &EGraph<L, N>,
+    ids: impl Iterator<Item = Id>,
+) -> HashMap<Id, Vec<Vec<Id>>>
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    ids.map(|id| {
+        let per_node = egraph[id]
+            .nodes
+            .iter()
+            .map(|node| node.children().iter().map(|&c| egraph.find(c)).collect())
+            .collect();
+        (id, per_node)
+    })
+    .collect()
 }
 
 /// Per key: size -> count histogram.
@@ -276,7 +338,7 @@ fn convolve_entry<C: Counter>(
 /// absent from the result cannot appear in any such extraction.
 fn class_budgets<L, N>(
     egraph: &EGraph<L, N>,
-    roots: &[Id],
+    root: Id,
     limit: usize,
     min_sizes: &HashMap<Id, usize>,
 ) -> HashMap<Id, usize>
@@ -284,10 +346,7 @@ where
     L: Language,
     N: Analysis<L>,
 {
-    let mut budgets: HashMap<Id, usize> = roots
-        .iter()
-        .map(|&root| (egraph.find(root), limit))
-        .collect();
+    let mut budgets = HashMap::from([(egraph.find(root), limit)]);
     let mut pending: UniqueQueue<Id> = budgets.keys().copied().collect();
 
     while let Some(id) = pending.pop() {
@@ -327,6 +386,15 @@ mod tests {
     use super::super::suffix_convolutions;
     use super::*;
 
+    fn rooted_counts(
+        egraph: &EGraph<SymbolLang, ()>,
+        root: Id,
+        limit: usize,
+    ) -> CountData<BigUint> {
+        let budgets = root_budgets(egraph, root, limit);
+        count_terms_rooted(egraph, &budgets)
+    }
+
     #[test]
     fn simple_term_size_count() {
         let mut egraph = EGraph::<SymbolLang, ()>::default();
@@ -337,7 +405,7 @@ mod tests {
         egraph.union(a, apb);
         egraph.rebuild();
 
-        let data = count_terms::<BigUint, _, _>(10, &egraph, None).data;
+        let data = rooted_counts(&egraph, apb, 10).data;
         let root_data = &data[&egraph.find(apb)];
 
         assert_eq!(root_data[&5], 1usize.into());
@@ -355,29 +423,10 @@ mod tests {
         egraph.union(b, apb);
         egraph.rebuild();
 
-        let data = count_terms::<BigUint, _, _>(10, &egraph, None).data;
+        let data = rooted_counts(&egraph, apb, 10).data;
 
         let root_data = &data[&egraph.find(apb)];
         assert_eq!(root_data[&5], 16usize.into());
-    }
-
-    #[test]
-    fn rooted_matches_unrooted_at_the_root() {
-        let mut egraph = EGraph::<SymbolLang, ()>::default();
-        let a = egraph.add(SymbolLang::leaf("a"));
-        let b = egraph.add(SymbolLang::leaf("b"));
-        let apb = egraph.add(SymbolLang::new("+", vec![a, b]));
-        let root = egraph.add(SymbolLang::new("f", vec![apb]));
-
-        egraph.union(a, apb);
-        egraph.rebuild();
-
-        let full = count_terms::<BigUint, _, _>(11, &egraph, None);
-        let rooted = count_terms::<BigUint, _, _>(11, &egraph, Some(&[root]));
-
-        let canon = egraph.find(root);
-        assert_eq!(full.data[&canon], rooted.data[&canon]);
-        assert_eq!(full.suffix[&canon], rooted.suffix[&canon]);
     }
 
     #[test]
@@ -393,7 +442,7 @@ mod tests {
         egraph.rebuild();
 
         let limit = 6;
-        let rooted = count_terms::<BigUint, _, _>(limit, &egraph, Some(&[root]));
+        let rooted = rooted_counts(&egraph, root, limit);
 
         // x can spend at most limit - 1 through g; one term per size.
         let x_hist = &rooted.data[&egraph.find(a)];
@@ -407,11 +456,6 @@ mod tests {
         assert_eq!(root_sizes, (2..=limit).collect::<Vec<_>>());
 
         assert!(!rooted.data.contains_key(&egraph.find(z)));
-
-        // Unrooted counts x all the way to the limit.
-        let full = count_terms::<BigUint, _, _>(limit, &egraph, None);
-        assert_eq!(full.data[&egraph.find(a)].len(), limit);
-        assert!(full.data.contains_key(&egraph.find(z)));
     }
 
     #[test]
@@ -429,7 +473,7 @@ mod tests {
         egraph.union(a, fa);
         egraph.rebuild();
 
-        let rooted = count_terms::<BigUint, _, _>(10, &egraph, Some(&[root]));
+        let rooted = rooted_counts(&egraph, root, 10);
 
         let mut x_sizes = rooted.data[&egraph.find(a)]
             .keys()
@@ -452,13 +496,14 @@ mod tests {
         let a = egraph.add(SymbolLang::leaf("a"));
         let b = egraph.add(SymbolLang::leaf("b"));
         let apb = egraph.add(SymbolLang::new("+", vec![a, b]));
-        let _gab = egraph.add(SymbolLang::new("g", vec![apb, b]));
+        let gab = egraph.add(SymbolLang::new("g", vec![apb, b]));
 
         egraph.union(a, apb);
         egraph.rebuild();
 
         let limit = 9;
-        let result = count_terms::<BigUint, _, _>(limit, &egraph, None);
+        let budgets = root_budgets(&egraph, gab, limit);
+        let result = count_terms_rooted::<BigUint, _, _>(&egraph, &budgets);
 
         for (&id, per_node) in &result.suffix {
             for (node, tables) in egraph[id].nodes.iter().zip(per_node) {
@@ -473,7 +518,7 @@ mod tests {
                             .unwrap_or_default()
                     })
                     .collect::<Vec<_>>();
-                let expected = suffix_convolutions(&histograms, limit - 1);
+                let expected = suffix_convolutions(&histograms, budgets.budget(id).unwrap() - 1);
                 assert_eq!(tables, &expected);
             }
         }

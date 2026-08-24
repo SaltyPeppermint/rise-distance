@@ -4,7 +4,8 @@ use hashbrown::HashMap;
 use crate::Counter;
 use crate::eqsat::EqsatResult;
 use crate::sampling::count::{
-    NodeMatches, NovelTermCount, PlainTermCount, enumerate_matches, find_novel_root_sizes,
+    NodeMatches, NovelTermCount, count_terms_rooted, enumerate_matches_rooted,
+    find_novel_root_sizes_rooted, prune_matches, root_budgets,
 };
 use crate::sampling::sampler::{
     BalancedFrontierSampler, CountWeigher, IndependentFrontierSampler, NaiveWeigher, PlainSampler,
@@ -48,27 +49,28 @@ where
         result: EqsatResult<L, N>,
         max_size: usize,
     ) -> Option<PrecomputePackage<C, L, N>> {
+        let curr = result.curr();
+        let root = curr.find(result.root());
+        let budgets = root_budgets(curr, root, max_size);
+
         let prev = result.prev_index();
-        let matches = enumerate_matches(result.curr(), &prev);
+        let mut matches = enumerate_matches_rooted(curr, &prev, &budgets);
         drop(prev);
-        Self::precompute_with_matches(result, max_size, matches)
+        prune_matches(curr, &mut matches, &budgets);
+        Self::build_rooted_package(result, max_size, matches, &budgets)
     }
 
-    /// [`precompute`](Self::precompute) with the (size-independent) match
-    /// enumeration precomputed by the caller, so repeated runs on the same
-    /// egraph pair don't redo it.
-    fn precompute_with_matches(
+    /// Finish [`precompute`](Self::precompute) from matches already restricted
+    /// to the supplied final root budgets.
+    fn build_rooted_package(
         result: EqsatResult<L, N>,
         max_size: usize,
         matches: NodeMatches,
+        budgets: &crate::sampling::count::RootBudgets,
     ) -> Option<PrecomputePackage<C, L, N>> {
         let (egraph, root) = result.into_curr();
-        let tc = NovelTermCount::with_matches(
-            max_size,
-            &egraph,
-            PlainTermCount::rooted(max_size, &egraph, &[root]),
-            matches,
-        );
+        let plain = count_terms_rooted(&egraph, budgets);
+        let tc = NovelTermCount::from_rooted_matches(&egraph, plain, matches, budgets);
 
         let root = egraph.find(root);
         let histogram = tc.data().get(&root)?;
@@ -118,16 +120,17 @@ where
     ) -> Result<(usize, Self), usize> {
         assert!(sizes > 0, "sizes must be nonzero");
 
-        // Match enumeration is independent of max_size and is shared by the
-        // size scan and package construction.
+        let cap = start_size + max_retries * retry_step;
+
         let prev = result.prev_index();
         let curr = result.curr();
         let root = curr.find(result.root());
-        let matches = enumerate_matches(curr, &prev);
-        drop(prev);
-        let cap = start_size + max_retries * retry_step;
+        let cap_budgets = root_budgets(curr, root, cap);
+        let mut matches = enumerate_matches_rooted(curr, &prev, &cap_budgets);
 
-        let novel_sizes = find_novel_root_sizes(cap, curr, root, &matches, sizes);
+        drop(prev);
+
+        let novel_sizes = find_novel_root_sizes_rooted(curr, root, &matches, sizes, &cap_budgets);
         if novel_sizes.len() < sizes {
             writeln!(
                 log,
@@ -138,8 +141,10 @@ where
             return Err(cap);
         }
         let max_size = novel_sizes[sizes - 1];
+        let final_budgets = root_budgets(curr, root, max_size);
+        prune_matches(curr, &mut matches, &final_budgets);
 
-        let Some(pp) = Self::precompute_with_matches(result, max_size, matches) else {
+        let Some(pp) = Self::build_rooted_package(result, max_size, matches, &final_budgets) else {
             writeln!(
                 log,
                 "package construction found no novel terms (max_size={max_size})"
