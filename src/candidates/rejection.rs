@@ -143,29 +143,20 @@ where
 {
     /// Build the previous lookup and extraction domain with memory checks at
     /// each material allocation boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the live heap exceeds `max_memory` at a checked
-    /// construction boundary.
-    pub fn new(
-        result: &'a EqsatResult<L, N>,
-        max_size: usize,
-        max_memory: Option<u64>,
-    ) -> Result<Self, String> {
-        check_memory(max_memory, "before previous-index construction")?;
+    pub fn new(result: &'a EqsatResult<L, N>, max_size: usize) -> Self {
+        // check_memory(max_memory, "before previous-index construction")?;
         let previous = result.prev_index();
-        check_memory(max_memory, "after previous-index construction")?;
+        // check_memory(max_memory, "after previous-index construction")?;
         let egraph = result.curr();
         let root = egraph.find(result.root());
         let domain = root_budgets(egraph, root, max_size);
-        check_memory(max_memory, "after extraction-domain construction")?;
-        Ok(Self {
+        // check_memory(max_memory, "after extraction-domain construction")?;
+        Self {
             egraph,
             previous,
             root,
             domain,
-        })
+        }
     }
 
     #[must_use]
@@ -184,24 +175,21 @@ where
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the feasibility table pushes the live heap above
-    /// `max_memory`.
+    #[must_use]
     pub fn feasibility(
         &self,
-        max_memory: Option<u64>,
-    ) -> Result<FeasibilityEngine<'_, L, N>, String> {
-        let engine = FeasibilityEngine::build(self.egraph, &self.domain, self.root);
-        check_memory(max_memory, "after feasibility-bitset construction")?;
-        Ok(engine)
+        // max_memory: Option<u64>,
+    ) -> FeasibilityEngine<'_, L, N> {
+        FeasibilityEngine::build(self.egraph, &self.domain, self.root)
+        // check_memory(max_memory, "after feasibility-bitset construction")?;
     }
 
-    /// # Errors
+    /// # Panics
     ///
-    /// Returns an error for count-proportional selection, whose semantics are
-    /// unavailable without exact counts.
-    #[expect(clippy::too_many_arguments)]
+    /// Panics if `candidate_count` or `novel_size_goal` is zero, or for
+    /// count-proportional selection, whose semantics are unavailable without
+    /// exact counts.
+    #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn collect<E: ProposalEngine<L>>(
         &self,
         engine: &E,
@@ -211,24 +199,117 @@ where
         candidate_seed: u64,
         pool_salt: u64,
         limits: RejectionLimits,
-    ) -> Result<RejectionBatch<L>, String> {
-        if matches!(allocation, SizeAllocation::Proportional(_)) {
-            return Err(
-                "proportional size allocation requires exact term counts and is unsupported \
-                 for rejection-backed candidate pools"
-                    .to_owned(),
-            );
+    ) -> RejectionBatch<L> {
+        assert!(candidate_count > 0);
+        assert!(novel_size_goal > 0);
+        let mut sizes = engine.candidate_sizes();
+        sizes.sort_unstable();
+        sizes.dedup();
+        let mut state = RejectionState::new(&sizes, candidate_seed, pool_salt);
+
+        // Probe in rounds so one impossible or old-only size cannot monopolize the
+        // discovery budget. Observed means at least one exact-novel proposal, not
+        // proof that an earlier unobserved size has an empty frontier.
+        let mut active = sizes.clone();
+        while state.accepted.len() < novel_size_goal && !active.is_empty() {
+            active.retain(|&size| {
+                if state.accepted.len() >= novel_size_goal {
+                    return false;
+                }
+                state.attempt(size, engine, &self.previous, limits)
+                    && state.accepted.get(&size).map_or(0, Vec::len) < candidate_count
+                    && state.stats[&size].proposal_attempts < limits.attempts_per_size
+            });
+            if matches!(
+                state.stop_reason,
+                "memory_limit" | "time_limit" | "global_attempt_limit"
+            ) {
+                break;
+            }
         }
-        Ok(collect_rejection_candidates(
-            engine,
-            &self.previous,
-            candidate_count,
-            novel_size_goal,
-            allocation,
-            candidate_seed,
-            pool_salt,
-            limits,
-        ))
+
+        let selected = state
+            .accepted
+            .keys()
+            .copied()
+            .take(novel_size_goal)
+            .collect::<Vec<_>>();
+        let mut candidates = Vec::with_capacity(candidate_count);
+        match allocation {
+            SizeAllocation::Greedy => {
+                for &size in &selected {
+                    while state.unique.len() < candidate_count {
+                        if !state.attempt(size, engine, &self.previous, limits) {
+                            break;
+                        }
+                    }
+                }
+                candidates.extend(
+                    selected
+                        .into_iter()
+                        .flat_map(|size| state.accepted.remove(&size).unwrap_or_default())
+                        .take(candidate_count),
+                );
+            }
+            SizeAllocation::Uniform => {
+                let base = if selected.is_empty() {
+                    0
+                } else {
+                    candidate_count / selected.len()
+                };
+                let remainder = if selected.is_empty() {
+                    0
+                } else {
+                    candidate_count % selected.len()
+                };
+                for (index, &size) in selected.iter().enumerate() {
+                    let quota = base + usize::from(index < remainder);
+                    while state.accepted.get(&size).map_or(0, Vec::len) < quota {
+                        if !state.attempt(size, engine, &self.previous, limits) {
+                            break;
+                        }
+                    }
+                }
+                let mut bins = selected
+                    .into_iter()
+                    .map(|size| state.accepted.remove(&size).unwrap_or_default().into_iter())
+                    .collect::<Vec<_>>();
+                while candidates.len() < candidate_count {
+                    let before = candidates.len();
+                    for bin in &mut bins {
+                        if let Some(term) = bin.next() {
+                            candidates.push(term);
+                            if candidates.len() == candidate_count {
+                                break;
+                            }
+                        }
+                    }
+                    if candidates.len() == before {
+                        break;
+                    }
+                }
+            }
+            SizeAllocation::Proportional(_) => unreachable!(
+                "proportional size allocation requires exact term counts and is unsupported for \
+                 rejection-backed candidate pools"
+            ),
+        }
+        if candidates.len() == candidate_count {
+            state.stop_reason = "quota_filled";
+        } else if candidates.is_empty() && state.stop_reason == "quota_or_size_budget" {
+            state.stop_reason = "no_novel_candidate_observed";
+        }
+        let live = live_heap_bytes();
+        state.peak_live_heap = state.peak_live_heap.max(live);
+        RejectionBatch {
+            candidates,
+            stats: RejectionStats {
+                per_size: state.stats,
+                elapsed: state.start.elapsed(),
+                peak_live_heap: state.peak_live_heap,
+                stop_reason: state.stop_reason,
+            },
+        }
     }
 }
 
@@ -659,161 +740,18 @@ impl<L: MyLanguage> RejectionState<L> {
     }
 }
 
-#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
-fn collect_rejection_candidates<L: MyLanguage, E: ProposalEngine<L>>(
-    engine: &E,
-    previous: &PrevIndex<L>,
-    candidate_count: usize,
-    novel_size_goal: usize,
-    allocation: SizeAllocation,
-    candidate_seed: u64,
-    pool_salt: u64,
-    limits: RejectionLimits,
-) -> RejectionBatch<L> {
-    assert!(novel_size_goal > 0);
-    let mut sizes = engine.candidate_sizes();
-    sizes.sort_unstable();
-    sizes.dedup();
-    if candidate_count == 0 {
-        return RejectionBatch {
-            candidates: Vec::new(),
-            stats: RejectionStats {
-                per_size: sizes
-                    .into_iter()
-                    .map(|size| (size, SizeRejectionStats::default()))
-                    .collect(),
-                elapsed: Duration::ZERO,
-                peak_live_heap: live_heap_bytes(),
-                stop_reason: "quota_filled",
-            },
-        };
-    }
-    let mut state = RejectionState::new(&sizes, candidate_seed, pool_salt);
-
-    // Probe in rounds so one impossible or old-only size cannot monopolize the
-    // discovery budget. Observed means at least one exact-novel proposal, not
-    // proof that an earlier unobserved size has an empty frontier.
-    let mut active = sizes.clone();
-    while state.accepted.len() < novel_size_goal && !active.is_empty() {
-        active.retain(|&size| {
-            if state.accepted.len() >= novel_size_goal {
-                return false;
-            }
-            state.attempt(size, engine, previous, limits)
-                && state.accepted.get(&size).map_or(0, Vec::len) < candidate_count
-                && state.stats[&size].proposal_attempts < limits.attempts_per_size
-        });
-        if matches!(
-            state.stop_reason,
-            "memory_limit" | "time_limit" | "global_attempt_limit"
-        ) {
-            break;
-        }
-    }
-
-    let selected = state
-        .accepted
-        .keys()
-        .copied()
-        .take(novel_size_goal)
-        .collect::<Vec<_>>();
-    match allocation {
-        SizeAllocation::Greedy => {
-            for &size in &selected {
-                while selected
-                    .iter()
-                    .map(|s| state.accepted.get(s).map_or(0, Vec::len))
-                    .sum::<usize>()
-                    < candidate_count
-                    && state.attempt(size, engine, previous, limits)
-                {}
-            }
-        }
-        SizeAllocation::Uniform => {
-            let base = if selected.is_empty() {
-                0
-            } else {
-                candidate_count / selected.len()
-            };
-            let remainder = if selected.is_empty() {
-                0
-            } else {
-                candidate_count % selected.len()
-            };
-            for (index, &size) in selected.iter().enumerate() {
-                let quota = base + usize::from(index < remainder);
-                while state.accepted.get(&size).map_or(0, Vec::len) < quota
-                    && state.attempt(size, engine, previous, limits)
-                {}
-            }
-        }
-        SizeAllocation::Proportional(_) => unreachable!(),
-    }
-
-    let mut candidates = Vec::with_capacity(candidate_count);
-    match allocation {
-        SizeAllocation::Greedy => {
-            for size in selected {
-                for term in state.accepted.remove(&size).unwrap_or_default() {
-                    if candidates.len() == candidate_count {
-                        break;
-                    }
-                    candidates.push(term);
-                }
-            }
-        }
-        SizeAllocation::Uniform => {
-            let mut bins = selected
-                .into_iter()
-                .map(|size| state.accepted.remove(&size).unwrap_or_default().into_iter())
-                .collect::<Vec<_>>();
-            while candidates.len() < candidate_count {
-                let before = candidates.len();
-                for bin in &mut bins {
-                    if let Some(term) = bin.next() {
-                        candidates.push(term);
-                        if candidates.len() == candidate_count {
-                            break;
-                        }
-                    }
-                }
-                if candidates.len() == before {
-                    break;
-                }
-            }
-        }
-        SizeAllocation::Proportional(_) => unreachable!(),
-    }
-    if candidates.len() == candidate_count {
-        state.stop_reason = "quota_filled";
-    } else if candidates.is_empty() && state.stop_reason == "quota_or_size_budget" {
-        state.stop_reason = "no_novel_candidate_observed";
-    }
-    let live = live_heap_bytes();
-    state.peak_live_heap = state.peak_live_heap.max(live);
-    RejectionBatch {
-        candidates,
-        stats: RejectionStats {
-            per_size: state.stats,
-            elapsed: state.start.elapsed(),
-            peak_live_heap: state.peak_live_heap,
-            stop_reason: state.stop_reason,
-        },
-    }
-}
-
-fn check_memory(max_memory: Option<u64>, boundary: &str) -> Result<(), String> {
-    let live = live_heap_bytes();
-    if max_memory.is_some_and(|limit| live > limit) {
-        Err(format!(
-            "candidate-construction memory limit exceeded {boundary}: live_heap={live} bytes, limit={} bytes",
-            max_memory.unwrap()
-        ))
-    } else {
-        eprintln!("candidate_memory boundary={boundary:?} live_heap={live}");
-        Ok(())
-    }
-}
+// fn check_memory(max_memory: Option<u64>, boundary: &str) -> Result<(), String> {
+//     let live = live_heap_bytes();
+//     if max_memory.is_some_and(|limit| live > limit) {
+//         Err(format!(
+//             "candidate-construction memory limit exceeded {boundary}: live_heap={live} bytes, limit={} bytes",
+//             max_memory.unwrap()
+//         ))
+//     } else {
+//         eprintln!("candidate_memory boundary={boundary:?} live_heap={live}");
+//         Ok(())
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
@@ -842,7 +780,7 @@ mod tests {
     #[test]
     fn walk_is_exact_size_deterministic_and_terminates_on_cycle() {
         let result = cyclic_result();
-        let package = RejectionCandidatePackage::new(&result, 9, None).unwrap();
+        let package = RejectionCandidatePackage::new(&result, 9);
         let limits = RejectionLimits {
             walk_backtrack: 512,
             attempts_per_size: 10,
@@ -866,8 +804,8 @@ mod tests {
     #[test]
     fn feasibility_matches_nonzero_plain_counts_and_constructs_every_size() {
         let result = cyclic_result();
-        let package = RejectionCandidatePackage::new(&result, 9, None).unwrap();
-        let feasible = package.feasibility(None).unwrap();
+        let package = RejectionCandidatePackage::new(&result, 9);
+        let feasible = package.feasibility();
         let counts = count_terms_rooted::<BigUint, _, _>(result.curr(), &package.domain);
         let mut exact_sizes = counts.data[&package.root]
             .keys()
@@ -885,7 +823,7 @@ mod tests {
     #[test]
     fn shared_rejection_accepts_only_exact_novel_unique_terms() {
         let result = cyclic_result();
-        let package = RejectionCandidatePackage::new(&result, 9, None).unwrap();
+        let package = RejectionCandidatePackage::new(&result, 9);
         let limits = RejectionLimits {
             walk_backtrack: 512,
             attempts_per_size: 64,
@@ -893,10 +831,8 @@ mod tests {
             max_time: Duration::from_secs(1),
             max_memory: None,
         };
-        let feasible = package.feasibility(None).unwrap();
-        let batch = package
-            .collect(&feasible, 3, 3, SizeAllocation::Greedy, 5, 11, limits)
-            .unwrap();
+        let feasible = package.feasibility();
+        let batch = package.collect(&feasible, 3, 3, SizeAllocation::Greedy, 5, 11, limits);
         assert!(!batch.candidates.is_empty());
         let mut unique = HashSet::new();
         for term in &batch.candidates {

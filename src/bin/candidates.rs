@@ -139,12 +139,14 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     rules: &[Rewrite<L, N>],
 ) -> Result<SeedCandidates<L>, String> {
-    if args.novel_size_goal == 0 {
-        return Err("--novel-size-goal must be positive".to_owned());
-    }
-    if !args.rejection_max_time.is_finite() || args.rejection_max_time < 0.0 {
-        return Err("--rejection-max-time must be finite and nonnegative".to_owned());
-    }
+    assert!(
+        args.novel_size_goal > 0,
+        "--novel-size-goal must be positive"
+    );
+    assert!(
+        args.rejection_max_time.is_finite() && args.rejection_max_time >= 0.0,
+        "--rejection-max-time must be finite and nonnegative"
+    );
     let seed_expr = args
         .seed
         .parse::<RecExpr<L>>()
@@ -191,7 +193,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     if has_rejection {
         candidates.extend(build_rejection_candidates(
             args, &result, &pools, start_size,
-        )?);
+        ));
     }
 
     if has_exact {
@@ -216,21 +218,15 @@ fn build_rejection_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     result: &EqsatResult<L, N>,
     pools: &[CandidatePool],
     start_size: usize,
-) -> Result<BTreeMap<String, Vec<GuideExpr<L>>>, String> {
-    if matches!(args.size_allocation, SizeAllocation::Proportional(_)) {
-        return Err(
-            "proportional size allocation is unsupported for rejection-backed candidate pools"
-                .to_owned(),
-        );
-    }
+) -> BTreeMap<String, Vec<GuideExpr<L>>> {
     let cap = start_size
         .checked_add(
             args.max_retries
                 .checked_mul(args.retry_step)
-                .ok_or("rejection size cap overflow")?,
+                .expect("rejection size cap overflow"),
         )
-        .ok_or("rejection size cap overflow")?;
-    let package = RejectionCandidatePackage::new(result, cap, args.eqsat.max_memory)?;
+        .expect("rejection size cap overflow");
+    let package = RejectionCandidatePackage::new(result, cap);
     let limits = RejectionLimits {
         walk_backtrack: args.rejection_walk_backtrack,
         attempts_per_size: args.rejection_attempts_per_size,
@@ -252,10 +248,10 @@ fn build_rejection_candidates<L: MyLanguage, N: MyAnalysis<L>>(
                     args.candidate_seed,
                     pool.rng_salt(),
                     limits,
-                )?
+                )
             }
             CandidatePool::RejectionFeasible => {
-                let engine = package.feasibility(args.eqsat.max_memory)?;
+                let engine = package.feasibility();
                 package.collect(
                     &engine,
                     args.candidates_per_pool,
@@ -264,7 +260,7 @@ fn build_rejection_candidates<L: MyLanguage, N: MyAnalysis<L>>(
                     args.candidate_seed,
                     pool.rng_salt(),
                     limits,
-                )?
+                )
             }
             _ => unreachable!(),
         };
@@ -285,7 +281,7 @@ fn build_rejection_candidates<L: MyLanguage, N: MyAnalysis<L>>(
                 .collect(),
         );
     }
-    Ok(candidates)
+    candidates
 }
 
 fn build_exact_candidates<L: MyLanguage, N: MyAnalysis<L>>(
