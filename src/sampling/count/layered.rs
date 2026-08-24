@@ -1,27 +1,9 @@
 //! Size-layered term counting.
 //!
-//! The number of distinct terms of exactly `size` extractable from an
-//! e-class depends only on child counts at sizes *strictly below* `size`:
-//! an e-node contributes 1 to the size, so its children share a budget of
-//! `size - 1`. Indexed by size, the dependency relation is therefore acyclic
-//! even on cyclic e-graphs, and one pass per size layer computes every count
-//! exactly once — no fixpoint iteration. (This replaced a worklist fixpoint
-//! that re-convolved entire histograms every time a class on a cycle gained
-//! an entry, costing up to `limit` full recomputations per class.)
-//!
-//! The layer loop itself is generic over the key type ([`LayeredDp`]): the
-//! same argument applies verbatim to the joint counts over
-//! `(curr_class, prev_class)` pairs, which reuse this kernel with matches as
-//! nodes (see `novel.rs` and `docs/counting/novel_size_search.md`). Stepping one layer
-//! at a time also lets the exact root-size scan stop as soon as it has seen
-//! enough novel sizes.
-//!
-//! Production counting is restricted to what extractions of size <= `limit`
-//! from the selected root can touch: only reachable classes are counted, each
-//! capped at its *budget* — the
-//! largest size a subterm rooted at that class can take in any such
-//! extraction. Deep classes then carry a handful of histogram entries
-//! instead of ~`limit`, which shrinks every convolution touching them.
+//! Because an e-node costs one, counts at a size depend only on smaller sizes.
+//! [`LayeredDp`] therefore handles cyclic e-graphs without a fixpoint. Root
+//! budgets restrict counting to states usable below the requested size limit.
+//! See `docs/counting/layered_counting.md`.
 
 use std::hash::Hash;
 
@@ -32,9 +14,7 @@ use crate::Counter;
 use crate::analysis::semilattice::SemiLatticeAnalysis;
 use crate::utils::UniqueQueue;
 
-/// Canonical current-class size bounds for extractions rooted at one selected
-/// e-class. This bundles the two pieces every rooted phase needs so a global
-/// size limit cannot accidentally be substituted for a per-class budget.
+/// Per-class size bounds and minima for extractions from one root.
 #[derive(Debug, Clone)]
 pub(crate) struct RootBudgets {
     budgets: HashMap<Id, usize>,
@@ -63,8 +43,7 @@ impl RootBudgets {
         self.limit
     }
 
-    /// Whether the cheapest realization of `node` fits its class's rooted
-    /// budget. Children are canonicalized before their minima are queried.
+    /// Whether `node` fits its class budget at minimum child sizes.
     #[must_use]
     pub(crate) fn node_fits<L, N>(&self, egraph: &EGraph<L, N>, class: Id, node: &L) -> bool
     where
@@ -83,8 +62,7 @@ impl RootBudgets {
     }
 }
 
-/// Compute canonical current-class budgets and minimum extraction sizes once
-/// for a selected root and size limit.
+/// Compute canonical class budgets and minima for a root and size limit.
 pub(crate) fn root_budgets<L, N>(egraph: &EGraph<L, N>, root: Id, limit: usize) -> RootBudgets
 where
     L: Language,
@@ -108,22 +86,16 @@ where
     }
 }
 
-/// Histograms and per-node suffix convolution tables from one counting run.
+/// Histograms and per-node suffix convolutions from one counting run.
 #[derive(Debug)]
 pub(crate) struct CountData<C> {
-    /// Per canonical class: term-size histogram (size -> count of distinct
-    /// terms). Classes without any term within their budget are absent.
+    /// Distinct-term counts by size and canonical class.
     pub(crate) data: HashMap<Id, HashMap<usize, C>>,
-    /// Per canonical class in `data`, per node index:
-    /// `suffix[class][node][i]` maps a total to the number of ways children
-    /// `i..` of that node can be filled with subterm sizes of that total.
-    /// Same shape as [`suffix_convolutions`](super::suffix_convolutions),
-    /// with `suffix[class][node][arity]` the empty-product base `{0: 1}`.
+    /// Per-class, per-node suffix convolutions used to split child sizes.
     pub(crate) suffix: HashMap<Id, Vec<Vec<HashMap<usize, C>>>>,
 }
 
-/// Count the distinct terms needed by a selected root, using an
-/// already-computed rooted budget map.
+/// Count distinct terms within precomputed root budgets.
 pub(crate) fn count_terms_rooted<C, L, N>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
@@ -142,7 +114,7 @@ where
     CountData { data, suffix }
 }
 
-/// Plain DP using shared root budgets. Not stepped yet.
+/// Create an unstepped plain DP for the root budgets.
 pub(crate) fn plain_dp_rooted<C, L, N>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
@@ -183,21 +155,14 @@ type Histograms<K, C> = HashMap<K, HashMap<usize, C>>;
 /// [`suffix_convolutions`](super::suffix_convolutions).
 type SuffixTables<K, C> = HashMap<K, Vec<Vec<HashMap<usize, C>>>>;
 
-/// The size-layered counting kernel, generic over the key type: e-class ids
-/// for plain counts, `(curr_class, prev_class)` pairs for joint counts. Per
-/// key there is a list of *nodes* (e-nodes resp. matches), each a list of
-/// child keys; a key's count at `size` sums, over its nodes, the ways to
-/// fill the node's children with subterm sizes totalling `size - 1`.
-/// [`step`](Self::step) completes one size layer; every histogram entry at
-/// sizes <= the completed layer is final.
+/// Size-layered counting over e-class keys or current/previous class pairs.
+/// Each key contains nodes represented by their child keys.
 pub struct LayeredDp<K, C> {
     /// Per key, per node: canonical child keys, aligned with node order.
     children_of: HashMap<K, Vec<Vec<K>>>,
-    /// Per key: the largest size worth computing. Keys of `children_of`
-    /// without a budget are skipped entirely.
+    /// Largest size computed per key; unbudgeted keys are skipped.
     budgets: HashMap<K, usize>,
-    /// Per budgeted key, per node: suffix tables, grown by one total per
-    /// layer.
+    /// Per-key, per-node suffix tables, extended one total per layer.
     suffix: SuffixTables<K, C>,
     /// Per key: size -> count histogram. Zero counts are never stored.
     data: Histograms<K, C>,
@@ -206,8 +171,8 @@ pub struct LayeredDp<K, C> {
 }
 
 impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
-    /// `children_of` must contain every key of `budgets`; child keys missing
-    /// from `budgets` are treated as having no terms.
+    /// Every budgeted key must occur in `children_of`; unbudgeted children
+    /// have no terms.
     pub fn new(children_of: HashMap<K, Vec<Vec<K>>>, budgets: HashMap<K, usize>) -> Self {
         let suffix = budgets
             .keys()
@@ -233,8 +198,7 @@ impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
         }
     }
 
-    /// Complete the next size layer and return it. Once this returns `s`,
-    /// every `data` entry at sizes <= `s` is final.
+    /// Complete and return the next size layer. Counts through it are final.
     pub fn step(&mut self) -> usize {
         self.size += 1;
         let size = self.size;
@@ -329,13 +293,8 @@ fn convolve_entry<C: Counter>(
         .fold(C::zero(), |acc, c| acc + c)
 }
 
-/// Largest subterm size each class can take in any extraction of size <=
-/// `limit` from one of `roots`. Through a parent node, a child may use the
-/// parent's budget minus 1 (the node itself) minus the minimal subterm sizes
-/// of its siblings; the budget is the maximum of that over all parent
-/// positions. Worklist relaxation: budgets only grow, are bounded by
-/// `limit`, and strictly shrink along any cycle, so this terminates. Classes
-/// absent from the result cannot appear in any such extraction.
+/// Largest subterm size usable by each class below `limit` from `root`.
+/// Unreachable classes are omitted.
 fn class_budgets<L, N>(
     egraph: &EGraph<L, N>,
     root: Id,

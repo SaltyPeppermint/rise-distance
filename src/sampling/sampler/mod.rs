@@ -14,10 +14,7 @@ pub use frontier::{BalanceConfig, BalancedFrontierSampler, IndependentFrontierSa
 pub use plain::PlainSampler;
 pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
 
-/// Common interface for samplers that draw size-targeted terms from an e-graph.
-///
-/// `sample_batch` and `sample_batch_root` are provided as default implementations
-/// in terms of [`Sampler::sample`].
+/// Samples size-targeted terms from an e-graph.
 pub trait Sampler<C, L, N>
 where
     C: Counter,
@@ -73,15 +70,8 @@ where
     /// Precondition: `possible_size(id, size, 0)`.
     fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>>;
 
-    /// Sample up to `samples` distinct terms for each size from an eclass and
-    /// concatenate them.
-    ///
-    /// Each size contributes as many distinct terms as it can, capped at its
-    /// requested count: a size whose frontier holds fewer than the requested
-    /// number of distinct terms simply contributes all of them rather than
-    /// failing the whole batch. Returns `None` only if *every* requested size
-    /// is empty (nothing at all could be drawn), so callers still see a clean
-    /// failure for a wholly empty frontier.
+    /// Sample up to the requested number of distinct terms at each size.
+    /// Returns `None` only when every requested size is empty.
     fn sample_batch(
         &self,
         id: Id,
@@ -96,17 +86,12 @@ where
         (!terms.is_empty()).then_some(terms)
     }
 
-    /// Draw up to `samples` distinct terms of exactly `size` from `id`,
-    /// oversampling up to a factor of 2^5 to hit the target. A size holds a
-    /// fixed number of distinct terms; if that is below `samples` no amount of
-    /// oversampling can reach the target, so the draw is capped at the size's
-    /// known distinct-term count (from the histogram) and returns everything it
-    /// finds instead of failing.
+    /// Draw up to `samples` distinct terms of exactly `size`, capped by the
+    /// known term count and the 32x draw budget.
     ///
     /// # Errors
     ///
-    /// Returns `None` only if the size has no extractable terms at all, so
-    /// nothing could be drawn.
+    /// Returns `None` if the size has no extractable terms.
     fn sample_size(
         &self,
         id: Id,
@@ -148,11 +133,7 @@ where
         Some(v)
     }
 
-    /// Sample exactly n number of terms for each size from the root
-    ///
-    /// # Errors
-    ///
-    /// Errors if even with oversampling the sampler does not find enough terms
+    /// Sample up to the requested number of terms at each size from the root.
     fn sample_batch_root(
         &self,
         samples_per_size: &[(usize, u64)],

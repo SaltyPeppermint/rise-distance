@@ -1,19 +1,8 @@
 //! Novel-reachable term counts.
 //!
-//! A term extracted from `curr` is novel iff it is not extractable from any
-//! e-class in `prev`. This module computes:
-//!
-//! - `joint[(c, pc)](s)`: for each (curr-class, prev-class) pair, the number
-//!   of size-`s` extractions rooted at curr's `c` that are also extractable
-//!   from prev's `pc`.
-//! - `matches[(c, idx)]`: for each curr e-node, the list of prev matches
-//!   (a prev e-class plus the canonical prev-class ids of the matching prev
-//!   node's children).
-//! - `data[c](s) = plain[c](s) - sum_pc joint[(c, pc)](s)`: the per-class
-//!   histogram of novel-reachable extractions.
-//!
-//! Two prev classes cannot share a term (`prev.lookup(t)` is unique once
-//! prev has been rebuilt), so the sum over `pc` does not double-count.
+//! A current term is novel when no previous e-class can extract it. This
+//! module enumerates previous matches, counts shared terms, and subtracts them
+//! from plain counts. See `docs/sampling/novel_sampling.md`.
 
 use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::{HashMap, HashSet};
@@ -28,13 +17,10 @@ use crate::sampling::count::count_terms_rooted;
 use crate::sampling::count::root_budgets;
 use crate::sampling::count::{CountData, LayeredDp, RootBudgets, plain_dp_rooted};
 
-/// Inline-allocated list of child class ids. Sized for the typical e-node
-/// arity (0–2); higher-arity nodes spill to the heap transparently.
+/// Child class ids, inline for the usual arity of at most two.
 pub type ChildIds = SmallVec<[Id; 2]>;
 
-/// One match of a curr e-node in prev. The `prev_children` are canonical prev
-/// class ids of the matching prev node's children, in the same order as the
-/// curr node's children.
+/// A current e-node's match in the previous e-graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeMatch {
     pub prev_class: Id,
@@ -44,23 +30,17 @@ pub struct NodeMatch {
 /// Per `(curr_class, node_idx)`: every match of that e-node in prev.
 pub type NodeMatches = HashMap<(Id, usize), Vec<NodeMatch>>;
 
-/// Per curr class: the set of prev classes that share at least one extraction
-/// with it. Used internally during match enumeration; the exposed `cover`
-/// field on [`NovelTermCount`] is a `Vec<Id>`-valued variant derived from the
-/// joint table.
+/// Previous classes sharing an extraction with each current class.
 type MatchCover = HashMap<Id, HashSet<Id>>;
 
 /// Dedup key for match enumeration: `(curr_class, node_idx, prev_class,
 /// prev_children)`.
 type MatchKeys = HashSet<(Id, usize, Id, ChildIds)>;
 
-/// Per `(curr_class, prev_class)` pair: histogram of size -> count of
-/// extractions rooted at curr's class that are also extractable from prev's
-/// class.
+/// Shared extraction counts by class pair and size.
 type JointTable<C> = HashMap<(Id, Id), HashMap<usize, C>>;
 
-/// Joint extractability table + per-node prev matches + derived novel
-/// histograms.
+/// Plain, joint, and novel counts plus previous-node matches.
 #[derive(Debug)]
 pub struct NovelTermCount<C>
 where
@@ -68,19 +48,16 @@ where
 {
     plain: CountData<C>,
 
-    /// Per `(curr_class, prev_class)` pair: histogram of size -> count of
-    /// extractions rooted at curr's class that are also extractable from
-    /// prev's class.
+    /// Shared extraction counts by class pair and size.
     joint: JointTable<C>,
 
-    /// Per curr class: the set of prev classes that share at least one
-    /// extraction with it (i.e., the second-coordinate keys of `joint`).
+    /// Previous classes sharing an extraction with each current class.
     cover: HashMap<Id, Vec<Id>>,
 
     /// Per `(curr_class, node_idx)`: every match of that e-node in prev.
     matches: NodeMatches,
 
-    /// Per curr class: histogram of novel-reachable extraction sizes.
+    /// Novel extraction counts by current class and size.
     /// `data[c][s] = plain[c][s] - sum_pc joint[(c, pc)][s]`.
     data: HashMap<Id, HashMap<usize, C>>,
 }
@@ -131,8 +108,7 @@ impl<C: Counter> NovelTermCount<C> {
         }
     }
 
-    /// Per-class novel histograms. Keyed by **canonical** curr ids. Callers
-    /// looking up by an `Id` that hasn't been through `curr.find` may miss.
+    /// Novel histograms keyed by canonical current ids.
     #[must_use]
     pub const fn data(&self) -> &HashMap<Id, HashMap<usize, C>> {
         &self.data
@@ -143,8 +119,7 @@ impl<C: Counter> NovelTermCount<C> {
         &self.plain
     }
 
-    /// Joint histogram for a `(curr_class, prev_class)` pair. `None` if the
-    /// two classes share no extraction.
+    /// Shared-term histogram for a current/previous class pair.
     pub(crate) fn joint_histogram<L, N>(
         &self,
         curr: &EGraph<L, N>,
@@ -159,8 +134,7 @@ impl<C: Counter> NovelTermCount<C> {
         self.joint.get(&(curr_canon, prev_id))
     }
 
-    /// Novel histogram for a curr class. `None` if every extraction is
-    /// representable in some prev class.
+    /// Novel histogram for a current class.
     pub(crate) fn novel_histogram<L, N>(
         &self,
         curr: &EGraph<L, N>,
@@ -190,9 +164,7 @@ impl<C: Counter> NovelTermCount<C> {
             .map_or(&[][..], Vec::as_slice)
     }
 
-    /// Set of prev classes that share at least one extraction with the given
-    /// curr class. Used by the sampler to enumerate per-slot agreement
-    /// options (any prev class in this set, plus NOVEL).
+    /// Previous classes sharing an extraction with `curr_class`.
     pub(crate) fn cover_of<L, N>(&self, curr: &EGraph<L, N>, curr_class: Id) -> &[Id]
     where
         L: Language,
@@ -225,9 +197,8 @@ fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
 // Phase 1: match enumeration.
 // ============================================================================
 
-/// Enumerate only matches that can participate in an extraction from the
-/// selected current root within its size limit. Previous classes are queried
-/// through the complete lookup and are deliberately not root-filtered.
+/// Enumerate matches usable from the current root within its size limit.
+/// Previous classes are not root-filtered.
 pub(crate) fn enumerate_matches_rooted<L, N, P>(
     curr: &EGraph<L, N>,
     prev: &P,
@@ -350,9 +321,7 @@ fn compute_joint_rooted<C: Counter, L: Language, N: Analysis<L>>(
     dp.into_parts().0
 }
 
-/// The joint DP's structure in [`LayeredDp`] shape: per `(curr_class,
-/// prev_class)` pair, one node per match with that prev class, holding the
-/// child pair keys `(curr_child, prev_child)` in slot order.
+/// Joint-DP nodes grouped by current/previous class pair.
 type PairChildren = HashMap<(Id, Id), Vec<Vec<(Id, Id)>>>;
 
 fn joint_children_of<L: Language, N: Analysis<L>>(
@@ -379,10 +348,7 @@ fn joint_children_of<L: Language, N: Analysis<L>>(
 // Exact root-size scan.
 // ============================================================================
 
-/// The first `stop_after` sizes (ascending) at which `root` has at least one
-/// novel term, using the shared budgets that also constrained match
-/// enumeration. The exact plain and joint DPs advance in lockstep and can stop
-/// without constructing sampler caches above the selected layer.
+/// Find the first `stop_after` novel root sizes within `rooted`.
 pub(crate) fn find_novel_root_sizes_rooted<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     root: Id,

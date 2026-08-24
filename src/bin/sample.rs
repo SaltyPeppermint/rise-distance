@@ -1,20 +1,8 @@
 //! Produce the guide-candidate menu for one seed.
 //!
-//! This is the "first half" of the old `guide` binary: it replays the
-//! guide-phase eqsat for one seed, builds a [`PrecomputePackage`], and samples
-//! the requested guide-candidate pools. The individual search legs (the second
-//! half) are driven by `guided_search.py`, which feeds chosen guide subsets to
-//! `verify`. Candidate pools are explicit: callers must pass at least one
-//! `--candidate-pool`.
-//!
-//! Touches no files and reads no stdin: everything comes on argv. `guided_search.py`
-//! owns all file I/O — it computes the effective replay limits (search-phase
-//! eqsat limits overridden by its `--stop-*` budget flags) and invokes this
-//! binary once per seed; the replay ends
-//! at whichever limit trips first. The recorded goals and `max_size` stay
-//! Python-side (they were only ever echoed back here), so `SeedSamples` is pure
-//! sampling output. It is printed as a one-element JSON array to stdout (empty
-//! on failure); logs go to stderr.
+//! Replays guide-phase eqsat and samples the requested candidate pools.
+//! Arguments come from `guided_search.py`; output is a one-element JSON array
+//! on stdout, or an empty array on failure. Logs go to stderr.
 
 use std::collections::BTreeMap;
 
@@ -46,16 +34,15 @@ Example:
 "
 )]
 struct Args {
-    /// Which language's rules to run under (from the folder's `goal_args.json`).
+    /// Language used for eqsat.
     #[arg(long)]
     language: AvailableLanguages,
 
-    /// The seed s-expression to replay the guide phase from.
+    /// Seed s-expression.
     #[arg(long)]
     seed: String,
 
-    /// The replay's eqsat limits (the driver passes the effective values, see
-    /// the module doc).
+    /// Guide replay limits.
     #[command(flatten)]
     eqsat: EqsatConfig,
 
@@ -63,15 +50,11 @@ struct Args {
     #[arg(long, default_value_t = Distribution::Greedy)]
     size_distribution: Distribution,
 
-    /// How many guide candidates to draw per sampling strategy. The menu must be
-    /// large enough for the driver to pick its widest `k` and to reshuffle
-    /// across restarts. `Smallest` always contributes exactly one term.
+    /// Candidates per sampling strategy. `Smallest` contributes one.
     #[arg(long, default_value_t = 1000)]
     samples_per_strategy: usize,
 
-    /// Seed for candidate sampling. This deliberately does not depend on
-    /// `samples_per_strategy`, so a larger batch extends the same deterministic
-    /// per-size draw streams instead of replacing a smaller experiment's pool.
+    /// Candidate-sampling seed, independent of the batch size.
     #[arg(long, default_value_t = 0)]
     sampling_seed: u64,
 
@@ -79,13 +62,11 @@ struct Args {
     #[arg(long, default_value_t = 5)]
     retry_step: usize,
 
-    /// How many times to retry precompute with a larger `max_size` before
-    /// giving up on a seed.
+    /// Number of precompute size increments.
     #[arg(long, default_value_t = 20)]
     max_retries: usize,
 
-    /// How many novel sizes the precompute must find (the size scan stops at
-    /// the `sample_sizes`-th one).
+    /// Number of novel sizes to find.
     #[arg(long, default_value_t = 5)]
     sample_sizes: usize,
 
@@ -117,11 +98,7 @@ fn main() {
     eprintln!("Finished at {}", OffsetDateTime::now_local().unwrap());
 }
 
-/// Sample the seed named by `--seed` for one concrete language and print the
-/// `SeedSamples` record as a one-element JSON array to stdout (empty array on
-/// failure). The output is emitted here (rather than returned) because the
-/// `SeedSamples<L>` type is language-specific and the caller's `match` arms
-/// can't unify on it; the JSON bytes are type-erased on the wire.
+/// Sample one language-specific seed and print its JSON record.
 fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
     eprintln!(
         "\n=== Seed: {} (max-iters={}) ===",
@@ -213,9 +190,7 @@ fn sample_seed<L: MyLanguage, N: MyAnalysis<L>>(
     })
 }
 
-/// Draw the guide-candidate pool for one strategy. The sampling strategies
-/// draw `samples_per_strategy` terms in a single batch; `Smallest` contributes
-/// the one smallest (novel or overall) root term.
+/// Draw one candidate pool; smallest-term pools contain one term.
 fn draw_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     pool: CandidatePool,

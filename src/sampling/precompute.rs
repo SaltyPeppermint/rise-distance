@@ -14,12 +14,9 @@ use crate::sampling::sampler::{
 use crate::sampling::{Distribution, SampleStrategy};
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
-/// Final e-graph together with the immutable counting tables used to sample
-/// its novel frontier.
+/// Final e-graph and counting tables for frontier sampling.
 ///
-/// Construction consumes [`EqsatResult`]: after match enumeration reconstructs
-/// the previous boundary, the package retains the final e-graph and drops the
-/// run metadata and boundary marker.
+/// Construction consumes [`EqsatResult`] and discards its run metadata.
 pub struct PrecomputePackage<C, L, N>
 where
     L: MyLanguage,
@@ -39,11 +36,8 @@ where
     N: MyAnalysis<L>,
     C: Counter,
 {
-    /// Consume an eqsat result and enumerate all frontier terms not present at
-    /// its selected previous boundary.
-    ///
-    /// The result is consumed even when the frontier is empty and this returns
-    /// `None`.
+    /// Build counts through `max_size` relative to the previous boundary.
+    /// Returns `None` for an empty frontier.
     #[must_use]
     pub fn precompute(
         result: EqsatResult<L, N>,
@@ -85,27 +79,14 @@ where
         })
     }
 
-    /// Like [`precompute`](Self::precompute), but consumes the result while
-    /// searching for the smallest `max_size` that yields at least `sizes`
-    /// distinct novel term sizes at the root.
+    /// Build a package ending at the `sizes`-th novel root size.
     ///
-    /// An exact, root-restricted counting pass advances one size layer at a
-    /// time and stops at the `sizes`-th novel size. That size is then used to
-    /// build the returned package, so no package data is computed above the
-    /// largest size that will be sampled. `start_size`, `max_retries`, and
-    /// `retry_step` only define the search cap
-    /// `start_size + max_retries * retry_step`; there is no retry schedule.
+    /// The exact scan stops at the cap `start_size + max_retries * retry_step`.
     /// See `docs/counting/novel_size_search.md`.
-    ///
-    /// The size scan uses `BigUint`, so it neither overflows nor has
-    /// probabilistic false negatives. Package counts use `C`; construction
-    /// is checked before success is returned.
     ///
     /// # Errors
     ///
-    /// Errors if no `max_size` up to the cap yields enough novel sizes, or
-    /// if package construction with `C` does not retain those sizes. The
-    /// error value is the cap (`start_size + max_retries * retry_step`).
+    /// Returns the cap if the scan or package finds too few novel sizes.
     ///
     /// # Panics
     ///
@@ -186,7 +167,7 @@ where
         }
     }
 
-    /// Sample frontier goal terms from `egraph` that are NOT present in `prev_raw_egg`.
+    /// Sample root terms absent from the previous boundary.
     #[must_use]
     pub fn sample_frontier_terms(
         &self,
@@ -216,14 +197,7 @@ where
         }
     }
 
-    /// Sample frontier terms while balancing construction choices across each
-    /// requested size bucket.
-    ///
-    /// Unlike [`Self::sample_frontier_terms`], this policy does not draw terms
-    /// independently. It shares coverage state across the batch and prefers
-    /// under-used e-nodes, frontier profiles, and child-size choices. It
-    /// refills exact duplicates while retaining the batch's coverage state,
-    /// subject to the sampler's bounded oversampling budget.
+    /// Sample frontier terms with batch-local coverage balancing per size.
     #[must_use]
     pub fn sample_balanced_frontier_terms(
         &self,
@@ -272,13 +246,11 @@ where
         self.root
     }
 
-    /// Histogram of novel root extractions by size. Guaranteed non-empty
-    /// because [`Self::precompute`] returns `None` otherwise.
+    /// Novel root-term counts by size.
     ///
     /// # Panics
     ///
-    /// Panics if the root histogram is somehow missing (would indicate a bug
-    /// in `precompute`'s None check).
+    /// Panics if package construction violated its root-histogram invariant.
     #[must_use]
     pub fn root_histogram(&self) -> &HashMap<usize, C> {
         self.tc

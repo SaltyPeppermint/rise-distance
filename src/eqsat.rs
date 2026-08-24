@@ -36,11 +36,8 @@ pub enum GuideError {
 }
 
 impl EqsatMetadata {
-    /// Summarize a single eqsat run from its per-iteration log. egg records
-    /// `egraph_nodes`/`egraph_classes` at the *start* of each iteration, so the
-    /// last entry holds the final size. `time` sums every iteration's
-    /// `total_time`; `iters` is the index of the last applied iteration
-    /// (`len() - 1`), matching [`crate::langs::EqsatResult::iters`].
+    /// Summarize an iteration log. Sizes come from its final entry and `iters`
+    /// is the last applied iteration index (`len() - 1`).
     ///
     /// # Panics
     ///
@@ -57,10 +54,7 @@ impl EqsatMetadata {
     }
 }
 
-/// Eqsat resource limits. Doubles as the shared clap flag group (`--max-*`) for
-/// the `goal` / `sample` / `verify` binaries; the Python drivers read the values out of the
-/// `generation_args.json` / `goal_args.json` sidecars and forward them on
-/// argv.
+/// Eqsat limits and shared `--max-*` CLI arguments.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, clap::Args)]
 pub struct EqsatConfig {
     /// Maximum eqsat iterations.
@@ -75,17 +69,14 @@ pub struct EqsatConfig {
     #[arg(long)]
     pub max_time: f64,
 
-    /// Absolute process live-heap ceiling in bytes (jemalloc
-    /// `stats.allocated`), enforced at egg's limit-check boundaries.
-    /// `None` (flag unset) = unbounded.
+    /// Process live-heap ceiling in bytes, or unbounded when unset.
     #[serde(default)]
     #[arg(long)]
     pub max_memory: Option<u64>,
 }
 
 impl EqsatConfig {
-    /// Build a [`Runner`] configured with this config's limits, process-memory
-    /// tracker, and scheduler.
+    /// Build a [`Runner`] with these limits, memory tracking, and scheduler.
     #[must_use]
     pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> Runner<L, N, D>
     where
@@ -102,11 +93,8 @@ impl EqsatConfig {
     }
 }
 
-/// Result of running eqsat. Holds the final e-graph and the compact marker
-/// needed to reconstruct the selected previous boundary, plus per-iteration
-/// metadata in `iter_data` (timings, `egraph_nodes`, etc.). `root` is the id
-/// returned by the initial `add`, so it may not be canonical in later iterations.
-/// It also canonicalizes with `egraph.find(root)` before using it as a `HashMap` key.
+/// An eqsat run's final e-graph, previous-boundary marker, and metadata.
+/// The stored root may become noncanonical after unions.
 pub struct EqsatResult<L, N>
 where
     L: Language,
@@ -126,8 +114,7 @@ where
     L: Language,
     N: Analysis<L>,
 {
-    /// Test-only constructor for a hand-built final e-graph whose union log
-    /// contains the supplied previous-boundary marker.
+    /// Construct a test result with a known previous-boundary marker.
     #[cfg(test)]
     pub(crate) fn new_for_tests(
         curr: EGraph<L, N>,
@@ -159,8 +146,7 @@ where
         &self.curr
     }
 
-    /// Reconstruct the previous-boundary index without changing the final
-    /// e-graph or its retained union log.
+    /// Reconstruct the previous-boundary index without mutating the final graph.
     pub(crate) fn prev_index(&self) -> PrevIndex<L> {
         PrevIndex::from_union_history(
             self.curr.nodes(),
@@ -170,9 +156,7 @@ where
         )
     }
 
-    /// Per-iteration metadata only (timings, `egraph_nodes`, `egraph_classes`,
-    /// `applied`, etc.). Index `0` is the iteration that started from the
-    /// initial egraph. `iters()` is the last applied iteration index.
+    /// Per-iteration metadata, starting with the initial e-graph iteration.
     #[must_use]
     pub fn data(&self) -> &[Iteration<()>] {
         &self.iter_data
@@ -189,14 +173,13 @@ where
         &self.stop_reason
     }
 
-    /// Final absolute process live heap sampled while the runner and its
-    /// final egraph were alive.
+    /// Final process live heap while the final e-graph was alive.
     #[must_use]
     pub fn allocated(&self) -> u64 {
         self.allocated
     }
 
-    /// Largest sampled absolute process live heap while the runner was active.
+    /// Peak process live heap during the run.
     #[must_use]
     pub fn peak_allocated(&self) -> u64 {
         self.peak_allocated
@@ -208,8 +191,7 @@ where
         (self.curr, self.root)
     }
 
-    /// Summarize the complete run. Node and class counts come from the rebuilt
-    /// final e-graph rather than egg's iteration-boundary snapshots.
+    /// Summarize the run using the rebuilt final e-graph's size.
     #[must_use]
     pub fn metadata(&self) -> EqsatMetadata {
         EqsatMetadata {
@@ -227,9 +209,7 @@ struct Boundary {
     union_event_count: usize,
 }
 
-/// Latest two distinct topology boundaries. Each marker is only two cursors;
-/// the final e-graph's raw-node history plus the union log reconstructs either
-/// boundary after the run.
+/// Latest two distinct topology boundaries, stored as history cursors.
 #[derive(Debug, Default)]
 struct FrontierHistory {
     latest_distinct: Option<Boundary>,
@@ -245,30 +225,22 @@ impl FrontierHistory {
     }
 }
 
-/// Minimum number of iterations the runner must complete for `run_eqsat` to
-/// return `Some`. Lower than this means we don't have enough distinct egraph
-/// states for a meaningful guide/goal split.
+/// Minimum iterations needed for a meaningful guide/goal split.
 const MIN_ITERS: usize = 3;
 
-/// Per-iteration decision-point, scheduler, and peak-memory telemetry.
+/// Per-iteration scheduler and live-heap telemetry.
 ///
-/// `iteration_start_allocated`, egg's egraph counts, and `scheduler` all
-/// describe the instant immediately before this iteration's hooks and search.
-/// The previous [`Iteration`]'s timings and applied counts are therefore the
-/// work history available to an online predictor at this boundary.
-///
-/// `allocated` remains the final live reading after rebuild, while
-/// `iteration_peak_allocated` retains transient search/application peaks even
-/// if their allocations were freed before the iteration ended.
+/// Start fields describe the pre-search boundary; `allocated` is the final
+/// reading and `iteration_peak_allocated` includes transient peaks.
 #[derive(Debug, Clone, Serialize)]
 pub struct HeapData {
-    /// Final live allocation sampled after rebuild/finalization.
+    /// Final live heap after rebuild.
     pub allocated: u64,
     pub iteration_start_allocated: u64,
     pub iteration_peak_allocated: u64,
     pub iteration_peak_phase: MemorySamplePhase,
     pub iteration_peak_rule: Option<egg::Symbol>,
-    /// Exact upcoming state captured before hooks and rewrite search.
+    /// Scheduler state before hooks and search.
     pub scheduler: SchedulerSnapshot,
 }
 
@@ -290,13 +262,8 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
     }
 }
 
-/// Per-iteration eqsat stats plus live-heap use, as produced by running a
-/// [`Runner`] with [`HeapData`] in its iteration-data slot (via
-/// `EqsatConfig::build_runner::<_, _, HeapData>`). Every byte count here is an
-/// absolute process live-heap figure, in the same coordinate system egg's
-/// limit check uses, so readings are directly comparable to `memory_limit`
-/// across runs and workers. `total_allocated` is Runner's final sample while
-/// the final egraph is alive.
+/// Eqsat iterations and absolute process live-heap measurements.
+/// Byte counts use the same scale as `memory_limit`.
 #[derive(Debug, Serialize)]
 pub struct Measurement {
     pub iterations: Vec<Iteration<HeapData>>,
@@ -306,8 +273,7 @@ pub struct Measurement {
 }
 
 impl Measurement {
-    /// Assemble a measurement from a completed runner's final report and
-    /// per-iteration readings.
+    /// Combine a final memory report with its iteration log.
     #[must_use]
     pub fn from_run(report: MemoryReport, iterations: Vec<Iteration<HeapData>>) -> Self {
         Self {
@@ -319,18 +285,12 @@ impl Measurement {
     }
 }
 
-/// Run equality saturation up to `config` maximums and return the
-/// final egraph (`curr`) together with a compact lookup index for the last
-/// meaningfully different earlier boundary.
-///
-/// Returns `None` if fewer than 3 iterations completed or if the
-/// runner never produced a distinct earlier egraph (e.g. saturated with no
-/// effective changes).
+/// Run eqsat and retain the last distinct boundary before the final e-graph.
+/// Returns `None` when too few iterations or distinct states exist.
 ///
 /// # Panics
 ///
-/// Panics if egg's `Runner` returns without a `stop_reason` set, which it
-/// documents as impossible.
+/// Panics if the runner omits its required stop reason.
 pub fn run_eqsat<'a, L, N, R>(
     start: &RecExpr<L>,
     rules: R,
@@ -421,11 +381,7 @@ where
     })
 }
 
-/// What `verify_reachability` searches for. Either a single concrete program
-/// (`Expr`, checked with `lookup_expr`) or a set of sketches that must *all*
-/// be satisfied by the (canonical) root e-class (`Sketches`, checked with
-/// [`eclass_contains`]). The guide/goal binaries use `Expr`; the `mini_rise`
-/// tile searches use `Sketches`.
+/// A concrete expression or a set of sketches to reach at the root.
 #[derive(Clone)]
 pub enum Goal<L: MyLanguage> {
     Expr(RecExpr<L>),
@@ -433,11 +389,8 @@ pub enum Goal<L: MyLanguage> {
 }
 
 impl<L: MyLanguage> Goal<L> {
-    /// True once this goal is reached in `egraph`. `root` may be a stale id
-    /// retained by the runner after a union, so canonicalize it here before
-    /// either goal representation uses it.
-    /// For `Sketches` the egraph must be clean (rebuilt);
-    /// [`eclass_contains`] asserts this.
+    /// Whether the canonical root reaches this goal.
+    /// Sketch lookup requires a rebuilt e-graph.
     fn reached<N: Analysis<L>>(&self, egraph: &EGraph<L, N>, root: Id) -> bool {
         let root = egraph.find(root);
         match self {
@@ -458,32 +411,28 @@ impl<L: MyLanguage> Goal<L> {
     }
 }
 
-/// A reached run's outputs from [`verify_reachability`]: the per-iteration log,
-/// the extracted goal term, and the *true* final egraph size (`nodes`/`classes`
-/// read off the rebuilt egraph after the run, not an iteration-boundary
-/// snapshot).
+/// Outputs from a reached run, including the rebuilt final e-graph size.
 pub struct ReachedRun<L: MyLanguage> {
     pub iterations: Vec<egg::Iteration<()>>,
     pub target: RecExpr<L>,
     pub nodes: usize,
     pub classes: usize,
-    /// Final absolute process live heap, in the same coordinate system as the
-    /// configured memory ceiling.
+    /// Final process live heap.
     pub allocated: u64,
-    /// Largest sampled absolute process live heap during this run.
+    /// Peak process live heap.
     pub peak_allocated: u64,
 }
 
-/// Run eqsat from `guides` (all unioned together) and check if `goal` becomes reachable.
+/// Run eqsat from unioned `guides` and check whether `goal` is reached.
 /// Returns a [`ReachedRun`] if reached, an error otherwise.
 ///
 /// # Errors
 ///
-/// Errors either if the guide is unrachable or we have a panic
+/// Returns [`GuideError`] if the goal is unreached or the run panics.
 ///
 /// # Panics
 ///
-/// Panics if not at least one guide is given
+/// Panics if `guides` is empty.
 pub fn verify_reachability<L, N>(
     guides: &[RecExpr<OriginLang<L>>],
     goal: &Goal<L>,
@@ -551,11 +500,7 @@ where
     }
 }
 
-/// Run an ordinary single-seed eqsat and stop when `goal` is reachable.
-///
-/// Unlike multi-guide verification, this uses [`EqsatConfig::build_runner`],
-/// so a configured next-memory predictor is active and receives its
-/// training-compatible single input-term size.
+/// Run single-seed eqsat until `goal` is reached or a limit stops the run.
 #[expect(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 pub fn verify_unguided<L, N>(
     seed: &RecExpr<L>,
@@ -796,9 +741,7 @@ mod tests {
         );
     }
 
-    /// Reported figures are absolute: the limit is the one the user
-    /// configured, so readings from different runs and workers are directly
-    /// comparable against a single ceiling.
+    /// Memory figures use the configured limit's absolute scale.
     #[test]
     fn measurement_reports_absolute_memory_figures() {
         let report = MemoryReport {
@@ -812,9 +755,7 @@ mod tests {
         assert_eq!(measurement.peak_allocated, 13_000);
     }
 
-    /// Readings are whole-process live heap with nothing subtracted out, so
-    /// heap the process already held is counted the same as the run's own.
-    /// This is what makes a reading comparable to the configured ceiling.
+    /// Readings include heap allocated before the runner.
     #[test]
     fn readings_include_heap_held_before_the_runner_existed() {
         const BYTES: usize = 32 * 1024 * 1024;
@@ -891,11 +832,7 @@ mod tests {
         );
     }
 
-    /// `live_heap_bytes` must track live allocations: a large touched buffer
-    /// shows up while alive and is gone once freed. This is the property the
-    /// per-term memory ceiling relies on (no `malloc_trim` purge needed). Only
-    /// meaningful when jemalloc is the active allocator; the test crate installs
-    /// it as its global allocator.
+    /// `live_heap_bytes` tracks allocation and release under jemalloc.
     #[test]
     fn live_heap_tracks_allocations() {
         use super::live_heap_bytes;
