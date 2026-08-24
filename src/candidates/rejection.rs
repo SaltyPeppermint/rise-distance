@@ -6,7 +6,6 @@
 //! rooted matches, or suffix-convolution tables.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
 
 use egg::{EGraph, Id, RecExpr};
 use hashbrown::{HashMap, HashSet};
@@ -18,7 +17,7 @@ use crate::candidates::SizeAllocation;
 use crate::candidates::exact::count::{RootBudgets, root_budgets};
 use crate::eqsat::EqsatResult;
 use crate::previous::PrevIndex;
-use crate::utils::{combined_rng, live_heap_bytes};
+use crate::utils::combined_rng;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// One low-memory proposal source. `None` is a bounded construction failure,
@@ -40,86 +39,15 @@ pub struct RejectionLimits {
     pub attempts_per_size: usize,
     /// Proposal attempts allowed for the whole candidate pool.
     pub global_attempts: usize,
-    /// Wall-clock proposal limit.
-    pub max_time: Duration,
-    /// Absolute live-heap ceiling. `None` is unbounded.
-    pub max_memory: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SizeRejectionStats {
-    pub proposal_attempts: usize,
-    pub construction_failures: usize,
-    pub non_novel_rejections: usize,
-    pub duplicate_rejections: usize,
-    pub accepted_unique_terms: usize,
-}
-
-/// Rejection telemetry. Budget exhaustion never means an exact empty frontier.
-#[derive(Clone, Debug)]
-pub struct RejectionStats {
-    pub per_size: BTreeMap<usize, SizeRejectionStats>,
-    pub elapsed: Duration,
-    pub peak_live_heap: u64,
-    pub stop_reason: &'static str,
-}
-
-impl RejectionStats {
-    #[must_use]
-    pub fn proposal_attempts(&self) -> usize {
-        self.per_size.values().map(|s| s.proposal_attempts).sum()
-    }
-
-    #[expect(clippy::cast_precision_loss)]
-    pub fn log(&self, pool: &str) {
-        eprintln!(
-            "rejection_stats pool={pool} attempts={} construction_failures={} \
-             non_novel={} duplicates={} accepted={} elapsed_seconds={:.6} \
-             peak_live_heap={} stop_reason={}",
-            self.proposal_attempts(),
-            self.per_size
-                .values()
-                .map(|s| s.construction_failures)
-                .sum::<usize>(),
-            self.per_size
-                .values()
-                .map(|s| s.non_novel_rejections)
-                .sum::<usize>(),
-            self.per_size
-                .values()
-                .map(|s| s.duplicate_rejections)
-                .sum::<usize>(),
-            self.per_size
-                .values()
-                .map(|s| s.accepted_unique_terms)
-                .sum::<usize>(),
-            self.elapsed.as_secs_f64(),
-            self.peak_live_heap,
-            self.stop_reason,
-        );
-        for (size, stats) in &self.per_size {
-            let acceptance = if stats.proposal_attempts == 0 {
-                0.0
-            } else {
-                stats.accepted_unique_terms as f64 / stats.proposal_attempts as f64
-            };
-            eprintln!(
-                "rejection_size pool={pool} size={size} attempts={} \
-                 construction_failures={} non_novel={} duplicates={} accepted={} \
-                 acceptance_rate={acceptance:.6}",
-                stats.proposal_attempts,
-                stats.construction_failures,
-                stats.non_novel_rejections,
-                stats.duplicate_rejections,
-                stats.accepted_unique_terms,
-            );
-        }
-    }
-}
-
-pub struct RejectionBatch<L: MyLanguage> {
-    pub candidates: Vec<RecExpr<OriginLang<L>>>,
-    pub stats: RejectionStats,
+    proposal_attempts: usize,
+    construction_failures: usize,
+    non_novel_rejections: usize,
+    duplicate_rejections: usize,
+    accepted_unique_terms: usize,
 }
 
 /// Previous-boundary index and count-independent extraction data borrowing the
@@ -189,7 +117,7 @@ where
     /// Panics if `candidate_count` or `novel_size_goal` is zero, or for
     /// count-proportional selection, whose semantics are unavailable without
     /// exact counts.
-    #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[expect(clippy::too_many_arguments)]
     pub fn collect<E: ProposalEngine<L>>(
         &self,
         engine: &E,
@@ -199,7 +127,7 @@ where
         candidate_seed: u64,
         pool_salt: u64,
         limits: RejectionLimits,
-    ) -> RejectionBatch<L> {
+    ) -> Vec<RecExpr<OriginLang<L>>> {
         assert!(candidate_count > 0);
         assert!(novel_size_goal > 0);
         let mut sizes = engine.candidate_sizes();
@@ -299,17 +227,7 @@ where
         } else if candidates.is_empty() && state.stop_reason == "quota_or_size_budget" {
             state.stop_reason = "no_novel_candidate_observed";
         }
-        let live = live_heap_bytes();
-        state.peak_live_heap = state.peak_live_heap.max(live);
-        RejectionBatch {
-            candidates,
-            stats: RejectionStats {
-                per_size: state.stats,
-                elapsed: state.start.elapsed(),
-                peak_live_heap: state.peak_live_heap,
-                stop_reason: state.stop_reason,
-            },
-        }
+        candidates
     }
 }
 
@@ -663,8 +581,6 @@ struct RejectionState<L: MyLanguage> {
     stats: BTreeMap<usize, SizeRejectionStats>,
     rngs: HashMap<usize, ChaCha12Rng>,
     total_attempts: usize,
-    start: Instant,
-    peak_live_heap: u64,
     stop_reason: &'static str,
 }
 
@@ -682,27 +598,11 @@ impl<L: MyLanguage> RejectionState<L> {
                 .map(|&size| (size, combined_rng([candidate_seed, pool_salt, size as u64])))
                 .collect(),
             total_attempts: 0,
-            start: Instant::now(),
-            peak_live_heap: live_heap_bytes(),
             stop_reason: "quota_or_size_budget",
         }
     }
 
     fn can_attempt(&mut self, size: usize, limits: RejectionLimits) -> bool {
-        // Advancing jemalloc's stats epoch is materially more expensive than
-        // a proposal on small graphs, so measure the heap periodically.
-        if self.total_attempts.is_multiple_of(64) {
-            let live = live_heap_bytes();
-            self.peak_live_heap = self.peak_live_heap.max(live);
-            if limits.max_memory.is_some_and(|limit| live > limit) {
-                self.stop_reason = "memory_limit";
-                return false;
-            }
-        }
-        if self.start.elapsed() >= limits.max_time {
-            self.stop_reason = "time_limit";
-            return false;
-        }
         if self.total_attempts >= limits.global_attempts {
             self.stop_reason = "global_attempt_limit";
             return false;
@@ -785,8 +685,6 @@ mod tests {
             walk_backtrack: 512,
             attempts_per_size: 10,
             global_attempts: 100,
-            max_time: Duration::from_secs(1),
-            max_memory: None,
         };
         let walk = package.random_walk(1, limits);
         for size in [1, 3, 5, 7, 9] {
@@ -828,23 +726,14 @@ mod tests {
             walk_backtrack: 512,
             attempts_per_size: 64,
             global_attempts: 256,
-            max_time: Duration::from_secs(1),
-            max_memory: None,
         };
         let feasible = package.feasibility();
         let batch = package.collect(&feasible, 3, 3, SizeAllocation::Greedy, 5, 11, limits);
-        assert!(!batch.candidates.is_empty());
+        assert!(!batch.is_empty());
         let mut unique = HashSet::new();
-        for term in &batch.candidates {
+        for term in &batch {
             assert!(!package.previous.contains_origin_expr(term));
             assert!(unique.insert(term));
         }
-        assert!(
-            batch
-                .stats
-                .per_size
-                .values()
-                .any(|s| s.non_novel_rejections > 0)
-        );
     }
 }

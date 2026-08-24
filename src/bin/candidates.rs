@@ -5,7 +5,6 @@
 //! on stdout, or an empty array on failure. Logs go to stderr.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
@@ -231,8 +230,6 @@ fn build_rejection_candidates<L: MyLanguage, N: MyAnalysis<L>>(
         walk_backtrack: args.rejection_walk_backtrack,
         attempts_per_size: args.rejection_attempts_per_size,
         global_attempts: args.rejection_global_attempts,
-        max_time: Duration::from_secs_f64(args.rejection_max_time),
-        max_memory: args.eqsat.max_memory,
     };
 
     let mut candidates = BTreeMap::new();
@@ -264,8 +261,7 @@ fn build_rejection_candidates<L: MyLanguage, N: MyAnalysis<L>>(
             }
             _ => unreachable!(),
         };
-        batch.stats.log(pool.name());
-        if batch.candidates.is_empty() {
+        if batch.is_empty() {
             eprintln!(
                 "WARNING: strategy {} accepted 0 candidates; budget exhaustion is not \
                  evidence of an empty novel frontier",
@@ -274,11 +270,7 @@ fn build_rejection_candidates<L: MyLanguage, N: MyAnalysis<L>>(
         }
         candidates.insert(
             pool.name().to_owned(),
-            batch
-                .candidates
-                .into_iter()
-                .map(GuideExpr::from_recexpr)
-                .collect(),
+            batch.into_iter().map(GuideExpr::from_recexpr).collect(),
         );
     }
     candidates

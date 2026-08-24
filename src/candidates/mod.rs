@@ -11,6 +11,6 @@ pub mod rejection;
 pub use allocation::{ExactSelectionPolicy, SizeAllocation, uniform_candidate_allocation};
 pub use exact::{BalanceConfig, ExactCandidatePackage};
 pub use rejection::{
-    FeasibilityEngine, ProposalEngine, RandomWalkEngine, RejectionBatch, RejectionCandidatePackage,
-    RejectionLimits, RejectionStats, SizeRejectionStats,
+    FeasibilityEngine, ProposalEngine, RandomWalkEngine, RejectionCandidatePackage,
+    RejectionLimits, SizeRejectionStats,
 };
