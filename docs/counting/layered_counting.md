@@ -1,17 +1,17 @@
 # Size-layered, root-restricted term counting
 
-The sampling precompute counts exact-size terms only for current e-classes and
+Exact candidate construction counts exact-size terms only for current e-classes and
 sizes that can participate in an extraction from the selected root. This
 document describes the shared size-layered kernel and the root budgets that
 bound every production counting phase.
 
 The relevant code is:
 
-- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) —
+- [src/candidates/exact/count/layered.rs](../../src/candidates/exact/count/layered.rs) —
   `RootBudgets`, `root_budgets`, and `LayeredDp`.
-- [src/sampling/sampler/plain.rs](../../src/sampling/sampler/plain.rs) —
+- [src/candidates/exact/draw/plain.rs](../../src/candidates/exact/draw/plain.rs) —
   top-down consumption of rooted plain histograms and suffix tables.
-- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — reuse of
+- [src/candidates/exact/count/novel.rs](../../src/candidates/exact/count/novel.rs) — reuse of
   the kernel for rooted joint counting and the novel-size scan.
 - [src/analysis/semilattice/ast_size.rs](../../src/analysis/semilattice/ast_size.rs)
   — minimum extraction sizes used by the budget calculation.
@@ -73,7 +73,7 @@ the key publishes its layer count by summing `S_0(s - 1)` over its nodes.
 Separating suffix extension from publication makes the result independent of
 hash-map iteration order.
 
-Plain counting retains these suffix tables because top-down sampling uses them
+Plain counting retains these suffix tables because top-down drawing uses them
 to split a requested size among children without proposing infeasible
 remainders.
 
@@ -125,14 +125,14 @@ and giving every sibling at least its minimum size, child `c_i` can receive no
 more than `budget(c_i)` by construction. Consequently:
 
 - every recursive plain-count lookup requested by the root is retained;
-- every suffix-table remainder reachable during sampling is retained;
-- every recursive sample call satisfies `size <= budget(child)`; and
+- every suffix-table remainder reachable during drawing is retained;
+- every recursive draw call satisfies `size <= budget(child)`; and
 - joint terms are also safe because a joint term for `(c, pc)` is a plain term
   of current class `c`.
 
 The restriction removes only states no extraction from the selected root can
 query. Direct histogram queries against deeper classes are intentionally
-capped; `PrecomputePackage` exposes root-driven sampling, not a global
+capped; `ExactCandidatePackage` exposes root-driven candidate drawing, not a global
 all-class analysis.
 
 ## Rooted joint counting
@@ -147,7 +147,7 @@ terms, which is the standard `LayeredDp` contract. Previous classes are not
 assigned an independent reachability or size budget.
 
 See [finding the smallest novel sizes](novel_size_search.md) for the complete
-precompute flow.
+exact-package flow.
 
 ## Verification
 
@@ -159,5 +159,5 @@ Tests cover:
 - suffix tables checked entry-for-entry against direct convolutions;
 - scan and final package histograms agreeing for every selected root in small
   acyclic and cyclic fixtures; and
-- recursive frontier sampling returning only terms absent from the previous
+- recursive frontier drawing returning only terms absent from the previous
   boundary.

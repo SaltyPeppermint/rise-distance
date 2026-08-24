@@ -1,8 +1,9 @@
 # Random term generation
 
 Seed terms are sampled directly from a language grammar, before an e-graph
-exists. This differs from [novel-term sampling](novel_sampling.md), which draws
-terms from an e-graph.
+exists. This differs from
+[exact novel-candidate construction](../candidates/exact_novel_candidates.md),
+which draws terms from an e-graph.
 
 The implementation is in
 [`src/generator.rs`](../../src/generator.rs), with grammars in
@@ -95,18 +96,19 @@ the grammar has binders. The exact subset representation is exponential in the
 number of such variables and is intended for small fixed variable pools such
 as Math's `x` and `y`.
 
-## Relationship to e-graph sampling
+## Relationship to e-graph candidate construction
 
 `SizeUniformSampler` samples seed terms directly from a language grammar. It
 does not inspect an e-graph.
 
-The other documents in this directory describe a separate pipeline:
+The candidate documents describe a separate pipeline:
 
-- [Novel-term counting and sampling](novel_sampling.md) counts terms
-  extractable from a current e-graph but absent from a previous e-graph.
-- [Frontier sampling policies](frontier_sampling.md) compares independent
-  count-weighted sampling with coverage-balanced sampling over that constrained
-  space.
+- [Exact novel-candidate construction](../candidates/exact_novel_candidates.md)
+  counts terms extractable from a current e-graph but absent from a previous
+  e-graph.
+- [Exact frontier drawing policies](../candidates/exact_frontier_drawing.md)
+  compares independent count-weighted drawing with coverage-balanced drawing
+  over that constrained space.
 
 ## Filtering in `generate`
 

@@ -1,29 +1,31 @@
 # Guide experiment pipeline
 
 This is an operational guide. See
-[random term generation](sampling/term_generation.md) for stage 1 and
-[novel-term counting and sampling](sampling/novel_sampling.md) and
-[frontier sampling policies](sampling/frontier_sampling.md) for the guide phase.
+[random term generation](generation/random_terms.md) for stage 1 and
+[exact novel-candidate construction](candidates/exact_novel_candidates.md) and
+[exact frontier drawing policies](candidates/exact_frontier_drawing.md) for the
+guide phase.
 
-The guide experiment measures how well sampled guide terms steer equality
-saturation toward a goal. It runs in four stages, each feeding the next through
-a seed folder (`data/seed_terms/<name>/`) that accumulates `terms.json` and
-`args.json`:
+The guide experiment measures how well constructed guide candidates steer
+equality saturation toward a goal. It runs in four stages, each feeding the
+next through a seed folder (`data/seed_terms/<name>/`) that accumulates
+`terms.json` and `args.json`:
 
 ```
-generate ──▶ goal ──▶ sample ──▶ verify
-(seeds)     (goals)   (menu)      (search legs)
-   └──────── generate_and_measure.py         └── driver.py orchestrates ──┘
+generate ──▶ goal ──▶ candidates ──▶ verify
+(seeds)     (goals)   (menu)          (search legs)
+   └──── generate_seeds.py / generate_goals.py ────┘
+                         guided_search.py orchestrates candidates + verify
 ```
 
 - **generate** samples random seed terms and measures their peak memory.
 - **goal** replays a big eqsat per seed and records goal terms to reach.
-- **sample** replays the guide phase and emits the guide-candidate menu.
+- **candidates** replays the guide phase and emits the guide-candidate menu.
 - **verify** runs one search leg (union guides, saturate, check the goal).
 
-`driver.py` runs `sample` once, then drives many parallel `verify` legs. All
-logging and data wrangling live in Python; the Rust binaries are stateless
-workers.
+`guided_search.py` runs `candidates` once per seed, then drives many parallel
+`verify` legs. Logging and data wrangling live in Python; the Rust binaries are
+stateless workers.
 
 ---
 
@@ -32,14 +34,14 @@ workers.
 ```bash
 cargo build --release \
     --bin generate \
-    --bin goal --bin sample --bin verify
+    --bin goal --bin candidates --bin verify
 ```
 
 ## 1. Generate seed terms (skip if you already have a seed folder)
 
-Writes `data/seed_terms/<auto-name>/terms.json` (+ `args.json`). Pick the
-language here — it flows through every later stage. Generated terms have exact
-sizes; only those that pass the eqsat validity check are kept.
+Writes `data/seed_terms/<auto-name>/terms.json` and `generation_args.json`.
+Pick the language here—it flows through every later stage. Generated terms
+have exact sizes; only those that pass the eqsat validity check are kept.
 
 ```bash
 uv run scripts/generate_seeds.py \
@@ -55,65 +57,87 @@ below. Pass `--path data/seed_terms/<name>` to choose the name yourself.
 
 ## 2. Enrich seeds with goal terms
 
-`goal` runs a full eqsat per seed and rewrites `terms.json` **in place** with
-goal terms + guide/goal-phase metadata. Start with `--take-first` to keep it
-quick; enrich more later by re-running.
+`generate_goals.py` runs the `goal` binary once per seed and writes
+`goal_terms.json` plus `goal_args.json`. Start with `--seeds` to keep it quick.
 
 ```bash
-target/release/goal data/seed_terms/dusky-cramp --goals 10 --take-first 3
+uv run scripts/generate_goals.py data/seed_terms/dusky-cramp \
+    --goals 10 --seeds 3
 ```
 
-> `goal` overwrites `terms.json`. To keep the raw seeds, copy the folder first
-> (`cp -r data/seed_terms/dusky-cramp /tmp/run1`) and point the rest at the copy.
+## 3. Run the driver (candidate construction + parallel search legs + parquet)
 
-## 3. Run the driver (sample + parallel search legs + parquet)
-
-`driver.py` calls `sample` internally, then fans out `verify` legs across cores.
-Keep `--take-first` in sync with stage 2 — the driver skips any seed that wasn't
-enriched.
+`guided_search.py` calls `candidates` internally, then fans out `verify` legs
+across cores. Pass at least one guide-replay `--stop-*` limit.
 
 ```bash
-uv run scripts/driver.py data/seed_terms/dusky-cramp \
-    --take-first 3 --attempts 5 --k 10 \
+uv run scripts/guided_search.py data/seed_terms/dusky-cramp \
+    --stop-memory 4G --seeds 3 --attempts 5 --k 10 \
     --strategy no_replacement_independent
 ```
 
-Output lands in `data/guide_driver/run.N/` (or pass `--output <dir>`):
+Output lands in `data/guided_search/run.N/` (or pass `--output <dir>`):
 
 - `results.parquet` / `results.json` — one row per `(seed, goal, k, attempt)`
 - `config.json` — the driver args
-- `sample_run/samples.json` — the guide-candidate menu `sample` produced
+- `candidate_run/candidates.json` — the guide-candidate menu produced
 
 ---
 
-## Reproducing the reach-rate-vs-k curve
+## Running a paired policy grid
 
-`--k` takes a list; each `(seed, goal)` pair is tried independently at every k,
-with `--attempts` resampled subsets per k (early-stops on first reach). This is
-the old `guide` experiment's sweep:
+`guided_search_grid.py` constructs one shared candidate manifest for every
+size-allocation/candidate-seed cell. Each policy reuses that manifest, and
+smaller attempt budgets can be analyzed as prefixes of the same run:
 
 ```bash
-uv run scripts/driver.py data/seed_terms/dusky-cramp \
-    --k 1 2 5 10 50 100 --attempts 20 \
-    --strategy no_replacement_independent --full-union
+uv run scripts/guided_search_grid.py data/seed_terms/dusky-cramp \
+    --stop-memory 4G --k 10 --attempts 250 --full-union
 ```
 
-The driver prints reach rate per k at the end, and
-`analysis/helpers.load_driver_run` + `compute_goal_reach` read the parquet for
-plotting.
+`analysis.helpers.load_grid` reads the paired parquet outputs for plotting.
+
+## Repository experiment script
+
+[`experiment.fish`](../experiment.fish) runs a concrete end-to-end experiment
+for `data/seed_terms/plenty-houses`:
+
+1. Generate 1,000 validated Math seed terms of sizes 10 through 50.
+2. Generate ten goal terms per retained seed.
+3. Run exact balanced and naive guide-candidate policies at 100M, 250M, 500M,
+   and 1000M guide-replay memory limits.
+4. Run both rejection-backed policies at 250M:
+   `no_replacement_rejection_walk` and
+   `no_replacement_rejection_feasible`.
+
+Run it from the repository root:
+
+```bash
+fish experiment.fish
+```
+
+Each command is followed by `or exit $status`, so a failed stage prevents later
+runs from consuming incomplete inputs. Each guided search creates a fresh
+`data/guided_search/run.N` directory containing its candidate manifest,
+attempt results, pair summaries, unguided baseline, and joined comparison.
+The rejection runs use exact previous-boundary filtering but differ in their
+proposal engines; see
+[low-memory rejection-candidate construction](candidates/rejection_candidates.md).
 
 ## Key knobs
 
 | Flag | Meaning |
 | --- | --- |
-| `--k <ints…>` | Guide-set sizes to sweep (guides unioned per leg). |
+| `--k N` | Guide-set size (guides unioned per leg). |
 | `--attempts N` | Legs per `(seed, goal, k)`; each resamples a fresh subset. Counts the first try. |
-| `--strategy` | Candidate pool: `no_replacement_independent`, `with_replacement_independent`, `no_replacement_naive`, `with_replacement_naive`, `no_replacement_balanced`, `with_replacement_balanced`, `smallest_novel`, `smallest_overall`. |
+| `--strategy` | Candidate policy, including independent, naive, balanced, rejection-walk, rejection-feasible, and smallest variants. |
 | `--candidate-pools` | Pools to generate in a shared manifest. Defaults to only the pool selected by `--strategy`; the grid driver supplies all pools needed by its paired strategies. |
 | `--full-union` | Union guide nodes by their origin e-class (experimental; helped reachability historically). |
-| `--samples-per-strategy N` | Menu size `sample` draws per strategy (default 1000). Keep ≥ largest `k`. Values below ~30 can trip a pre-existing bigint sampler panic. |
+| `--candidate-seed N` | Rust candidate-construction seed. |
+| `--size-allocation` | Root-size allocation: `greedy`, `uniform`, or `proportional:<min>`. |
+| `--novel-size-goal N` | Number of novel sizes exact construction must find or rejection construction must observe. |
 | `--jobs N` | Concurrent `verify` legs (default `os.cpu_count()`). Lower it if the large leg egraphs exhaust RAM. |
-| `--take-first N` | Only process the first N seeds. |
+| `--seeds N` | Only process the first N seeds. |
 
 The `balanced` pool is diversified while frontier terms are constructed.
 `independent` and `naive` draw each candidate
@@ -121,12 +145,14 @@ independently, using count-proportional and equal-local-choice weighting
 respectively. The
 `with_replacement_*` / `no_replacement_*` prefix is a separate Python-side
 policy for selecting guide subsets from the resulting finite pool.
+The rejection engines, their limits, and their weaker discovery guarantees are
+documented in
+[low-memory rejection-candidate construction](candidates/rejection_candidates.md).
 
 ## Scaling notes
 
-- Total legs per goal = `len(k) × attempts`. A `--k 1 2 5 10 50 100 --attempts
-  500` run is up to 3000 legs **per goal**, each a full eqsat — budget wall time
-  and watch RAM.
+- Total legs per goal are bounded by `attempts`. Every leg runs a full eqsat,
+  so budget wall time and watch RAM on large grids.
 - Reaches are strongly k-dependent (historically ~20% at k=1, ~90% at k=100).
-  A single small k on a hard seed can legitimately reach 0%; widen `--k` and
+  A single small k on a hard seed can legitimately reach 0%; increase `--k` and
   `--attempts`, and try `--full-union`, before concluding a goal is unreachable.

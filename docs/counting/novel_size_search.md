@@ -1,16 +1,17 @@
-# Root-restricted novel-size search and precompute
+# Root-restricted novel-size search and exact package construction
 
-`PrecomputePackage::backoff_precompute` finds the requested novel root sizes
-and builds all sampler data without enumerating or counting classes, e-nodes,
-or current/previous pairs that the selected root cannot use.
+`ExactCandidatePackage::build_through_novel_sizes` finds the requested novel
+root sizes and builds all data needed for exact drawing without enumerating or
+counting classes, e-nodes, or current/previous pairs that the selected root
+cannot use.
 
 The relevant code is:
 
-- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) — shared
+- [src/candidates/exact/count/layered.rs](../../src/candidates/exact/count/layered.rs) — shared
   current-root budgets and the generic layered DP.
-- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — rooted
+- [src/candidates/exact/count/novel.rs](../../src/candidates/exact/count/novel.rs) — rooted
   match enumeration, pruning, joint counting, and the exact scan.
-- [src/sampling/precompute.rs](../../src/sampling/precompute.rs) — phase
+- [src/candidates/exact/package.rs](../../src/candidates/exact/package.rs) — phase
   ordering, package retention, and telemetry.
 
 For the counting recurrence, first read
@@ -18,7 +19,7 @@ For the counting recurrence, first read
 
 ## Control flow
 
-The final sampling size is not known until the exact scan completes. The scan
+The final candidate size is not known until the exact scan completes. The scan
 cap bounds the first rooted match enumeration; the result is tightened after
 the final size is selected:
 
@@ -43,10 +44,10 @@ prune_matches(curr, matches, final_budgets)
 
 plain = count_plain_rooted(curr, final_budgets)
 joint = count_joint_rooted(curr, matches, final_budgets)
-package = derive_novel_and_retain_sampler_data(plain, joint, matches)
+package = derive_novel_and_retain_package_data(plain, joint, matches)
 ```
 
-`PrecomputePackage::precompute(result, max_size)` already knows its final
+`ExactCandidatePackage::build(result, max_size)` already knows its final
 limit. It computes final budgets immediately, enumerates matches inside that
 domain, and builds the package without the cap scan.
 
@@ -108,9 +109,9 @@ novel(root, s) = plain(root, s)
 
 The scan uses `BigUint`, so nonzero detection is exact. It records nonzero
 sizes in ascending order and stops at the requested count; no larger scan
-layer or sampler suffix cache is constructed.
+layer or exact-drawing suffix cache is constructed.
 
-The final package is a separate pass because sampling needs complete rooted
+The final package is a separate pass because drawing needs complete rooted
 histograms and plain suffix tables through `final_max_size`, potentially with
 the caller's counter type rather than `BigUint`.
 
@@ -126,7 +127,7 @@ Every previous witness attached to a surviving current node is retained.
 Rooted joint counting decides which current/previous pairs have nonzero cells
 within budget. The package retains only:
 
-- rooted plain histograms and sampler suffix tables;
+- rooted plain histograms and exact-drawing suffix tables;
 - nonempty rooted joint histograms;
 - cover entries derived from nonempty joint keys;
 - the final-budget-pruned node-match table; and
@@ -142,15 +143,15 @@ constructing a term of size at most `M` remains available:
 - covers and node matches needed by every feasible frontier state; and
 - suffix tables needed to split child sizes.
 
-The restriction removes only data no root derivation can query. Every sampled
-term remains extractable from the current graph and absent from the previous
-boundary.
+The restriction removes only data no root derivation can query. Every drawn
+candidate remains extractable from the current graph and absent from the
+previous boundary.
 
 ## Diagnostics
 
-`backoff_precompute` writes a diagnostic to its supplied log only when it
+`build_through_novel_sizes` writes a diagnostic to its supplied log only when it
 cannot build a package with the requested number of novel sizes. A successful
-call does not write a structural or live-heap summary. Call `log_root`
+call does not write a structural or live-heap summary. Call `log_root_counts`
 explicitly after success when a sorted frontier-size histogram is needed.
 
 ## Verification

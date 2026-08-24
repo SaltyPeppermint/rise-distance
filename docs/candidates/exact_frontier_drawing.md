@@ -1,35 +1,35 @@
-# Frontier sampling policies
+# Exact frontier drawing policies
 
-This document records why frontier membership was separated from sampling
+This document records why frontier membership was separated from drawing
 policy, how the shared constrained derivation space works, and how the
-coverage-balanced sampler increases structural variety without tree-distance
+coverage-balanced drawer increases structural variety without tree-distance
 comparisons or unbounded rejection sampling.
 
 The relevant implementation is:
 
-- [`src/sampling/count/novel.rs`](../../src/sampling/count/novel.rs): match,
+- [`src/candidates/exact/count/novel.rs`](../../src/candidates/exact/count/novel.rs): match,
   joint-count, and outside-`prev` histograms.
-- [`src/sampling/sampler/frontier/space.rs`](../../src/sampling/sampler/frontier/space.rs):
+- [`src/candidates/exact/draw/frontier/space.rs`](../../src/candidates/exact/draw/frontier/space.rs):
   shared frontier states and feasible derivations.
-- [`src/sampling/sampler/frontier/independent.rs`](../../src/sampling/sampler/frontier/independent.rs):
-  independent weighted sampling over that space.
-- [`src/sampling/sampler/frontier/balanced.rs`](../../src/sampling/sampler/frontier/balanced.rs):
-  batch-local coverage-balanced sampling over the same space.
+- [`src/candidates/exact/draw/frontier/independent.rs`](../../src/candidates/exact/draw/frontier/independent.rs):
+  independent weighted drawing over that space.
+- [`src/candidates/exact/draw/frontier/balanced.rs`](../../src/candidates/exact/draw/frontier/balanced.rs):
+  batch-local coverage-balanced drawing over the same space.
 
 The detailed counting argument remains in
-[`novel_sampling.md`](novel_sampling.md).
-Direct grammar sampling, including exact binder handling, is documented
-separately in [`term_generation.md`](term_generation.md).
+[`exact_novel_candidates.md`](exact_novel_candidates.md).
+Direct grammar drawing, including exact binder handling, is documented
+separately in [`../generation/random_terms.md`](../generation/random_terms.md).
 
 ## Motivation
 
-The original `NovelSampler` had two responsibilities:
+The former frontier implementation had two responsibilities:
 
 1. Preserve the frontier invariant: return only current-graph terms which are
    not extractable from any e-class in the previous graph.
 2. Choose a probability distribution over those terms.
 
-Those concerns need not be coupled. In particular, count-proportional sampling
+Those concerns need not be coupled. In particular, count-proportional drawing
 can be correct and uniform over individual terms while still putting almost
 all probability mass in one enormous family of structurally similar terms.
 Changing that distribution should not require reimplementing the
@@ -37,8 +37,10 @@ correctness-critical frontier test.
 
 Post-hoc alternatives have unattractive costs:
 
-- Rejection sampling can take unbounded work when the proposal distribution is
-  concentrated.
+- Unbounded rejection sampling can take unbounded work when the proposal
+  distribution is concentrated. The separate
+  [low-memory rejection path](rejection_candidates.md) imposes explicit limits
+  and permits partial candidate pools instead.
 - Zhang-Shasha tree distance requires dynamic programming for many pairs of
   completed trees.
 - A bounded candidate pool has predictable cost, but cannot cover a rare
@@ -76,7 +78,7 @@ known:
 ### `OutsidePrev` as a proof obligation
 
 The transition above is bottom-up, but construction runs top-down. At an
-`OutsidePrev` node, the sampler has the obligation to ensure that the completed
+`OutsidePrev` node, the drawer has the obligation to ensure that the completed
 subtree is absent from `prev`. A feasible child-state profile discharges or
 delegates that obligation in one of two ways:
 
@@ -92,7 +94,7 @@ delegates that obligation in one of two ways:
    the current node—and every ancestor above it—`OutsidePrev`.
 
 Thus a completed term needs only one failure to reconstruct in `prev`. The
-sampler does not store a separate `already_outside` flag: an `OutsidePrev`
+drawer does not store a separate `already_outside` flag: an `OutsidePrev`
 state is the still-active obligation, while an all-`InsidePrev` profile with no
 previous-node match discharges it locally.
 
@@ -111,7 +113,7 @@ the concrete child terms into disjoint cases and lets the `novel` and `joint`
 histograms provide exact branch counts. A `Free` state would combine those
 cases and lose that direct, non-overlapping correspondence.
 
-Sampling a frontier term means constructing a derivation rooted at:
+Drawing a frontier term means constructing a derivation rooted at:
 
 ```text
 (current root class, requested size, OutsidePrev)
@@ -134,12 +136,10 @@ enumerate only feasible `(e-node, child-state profile)` branches. It also
 enumerates only child sizes that leave a feasible budget for the remaining
 children.
 
-Consequently, a sampling policy never receives an invalid choice. Frontier
+Consequently, a drawing policy never receives an invalid choice. Frontier
 correctness belongs to `FrontierSpace`, not to an individual random policy.
 
-## Sampler names and responsibilities
-
-The original `NovelSampler` is now named `IndependentFrontierSampler`.
+## Exact drawer responsibilities
 
 "Independent" describes its important behavior: every complete term is drawn
 without knowledge of earlier terms in the batch. It still supports both
@@ -152,8 +152,8 @@ existing weighers:
 Both use `FrontierSpace`, so the refactor does not change their frontier
 semantics.
 
-`BalancedFrontierSampler` also uses `FrontierSpace`, but shares a coverage map
-across all constructions requested from one `sample_size` call.
+`BalancedFrontierDrawer` also uses `FrontierSpace`, but shares a coverage map
+across all constructions requested from one `draw_size` call.
 
 ## Coverage-balanced construction
 
@@ -189,8 +189,8 @@ The balanced policy records three local feature families:
 Together these are hierarchical coverage metrics: choices are balanced within
 the structural prefix where they occur, rather than only by their global
 e-class identity. In particular, a later child's choices are balanced
-separately for each preceding sibling term, which spreads samples across joint
-combinations instead of merely balancing each child's marginal frequencies.
+separately for each preceding sibling term, which spreads candidates across
+joint combinations instead of merely balancing each child's marginal frequencies.
 
 For each feasible choice, the current implementation combines its exact
 completion capacity with its usage penalty:
@@ -210,7 +210,7 @@ size weight =
     (child_capacity * remaining_sibling_capacity) / (size_usage + 1)
 ```
 
-It samples from these weights with the caller's seeded RNG. Capacity prevents a
+It draws from these weights with the caller's seeded RNG. Capacity prevents a
 one-term branch from receiving the same repeated quota as a branch with
 thousands of distinct completions; the usage denominator still pushes the
 batch toward under-covered choices. Weights are evaluated in log space so very
@@ -226,19 +226,19 @@ child_size_penalty = 1
 
 Favoring node coverage first prevents an e-node with many profiles from
 immediately dominating all other e-nodes. Profile and child-size coverage then
-spread samples within each structural family.
+spread candidates within each structural family.
 
-Coverage is local to a `sample_size` batch. `sample()` creates an empty
-coverage map because one isolated draw has no earlier terms to diversify
-against. Keeping the state local avoids interior mutability, call-order
-dependence between unrelated batches, and synchronization requirements.
+Coverage is local to a `draw_size` batch. `draw()` creates an empty coverage
+map because one isolated draw has no earlier terms to diversify against.
+Keeping the state local avoids interior mutability, call-order dependence
+between unrelated batches, and synchronization requirements.
 
 ## Work bound and duplicate behavior
 
-`BalancedFrontierSampler::sample_size` targets the requested number of distinct
+`BalancedFrontierDrawer::draw_size` targets the requested number of distinct
 outputs, capped by the exact number of available frontier terms reported by the
 histogram. It retains one coverage map while refilling duplicates, with the
-same `32 × requested` construction budget as the independent sampler.
+same `32 × requested` construction budget as the independent drawer.
 
 Completed terms are placed in a set before return. An exact duplicate is
 collapsed and another construction is attempted while budget remains.
@@ -249,12 +249,13 @@ Therefore:
 - The method usually fills duplicate-induced shortfalls, while retaining the
   coverage policy across refill draws.
 - It can still return fewer than requested after exhausting the bounded work
-  budget, consistent with the `Sampler::sample_size` "up to" contract.
+  budget, consistent with the `ExactDrawer::draw_size` "up to" contract.
 
-`PrecomputePackage::sample_balanced_frontier_terms` is the production entry
-point. It uses the same size-distribution logic as `sample_frontier_terms`, but
-always samples the frontier and applies the balanced policy.
-`sample_balanced_frontier_terms_with_config` exposes the three penalties when
+`ExactCandidatePackage::draw_balanced_frontier_candidates` is the production
+entry point. It uses the same size-allocation logic as
+`draw_frontier_candidates`, but always draws from the frontier and applies the
+balanced policy.
+`draw_balanced_frontier_candidates_with_config` exposes the three penalties when
 an experiment needs to tune them.
 
 ## Correctness argument
@@ -289,7 +290,7 @@ Promising follow-up work is:
    `capacity^alpha / (1 + usage)^beta` when experiments need a continuum
    between structural and count-proportional balancing.
 
-2. **Exact sampling without replacement.** Implement rank/unrank over the
+2. **Exact drawing without replacement.** Implement rank/unrank over the
    frontier derivation grammar. Production blocks have known counts, and child
    products can use mixed-radix ranks. Distinct ranks would guarantee distinct
    terms with no rejection.
@@ -299,8 +300,8 @@ Promising follow-up work is:
    capacity weights would provide explicit stratification rather than the
    current online least-used heuristic.
 
-4. **Cross-size coverage.** Override `sample_batch` and share selected coverage
-   features across size buckets. At present each `sample_size` call starts a
+4. **Cross-size coverage.** Override `draw_batch` and share selected coverage
+   features across size buckets. At present each `draw_size` call starts a
    fresh coverage map.
 
 5. **Lazy profile generation.** The Cartesian product of child-state options
@@ -314,11 +315,11 @@ Promising follow-up work is:
 
 7. **Diversity measurements.** Evaluate node/profile coverage, structural
    shingle Jaccard distance, and downstream search success. Tree-edit distance
-   can remain an offline evaluation metric without entering the sampling hot
+   can remain an offline evaluation metric without entering the drawing hot
    path.
 
 8. **CLI tuning.** The balanced policy is available as the `balanced`
-   `SampleStrategy`, as `sample_balanced` in the guide menu, and through the
+   `ExactSelectionPolicy`, as `exact_balanced` in the guide menu, and through the
    Python driver's `no_replacement_balanced` / `with_replacement_balanced`
    strategies. A future CLI can expose the individual `BalanceConfig`
    penalties when experiments need values other than the defaults.
