@@ -1,6 +1,6 @@
-//! Coverage-balanced frontier sampling.
+//! Coverage-balanced exact frontier drawing.
 //!
-//! Unlike [`super::IndependentFrontierSampler`], this sampler coordinates the
+//! Unlike [`super::IndependentFrontierDrawer`], this drawer coordinates the
 //! derivation choices made for all terms in one size bucket. It preferentially
 //! selects under-used e-nodes, frontier-state profiles, and child sizes. Every
 //! choice still comes from [`FrontierSpace`], so balancing cannot weaken the
@@ -16,13 +16,13 @@ use super::space::{
     FrontierState,
 };
 use crate::Counter;
-use crate::sampling::count::NovelTermCount;
-use crate::sampling::sampler::{MAX_OVERSAMPLE, Sampler};
+use crate::candidates::exact::count::NovelTermCount;
+use crate::candidates::exact::draw::{ExactDrawer, MAX_DRAW_ATTEMPTS_PER_CANDIDATE};
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
 /// Relative penalties used when balancing local derivation choices.
 ///
-/// Larger values make the sampler more reluctant to repeat that feature. A
+/// Larger values make the drawer more reluctant to repeat that feature. A
 /// zero value disables the corresponding coverage signal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BalanceConfig {
@@ -43,7 +43,7 @@ impl Default for BalanceConfig {
 
 /// Constructs frontier terms while balancing the derivation decisions made
 /// across each requested size bucket.
-pub struct BalancedFrontierSampler<'a, 'g, C, L, N>
+pub struct BalancedFrontierDrawer<'a, 'g, C, L, N>
 where
     C: Counter,
     L: MyLanguage,
@@ -54,7 +54,7 @@ where
     config: BalanceConfig,
 }
 
-impl<'a, 'g, C, L, N> BalancedFrontierSampler<'a, 'g, C, L, N>
+impl<'a, 'g, C, L, N> BalancedFrontierDrawer<'a, 'g, C, L, N>
 where
     C: Counter,
     L: MyLanguage,
@@ -244,7 +244,7 @@ impl<C: Counter> FrontierPolicy<C> for CoveragePolicy {
 }
 
 /// Log of the capacity-aware coverage weight `capacity / (usage + 1)`.
-/// Sampling from these weights covers structural branches without repeatedly
+/// Drawing from these weights covers structural branches without repeatedly
 /// forcing low-capacity choices after their few completions are exhausted.
 #[expect(clippy::cast_precision_loss)]
 fn capacity_priority<C: Counter>(capacity: &C, usage: u64, coverage_enabled: bool) -> f64 {
@@ -258,7 +258,7 @@ fn capacity_priority<C: Counter>(capacity: &C, usage: u64, coverage_enabled: boo
     capacity.ln() - (usage as f64 + 1.0).ln()
 }
 
-impl<C, L, N> Sampler<C, L, N> for BalancedFrontierSampler<'_, '_, C, L, N>
+impl<C, L, N> ExactDrawer<C, L, N> for BalancedFrontierDrawer<'_, '_, C, L, N>
 where
     C: Counter,
     L: MyLanguage,
@@ -276,18 +276,18 @@ where
         self.space.counts().data().get(&self.find(id))
     }
 
-    fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
+    fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
         self.construct(id, size, &mut CoveragePolicy::new(self.config), rng)
     }
 
-    fn sample_size(
+    fn draw_size(
         &self,
         id: Id,
         size: usize,
-        samples: u64,
+        requested_count: u64,
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
-        let requested = usize::try_from(samples).unwrap();
+        let requested = usize::try_from(requested_count).unwrap();
         let count = self.size_histogram(self.find(id))?.get(&size)?;
         let target = requested.min(count.to_usize().unwrap_or(requested));
         if target == 0 {
@@ -302,7 +302,7 @@ where
         // subsequent constructions toward under-used choices. Cap this phase
         // to keep duplicate-heavy frontiers from turning it into an unbounded
         // rejection loop.
-        let mut budget = samples * MAX_OVERSAMPLE;
+        let mut budget = requested_count * MAX_DRAW_ATTEMPTS_PER_CANDIDATE;
         while terms.len() < target && budget > 0 {
             terms.insert(self.construct(id, size, &mut coverage, &mut rng));
             budget -= 1;
@@ -325,7 +325,7 @@ mod tests {
     use crate::utils::sym;
 
     #[test]
-    fn balanced_sampler_covers_frontier_profiles_without_rejection() {
+    fn balanced_drawer_covers_frontier_profiles_without_rejection() {
         // prev contains (+ a b). After merging a and b, the other three
         // combinations are frontier terms represented by three distinct
         // child-state profiles under the same root e-node.
@@ -340,9 +340,9 @@ mod tests {
         curr.rebuild();
 
         let counts = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
-        let sampler = BalancedFrontierSampler::new(&counts, &curr, root);
-        let terms = sampler
-            .sample_size(root, 3, 3, [17, 23])
+        let drawer = BalancedFrontierDrawer::new(&counts, &curr, root);
+        let terms = drawer
+            .draw_size(root, 3, 3, [17, 23])
             .expect("three frontier terms");
         let lowered = terms
             .into_iter()
@@ -360,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn balanced_sampler_never_returns_previous_term() {
+    fn balanced_drawer_never_returns_previous_term() {
         let mut curr = EGraph::<Math, ()>::new(());
         let a = curr.add(sym("a"));
         let b = curr.add(sym("b"));
@@ -371,9 +371,9 @@ mod tests {
         curr.rebuild();
 
         let counts = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
-        let sampler = BalancedFrontierSampler::new(&counts, &curr, root);
-        let terms = sampler
-            .sample_size(root, 3, 3, [0, 0])
+        let drawer = BalancedFrontierDrawer::new(&counts, &curr, root);
+        let terms = drawer
+            .draw_size(root, 3, 3, [0, 0])
             .expect("non-empty frontier");
 
         for term in terms {
@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn balanced_sampler_refills_duplicates_up_to_target() {
+    fn balanced_drawer_refills_duplicates_up_to_target() {
         // The previous graph contains only (+ a b). After merging a, b, and c,
         // the root has eight novel size-3 combinations. With coverage penalties
         // disabled, this seed repeats at least one combination in the first
@@ -405,27 +405,27 @@ mod tests {
             profile_penalty: 0,
             child_size_penalty: 0,
         };
-        let sampler = BalancedFrontierSampler::with_config(&counts, &curr, root, config);
+        let drawer = BalancedFrontierDrawer::with_config(&counts, &curr, root, config);
         let seed = [17, 23];
 
         let mut rng = utils::combined_rng([3, seed[0], seed[1]]);
         let mut coverage = CoveragePolicy::new(config);
         let first_batch = (0..8)
-            .map(|_| sampler.construct(root, 3, &mut coverage, &mut rng))
+            .map(|_| drawer.construct(root, 3, &mut coverage, &mut rng))
             .collect::<HashSet<_>>();
         assert!(
             first_batch.len() < 8,
             "fixture must contain an initial duplicate"
         );
 
-        let terms = sampler
-            .sample_size(root, 3, 8, seed)
+        let terms = drawer
+            .draw_size(root, 3, 8, seed)
             .expect("eight frontier terms");
         assert_eq!(terms.len(), 8);
     }
 
     #[test]
-    fn balanced_sampler_fills_large_skewed_frontier() {
+    fn balanced_drawer_fills_large_skewed_frontier() {
         // Merging 22 leaves creates 22^2 - 1 novel combinations below the
         // existing binary root. A context-free, capacity-blind coverage score
         // synchronizes the two child choices and repeatedly visits only a
@@ -444,9 +444,9 @@ mod tests {
         curr.rebuild();
 
         let counts = NovelTermCount::<BigUint>::rooted_for_tests(3, &curr, &prev, root);
-        let sampler = BalancedFrontierSampler::new(&counts, &curr, root);
-        let terms = sampler
-            .sample_size(root, 3, 400, [31, 41])
+        let drawer = BalancedFrontierDrawer::new(&counts, &curr, root);
+        let terms = drawer
+            .draw_size(root, 3, 400, [31, 41])
             .expect("large frontier terms");
 
         assert_eq!(terms.len(), 400);

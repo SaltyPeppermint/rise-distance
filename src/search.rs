@@ -4,31 +4,31 @@
 //! point where the root e-class satisfies every goal. Two strategies are
 //! offered via [`SearchMode`]:
 //!
-//! - [`SearchMode::Cut`]: grow the e-graph to a chosen iteration, sample the
-//!   novel frontier there, then continue eqsat from those samples and verify.
+//! - [`SearchMode::Cut`]: grow the e-graph to a chosen iteration, construct
+//!   novel frontier candidates, then continue eqsat from them and verify.
 //! - [`SearchMode::Brute`]: grow one continuous e-graph and check the sketches
-//!   directly, no sampling or restart.
+//!   directly, with no candidate restart.
 
 use std::fmt::Display;
 
 use egg::{Language, RecExpr, Rewrite};
 
 use crate::Counter;
+use crate::candidates::{ExactCandidatePackage, ExactSelectionPolicy, SizeAllocation};
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
-use crate::sampling::{Distribution, PrecomputePackage, SampleStrategy};
 use crate::sketch::Sketch;
 use crate::{MyAnalysis, MyLanguage, OriginLang, id0, lower};
 
-/// Tunable knobs for the cut-and-sample search strategy.
+/// Tunable knobs for the cut-and-restart search strategy.
 #[derive(Copy, Clone, Debug, clap::Args)]
 pub struct CutArgs {
-    /// Iteration at which to cut the egraph, sample the novel frontier, and
-    /// continue eqsat from those samples.
+    /// Iteration at which to cut the egraph, construct novel candidates, and
+    /// continue eqsat from them.
     #[arg(long, default_value_t = 6)]
     pub cut_iters: usize,
 
-    /// Maximum frontier term size enumerated by [`PrecomputePackage`] when
-    /// sampling guide terms at the cut.
+    /// Maximum frontier term size enumerated by [`ExactCandidatePackage`] when
+    /// constructing guide candidates at the cut.
     #[arg(long, default_value_t = 30)]
     pub max_size: usize,
 
@@ -40,10 +40,10 @@ pub struct CutArgs {
     #[arg(long, default_value_t = 30.0)]
     pub max_time: f64,
 
-    /// Number of novel frontier terms to sample at the cut point as the guide
+    /// Number of novel frontier candidates to draw at the cut point as the guide
     /// set to continue eqsat from.
     #[arg(long, default_value_t = 100)]
-    pub sample_count: usize,
+    pub candidate_count: usize,
 }
 
 /// Knobs for the brute-force (no-cut) strategy.
@@ -65,7 +65,7 @@ pub struct BruteArgs {
 /// Which search strategy to run.
 #[derive(Copy, Clone, Debug)]
 pub enum SearchMode {
-    /// Cut at an iteration, sample the novel frontier, continue + verify.
+    /// Cut at an iteration, construct novel candidates, continue, and verify.
     Cut(CutArgs),
     /// Grow one continuous egraph and check the sketches directly.
     Brute(BruteArgs),
@@ -75,9 +75,9 @@ pub enum SearchMode {
 pub struct ReachResult<L: Language> {
     /// Whether all sketch goals were satisfied.
     pub reached: Option<RecExpr<L>>,
-    /// For [`SearchMode::Cut`], the novel frontier terms sampled at the cut and
+    /// For [`SearchMode::Cut`], the novel candidates drawn at the cut and
     /// used as guides. Empty for [`SearchMode::Brute`].
-    pub sampled: Vec<RecExpr<L>>,
+    pub candidates: Vec<RecExpr<L>>,
 
     /// Per-phase eqsat metadata. [`SearchMode::Cut`] yields up to two entries
     /// (the cut growth, then the verify run); [`SearchMode::Brute`] yields one
@@ -113,8 +113,8 @@ where
     }
 }
 
-/// Cut-and-sample strategy: grow to `cut_iters`, sample the novel frontier,
-/// then continue eqsat from those samples and verify the sketches.
+/// Cut-and-restart strategy: grow to `cut_iters`, construct novel candidates,
+/// then continue eqsat from them and verify the sketches.
 fn reach_cut<L, N, C>(
     search_name: &str,
     start: &RecExpr<L>,
@@ -139,7 +139,7 @@ where
         println!("{search_name}: run_eqsat produced no distinct cut state");
         return ReachResult {
             reached: None,
-            sampled: Vec::new(),
+            candidates: Vec::new(),
             eqsat_meta: Vec::new(),
         };
     };
@@ -151,41 +151,41 @@ where
     let cut_meta = EqsatMetadata::from_iterations(result.data());
     let cut_iters = result.iters();
 
-    let Some(pp) = PrecomputePackage::<C, _, _>::precompute(result, args.max_size) else {
-        println!("{search_name}: precompute returned None (empty frontier)");
+    let Some(package) = ExactCandidatePackage::<C, _, _>::build(result, args.max_size) else {
+        println!("{search_name}: exact candidate package found an empty frontier");
         return ReachResult {
             reached: None,
-            sampled: Vec::new(),
+            candidates: Vec::new(),
             eqsat_meta: vec![cut_meta],
         };
     };
-    // pp.log_root();
+    // package.log_root_counts();
 
-    let Some(sampled) = pp.sample_frontier_terms(
-        args.sample_count,
-        Distribution::Greedy,
-        SampleStrategy::Independent,
+    let Some(candidates) = package.draw_frontier_candidates(
+        args.candidate_count,
+        SizeAllocation::Greedy,
+        ExactSelectionPolicy::Independent,
         [args.cut_iters as u64, 0],
     ) else {
-        println!("{search_name}: sampling failed");
+        println!("{search_name}: candidate drawing failed");
         return ReachResult {
             reached: None,
-            sampled: Vec::new(),
+            candidates: Vec::new(),
             eqsat_meta: vec![cut_meta],
         };
     };
 
     println!(
-        "Sampled {} terms after {} iterations!",
-        sampled.len(),
+        "Drew {} candidates after {} iterations!",
+        candidates.len(),
         cut_iters
     );
-    for s in &sampled {
-        println!("{}", lower(s.to_owned()));
+    for candidate in &candidates {
+        println!("{}", lower(candidate.to_owned()));
     }
 
     let verify = eqsat::verify_reachability(
-        &sampled,
+        &candidates,
         &Goal::Sketches(sketch_goals),
         rules,
         &eqsat_config,
@@ -204,13 +204,13 @@ where
 
     ReachResult {
         reached,
-        sampled: sampled.into_iter().map(lower).collect(),
+        candidates: candidates.into_iter().map(lower).collect(),
         eqsat_meta,
     }
 }
 
 /// Brute-force (no-cut) strategy: grow one continuous egraph from `start` and
-/// check the sketches directly, no sampling or restart.
+/// check the sketches directly, with no candidate restart.
 fn reach_brute<L, N>(
     search_name: &str,
     start: &RecExpr<L>,
@@ -258,7 +258,7 @@ where
 
     ReachResult {
         reached,
-        sampled: Vec::new(),
+        candidates: Vec::new(),
         eqsat_meta,
     }
 }

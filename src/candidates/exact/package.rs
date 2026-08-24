@@ -2,22 +2,22 @@ use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
 
 use crate::Counter;
-use crate::eqsat::EqsatResult;
-use crate::sampling::count::{
+use crate::candidates::exact::count::{
     NodeMatches, NovelTermCount, count_terms_rooted, enumerate_matches_rooted,
     find_novel_root_sizes_rooted, prune_matches, root_budgets,
 };
-use crate::sampling::sampler::{
-    BalancedFrontierSampler, CountWeigher, IndependentFrontierSampler, NaiveWeigher, PlainSampler,
-    Sampler,
+use crate::candidates::exact::draw::{
+    BalancedFrontierDrawer, CountWeigher, ExactDrawer, IndependentFrontierDrawer, NaiveWeigher,
+    PlainDrawer,
 };
-use crate::sampling::{Distribution, SampleStrategy};
+use crate::candidates::{ExactSelectionPolicy, SizeAllocation};
+use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
-/// Final e-graph and counting tables for frontier sampling.
+/// Final e-graph and complete count tables for exact candidate construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
-pub struct PrecomputePackage<C, L, N>
+pub struct ExactCandidatePackage<C, L, N>
 where
     L: MyLanguage,
     N: MyAnalysis<L>,
@@ -30,7 +30,7 @@ where
     root: Id,
 }
 
-impl<C, L, N> PrecomputePackage<C, L, N>
+impl<C, L, N> ExactCandidatePackage<C, L, N>
 where
     L: MyLanguage,
     N: MyAnalysis<L>,
@@ -39,10 +39,10 @@ where
     /// Build counts through `max_size` relative to the previous boundary.
     /// Returns `None` for an empty frontier.
     #[must_use]
-    pub fn precompute(
+    pub fn build(
         result: EqsatResult<L, N>,
         max_size: usize,
-    ) -> Option<PrecomputePackage<C, L, N>> {
+    ) -> Option<ExactCandidatePackage<C, L, N>> {
         let curr = result.curr();
         let root = curr.find(result.root());
         let budgets = root_budgets(curr, root, max_size);
@@ -51,17 +51,17 @@ where
         let mut matches = enumerate_matches_rooted(curr, &prev, &budgets);
         drop(prev);
         prune_matches(curr, &mut matches, &budgets);
-        Self::build_rooted_package(result, max_size, matches, &budgets)
+        Self::from_rooted_matches(result, max_size, matches, &budgets)
     }
 
-    /// Finish [`precompute`](Self::precompute) from matches already restricted
+    /// Finish [`build`](Self::build) from matches already restricted
     /// to the supplied final root budgets.
-    fn build_rooted_package(
+    fn from_rooted_matches(
         result: EqsatResult<L, N>,
         max_size: usize,
         matches: NodeMatches,
-        budgets: &crate::sampling::count::RootBudgets,
-    ) -> Option<PrecomputePackage<C, L, N>> {
+        budgets: &crate::candidates::exact::count::RootBudgets,
+    ) -> Option<ExactCandidatePackage<C, L, N>> {
         let (egraph, root) = result.into_curr();
         let plain = count_terms_rooted(&egraph, budgets);
         let tc = NovelTermCount::from_rooted_matches(&egraph, plain, matches, budgets);
@@ -70,7 +70,7 @@ where
         let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
-        Some(PrecomputePackage {
+        Some(ExactCandidatePackage {
             egraph,
             tc,
             min_size,
@@ -79,7 +79,7 @@ where
         })
     }
 
-    /// Build a package ending at the `sizes`-th novel root size.
+    /// Build a package ending at the `novel_size_goal`-th novel root size.
     ///
     /// The exact scan stops at the cap `start_size + max_retries * retry_step`.
     /// See `docs/counting/novel_size_search.md`.
@@ -90,16 +90,16 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `sizes` is zero or writing to `log` fails.
-    pub fn backoff_precompute<W: std::fmt::Write>(
+    /// Panics if `novel_size_goal` is zero or writing to `log` fails.
+    pub fn build_through_novel_sizes<W: std::fmt::Write>(
         result: EqsatResult<L, N>,
         start_size: usize,
         max_retries: usize,
         retry_step: usize,
-        sizes: usize,
+        novel_size_goal: usize,
         log: &mut W,
     ) -> Result<(usize, Self), usize> {
-        assert!(sizes > 0, "sizes must be nonzero");
+        assert!(novel_size_goal > 0, "novel_size_goal must be nonzero");
 
         let cap = start_size + max_retries * retry_step;
 
@@ -111,21 +111,23 @@ where
 
         drop(prev);
 
-        let novel_sizes = find_novel_root_sizes_rooted(curr, root, &matches, sizes, &cap_budgets);
-        if novel_sizes.len() < sizes {
+        let novel_sizes =
+            find_novel_root_sizes_rooted(curr, root, &matches, novel_size_goal, &cap_budgets);
+        if novel_sizes.len() < novel_size_goal {
             writeln!(
                 log,
-                "found {found} of {sizes} novel sizes (max_size={cap})",
+                "found {found} of {novel_size_goal} novel sizes (max_size={cap})",
                 found = novel_sizes.len()
             )
             .unwrap();
             return Err(cap);
         }
-        let max_size = novel_sizes[sizes - 1];
+        let max_size = novel_sizes[novel_size_goal - 1];
         let final_budgets = root_budgets(curr, root, max_size);
         prune_matches(curr, &mut matches, &final_budgets);
 
-        let Some(pp) = Self::build_rooted_package(result, max_size, matches, &final_budgets) else {
+        let Some(package) = Self::from_rooted_matches(result, max_size, matches, &final_budgets)
+        else {
             writeln!(
                 log,
                 "package construction found no novel terms (max_size={max_size})"
@@ -133,16 +135,17 @@ where
             .unwrap();
             return Err(cap);
         };
-        if pp.root_histogram().len() < sizes {
+        if package.root_histogram().len() < novel_size_goal {
             writeln!(
                 log,
-                "package construction found fewer than {sizes} novel sizes (max_size={max_size})"
+                "package construction found fewer than {novel_size_goal} novel sizes \
+                 (max_size={max_size})"
             )
             .unwrap();
             return Err(cap);
         }
 
-        Ok((max_size, pp))
+        Ok((max_size, package))
     }
 
     /// Log the stats about the root into `out`.
@@ -150,7 +153,7 @@ where
     /// # Panics
     ///
     /// Panics if there are no terms in the root, or if writing to `out` fails.
-    pub fn log_root<W: std::fmt::Write>(&self, out: &mut W) {
+    pub fn log_root_counts<W: std::fmt::Write>(&self, out: &mut W) {
         let histogram = self
             .tc
             .data()
@@ -167,77 +170,74 @@ where
         }
     }
 
-    /// Sample root terms absent from the previous boundary.
+    /// Draw exact root candidates absent from the previous boundary.
     #[must_use]
-    pub fn sample_frontier_terms(
+    pub fn draw_frontier_candidates(
         &self,
         count: usize,
-        distribution: Distribution,
-        sample_strategy: SampleStrategy,
+        allocation: SizeAllocation,
+        selection_policy: ExactSelectionPolicy,
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let histogram = self.tc.data().get(&self.root)?;
 
-        let samples_per_size =
-            distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
+        let requests = allocation.allocate(histogram, self.min_size, self.max_size, count);
 
-        match sample_strategy {
-            SampleStrategy::Naive => {
-                IndependentFrontierSampler::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
-                    .sample_batch_root(&samples_per_size, seed)
+        match selection_policy {
+            ExactSelectionPolicy::Naive => {
+                IndependentFrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
+                    .draw_root_batch(&requests, seed)
             }
-            SampleStrategy::Independent => {
-                IndependentFrontierSampler::new(&self.tc, &self.egraph, self.root, CountWeigher)
-                    .sample_batch_root(&samples_per_size, seed)
+            ExactSelectionPolicy::Independent => {
+                IndependentFrontierDrawer::new(&self.tc, &self.egraph, self.root, CountWeigher)
+                    .draw_root_batch(&requests, seed)
             }
-            SampleStrategy::Balanced => {
-                BalancedFrontierSampler::new(&self.tc, &self.egraph, self.root)
-                    .sample_batch_root(&samples_per_size, seed)
+            ExactSelectionPolicy::Balanced => {
+                BalancedFrontierDrawer::new(&self.tc, &self.egraph, self.root)
+                    .draw_root_batch(&requests, seed)
             }
         }
     }
 
-    /// Sample frontier terms with batch-local coverage balancing per size.
+    /// Draw frontier candidates with batch-local coverage balancing per size.
     #[must_use]
-    pub fn sample_balanced_frontier_terms(
+    pub fn draw_balanced_frontier_candidates(
         &self,
         count: usize,
-        distribution: Distribution,
+        allocation: SizeAllocation,
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let histogram = self.tc.data().get(&self.root)?;
-        let samples_per_size =
-            distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
+        let requests = allocation.allocate(histogram, self.min_size, self.max_size, count);
 
-        BalancedFrontierSampler::new(&self.tc, &self.egraph, self.root)
-            .sample_batch_root(&samples_per_size, seed)
+        BalancedFrontierDrawer::new(&self.tc, &self.egraph, self.root)
+            .draw_root_batch(&requests, seed)
     }
 
-    /// [`Self::sample_balanced_frontier_terms`] with explicit coverage
+    /// [`Self::draw_balanced_frontier_candidates`] with explicit coverage
     /// penalties.
     #[must_use]
-    pub fn sample_balanced_frontier_terms_with_config(
+    pub fn draw_balanced_frontier_candidates_with_config(
         &self,
         count: usize,
-        distribution: Distribution,
+        allocation: SizeAllocation,
         seed: [u64; 2],
-        config: crate::sampling::BalanceConfig,
+        config: crate::candidates::BalanceConfig,
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let histogram = self.tc.data().get(&self.root)?;
-        let samples_per_size =
-            distribution.samples_per_size(histogram, self.min_size, self.max_size, count);
+        let requests = allocation.allocate(histogram, self.min_size, self.max_size, count);
 
-        BalancedFrontierSampler::with_config(&self.tc, &self.egraph, self.root, config)
-            .sample_batch_root(&samples_per_size, seed)
+        BalancedFrontierDrawer::with_config(&self.tc, &self.egraph, self.root, config)
+            .draw_root_batch(&requests, seed)
     }
 
     #[must_use]
-    pub fn smallest(&self, id: Id, novel: bool) -> RecExpr<OriginLang<L>> {
+    pub fn smallest_candidate(&self, id: Id, novel: bool) -> RecExpr<OriginLang<L>> {
         if novel {
-            IndependentFrontierSampler::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
+            IndependentFrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
                 .smallest(id)
         } else {
-            PlainSampler::new(self.tc.plain(), &self.egraph, self.root, NaiveWeigher).smallest(id)
+            PlainDrawer::new(self.tc.plain(), &self.egraph, self.root, NaiveWeigher).smallest(id)
         }
     }
 
@@ -256,7 +256,7 @@ where
         self.tc
             .data()
             .get(&self.root)
-            .expect("root histogram present iff precompute returned Some")
+            .expect("root histogram present iff build returned Some")
     }
 }
 
@@ -270,7 +270,7 @@ mod tests {
     use crate::utils::sym;
 
     #[test]
-    fn backoff_precompute_runs_exact_analysis_at_kth_novel_size() {
+    fn build_through_novel_sizes_runs_exact_analysis_at_kth_novel_size() {
         // Unioning `a` with the root of (+ a b) creates a cycle: the root
         // class extracts a, (+ a b), (+ (+ a b) b), ... (sizes 1, 3, 5, ...).
         // `a` and (+ a b) already exist in prev, so the novel sizes are
@@ -290,25 +290,28 @@ mod tests {
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
         let mut log = String::new();
-        let (used_max_size, pp) =
-            PrecomputePackage::<BigUint, _, _>::backoff_precompute(result, 3, 10, 2, 3, &mut log)
-                .expect("backoff_precompute should succeed");
+        let (used_max_size, package) =
+            ExactCandidatePackage::<BigUint, _, _>::build_through_novel_sizes(
+                result, 3, 10, 2, 3, &mut log,
+            )
+            .expect("build_through_novel_sizes should succeed");
 
         assert_eq!(used_max_size, 9, "log:\n{log}");
-        assert_eq!(pp.max_size, 9);
-        assert_eq!(pp.min_size, 5);
-        let mut keys = pp.root_histogram().keys().copied().collect::<Vec<_>>();
+        assert_eq!(package.max_size, 9);
+        assert_eq!(package.min_size, 5);
+        let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
         keys.sort_unstable();
         assert_eq!(keys, vec![5, 7, 9]);
         assert!(
-            pp.root_histogram()
+            package
+                .root_histogram()
                 .values()
                 .all(|c| *c == BigUint::from(1u32))
         );
     }
 
     #[test]
-    fn balanced_sample_strategy_covers_union_profiles() {
+    fn balanced_selection_policy_covers_union_profiles() {
         let mut curr = EGraph::<Math, ()>::new(());
         curr.enable_union_event_recording();
         let a = curr.add(sym("a"));
@@ -323,9 +326,14 @@ mod tests {
         let result =
             EqsatResult::new_for_tests(curr, root, prev_raw_node_count, prev_union_event_count);
         let package =
-            PrecomputePackage::<BigUint, _, _>::precompute(result, 3).expect("frontier package");
+            ExactCandidatePackage::<BigUint, _, _>::build(result, 3).expect("frontier package");
         let terms = package
-            .sample_frontier_terms(3, Distribution::Greedy, SampleStrategy::Balanced, [5, 8])
+            .draw_frontier_candidates(
+                3,
+                SizeAllocation::Greedy,
+                ExactSelectionPolicy::Balanced,
+                [5, 8],
+            )
             .expect("balanced frontier terms");
         let lowered = terms
             .into_iter()

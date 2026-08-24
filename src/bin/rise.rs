@@ -7,8 +7,8 @@ use rise_distance::search::{BruteArgs, CutArgs, SearchMode};
     about = "Sketch-based tiling/reorder searches via the guide pipeline",
     after_help = "\
 Examples:
-  # Cut at iteration 8 and sample 200 terms:
-  rise tile3d tile cut --cut-iters 8 --sample-count 200
+  # Cut at iteration 8 and construct 200 candidates:
+  rise tile3d tile cut --cut-iters 8 --candidate-count 200
   # Brute-force (no cut), up to 100 iterations:
   rise tile3d tile brute --max-iters 100
 "
@@ -32,7 +32,7 @@ enum Experiment {
 
 #[derive(Subcommand)]
 enum Mode {
-    /// Cut at an iteration, sample the novel frontier, continue + verify.
+    /// Cut at an iteration, construct novel frontier candidates, continue, and verify.
     Cut(CutArgs),
     /// Grow one continuous egraph and check the sketches directly.
     Brute(BruteArgs),
@@ -56,11 +56,11 @@ fn main() {
     println!("\n--- Results ---");
     match result.reached {
         Some(goal) => println!(
-            "REACHED ({} sampled guide terms)\n{}",
-            result.sampled.len(),
+            "REACHED ({} guide candidates)\n{}",
+            result.candidates.len(),
             goal,
         ),
-        None => println!("NOT REACHED ({} sampled guide terms)", result.sampled.len()),
+        None => println!("NOT REACHED ({} guide candidates)", result.candidates.len()),
     }
     for (i, m) in result.eqsat_meta.iter().enumerate() {
         println!(

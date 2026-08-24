@@ -4,14 +4,14 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-// TODO: reenable zs_min_distance sampler
+// TODO: reenable zs_min_distance drawer
 
 use crate::Counter;
-use crate::sampling::count::CountData;
-use crate::sampling::sampler::{Sampler, Weigher};
+use crate::candidates::exact::count::CountData;
+use crate::candidates::exact::draw::{ExactDrawer, Weigher};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
-pub struct PlainSampler<'a, 'b, C, L, N, W>
+pub struct PlainDrawer<'a, 'b, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -24,7 +24,7 @@ where
     weigher: W,
 }
 
-impl<'a, 'b, C, L, N, W> PlainSampler<'a, 'b, C, L, N, W>
+impl<'a, 'b, C, L, N, W> PlainDrawer<'a, 'b, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -47,7 +47,7 @@ where
     }
 }
 
-impl<C, L, N, W> Sampler<C, L, N> for PlainSampler<'_, '_, C, L, N, W>
+impl<C, L, N, W> ExactDrawer<C, L, N> for PlainDrawer<'_, '_, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -66,7 +66,7 @@ where
         self.term_count.data.get(&id)
     }
 
-    fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
+    fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
         let canon_id = self.graph.find(id);
         let eclass = &self.graph[canon_id];
         let child_budget = size - 1;
@@ -106,7 +106,7 @@ where
                 let dist = WeightedIndex::new(candidates.iter().map(|(_, w)| w)).unwrap();
                 let chosen_size = candidates[dist.sample(rng)].0;
                 remaining -= chosen_size;
-                self.sample(c_id, chosen_size, rng)
+                self.draw(c_id, chosen_size, rng)
             })
             .collect::<Vec<_>>();
 
@@ -120,10 +120,10 @@ mod tests {
     use num::BigUint;
 
     use super::*;
+    use crate::candidates::exact::count::{CountData, count_terms_rooted, root_budgets};
+    use crate::candidates::exact::draw::{CountWeigher, NaiveWeigher};
     use crate::langs::math::Math;
     use crate::lower;
-    use crate::sampling::count::{CountData, count_terms_rooted, root_budgets};
-    use crate::sampling::sampler::{CountWeigher, NaiveWeigher};
     use crate::utils::combined_rng;
     use crate::utils::sym;
 
@@ -133,21 +133,21 @@ mod tests {
     }
 
     #[test]
-    fn naive_sample_single_leaf() {
+    fn naive_draw_single_leaf() {
         let mut graph = EGraph::<Math, ()>::new(());
         let root = graph.add(sym("a"));
         graph.rebuild();
 
         let tc = rooted_counts(10, &graph, root);
-        let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
+        let drawer = PlainDrawer::new(&tc, &graph, root, NaiveWeigher);
 
         let mut rng = combined_rng([42]);
-        let term = sampler.sample(root, 1, &mut rng);
+        let term = drawer.draw(root, 1, &mut rng);
         assert_eq!(lower(term).to_string(), "a");
     }
 
     #[test]
-    fn naive_sample_picks_valid_choice() {
+    fn naive_draw_picks_valid_choice() {
         let mut graph = EGraph::<Math, ()>::new(());
         let a = graph.add(sym("a"));
         let b = graph.add(sym("b"));
@@ -155,11 +155,11 @@ mod tests {
         graph.rebuild();
 
         let tc = rooted_counts(10, &graph, a);
-        let sampler = PlainSampler::new(&tc, &graph, a, NaiveWeigher);
+        let drawer = PlainDrawer::new(&tc, &graph, a, NaiveWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
-            let term = lower(sampler.sample(a, 1, &mut rng)).to_string();
+            let term = lower(drawer.draw(a, 1, &mut rng)).to_string();
             assert!(term == "a" || term == "b", "got unexpected: {term}");
         }
     }
@@ -172,16 +172,16 @@ mod tests {
         graph.rebuild();
 
         let tc = rooted_counts(10, &graph, root);
-        let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
+        let drawer = PlainDrawer::new(&tc, &graph, root, NaiveWeigher);
 
-        assert!(!sampler.possible_size(root, 1, 0));
-        assert!(!sampler.possible_size(root, 3, 0));
-        assert!(sampler.possible_size(root, 2, 0));
-        assert!(!sampler.possible_size(root, 2, 1));
+        assert!(!drawer.possible_size(root, 1, 0));
+        assert!(!drawer.possible_size(root, 3, 0));
+        assert!(drawer.possible_size(root, 2, 0));
+        assert!(!drawer.possible_size(root, 2, 1));
     }
 
     #[test]
-    fn naive_sample_batch_finds_all_unique() {
+    fn naive_draw_batch_finds_all_unique() {
         let mut graph = EGraph::<Math, ()>::new(());
         let a1 = graph.add(sym("a1"));
         let a2 = graph.add(sym("a2"));
@@ -195,28 +195,28 @@ mod tests {
         graph.rebuild();
 
         let tc = rooted_counts(10, &graph, root);
-        let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
+        let drawer = PlainDrawer::new(&tc, &graph, root, NaiveWeigher);
 
-        let result = sampler.sample_batch_root(&[(3, 5)], [1, 2]).unwrap();
+        let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
         assert!(result.len() <= 6);
     }
 
     #[test]
-    fn count_sample_single_leaf() {
+    fn count_weighted_draw_single_leaf() {
         let mut graph = EGraph::<Math, ()>::new(());
         let root = graph.add(sym("a"));
         graph.rebuild();
 
         let tc = rooted_counts(10, &graph, root);
-        let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
+        let drawer = PlainDrawer::new(&tc, &graph, root, CountWeigher);
 
         let mut rng = combined_rng([42]);
-        let term = sampler.sample(root, 1, &mut rng);
+        let term = drawer.draw(root, 1, &mut rng);
         assert_eq!(lower(term).to_string(), "a");
     }
 
     #[test]
-    fn count_sample_picks_valid_choice() {
+    fn count_weighted_draw_picks_valid_choice() {
         let mut graph = EGraph::<Math, ()>::new(());
         let a = graph.add(sym("a"));
         let b = graph.add(sym("b"));
@@ -224,17 +224,17 @@ mod tests {
         graph.rebuild();
 
         let tc = rooted_counts(10, &graph, a);
-        let sampler = PlainSampler::new(&tc, &graph, a, CountWeigher);
+        let drawer = PlainDrawer::new(&tc, &graph, a, CountWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
-            let term = lower(sampler.sample(a, 1, &mut rng)).to_string();
+            let term = lower(drawer.draw(a, 1, &mut rng)).to_string();
             assert!(term == "a" || term == "b", "got unexpected: {term}");
         }
     }
 
     #[test]
-    fn count_sample_batch_finds_unique() {
+    fn count_draw_batch_finds_unique() {
         let mut graph = EGraph::<Math, ()>::new(());
         let a1 = graph.add(sym("a1"));
         let a2 = graph.add(sym("a2"));
@@ -248,15 +248,15 @@ mod tests {
         graph.rebuild();
 
         let tc = rooted_counts(10, &graph, root);
-        let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
+        let drawer = PlainDrawer::new(&tc, &graph, root, CountWeigher);
 
-        let result = sampler.sample_batch_root(&[(3, 5)], [1, 2]).unwrap();
+        let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
 
         assert!(result.len() <= 6);
     }
 
     #[test]
-    fn sample_batch_returns_partial_when_size_undersupplied() {
+    fn draw_batch_returns_partial_when_size_undersupplied() {
         // Root Add([a-class, b-class]) has 2 * 3 = 6 distinct terms of size 3.
         // Asking for far more than that must return the 6 that exist rather
         // than collapsing the whole batch to None (the empty-pool bug).
@@ -273,10 +273,10 @@ mod tests {
         graph.rebuild();
 
         let tc = rooted_counts(10, &graph, root);
-        let sampler = PlainSampler::new(&tc, &graph, root, CountWeigher);
+        let drawer = PlainDrawer::new(&tc, &graph, root, CountWeigher);
 
-        let result = sampler
-            .sample_batch_root(&[(3, 1000)], [1, 2])
+        let result = drawer
+            .draw_root_batch(&[(3, 1000)], [1, 2])
             .expect("undersupplied size should still yield its available terms");
         assert_eq!(
             result.len(),
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn sample_batch_none_only_when_all_sizes_empty() {
+    fn draw_batch_none_only_when_all_sizes_empty() {
         // Root Ln(a) has exactly one term of size 2 and nothing at size 5.
         // A batch mixing a satisfiable size with an empty one keeps the
         // satisfiable one; a batch of only empty sizes returns None.
@@ -296,15 +296,15 @@ mod tests {
         graph.rebuild();
 
         let tc = rooted_counts(10, &graph, root);
-        let sampler = PlainSampler::new(&tc, &graph, root, NaiveWeigher);
+        let drawer = PlainDrawer::new(&tc, &graph, root, NaiveWeigher);
 
-        let mixed = sampler
-            .sample_batch_root(&[(2, 5), (5, 5)], [1, 2])
+        let mixed = drawer
+            .draw_root_batch(&[(2, 5), (5, 5)], [1, 2])
             .expect("a non-empty size keeps the batch alive");
         assert_eq!(mixed.len(), 1);
 
         assert!(
-            sampler.sample_batch_root(&[(5, 5)], [1, 2]).is_none(),
+            drawer.draw_root_batch(&[(5, 5)], [1, 2]).is_none(),
             "a wholly empty frontier still returns None"
         );
     }

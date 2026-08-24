@@ -17,11 +17,11 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 
+use rise_distance::candidates::{ExactCandidatePackage, ExactSelectionPolicy, SizeAllocation};
 use rise_distance::cli::GoalGenMetadata;
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::lower;
-use rise_distance::sampling::{Distribution, PrecomputePackage, SampleStrategy};
 use rise_distance::{MyAnalysis, MyLanguage, eqsat};
 
 #[derive(Parser)]
@@ -48,31 +48,30 @@ struct Args {
     #[command(flatten)]
     eqsat: EqsatConfig,
 
-    /// Number of goal terms to sample per seed.
+    /// Number of goal candidates to draw per seed.
     #[arg(long, default_value_t = 10)]
     goals: usize,
 
-    /// How to distribute the sample budget across sizes.
-    #[arg(long, default_value_t = Distribution::Greedy)]
-    size_distribution: Distribution,
+    /// How to allocate the goal-candidate budget across sizes.
+    #[arg(long, default_value_t = SizeAllocation::Greedy)]
+    size_allocation: SizeAllocation,
 
-    /// How to sample the GOAL terms.
-    #[arg(long, default_value_t = SampleStrategy::Independent)]
-    goal_sample_strategy: SampleStrategy,
+    /// Exact policy used to draw goal candidates.
+    #[arg(long, default_value_t = ExactSelectionPolicy::Independent)]
+    exact_selection_policy: ExactSelectionPolicy,
 
-    /// How much to grow `max_size` on each precompute retry.
+    /// How much to grow `max_size` on each exact-size-search retry.
     #[arg(long, default_value_t = 5)]
     retry_step: usize,
 
-    /// How many times to retry precompute with a larger `max_size` before
+    /// How many times to retry exact size discovery with a larger `max_size` before
     /// giving up on a seed.
     #[arg(long, default_value_t = 20)]
     max_retries: usize,
 
-    /// How many novel sizes the precompute must find (the size scan stops at
-    /// the `sample_sizes`-th one).
+    /// How many novel sizes exact construction must find.
     #[arg(long, default_value_t = 5)]
-    sample_sizes: usize,
+    novel_size_goal: usize,
 }
 
 fn main() {
@@ -129,8 +128,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
         return Err("big eqsat failed".to_owned());
     };
 
-    // Absolute process live heap, sampled before precompute below allocates
-    // further.
+    // Absolute process live heap before exact candidate construction.
     let base_memory = result.allocated();
     let base_peak_live_heap = result.peak_allocated();
 
@@ -148,43 +146,45 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     let now = Instant::now();
 
     let start_size = AstSize.cost_rec(seed_expr);
-    let (used_max_size, pp) = PrecomputePackage::<BigUint, L, _>::backoff_precompute(
-        result,
-        start_size,
-        args.max_retries,
-        args.retry_step,
-        args.sample_sizes,
-        log,
-    )
-    .map_err(|tried_max_size| {
-        format!(
-            "goal precompute returned None after {} retries (goal_iters={}, max_size={})",
-            args.max_retries, goal.iters, tried_max_size
+    let (used_max_size, package) =
+        ExactCandidatePackage::<BigUint, L, _>::build_through_novel_sizes(
+            result,
+            start_size,
+            args.max_retries,
+            args.retry_step,
+            args.novel_size_goal,
+            log,
         )
-    })?;
+        .map_err(|tried_max_size| {
+            format!(
+                "exact goal-candidate construction found too few novel sizes after {} retries \
+             (goal_iters={}, max_size={})",
+                args.max_retries, goal.iters, tried_max_size
+            )
+        })?;
     writeln!(
         log,
-        "Precompute built in {:.2}s",
+        "Exact candidate package built in {:.2}s",
         now.elapsed().as_secs_f64()
     )
     .unwrap();
-    pp.log_root(log);
+    package.log_root_counts(log);
 
-    let goals = pp
-        .sample_frontier_terms(
+    let goals = package
+        .draw_frontier_candidates(
             args.goals,
-            args.size_distribution,
-            args.goal_sample_strategy,
+            args.size_allocation,
+            args.exact_selection_policy,
             [0, 0],
         )
-        .ok_or_else(|| "sample_frontier failed".to_owned())?;
+        .ok_or_else(|| "exact frontier candidate drawing failed".to_owned())?;
 
     let goal_strings = goals
         .iter()
         .map(|g| lower(g.clone()).to_string())
         .collect::<Vec<_>>();
 
-    let frontier_histogram = pp
+    let frontier_histogram = package
         .root_histogram()
         .iter()
         .map(|(s, c)| (s.to_string(), c.clone()))

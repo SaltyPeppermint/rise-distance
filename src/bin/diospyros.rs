@@ -4,13 +4,13 @@ use clap::{Parser, Subcommand};
 use egg::{Extractor, RecExpr};
 
 use num::BigUint;
+use rise_distance::candidates::{ExactCandidatePackage, ExactSelectionPolicy, SizeAllocation};
 use rise_distance::eqsat::{EqsatConfig, EqsatMetadata, EqsatResult};
 use rise_distance::langs::diospyros::VecLang;
 use rise_distance::langs::diospyros::cost::VecCostFn;
 use rise_distance::langs::diospyros::rewriteconcats::list_to_concats;
 use rise_distance::langs::diospyros::rules::{filter_applicable_rules, rules};
 use rise_distance::langs::diospyros::stringconversion::convert_string;
-use rise_distance::sampling::{Distribution, PrecomputePackage, SampleStrategy};
 use rise_distance::{eqsat, lower};
 
 #[derive(Parser)]
@@ -22,8 +22,8 @@ Examples:
   diospyros --input data/diospyros/mat_mul_2x2_2x2.sexp brute --timeout 180
   # Run all benchmarks in brute mode:
   diospyros --all brute --timeout 120
-  # Cut after 10 iterations, sample 50 frontier terms, continue from each:
-  diospyros --input data/diospyros/conv_2d_3x3_3x3.sexp cut --cut-iters 10 --sample-count 50
+  # Cut after 10 iterations, draw 50 frontier candidates, continue from each:
+  diospyros --input data/diospyros/conv_2d_3x3_3x3.sexp cut --cut-iters 10 --candidate-count 50
 "
 )]
 struct Args {
@@ -51,7 +51,7 @@ struct Args {
 enum Mode {
     /// Grow one continuous egraph and extract the cheapest term.
     Brute(BruteArgs),
-    /// Grow the egraph to a cut point, sample novel frontier terms, restart
+    /// Grow the egraph to a cut point, construct novel frontier candidates, restart
     /// eqsat from each, and keep the best cost found across all restarts.
     Cut(CutArgs),
 }
@@ -73,7 +73,7 @@ struct BruteArgs {
 
 #[derive(clap::Args, Clone, Debug)]
 struct CutArgs {
-    /// Stop the first phase after this many iterations and sample the frontier.
+    /// Stop the first phase after this many iterations and construct candidates.
     #[arg(long, default_value_t = 10)]
     cut_iters: usize,
 
@@ -89,9 +89,9 @@ struct CutArgs {
     #[arg(long, default_value_t = 10_000)]
     verify_iters: usize,
 
-    /// Number of novel frontier terms to sample at the cut point.
+    /// Number of novel frontier candidates to draw at the cut point.
     #[arg(long, default_value_t = 50)]
-    sample_count: usize,
+    candidate_count: usize,
 
     /// Maximum term size considered when enumerating frontier terms.
     #[arg(long, default_value_t = 30)]
@@ -227,7 +227,7 @@ fn run_cut(
     let mut rule_set = rules(no_ac, no_vec);
     filter_applicable_rules(&mut rule_set, prog);
 
-    // Phase 1: grow to the cut point, then sample novel frontier terms.
+    // Phase 1: grow to the cut point, then construct novel frontier candidates.
     let cut_cfg = config(args.cut_iters, args.max_nodes, args.timeout);
     let Some(cut_result) = eqsat::run_eqsat::<VecLang, (), _>(prog, rule_set.iter(), &cut_cfg)
     else {
@@ -241,40 +241,41 @@ fn run_cut(
     let cut_meta = EqsatMetadata::from_iterations(cut_result.data());
     let cut_iters = cut_result.iters();
 
-    let Some(pp) = PrecomputePackage::<BigUint, VecLang, ()>::precompute(cut_result, args.max_size)
+    let Some(package) =
+        ExactCandidatePackage::<BigUint, VecLang, ()>::build(cut_result, args.max_size)
     else {
-        warn("Precompute returned None (empty frontier)");
+        warn("Exact candidate package found an empty frontier");
         return None;
     };
 
-    let Some(sampled) = pp.sample_frontier_terms(
-        args.sample_count,
-        Distribution::Greedy,
-        SampleStrategy::Independent,
+    let Some(candidates) = package.draw_frontier_candidates(
+        args.candidate_count,
+        SizeAllocation::Greedy,
+        ExactSelectionPolicy::Independent,
         [args.cut_iters as u64, 0],
     ) else {
-        warn("Sampling failed");
+        warn("Candidate drawing failed");
         return None;
     };
 
     println!(
-        "Cut: sampled {} frontier terms after {} iters",
-        sampled.len(),
+        "Cut: drew {} frontier candidates after {} iters",
+        candidates.len(),
         cut_iters
     );
 
-    // Phase 2: run eqsat from each sampled term and keep the best cost.
+    // Phase 2: run eqsat from each candidate and keep the best cost.
     let verify_cfg = config(args.verify_iters, args.max_nodes, args.timeout);
-    let runs = sampled.iter().enumerate().filter_map(|(i, sample)| {
-        let start = lower(sample.clone());
+    let runs = candidates.iter().enumerate().filter_map(|(i, candidate)| {
+        let start = lower(candidate.clone());
         eqsat::run_eqsat::<VecLang, (), _>(&start, &rule_set, &verify_cfg)
             .or_else(|| {
-                warn(&format!("Sample {i}: run_eqsat returned None, skipping"));
+                warn(&format!("Candidate {i}: run_eqsat returned None, skipping"));
                 None
             })
             .map(|result| {
                 println!(
-                    "Sample {i}: stopped with stop reason: {:?}",
+                    "Candidate {i}: stopped with stop reason: {:?}",
                     result.stop_reason()
                 );
                 extract(result)
@@ -291,7 +292,7 @@ fn run_cut(
     }
 
     let Some((cost, best)) = best else {
-        warn("Cut: every sampled restart failed");
+        warn("Cut: every candidate restart failed");
         return None;
     };
     Some(RunResult { cost, best, meta })

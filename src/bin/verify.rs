@@ -2,7 +2,7 @@
 //! guides, saturate, and report goal reachability, stopping at the first reach.
 //!
 //! Stateless wrapper over [`verify_reachability`] — no guide egraph replay or
-//! precompute. `guided_search.py` spawns this once per pair, passing the pair's
+//! candidate construction. `guided_search.py` spawns this once per pair, passing the pair's
 //! attempt subsets (serialized [`GuideExpr`] node lists) as a JSON array of
 //! arrays on stdin and the goal on argv. Prints a JSON array of `LegResult`, one
 //! per subset run — early-stopped, so possibly shorter than the input.

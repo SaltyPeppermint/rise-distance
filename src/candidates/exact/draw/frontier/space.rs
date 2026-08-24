@@ -1,8 +1,8 @@
-//! Frontier-constrained derivation space shared by frontier sampling policies.
+//! Frontier-constrained derivation space shared by frontier selection policies.
 //!
-//! This module owns the correctness-critical part of frontier sampling: the
+//! This module owns the correctness-critical part of frontier candidate construction: the
 //! state threaded through the derivation and the enumeration of feasible
-//! productions. Sampling policies only choose between productions returned by
+//! productions. Selection policies only choose between productions returned by
 //! [`FrontierSpace`], so they cannot accidentally construct a term that
 //! violates the requested frontier state.
 
@@ -13,7 +13,7 @@ use hashbrown::HashMap;
 use rand_chacha::ChaCha12Rng;
 
 use crate::Counter;
-use crate::sampling::count::{NodeMatch, NovelTermCount, convolve, suffix_convolutions};
+use crate::candidates::exact::count::{NodeMatch, NovelTermCount, convolve, suffix_convolutions};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// Whether a current-graph extraction is outside the previous graph or agrees
@@ -74,7 +74,7 @@ pub(crate) trait FrontierPolicy<C: Counter> {
     ) -> usize;
 }
 
-/// The constrained derivation space common to all frontier samplers.
+/// The constrained derivation space common to all frontier drawers.
 ///
 /// `OutsidePrev` corresponds to the old `Novel` recursion mode and
 /// `InsidePrev(pc)` to the old `AgreeWith(pc)` mode. Counts and match data come

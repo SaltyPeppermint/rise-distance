@@ -95,7 +95,7 @@ pub(crate) struct CountData<C> {
     pub(crate) suffix: HashMap<Id, Vec<Vec<HashMap<usize, C>>>>,
 }
 
-/// Count distinct terms within precomputed root budgets.
+/// Count distinct terms within pre-established root budgets.
 pub(crate) fn count_terms_rooted<C, L, N>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,

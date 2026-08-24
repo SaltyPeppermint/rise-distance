@@ -1,11 +1,11 @@
-//! Independent weighted frontier-term sampling.
+//! Independent weighted frontier-candidate drawing.
 //!
-//! [`IndependentFrontierSampler`] preserves the sampling behavior of the
-//! original `NovelSampler`: every requested term is drawn independently, and a
+//! [`IndependentFrontierDrawer`] preserves the draw behavior of the
+//! former frontier drawer: every requested term is drawn independently, and a
 //! [`Weigher`] controls whether feasible derivation choices are balanced
 //! locally or weighted by their term counts. The frontier constraint itself
 //! lives in [`super::space::FrontierSpace`] and is shared with other
-//! frontier sampling policies.
+//! frontier selection policies.
 
 use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
@@ -18,18 +18,18 @@ use super::space::{
     FrontierState,
 };
 use crate::Counter;
-use crate::sampling::count::NovelTermCount;
-use crate::sampling::sampler::{Sampler, Weigher};
+use crate::candidates::exact::count::NovelTermCount;
+use crate::candidates::exact::draw::{ExactDrawer, Weigher};
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
 /// Draws each frontier term independently using the supplied local weighting
 /// policy.
 ///
-/// `CountWeigher` samples proportionally to the number of complete terms below
+/// `CountWeigher` draws proportionally to the number of complete terms below
 /// each derivation choice. `NaiveWeigher` gives every feasible local choice
 /// equal weight. Neither policy coordinates choices across a batch; use
-/// `BalancedFrontierSampler` when coverage across sampled terms matters.
-pub struct IndependentFrontierSampler<'a, 'g, C, L, N, W>
+/// `BalancedFrontierDrawer` when coverage across drawn candidates matters.
+pub struct IndependentFrontierDrawer<'a, 'g, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -41,7 +41,7 @@ where
     weigher: W,
 }
 
-impl<'a, 'g, C, L, N, W> IndependentFrontierSampler<'a, 'g, C, L, N, W>
+impl<'a, 'g, C, L, N, W> IndependentFrontierDrawer<'a, 'g, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -102,7 +102,7 @@ where
     }
 }
 
-impl<C, L, N, W> Sampler<C, L, N> for IndependentFrontierSampler<'_, '_, C, L, N, W>
+impl<C, L, N, W> ExactDrawer<C, L, N> for IndependentFrontierDrawer<'_, '_, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -121,7 +121,7 @@ where
         self.space.counts().data().get(&self.find(id))
     }
 
-    fn sample(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
+    fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
         let mut policy = IndependentPolicy {
             weigher: &self.weigher,
         };
@@ -136,13 +136,13 @@ mod tests {
     use num::BigUint;
 
     use super::*;
+    use crate::candidates::exact::draw::CountWeigher;
     use crate::langs::math::Math;
     use crate::lower;
-    use crate::sampling::sampler::CountWeigher;
     use crate::utils::{combined_rng, sym};
 
     #[test]
-    fn independent_frontier_sample_picks_only_frontier_term() {
+    fn independent_frontier_draw_picks_only_frontier_term() {
         // prev: a, b, ln(a) (no union).
         // curr: same plus union(a, b). Now ln(b) is extractable from curr's
         // root but not from any prev class.
@@ -158,17 +158,17 @@ mod tests {
         curr.rebuild();
 
         let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
-        let sampler = IndependentFrontierSampler::new(&novel, &curr, root, CountWeigher);
+        let drawer = IndependentFrontierDrawer::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..50_u64 {
             let mut rng = combined_rng([seed]);
-            let term = lower(sampler.sample(root, 2, &mut rng)).to_string();
-            assert_eq!(term, "(ln b)", "got non-frontier sample: {term}");
+            let term = lower(drawer.draw(root, 2, &mut rng)).to_string();
+            assert_eq!(term, "(ln b)", "got non-frontier candidate: {term}");
         }
     }
 
     #[test]
-    fn independent_frontier_sample_union_diagonal() {
+    fn independent_frontier_draw_union_diagonal() {
         // prev: Add(a, b)
         // curr: same plus union(a, b). Add(merged, merged) extracts 4 terms;
         // only Add(a, b) is in prev.
@@ -183,11 +183,11 @@ mod tests {
         curr.rebuild();
 
         let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
-        let sampler = IndependentFrontierSampler::new(&novel, &curr, root, CountWeigher);
+        let drawer = IndependentFrontierDrawer::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..100_u64 {
             let mut rng = combined_rng([seed]);
-            let term = lower(sampler.sample(root, 3, &mut rng)).to_string();
+            let term = lower(drawer.draw(root, 3, &mut rng)).to_string();
             assert_ne!(term, "(+ a b)", "produced non-frontier term");
             assert!(
                 ["(+ a a)", "(+ b a)", "(+ b b)"].contains(&term.as_str()),
@@ -203,8 +203,8 @@ mod tests {
         graph.rebuild();
 
         let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &graph, &graph, a);
-        let sampler = IndependentFrontierSampler::new(&novel, &graph, a, CountWeigher);
+        let drawer = IndependentFrontierDrawer::new(&novel, &graph, a, CountWeigher);
 
-        assert!(!sampler.possible_size(a, 1, 0));
+        assert!(!drawer.possible_size(a, 1, 0));
     }
 }

@@ -1,12 +1,13 @@
 //! Compact lookup index for an earlier e-graph boundary.
 
-use egg::{Id, Language, UnionEvent};
+use egg::{Id, Language, RecExpr, UnionEvent};
 use hashbrown::HashMap;
 
 #[cfg(test)]
-use egg::{Analysis, EGraph, RecExpr};
+use egg::{Analysis, EGraph};
 
 use crate::utils::DenseUnionFind;
+use crate::{MyLanguage, OriginLang};
 
 /// The lookup behavior novelty matching needs from the previous state.
 pub(crate) trait PreviousLookup<L: Language> {
@@ -81,6 +82,32 @@ impl<L: Language> PrevIndex<L> {
             ids.push(self.lookup(node)?);
         }
         ids.last().copied()
+    }
+
+    /// Whether an origin-annotated expression existed at the indexed
+    /// boundary. Origins are deliberately ignored: previous membership is a
+    /// property of the lowered language expression.
+    pub(crate) fn contains_origin_expr(&self, expr: &RecExpr<OriginLang<L>>) -> bool
+    where
+        L: MyLanguage,
+    {
+        let mut ids: Vec<Option<Id>> = Vec::with_capacity(expr.as_ref().len());
+        for node in expr.as_ref() {
+            if node
+                .children()
+                .iter()
+                .any(|&child| ids[usize::from(child)].is_none())
+            {
+                ids.push(None);
+                continue;
+            }
+            let lowered = node
+                .inner()
+                .clone()
+                .map_children(|child| ids[usize::from(child)].unwrap());
+            ids.push(self.lookup(lowered));
+        }
+        ids.last().is_some_and(Option::is_some)
     }
 }
 
@@ -191,5 +218,31 @@ mod tests {
             before + 1,
             "the explanation-only raw representative must be logged"
         );
+    }
+
+    #[test]
+    fn origin_membership_ignores_origins_and_rejects_new_children() {
+        let mut graph = EGraph::<Math, ()>::new(());
+        graph.enable_union_event_recording();
+        let a = graph.add(sym("a"));
+        let fa = graph.add(Math::Ln(a));
+        graph.rebuild();
+        let index = PrevIndex::from_union_history(
+            graph.nodes(),
+            graph.nodes().len(),
+            graph.union_event_count(),
+            graph.union_events(),
+        );
+
+        let old = RecExpr::from(vec![
+            OriginLang::new(sym("a"), Id::from(999)),
+            OriginLang::new(Math::Ln(Id::from(0)), Id::from(998)),
+        ]);
+        let new = RecExpr::from(vec![
+            OriginLang::new(sym("b"), a),
+            OriginLang::new(Math::Ln(Id::from(0)), fa),
+        ]);
+        assert!(index.contains_origin_expr(&old));
+        assert!(!index.contains_origin_expr(&new));
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! A current term is novel when no previous e-class can extract it. This
 //! module enumerates previous matches, counts shared terms, and subtracts them
-//! from plain counts. See `docs/sampling/novel_sampling.md`.
+//! from plain counts. See `docs/candidates/exact_novel_candidates.md`.
 
 use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::{HashMap, HashSet};
@@ -10,12 +10,12 @@ use num::BigUint;
 use smallvec::SmallVec;
 
 use crate::Counter;
+#[cfg(test)]
+use crate::candidates::exact::count::count_terms_rooted;
+#[cfg(test)]
+use crate::candidates::exact::count::root_budgets;
+use crate::candidates::exact::count::{CountData, LayeredDp, RootBudgets, plain_dp_rooted};
 use crate::previous::PreviousLookup;
-#[cfg(test)]
-use crate::sampling::count::count_terms_rooted;
-#[cfg(test)]
-use crate::sampling::count::root_budgets;
-use crate::sampling::count::{CountData, LayeredDp, RootBudgets, plain_dp_rooted};
 
 /// Child class ids, inline for the usual arity of at most two.
 pub type ChildIds = SmallVec<[Id; 2]>;
@@ -178,7 +178,7 @@ impl<C: Counter> NovelTermCount<C> {
 // The exposed `cover` is built from the *joint* keys, not from match
 // enumeration's internal `cover`. The two can differ: a `(c, pc)` pair whose
 // matches all involve some child with empty `joint` within its root budget
-// ends up dropped by rooted joint counting. That's fine for sampling: a
+// ends up dropped by rooted joint counting. That's fine for exact candidate construction: a
 // missing `pc` had joint count 0 anyway, so neither slot enumeration nor
 // `completes_some_match`
 // can be fooled by its absence.
