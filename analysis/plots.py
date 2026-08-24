@@ -197,7 +197,7 @@ def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
 
 
 def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Absolute guided/unguided verification RSS, excluding sampler setup."""
+    """Absolute guided/unguided verification RSS, excluding candidate construction."""
     data = pl.concat(
         [
             paired.select(
@@ -213,8 +213,7 @@ def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         ]
     ).with_columns(
         (
-            pl.col("peak_mib").rank("max").over("mode", "method")
-            / pl.len().over("mode", "method")
+            pl.col("peak_mib").rank("max").over("mode", "method") / pl.len().over("mode", "method")
         ).alias("cdf")
     )
     return (
@@ -245,7 +244,7 @@ def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
         .properties(
-            title=_title("Verification-only peak RSS (sampling excluded)", meta),
+            title=_title("Verification-only peak RSS (candidate construction excluded)", meta),
             width=300,
             height=240,
         )

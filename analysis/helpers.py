@@ -13,7 +13,7 @@ REQUIRED_COMPARISON_COLUMNS = {
     "goal",
     "guided_success",
     "unguided_success",
-    "sample_peak_rss_bytes",
+    "candidate_peak_rss_bytes",
     "verify_peak_rss_bytes",
     "guided_peak_rss_bytes",
     "unguided_peak_rss_bytes",
@@ -235,7 +235,7 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
 
     Guided setup failures take precedence over any panic observed in the
     attempt workflow; panic then takes precedence over the terminal stop
-    reason. Unguided runs have no guide-sampling setup stage.
+    reason. Unguided runs have no guide-candidate construction stage.
     """
     guided = frame.filter(~pl.col("guided_success").fill_null(False)).select(
         "mode",
@@ -299,7 +299,7 @@ def paired_workflow_successes(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def paired_successes(frame: pl.DataFrame) -> pl.DataFrame:
-    """Backward-compatible complete-workflow comparison for grid analyses."""
+    """Complete-workflow comparison for grid analyses."""
     return paired_workflow_successes(frame)
 
 
@@ -312,7 +312,7 @@ def memory_component_summary(frame: pl.DataFrame) -> pl.DataFrame:
     """
     paired = frame.filter(pl.col("guided_success") & pl.col("unguided_success"))
     components = (
-        ("sampler setup", "sample_peak_rss_bytes"),
+        ("candidate construction", "candidate_peak_rss_bytes"),
         ("guided verification", "verify_peak_rss_bytes"),
         ("guided workflow", "guided_peak_rss_bytes"),
         ("unguided verification", "unguided_peak_rss_bytes"),
@@ -373,12 +373,16 @@ def memory_summary(paired: pl.DataFrame) -> pl.DataFrame:
 
 def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
     """One compact success-only row per mode."""
-    return success_rates(frame).pivot(
-        on="method",
-        index="mode",
-        values=["successes", "n", "success_rate", "ci_low", "ci_high"],
-        separator="_",
-    ).sort("mode")
+    return (
+        success_rates(frame)
+        .pivot(
+            on="method",
+            index="mode",
+            values=["successes", "n", "success_rate", "ci_low", "ci_high"],
+            separator="_",
+        )
+        .sort("mode")
+    )
 
 
 def resolve_grid(pattern: str = "") -> Path:
@@ -397,8 +401,8 @@ def grid_prefix_budgets(grid_dir: Path) -> list[int]:
     return [int(value) for value in config["prefix_budgets"]]
 
 
-def _grid_mode(distribution: str, strategy: str) -> str:
-    return f"{_short_strategy(strategy)} · {distribution}"
+def _grid_mode(allocation: str, strategy: str) -> str:
+    return f"{_short_strategy(strategy)} · {allocation}"
 
 
 def load_grid(grid_dir: Path) -> tuple[pl.DataFrame, dict]:
@@ -406,35 +410,35 @@ def load_grid(grid_dir: Path) -> tuple[pl.DataFrame, dict]:
     config = json.loads((grid_dir / "grid_config.json").read_text())
     frames = []
     loaded = set()
-    for path in sorted(grid_dir.glob("distribution.*/sampling_seed.*/*/comparison.parquet")):
+    for path in sorted(grid_dir.glob("allocation.*/candidate_seed.*/*/comparison.parquet")):
         run_config = json.loads((path.parent / "config.json").read_text())
-        distribution = str(run_config["size_distribution"])
-        sampling_seed = int(run_config["sampling_seed"])
+        allocation = str(run_config["size_allocation"])
+        candidate_seed = int(run_config["candidate_seed"])
         strategy = str(run_config["strategy"])
         frame = pl.read_parquet(path)
         _validate_comparison(frame, path)
         frames.append(
             frame.with_columns(
-                pl.lit(distribution).alias("distribution"),
-                pl.lit(sampling_seed).alias("sampling_seed"),
+                pl.lit(allocation).alias("allocation"),
+                pl.lit(candidate_seed).alias("candidate_seed"),
                 pl.lit(strategy).alias("strategy"),
-                pl.lit(_grid_mode(distribution, strategy)).alias("mode"),
+                pl.lit(_grid_mode(allocation, strategy)).alias("mode"),
                 pl.concat_str(["seed", "goal"], separator="│").alias("pair"),
             )
         )
-        loaded.add((distribution, sampling_seed, strategy))
+        loaded.add((allocation, candidate_seed, strategy))
     if not frames:
         raise FileNotFoundError(f"No completed comparison cells under {grid_dir}")
 
     expected = {
-        (distribution, int(seed), strategy)
-        for distribution in config["distributions_expanded"]
-        for seed in config["sampling_seeds_expanded"]
+        (allocation, int(seed), strategy)
+        for allocation in config["size_allocations_expanded"]
+        for seed in config["candidate_seeds_expanded"]
         for strategy in config["strategies_expanded"]
     }
     modes = [
-        _grid_mode(distribution, strategy)
-        for distribution in config["distributions_expanded"]
+        _grid_mode(allocation, strategy)
+        for allocation in config["size_allocations_expanded"]
         for strategy in config["strategies_expanded"]
     ]
     data = pl.concat(frames, how="diagonal_relaxed")
@@ -442,11 +446,11 @@ def load_grid(grid_dir: Path) -> tuple[pl.DataFrame, dict]:
         "modes": modes,
         "n_pairs": data.select("seed", "goal").unique().height,
         "max_attempts": int(config["attempts"]),
-        "sampling_seeds": data["sampling_seed"].n_unique(),
+        "candidate_seeds": data["candidate_seed"].n_unique(),
         "missing_cells": len(expected - loaded),
         "subtitle": [
             f"{len(loaded)}/{len(expected)} grid cells",
-            f"{data['sampling_seed'].n_unique()} sampling seeds",
+            f"{data['candidate_seed'].n_unique()} candidate seeds",
         ],
         "grid_dir": grid_dir,
     }
@@ -457,12 +461,12 @@ def grid_success_by_budget(grid_dir: Path, budgets: Sequence[int]) -> pl.DataFra
     """Success observations at cumulative attempt budgets, including setup failures."""
     frames = []
     for comparison_path in sorted(
-        grid_dir.glob("distribution.*/sampling_seed.*/*/comparison.parquet")
+        grid_dir.glob("allocation.*/candidate_seed.*/*/comparison.parquet")
     ):
         run_dir = comparison_path.parent
         config = json.loads((run_dir / "config.json").read_text())
-        distribution = str(config["size_distribution"])
-        sampling_seed = int(config["sampling_seed"])
+        allocation = str(config["size_allocation"])
+        candidate_seed = int(config["candidate_seed"])
         strategy = str(config["strategy"])
         base = pl.read_parquet(comparison_path, columns=["seed", "goal"])
         attempts = pl.read_parquet(run_dir / "results.parquet")
@@ -475,10 +479,10 @@ def grid_success_by_budget(grid_dir: Path, budgets: Sequence[int]) -> pl.DataFra
             frames.append(
                 base.join(reached, on=["seed", "goal"], how="left").with_columns(
                     pl.col("guided_success").fill_null(False),
-                    pl.lit(distribution).alias("distribution"),
-                    pl.lit(sampling_seed).alias("sampling_seed"),
+                    pl.lit(allocation).alias("allocation"),
+                    pl.lit(candidate_seed).alias("candidate_seed"),
                     pl.lit(strategy).alias("strategy"),
-                    pl.lit(_grid_mode(distribution, strategy)).alias("mode"),
+                    pl.lit(_grid_mode(allocation, strategy)).alias("mode"),
                     pl.lit(int(budget)).alias("budget"),
                 )
             )
