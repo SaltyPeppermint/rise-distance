@@ -38,9 +38,7 @@ correctness-critical frontier test.
 Post-hoc alternatives have unattractive costs:
 
 - Unbounded rejection sampling can take unbounded work when the proposal
-  distribution is concentrated. The separate
-  [low-memory rejection path](rejection_candidates.md) imposes explicit limits
-  and permits partial candidate pools instead.
+  distribution is concentrated.
 - Zhang-Shasha tree distance requires dynamic programming for many pairs of
   completed trees.
 - A bounded candidate pool has predictable cost, but cannot cover a rare

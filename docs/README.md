@@ -22,8 +22,9 @@ docs/
 - To understand the shared frontier constraint and the available exact
   selection policies, read
   [exact frontier drawing policies](candidates/exact_frontier_drawing.md).
-- For count-free, low-memory construction, read
-  [rejection-candidate construction](candidates/rejection_candidates.md).
+- For the planned migration from exact cardinalities to low-memory exact
+  support, read
+  [the exact support migration plan](candidates/exact_support_migration.md).
 
 ## Counting internals
 

@@ -11,9 +11,7 @@ use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 use time::OffsetDateTime;
 
-use rise_distance::candidates::{
-    ExactCandidatePackage, RejectionCandidatePackage, RejectionLimits, SizeAllocation,
-};
+use rise_distance::candidates::{ExactCandidatePackage, SizeAllocation};
 use rise_distance::cli::{CandidatePool, GuideExpr, SeedCandidates};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
@@ -68,25 +66,9 @@ struct Args {
     #[arg(long, default_value_t = 20)]
     max_retries: usize,
 
-    /// Number of novel sizes to find or empirically observe.
+    /// Number of novel sizes the exact analysis must find.
     #[arg(long, default_value_t = 5)]
     novel_size_goal: usize,
-
-    /// Recursive state/partition visits allowed to one rejection-walk proposal.
-    #[arg(long, default_value_t = 512)]
-    rejection_walk_backtrack: usize,
-
-    /// Rejection proposal attempts allowed per target size.
-    #[arg(long, default_value_t = 4096)]
-    rejection_attempts_per_size: usize,
-
-    /// Rejection proposal attempts allowed for one candidate pool.
-    #[arg(long, default_value_t = 100_000)]
-    rejection_global_attempts: usize,
-
-    /// Wall-clock seconds allowed for one rejection-backed candidate pool.
-    #[arg(long, default_value_t = 60.0)]
-    rejection_max_time: f64,
 
     /// Candidate pool to emit. Repeat for a shared multi-pool manifest.
     #[arg(long = "candidate-pool", value_enum, required = true)]
@@ -142,10 +124,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
         args.novel_size_goal > 0,
         "--novel-size-goal must be positive"
     );
-    assert!(
-        args.rejection_max_time.is_finite() && args.rejection_max_time >= 0.0,
-        "--rejection-max-time must be finite and nonnegative"
-    );
+
     let seed_expr = args
         .seed
         .parse::<RecExpr<L>>()
@@ -179,25 +158,12 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
             unique
         },
     );
-    let has_rejection = pools.iter().any(|pool| pool.is_rejection());
-    let has_exact = pools.iter().any(|pool| pool.needs_exact_counts());
-    if has_rejection && has_exact {
-        eprintln!(
-            "WARNING: mixed exact/rejection candidate pools requested; exact counting will \
-             still determine peak candidate-construction memory"
-        );
-    }
 
     let mut candidates = BTreeMap::new();
-    if has_rejection {
-        candidates.extend(build_rejection_candidates(
-            args, &result, &pools, start_size,
-        ));
-    }
 
-    if has_exact {
-        candidates.extend(build_exact_candidates(args, result, &pools, start_size)?);
-    }
+    candidates.extend(build_full_analysis_candidates(
+        args, result, &pools, start_size,
+    )?);
 
     Ok(SeedCandidates {
         seed: args.seed.clone(),
@@ -212,71 +178,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     })
 }
 
-fn build_rejection_candidates<L: MyLanguage, N: MyAnalysis<L>>(
-    args: &Args,
-    result: &EqsatResult<L, N>,
-    pools: &[CandidatePool],
-    start_size: usize,
-) -> BTreeMap<String, Vec<GuideExpr<L>>> {
-    let cap = start_size
-        .checked_add(
-            args.max_retries
-                .checked_mul(args.retry_step)
-                .expect("rejection size cap overflow"),
-        )
-        .expect("rejection size cap overflow");
-    let package = RejectionCandidatePackage::new(result, cap);
-    let limits = RejectionLimits {
-        walk_backtrack: args.rejection_walk_backtrack,
-        attempts_per_size: args.rejection_attempts_per_size,
-        global_attempts: args.rejection_global_attempts,
-    };
-
-    let mut candidates = BTreeMap::new();
-    for pool in pools.iter().copied().filter(|pool| pool.is_rejection()) {
-        let batch = match pool {
-            CandidatePool::RejectionWalk => {
-                let engine = package.random_walk(start_size, limits);
-                package.collect(
-                    &engine,
-                    args.candidates_per_pool,
-                    args.novel_size_goal,
-                    args.size_allocation,
-                    args.candidate_seed,
-                    pool.rng_salt(),
-                    limits,
-                )
-            }
-            CandidatePool::RejectionFeasible => {
-                let engine = package.feasibility();
-                package.collect(
-                    &engine,
-                    args.candidates_per_pool,
-                    args.novel_size_goal,
-                    args.size_allocation,
-                    args.candidate_seed,
-                    pool.rng_salt(),
-                    limits,
-                )
-            }
-            _ => unreachable!(),
-        };
-        if batch.is_empty() {
-            eprintln!(
-                "WARNING: strategy {} accepted 0 candidates; budget exhaustion is not \
-                 evidence of an empty novel frontier",
-                pool.name()
-            );
-        }
-        candidates.insert(
-            pool.name().to_owned(),
-            batch.into_iter().map(GuideExpr::from_recexpr).collect(),
-        );
-    }
-    candidates
-}
-
-fn build_exact_candidates<L: MyLanguage, N: MyAnalysis<L>>(
+fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     result: EqsatResult<L, N>,
     pools: &[CandidatePool],
@@ -305,7 +207,6 @@ fn build_exact_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     Ok(pools
         .iter()
         .copied()
-        .filter(|pool| pool.needs_exact_counts())
         .map(|pool| {
             let terms = draw_exact_candidates(args, pool, &package);
             (
@@ -322,7 +223,6 @@ fn draw_exact_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     pool: CandidatePool,
     package: &ExactCandidatePackage<BigUint, L, N>,
 ) -> Vec<RecExpr<OriginLang<L>>> {
-    assert!(!pool.is_rejection());
     match pool.exact_policy() {
         // Replacement is a driver concern (how it re-draws subsets from the
         // pool across restarts); the pool itself is one novel candidate batch

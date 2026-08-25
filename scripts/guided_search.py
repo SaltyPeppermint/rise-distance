@@ -45,13 +45,9 @@ CandidateStrategy = Literal[
     "no_replacement_independent",
     "no_replacement_naive",
     "no_replacement_balanced",
-    "no_replacement_rejection_walk",
-    "no_replacement_rejection_feasible",
     "with_replacement_independent",
     "with_replacement_naive",
     "with_replacement_balanced",
-    "with_replacement_rejection_walk",
-    "with_replacement_rejection_feasible",
 ]
 SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
 Strategy = Literal[CandidateStrategy, SmallestStrategy]
@@ -60,8 +56,6 @@ CandidatePool = Literal[
     "exact_independent",
     "exact_naive",
     "exact_balanced",
-    "rejection_walk",
-    "rejection_feasible",
     "smallest_novel",
     "smallest_overall",
 ]
@@ -176,19 +170,7 @@ class Args:
     `greedy`, `uniform`, or `proportional:<min>`."""
 
     novel_size_goal: int = 5
-    """Number of empirically observed novel sizes used by rejection pools."""
-
-    rejection_walk_backtrack: int = 512
-    """Recursive state/partition visits allowed per rejection-walk proposal."""
-
-    rejection_attempts_per_size: int = 4096
-    """Proposal attempts allowed per target size for rejection pools."""
-
-    rejection_global_attempts: int = 100_000
-    """Proposal attempts allowed for one rejection pool."""
-
-    rejection_max_time: float = 60.0
-    """Wall-clock seconds allowed for one rejection pool."""
+    """Number of novel sizes the exact analysis must find."""
 
     candidate_pools: tuple[CandidatePool, ...] = ()
     """Candidate pools to generate. Defaults to the pool selected by `strategy`;
@@ -226,10 +208,6 @@ def pool_key(strategy: Strategy) -> CandidatePool:
         return "exact_naive"
     if strategy.endswith("_balanced"):
         return "exact_balanced"
-    if strategy.endswith("_rejection_walk"):
-        return "rejection_walk"
-    if strategy.endswith("_rejection_feasible"):
-        return "rejection_feasible"
     raise ValueError(f"unknown strategy {strategy!r}")
 
 
@@ -345,14 +323,6 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         str(args.candidate_seed),
         "--novel-size-goal",
         str(args.novel_size_goal),
-        "--rejection-walk-backtrack",
-        str(args.rejection_walk_backtrack),
-        "--rejection-attempts-per-size",
-        str(args.rejection_attempts_per_size),
-        "--rejection-global-attempts",
-        str(args.rejection_global_attempts),
-        "--rejection-max-time",
-        str(args.rejection_max_time),
     ]
     limits = replay_limits(args, cfg)
     # Menu size = exactly what the attempt loop consumes: no_replacement_* needs

@@ -46,10 +46,6 @@ class Args:
     """Comma-separated Rust candidate-construction seeds."""
 
     novel_size_goal: int = 5
-    rejection_walk_backtrack: int = 512
-    rejection_attempts_per_size: int = 4096
-    rejection_global_attempts: int = 100_000
-    rejection_max_time: float = 60.0
 
     strategies: str = "no_replacement_independent,no_replacement_balanced"
     """Comma-separated guided-search strategies. All strategies in a cell
@@ -151,14 +147,6 @@ def driver_command(
         size_allocation,
         "--novel-size-goal",
         str(args.novel_size_goal),
-        "--rejection-walk-backtrack",
-        str(args.rejection_walk_backtrack),
-        "--rejection-attempts-per-size",
-        str(args.rejection_attempts_per_size),
-        "--rejection-global-attempts",
-        str(args.rejection_global_attempts),
-        "--rejection-max-time",
-        str(args.rejection_max_time),
     ]
     if args.full_union:
         cmd.append("--full-union")
@@ -178,10 +166,6 @@ def candidate_pool(strategy: str) -> str:
     """Map a driver strategy to the candidate key emitted by `candidates`."""
     if strategy.startswith("smallest_"):
         return strategy
-    if strategy.endswith("_rejection_walk"):
-        return "rejection_walk"
-    if strategy.endswith("_rejection_feasible"):
-        return "rejection_feasible"
     for suffix in ("independent", "naive", "balanced"):
         if strategy.endswith(f"_{suffix}"):
             return f"exact_{suffix}"

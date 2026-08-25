@@ -1,12 +1,13 @@
 //! Compact lookup index for an earlier e-graph boundary.
 
-use egg::{Id, Language, RecExpr, UnionEvent};
+use egg::{Id, Language, UnionEvent};
 use hashbrown::HashMap;
 
 #[cfg(test)]
-use egg::{Analysis, EGraph};
+use egg::{Analysis, EGraph, RecExpr};
 
 use crate::utils::DenseUnionFind;
+#[cfg(test)]
 use crate::{MyLanguage, OriginLang};
 
 /// The lookup behavior novelty matching needs from the previous state.
@@ -87,6 +88,7 @@ impl<L: Language> PrevIndex<L> {
     /// Whether an origin-annotated expression existed at the indexed
     /// boundary. Origins are deliberately ignored: previous membership is a
     /// property of the lowered language expression.
+    #[cfg(test)]
     pub(crate) fn contains_origin_expr(&self, expr: &RecExpr<OriginLang<L>>) -> bool
     where
         L: MyLanguage,

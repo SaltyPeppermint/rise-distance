@@ -7,8 +7,6 @@ information learned in the iteration that produced `curr` from `prev`.
 This is e-graph extraction, not direct grammar generation. For the seed-term
 drawer and its binder semantics, see
 [../generation/random_terms.md](../generation/random_terms.md).
-For the count-free alternative, see
-[low-memory rejection-candidate construction](rejection_candidates.md).
 
 The relevant code lives in:
 

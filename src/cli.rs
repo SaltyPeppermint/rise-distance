@@ -23,10 +23,6 @@ pub enum CandidatePool {
     ExactNaive,
     #[value(name = "exact_balanced")]
     ExactBalanced,
-    #[value(name = "rejection_walk")]
-    RejectionWalk,
-    #[value(name = "rejection_feasible")]
-    RejectionFeasible,
     #[value(name = "smallest_overall")]
     SmallestOverall,
     #[value(name = "smallest_novel")]
@@ -40,8 +36,6 @@ impl CandidatePool {
             Self::ExactIndependent => "exact_independent",
             Self::ExactNaive => "exact_naive",
             Self::ExactBalanced => "exact_balanced",
-            Self::RejectionWalk => "rejection_walk",
-            Self::RejectionFeasible => "rejection_feasible",
             Self::SmallestOverall => "smallest_overall",
             Self::SmallestNovel => "smallest_novel",
         }
@@ -55,8 +49,6 @@ impl CandidatePool {
             Self::ExactIndependent => 1,
             Self::ExactNaive => 2,
             Self::ExactBalanced => 3,
-            Self::RejectionWalk => 4,
-            Self::RejectionFeasible => 5,
             Self::SmallestOverall | Self::SmallestNovel => 0,
         }
     }
@@ -67,21 +59,8 @@ impl CandidatePool {
             Self::ExactIndependent => Some(ExactSelectionPolicy::Independent),
             Self::ExactNaive => Some(ExactSelectionPolicy::Naive),
             Self::ExactBalanced => Some(ExactSelectionPolicy::Balanced),
-            Self::RejectionWalk
-            | Self::RejectionFeasible
-            | Self::SmallestOverall
-            | Self::SmallestNovel => None,
+            Self::SmallestOverall | Self::SmallestNovel => None,
         }
-    }
-
-    #[must_use]
-    pub const fn is_rejection(self) -> bool {
-        matches!(self, Self::RejectionWalk | Self::RejectionFeasible)
-    }
-
-    #[must_use]
-    pub const fn needs_exact_counts(self) -> bool {
-        !self.is_rejection()
     }
 }
 
@@ -173,8 +152,6 @@ mod tests {
             CandidatePool::ExactIndependent,
             CandidatePool::ExactNaive,
             CandidatePool::ExactBalanced,
-            CandidatePool::RejectionWalk,
-            CandidatePool::RejectionFeasible,
             CandidatePool::SmallestOverall,
             CandidatePool::SmallestNovel,
         ]
@@ -185,15 +162,11 @@ mod tests {
                 "exact_independent",
                 "exact_naive",
                 "exact_balanced",
-                "rejection_walk",
-                "rejection_feasible",
                 "smallest_overall",
                 "smallest_novel",
             ]
         );
         assert_eq!(CandidatePool::ExactBalanced.rng_salt(), 3);
-        assert_eq!(CandidatePool::RejectionWalk.rng_salt(), 4);
-        assert!(CandidatePool::RejectionFeasible.is_rejection());
         assert_eq!(
             serde_json::to_string(&CandidatePool::ExactBalanced).unwrap(),
             "\"exact_balanced\""

@@ -106,9 +106,6 @@ for `data/seed_terms/plenty-houses`:
 2. Generate ten goal terms per retained seed.
 3. Run exact balanced and naive guide-candidate policies at 100M, 250M, 500M,
    and 1000M guide-replay memory limits.
-4. Run both rejection-backed policies at 250M:
-   `no_replacement_rejection_walk` and
-   `no_replacement_rejection_feasible`.
 
 Run it from the repository root:
 
@@ -120,9 +117,6 @@ Each command is followed by `or exit $status`, so a failed stage prevents later
 runs from consuming incomplete inputs. Each guided search creates a fresh
 `data/guided_search/run.N` directory containing its candidate manifest,
 attempt results, pair summaries, unguided baseline, and joined comparison.
-The rejection runs use exact previous-boundary filtering but differ in their
-proposal engines; see
-[low-memory rejection-candidate construction](candidates/rejection_candidates.md).
 
 ## Key knobs
 
@@ -130,12 +124,12 @@ proposal engines; see
 | --- | --- |
 | `--k N` | Guide-set size (guides unioned per leg). |
 | `--attempts N` | Legs per `(seed, goal, k)`; each resamples a fresh subset. Counts the first try. |
-| `--strategy` | Candidate policy, including independent, naive, balanced, rejection-walk, rejection-feasible, and smallest variants. |
+| `--strategy` | Candidate policy, including independent, naive, balanced, and smallest variants. |
 | `--candidate-pools` | Pools to generate in a shared manifest. Defaults to only the pool selected by `--strategy`; the grid driver supplies all pools needed by its paired strategies. |
 | `--full-union` | Union guide nodes by their origin e-class (experimental; helped reachability historically). |
 | `--candidate-seed N` | Rust candidate-construction seed. |
 | `--size-allocation` | Root-size allocation: `greedy`, `uniform`, or `proportional:<min>`. |
-| `--novel-size-goal N` | Number of novel sizes exact construction must find or rejection construction must observe. |
+| `--novel-size-goal N` | Number of novel sizes exact construction must find. |
 | `--jobs N` | Concurrent `verify` legs (default `os.cpu_count()`). Lower it if the large leg egraphs exhaust RAM. |
 | `--seeds N` | Only process the first N seeds. |
 
@@ -145,9 +139,6 @@ independently, using count-proportional and equal-local-choice weighting
 respectively. The
 `with_replacement_*` / `no_replacement_*` prefix is a separate Python-side
 policy for selecting guide subsets from the resulting finite pool.
-The rejection engines, their limits, and their weaker discovery guarantees are
-documented in
-[low-memory rejection-candidate construction](candidates/rejection_candidates.md).
 
 ## Scaling notes
 
