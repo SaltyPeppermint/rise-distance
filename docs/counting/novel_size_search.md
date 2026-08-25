@@ -7,11 +7,11 @@ cannot use.
 
 The relevant code is:
 
-- [src/candidates/exact/count/layered.rs](../../src/candidates/exact/count/layered.rs) — shared
+- [src/candidates/count/layered.rs](../../src/candidates/count/layered.rs) — shared
   current-root budgets and the generic layered DP.
-- [src/candidates/exact/count/novel.rs](../../src/candidates/exact/count/novel.rs) — rooted
+- [src/candidates/count/novel.rs](../../src/candidates/count/novel.rs) — rooted
   match enumeration, pruning, joint counting, and the exact scan.
-- [src/candidates/exact/package.rs](../../src/candidates/exact/package.rs) — phase
+- [src/candidates/package.rs](../../src/candidates/package.rs) — phase
   ordering, package retention, and telemetry.
 
 For the counting recurrence, first read

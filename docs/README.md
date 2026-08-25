@@ -16,15 +16,12 @@ docs/
   [guide experiment pipeline](guide_experiment.md).
 - For seed generation, read
   [random term generation](generation/random_terms.md).
-- To understand how exact novel candidates are defined, counted, and drawn,
+- To understand how novel candidates are defined, counted, and drawn,
   start with
-  [exact novel-candidate construction](candidates/exact_novel_candidates.md).
-- To understand the shared frontier constraint and the available exact
+  [novel-candidate construction](candidates/novel_candidates.md).
+- To understand the shared frontier constraint and the available
   selection policies, read
-  [exact frontier drawing policies](candidates/exact_frontier_drawing.md).
-- For the planned migration from exact cardinalities to low-memory exact
-  support, read
-  [the exact support migration plan](candidates/exact_support_migration.md).
+  [frontier drawing policies](candidates/frontier_drawing.md).
 
 ## Counting internals
 

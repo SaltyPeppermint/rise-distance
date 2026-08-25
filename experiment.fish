@@ -33,7 +33,7 @@
 # or exit $status
 
 uv run scripts/guided_search.py \
-  --strategy no_replacement_independent \
+  --strategy no_replacement_count \
   --goals 5 \
   --seeds 20 \
   --k 1 \
@@ -77,7 +77,7 @@ or exit $status
 #   data/seed_terms/plenty-houses
 # or exit $status
 
-# # Exact, locally uniform candidates across guide-replay memory limits.
+# # Locally uniform candidates across guide-replay memory limits.
 # uv run scripts/guided_search.py \
 #   --strategy no_replacement_naive \
 #   --goals 5 \

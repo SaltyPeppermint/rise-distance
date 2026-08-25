@@ -226,7 +226,7 @@ mod tests {
     use crate::utils::sym;
 
     #[test]
-    fn build_through_novel_sizes_runs_exact_analysis_at_kth_novel_size() {
+    fn build_through_novel_sizes_runs_analysis_at_kth_novel_size() {
         // Unioning `a` with the root of (+ a b) creates a cycle: the root
         // class extracts a, (+ a b), (+ (+ a b) b), ... (sizes 1, 3, 5, ...).
         // `a` and (+ a b) already exist in prev, so the novel sizes are

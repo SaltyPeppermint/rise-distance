@@ -51,8 +51,8 @@ SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
 Strategy = Literal[CandidateStrategy, SmallestStrategy]
 SINGLE_CANDIDATE_STRATEGIES = get_args(SmallestStrategy)
 CandidatePool = Literal[
-    "exact_count",
-    "exact_naive",
+    "count",
+    "naive",
     "smallest_novel",
     "smallest_overall",
 ]
@@ -166,8 +166,8 @@ class Args:
     """How `candidates` allocates the candidate budget across root term sizes:
     `greedy` or `uniform`"""
 
-    novel_size_goal: int = 5
-    """Number of novel sizes the exact analysis must find."""
+    size_goal: int = 5
+    """Number of novel sizes the analysis must find."""
 
     candidate_pools: tuple[CandidatePool, ...] = ()
     """Candidate pools to generate. Defaults to the pool selected by `strategy`;
@@ -193,15 +193,15 @@ def pool_key(strategy: Strategy) -> CandidatePool:
     """Map a driver strategy to the candidate-pool key `candidates` writes.
 
     The replacement prefix is a Python-side draw policy (`pick_subset`), not a
-    pool: `candidates` emits `exact_count`, `exact_naive`, so collapse the prefix to hit one of those.
+    pool: `candidates` emits `count`, `naive`, so collapse the prefix to hit one of those.
     `smallest_*` keys pass through unchanged.
     """
     if strategy in SINGLE_CANDIDATE_STRATEGIES:
         return strategy
     if strategy.endswith("_count"):
-        return "exact_count"
+        return "count"
     if strategy.endswith("_naive"):
-        return "exact_naive"
+        return "naive"
     raise ValueError(f"unknown strategy {strategy!r}")
 
 
@@ -315,8 +315,8 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         args.size_allocation,
         "--candidate-seed",
         str(args.candidate_seed),
-        "--novel-size-goal",
-        str(args.novel_size_goal),
+        "--size-goal",
+        str(args.size_goal),
     ]
     limits = replay_limits(args, cfg)
     # Menu size = exactly what the attempt loop consumes: no_replacement_* needs

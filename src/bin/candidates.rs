@@ -30,7 +30,7 @@ Example:
   candidates --language math --seed '(+ x 0)' \\
     --max-iters 38 --max-nodes 1000000 --max-time 10 \\
     --max-memory 2000000000 \\
-    --candidate-pool exact_independent
+    --candidate-pool count
 "
 )]
 struct Args {
@@ -68,7 +68,7 @@ struct Args {
 
     /// Number of novel sizes the exact analysis must find.
     #[arg(long, default_value_t = 5)]
-    novel_size_goal: usize,
+    size_goal: usize,
 
     /// Candidate pool to emit. Repeat for a shared multi-pool manifest.
     #[arg(long = "candidate-pool", value_enum, required = true)]
@@ -120,10 +120,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     rules: &[Rewrite<L, N>],
 ) -> Result<SeedCandidates<L>, String> {
-    assert!(
-        args.novel_size_goal > 0,
-        "--novel-size-goal must be positive"
-    );
+    assert!(args.size_goal > 0, "--size-goal must be positive");
 
     let seed_expr = args
         .seed
@@ -194,7 +191,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
         start_size,
         args.max_retries,
         args.retry_step,
-        args.novel_size_goal,
+        args.size_goal,
         &mut root_log,
     )
     .map_err(|tried_max_size| {
@@ -212,7 +209,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
         .iter()
         .copied()
         .map(|pool| {
-            let terms = draw_exact_candidates(args, pool, &package);
+            let terms = draw_candiates(args, pool, &package);
             (
                 pool.to_string().clone(),
                 terms.into_iter().map(GuideExpr::from_recexpr).collect(),
@@ -222,7 +219,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
 }
 
 /// Draw one candidate pool; smallest-term pools contain one term.
-fn draw_exact_candidates<L: MyLanguage, N: MyAnalysis<L>>(
+fn draw_candiates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     policy: Policy,
     package: &ExactCandidatePackage<BigUint, L, N>,

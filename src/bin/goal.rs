@@ -56,20 +56,20 @@ struct Args {
     #[arg(long, default_value_t = SizeAllocation::Greedy)]
     size_allocation: SizeAllocation,
 
-    /// Exact policy used to draw goal candidates.
+    /// Policy used to draw goal candidates.
     #[arg(long, default_value_t = Policy::Count)]
     selection_policy: Policy,
 
-    /// How much to grow `max_size` on each exact-size-search retry.
+    /// How much to grow `max_size` on each size-search retry.
     #[arg(long, default_value_t = 5)]
     retry_step: usize,
 
-    /// How many times to retry exact size discovery with a larger `max_size` before
+    /// How many times to retry size discovery with a larger `max_size` before
     /// giving up on a seed.
     #[arg(long, default_value_t = 20)]
     max_retries: usize,
 
-    /// How many novel sizes exact construction must find.
+    /// How many novel sizes construction must find.
     #[arg(long, default_value_t = 5)]
     novel_size_goal: usize,
 }

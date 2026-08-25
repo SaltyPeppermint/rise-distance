@@ -52,7 +52,7 @@ class Args:
     size_allocation: str | None = None
     """How to allocate the candidate budget across sizes (forwarded if set)."""
 
-    exact_selection_policy: GoalSelectionPolicy | None = None
+    selection_policy: GoalSelectionPolicy | None = None
     """How to draw goal candidates: count or naive (forwarded if set)."""
 
     skip_unmeasured: bool = True
@@ -65,7 +65,7 @@ class Args:
     max_retries: int = 20
     """How many exact-size-search increments to allow."""
 
-    novel_size_goal: int = 5
+    size_goal: int = 5
     """How many novel root sizes exact construction must find."""
 
     # fan-out
@@ -124,13 +124,13 @@ def run_goal_shard(args: Args, base_flags: list[str], seed: str) -> object:
         str(args.retry_step),
         "--max-retries",
         str(args.max_retries),
-        "--novel-size-goal",
-        str(args.novel_size_goal),
+        "--size-goal",
+        str(args.size_goal),
     ]
     if args.size_allocation is not None:
         cmd += ["--size-allocation", args.size_allocation]
-    if args.exact_selection_policy is not None:
-        cmd += ["--exact-selection-policy", args.exact_selection_policy]
+    if args.selection_policy is not None:
+        cmd += ["--exact-selection-policy", args.selection_policy]
     return run_json_subprocess(cmd, what=f"goal for seed {seed!r}")
 
 

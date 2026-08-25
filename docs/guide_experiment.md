@@ -2,8 +2,8 @@
 
 This is an operational guide. See
 [random term generation](generation/random_terms.md) for stage 1 and
-[exact novel-candidate construction](candidates/exact_novel_candidates.md) and
-[exact frontier drawing policies](candidates/exact_frontier_drawing.md) for the
+[novel-candidate construction](candidates/novel_candidates.md) and
+[frontier drawing policies](candidates/frontier_drawing.md) for the
 guide phase.
 
 The guide experiment measures how well constructed guide candidates steer
@@ -104,7 +104,7 @@ for `data/seed_terms/plenty-houses`:
 
 1. Generate 1,000 validated Math seed terms of sizes 10 through 50.
 2. Generate ten goal terms per retained seed.
-3. Run exact independent and naive guide-candidate policies at 100M, 250M, 500M,
+3. Run count and naive guide-candidate policies at 100M, 250M, 500M,
    and 1000M guide-replay memory limits.
 
 Run it from the repository root:
@@ -129,7 +129,7 @@ attempt results, pair summaries, unguided baseline, and joined comparison.
 | `--full-union` | Union guide nodes by their origin e-class (experimental; helped reachability historically). |
 | `--candidate-seed N` | Rust candidate-construction seed. |
 | `--size-allocation` | Root-size allocation: `greedy` or `uniform` |
-| `--novel-size-goal N` | Number of novel sizes exact construction must find. |
+| `--size-goal N` | Number of novel sizes construction must find. |
 | `--jobs N` | Concurrent `verify` legs (default `os.cpu_count()`). Lower it if the large leg egraphs exhaust RAM. |
 | `--seeds N` | Only process the first N seeds. |
 `independent` and `naive` draw each candidate independently, using

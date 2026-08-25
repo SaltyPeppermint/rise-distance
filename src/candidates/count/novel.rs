@@ -2,7 +2,7 @@
 //!
 //! A current term is novel when no previous e-class can extract it. This
 //! module enumerates previous matches, counts shared terms, and subtracts them
-//! from plain counts. See `docs/candidates/exact_novel_candidates.md`.
+//! from plain counts. See `docs/candidates/novel_candidates.md`.
 
 use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::{HashMap, HashSet};

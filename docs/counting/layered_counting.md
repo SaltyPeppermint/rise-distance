@@ -1,17 +1,17 @@
 # Size-layered, root-restricted term counting
 
-Exact candidate construction counts exact-size terms only for current e-classes and
+Candidate construction counts exact-size terms only for current e-classes and
 sizes that can participate in an extraction from the selected root. This
 document describes the shared size-layered kernel and the root budgets that
 bound every production counting phase.
 
 The relevant code is:
 
-- [src/candidates/exact/count/layered.rs](../../src/candidates/exact/count/layered.rs) —
+- [src/candidates/count/layered.rs](../../src/candidates/count/layered.rs) —
   `RootBudgets`, `root_budgets`, and `LayeredDp`.
-- [src/candidates/exact/draw/plain.rs](../../src/candidates/exact/draw/plain.rs) —
+- [src/candidates/draw/plain.rs](../../src/candidates/draw/plain.rs) —
   top-down consumption of rooted plain histograms and suffix tables.
-- [src/candidates/exact/count/novel.rs](../../src/candidates/exact/count/novel.rs) — reuse of
+- [src/candidates/count/novel.rs](../../src/candidates/count/novel.rs) — reuse of
   the kernel for rooted joint counting and the novel-size scan.
 - [src/analysis/semilattice/ast_size.rs](../../src/analysis/semilattice/ast_size.rs)
   — minimum extraction sizes used by the budget calculation.
