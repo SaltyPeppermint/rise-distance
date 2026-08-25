@@ -35,7 +35,7 @@
 uv run scripts/guided_search.py \
   --strategy no_replacement_count \
   --goals 5 \
-  --seeds 20 \
+  --seeds 100 \
   --k 1 \
   --attempts 10 \
   --rng-seed 42 \
@@ -45,9 +45,9 @@ or exit $status
 
 
 uv run scripts/guided_search.py \
-  --strategy no_replacement_count \
+  --strategy no_replacement_naive \
   --goals 5 \
-  --seeds 20 \
+  --seeds 100 \
   --k 1 \
   --attempts 10 \
   --rng-seed 42 \
