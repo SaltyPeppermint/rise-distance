@@ -342,7 +342,7 @@ mod tests {
     use egg::{EGraph, SymbolLang};
     use num::BigUint;
 
-    use super::super::suffix_convolutions;
+    use super::super::super::suffix_convolutions;
     use super::*;
 
     fn rooted_counts(
