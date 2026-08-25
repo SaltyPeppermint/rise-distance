@@ -39,7 +39,7 @@ class Args:
     """Grid output directory. Auto-numbered under `data/guided_search_grid/`
     when omitted."""
 
-    size_allocations: str = "greedy,uniform,proportional:1"
+    size_allocations: str = "greedy,uniform"
     """Comma-separated root-size allocations accepted by `candidates`."""
 
     candidate_seeds: str = "0,1,2"

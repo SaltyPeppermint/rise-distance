@@ -167,7 +167,7 @@ class Args:
 
     size_allocation: str = "greedy"
     """How `candidates` allocates the candidate budget across root term sizes:
-    `greedy`, `uniform`, or `proportional:<min>`."""
+    `greedy` or `uniform`"""
 
     novel_size_goal: int = 5
     """Number of novel sizes the exact analysis must find."""

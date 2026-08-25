@@ -128,7 +128,7 @@ attempt results, pair summaries, unguided baseline, and joined comparison.
 | `--candidate-pools` | Pools to generate in a shared manifest. Defaults to only the pool selected by `--strategy`; the grid driver supplies all pools needed by its paired strategies. |
 | `--full-union` | Union guide nodes by their origin e-class (experimental; helped reachability historically). |
 | `--candidate-seed N` | Rust candidate-construction seed. |
-| `--size-allocation` | Root-size allocation: `greedy`, `uniform`, or `proportional:<min>`. |
+| `--size-allocation` | Root-size allocation: `greedy` or `uniform` |
 | `--novel-size-goal N` | Number of novel sizes exact construction must find. |
 | `--jobs N` | Concurrent `verify` legs (default `os.cpu_count()`). Lower it if the large leg egraphs exhaust RAM. |
 | `--seeds N` | Only process the first N seeds. |

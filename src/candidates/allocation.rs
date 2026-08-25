@@ -16,8 +16,6 @@ pub enum ExactSelectionPolicy {
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub enum SizeAllocation {
-    /// Proportional to the number of terms of that size with a minimum number per size
-    Proportional(usize),
     /// Fill the candidate budget greedily from the smallest size upward: take as
     /// many terms as each size has before moving to the next bigger one, until
     /// the goal is reached (or every size is exhausted).
@@ -29,7 +27,6 @@ pub enum SizeAllocation {
 impl Display for SizeAllocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Proportional(min) => write!(f, "proportional:{min}"),
             Self::Greedy => write!(f, "greedy"),
             Self::Uniform => write!(f, "uniform"),
         }
@@ -40,15 +37,6 @@ impl FromStr for SizeAllocation {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s == "proportional" {
-            return Ok(Self::Proportional(10));
-        }
-        if let Some(rest) = s.strip_prefix("proportional:") {
-            let min = rest
-                .parse::<usize>()
-                .map_err(|e| format!("invalid min_per_size in 'proportional:{rest}': {e}"))?;
-            return Ok(Self::Proportional(min));
-        }
         if s == "greedy" {
             return Ok(Self::Greedy);
         }
@@ -56,7 +44,7 @@ impl FromStr for SizeAllocation {
             return Ok(Self::Uniform);
         }
         Err(format!(
-            "unknown size allocation '{s}': expected 'uniform', 'greedy', or 'proportional:<min>'"
+            "unknown size allocation '{s}': expected 'uniform' or 'greedy'"
         ))
     }
 }
@@ -115,24 +103,6 @@ impl SizeAllocation {
                         let take = remaining.min(available);
                         remaining -= take;
                         (size, take)
-                    })
-                    .collect()
-            }
-            Self::Proportional(min_per_size) => {
-                let total_terms = (min_size..=max_size)
-                    .filter_map(|s| histogram.get(&s))
-                    .sum::<C>();
-                let budget = C::from_usize(total_candidates).unwrap();
-                let floor = u64::try_from(min_per_size).unwrap();
-                (min_size..=max_size)
-                    .map(|size| {
-                        let n = histogram.get(&size).map_or(0, |count| {
-                            (count.clone() * &budget / &total_terms)
-                                .to_u64()
-                                .unwrap_or(u64::MAX)
-                                .max(floor)
-                        });
-                        (size, n)
                     })
                     .collect()
             }
