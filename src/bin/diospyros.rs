@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use egg::{Extractor, RecExpr};
 
 use num::BigUint;
-use rise_distance::candidates::{ExactCandidatePackage, ExactSelectionPolicy, SizeAllocation};
+use rise_distance::candidates::{ExactCandidatePackage, SelectionPolicy, SizeAllocation};
 use rise_distance::eqsat::{EqsatConfig, EqsatMetadata, EqsatResult};
 use rise_distance::langs::diospyros::VecLang;
 use rise_distance::langs::diospyros::cost::VecCostFn;
@@ -251,7 +251,7 @@ fn run_cut(
     let Some(candidates) = package.draw_frontier_candidates(
         args.candidate_count,
         SizeAllocation::Greedy,
-        ExactSelectionPolicy::Independent,
+        SelectionPolicy::Independent,
         [args.cut_iters as u64, 0],
     ) else {
         warn("Candidate drawing failed");

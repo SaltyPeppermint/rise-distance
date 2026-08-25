@@ -14,7 +14,7 @@ use std::fmt::Display;
 use egg::{Language, RecExpr, Rewrite};
 
 use crate::Counter;
-use crate::candidates::{ExactCandidatePackage, ExactSelectionPolicy, SizeAllocation};
+use crate::candidates::{ExactCandidatePackage, SelectionPolicy, SizeAllocation};
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
 use crate::sketch::Sketch;
 use crate::{MyAnalysis, MyLanguage, OriginLang, id0, lower};
@@ -164,7 +164,7 @@ where
     let Some(candidates) = package.draw_frontier_candidates(
         args.candidate_count,
         SizeAllocation::Greedy,
-        ExactSelectionPolicy::Independent,
+        SelectionPolicy::Independent,
         [args.cut_iters as u64, 0],
     ) else {
         println!("{search_name}: candidate drawing failed");

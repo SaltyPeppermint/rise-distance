@@ -30,7 +30,7 @@ Example:
   candidates --language math --seed '(+ x 0)' \\
     --max-iters 38 --max-nodes 1000000 --max-time 10 \\
     --max-memory 2000000000 \\
-    --candidate-pool exact_balanced
+    --candidate-pool exact_independent
 "
 )]
 struct Args {

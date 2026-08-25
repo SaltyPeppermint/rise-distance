@@ -8,10 +8,9 @@ use crate::Counter;
 
 #[derive(Serialize, serde::Deserialize, Debug, Clone, Copy, clap::ValueEnum, strum::Display)]
 #[strum(serialize_all = "kebab-case")]
-pub enum ExactSelectionPolicy {
+pub enum SelectionPolicy {
     Independent,
     Naive,
-    Balanced,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

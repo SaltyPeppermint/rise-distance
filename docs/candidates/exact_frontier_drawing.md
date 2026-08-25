@@ -1,57 +1,43 @@
-# Exact frontier drawing policies
+# Exact frontier drawing
 
-This document records why frontier membership was separated from drawing
-policy, how the shared constrained derivation space works, and how the
-coverage-balanced drawer increases structural variety without tree-distance
-comparisons or unbounded rejection sampling.
+Frontier membership and random selection are separate responsibilities.
+`FrontierSpace` owns the correctness-critical constrained derivation space;
+`IndependentFrontierDrawer` chooses among the feasible productions it exposes.
+Changing the probability distribution therefore does not require
+reimplementing the frontier test.
 
 The relevant implementation is:
 
-- [`src/candidates/exact/count/novel.rs`](../../src/candidates/exact/count/novel.rs): match,
-  joint-count, and outside-`prev` histograms.
-- [`src/candidates/exact/draw/frontier/space.rs`](../../src/candidates/exact/draw/frontier/space.rs):
-  shared frontier states and feasible derivations.
-- [`src/candidates/exact/draw/frontier/independent.rs`](../../src/candidates/exact/draw/frontier/independent.rs):
+- [`src/candidates/count/novel.rs`](../../src/candidates/count/novel.rs):
+  previous-node matches plus plain, joint, and novel histograms;
+- [`src/candidates/draw/frontier/space.rs`](../../src/candidates/draw/frontier/space.rs):
+  frontier states and feasible derivations; and
+- [`src/candidates/draw/frontier/independent.rs`](../../src/candidates/draw/frontier/independent.rs):
   independent weighted drawing over that space.
-- [`src/candidates/exact/draw/frontier/balanced.rs`](../../src/candidates/exact/draw/frontier/balanced.rs):
-  batch-local coverage-balanced drawing over the same space.
 
-The detailed counting argument remains in
-[`exact_novel_candidates.md`](exact_novel_candidates.md).
-Direct grammar drawing, including exact binder handling, is documented
-separately in [`../generation/random_terms.md`](../generation/random_terms.md).
+The detailed counting argument is in
+[`exact_novel_candidates.md`](exact_novel_candidates.md). Direct grammar
+drawing, including binder handling, is documented separately in
+[`../generation/random_terms.md`](../generation/random_terms.md).
 
-## Motivation
+## Responsibilities
 
-The former frontier implementation had two responsibilities:
+The frontier implementation must:
 
-1. Preserve the frontier invariant: return only current-graph terms which are
-   not extractable from any e-class in the previous graph.
-2. Choose a probability distribution over those terms.
+1. return only current-graph terms that are absent from every previous
+   e-class;
+2. construct terms of exactly the requested size;
+3. terminate on cyclic e-graphs for every finite requested size; and
+4. permit different random distributions over the valid derivations without
+   duplicating the correctness logic.
 
-Those concerns need not be coupled. In particular, count-proportional drawing
-can be correct and uniform over individual terms while still putting almost
-all probability mass in one enormous family of structurally similar terms.
-Changing that distribution should not require reimplementing the
-correctness-critical frontier test.
+Construction is direct. It does not generate an unconstrained term and reject
+it after checking previous membership.
 
-Post-hoc alternatives have unattractive costs:
+## Frontier membership as a tree automaton
 
-- Unbounded rejection sampling can take unbounded work when the proposal
-  distribution is concentrated.
-- Zhang-Shasha tree distance requires dynamic programming for many pairs of
-  completed trees.
-- A bounded candidate pool has predictable cost, but cannot cover a rare
-  structural family it never proposes.
-
-The chosen design instead balances decisions while a valid frontier term is
-being constructed. Every partial derivation is feasible, every completed term
-is on the frontier, and the amount of construction work is bounded by a fixed
-multiple of the requested batch size.
-
-## Frontier membership as a two-state tree automaton
-
-For a current e-class `c`, a subtree has one of these states:
+For a current e-class, a concrete subtree is constructed under one of two
+states:
 
 ```rust
 enum FrontierState {
@@ -60,264 +46,154 @@ enum FrontierState {
 }
 ```
 
-- `InsidePrev(pc)` means the concrete subtree is also extractable from
-  previous e-class `pc`.
-- `OutsidePrev` means it is not extractable from any previous e-class.
+- `InsidePrev(pc)` means that the concrete subtree must also be extractable
+  from previous e-class `pc`.
+- `OutsidePrev` means that the concrete subtree must not be extractable from
+  any previous e-class.
 
-The transition at a current e-node is deterministic once the child states are
-known:
+The transition at a current e-node is determined by its child states:
 
-1. If any child is `OutsidePrev`, the parent is `OutsidePrev`.
+1. If any child is `OutsidePrev`, the parent is also `OutsidePrev`.
 2. Otherwise every child is `InsidePrev(pc_i)`. Replace the current e-node's
-   children with the `pc_i` values and look it up in `prev`.
-   - A successful lookup gives `InsidePrev(parent_pc)`.
-   - A failed lookup gives `OutsidePrev`.
+   children with those previous-class ids and look up the translated node in
+   the previous graph.
+   - A successful lookup places the parent in `InsidePrev(parent_pc)`.
+   - A failed lookup places the parent in `OutsidePrev`.
 
 ### `OutsidePrev` as a proof obligation
 
-The transition above is bottom-up, but construction runs top-down. At an
-`OutsidePrev` node, the drawer has the obligation to ensure that the completed
-subtree is absent from `prev`. A feasible child-state profile discharges or
-delegates that obligation in one of two ways:
+Construction runs top-down, so `OutsidePrev` is an obligation that a selected
+production must discharge or delegate:
 
-1. **Step outside at the current node.** Every child is
-   `InsidePrev(pc_i)`, but the translated parent
-   `node(pc_1, ..., pc_k)` has no match in `prev`. The current node is the first
-   point where reconstruction in `prev` fails. Its descendants can all be
-   constructed with `InsidePrev` constraints.
-2. **Delegate the step to a child.** At least one child is
-   `OutsidePrev`. That child must establish a failure somewhere in its own
-   subtree. Because a previous parent extraction requires every concrete child
-   extraction to belong to a previous e-class, the child's failure also makes
-   the current node—and every ancestor above it—`OutsidePrev`.
+- An all-`InsidePrev` child profile discharges the obligation at the current
+  node when the translated parent has no previous-node match.
+- A profile containing an `OutsidePrev` child delegates the obligation to that
+  child. Its eventual failure to reconstruct also makes every ancestor absent
+  from the previous graph.
 
-Thus a completed term needs only one failure to reconstruct in `prev`. The
-drawer does not store a separate `already_outside` flag: an `OutsidePrev`
-state is the still-active obligation, while an all-`InsidePrev` profile with no
-previous-node match discharges it locally.
-
-For example, if `prev` contains `F(A, B)` but not `F(B, B)`, then an
-`OutsidePrev` construction of `F` treats these profiles differently:
+For example, if the previous graph contains `F(A, B)` but not `F(B, B)`, then:
 
 ```text
 [InsidePrev(A), InsidePrev(B)]  rejected: reconstructs F(A, B)
-[InsidePrev(B), InsidePrev(B)]  accepted: steps outside at this F
-[OutsidePrev,  InsidePrev(B)]  accepted: delegates the step to the first child
+[InsidePrev(B), InsidePrev(B)]  accepted: steps outside at F
+[OutsidePrev,  InsidePrev(B)]   accepted: delegates to the first child
 ```
 
-Although one failure is sufficient for frontier membership, every child is
-still classified as either `OutsidePrev` or `InsidePrev(pc)`. This partitions
-the concrete child terms into disjoint cases and lets the `novel` and `joint`
-histograms provide exact branch counts. A `Free` state would combine those
-cases and lose that direct, non-overlapping correspondence.
+Every child remains classified as either `OutsidePrev` or one particular
+`InsidePrev(pc)`. These cases are disjoint because a concrete previous term
+belongs to a unique rebuilt previous e-class.
 
-Drawing a frontier term means constructing a derivation rooted at:
+Drawing a frontier term starts at:
 
 ```text
 (current root class, requested size, OutsidePrev)
 ```
 
-This definition is stronger and more accurate than requiring a term to contain
-a "new e-node." Equality saturation can create a new combination solely by
-merging child classes; all operators in the resulting frontier term may
-already have appeared in `prev`.
+This is more precise than requiring the term to contain a newly added e-node.
+A novel term can arise solely from a new combination created by merging child
+classes.
 
-The existing counting tables map directly onto the automaton:
+## Count tables and feasible productions
 
-```text
-histogram(c, OutsidePrev)   = novel[c]
-histogram(c, InsidePrev(p)) = joint[(c, p)]
-```
-
-`FrontierSpace` uses these histograms plus the precomputed node matches to
-enumerate only feasible `(e-node, child-state profile)` branches. It also
-enumerates only child sizes that leave a feasible budget for the remaining
-children.
-
-Consequently, a drawing policy never receives an invalid choice. Frontier
-correctness belongs to `FrontierSpace`, not to an individual random policy.
-
-## Exact drawer responsibilities
-
-"Independent" describes its important behavior: every complete term is drawn
-without knowledge of earlier terms in the batch. It still supports both
-existing weighers:
-
-- `CountWeigher`: weight a derivation by the number of complete terms beneath
-  it.
-- `NaiveWeigher`: give feasible local derivation choices equal weight.
-
-Both use `FrontierSpace`, so the refactor does not change their frontier
-semantics.
-
-`BalancedFrontierDrawer` also uses `FrontierSpace`, but shares a coverage map
-across all constructions requested from one `draw_size` call.
-
-## Coverage-balanced construction
-
-The balanced policy records three local feature families:
-
-1. **Node coverage**
-
-   ```text
-   (construction context, current class, frontier state, e-node index)
-   ```
-
-   The context fingerprints the parent derivation, tree position, and preceding
-   sibling terms. This prevents repeated occurrences of the same e-class from
-   sharing a counter and synchronizing their choices into a small set of
-   combinations.
-
-2. **Profile coverage**
-
-   ```text
-   (node key, child frontier states)
-   ```
-
-   This captures the reason a term is on the frontier: novelty introduced at
-   the current node, propagated through one or more children, or produced by a
-   particular combination of agreements with previous e-classes.
-
-3. **Child-size coverage**
-
-   ```text
-   (profile key, child position, chosen child size)
-   ```
-
-Together these are hierarchical coverage metrics: choices are balanced within
-the structural prefix where they occur, rather than only by their global
-e-class identity. In particular, a later child's choices are balanced
-separately for each preceding sibling term, which spreads candidates across
-joint combinations instead of merely balancing each child's marginal frequencies.
-
-For each feasible choice, the current implementation combines its exact
-completion capacity with its usage penalty:
+The counted implementation maps its histograms onto the automaton states:
 
 ```text
-branch usage =
-    node_penalty    * node_usage
-  + profile_penalty * profile_usage
+histogram(current_class, OutsidePrev)
+    = novel[current_class]
 
-branch weight =
-    branch_capacity / (branch_usage + 1)
-
-size usage =
-    child_size_penalty * child_size_usage
-
-size weight =
-    (child_capacity * remaining_sibling_capacity) / (size_usage + 1)
+histogram(current_class, InsidePrev(previous_class))
+    = joint[(current_class, previous_class)]
 ```
 
-It draws from these weights with the caller's seeded RNG. Capacity prevents a
-one-term branch from receiving the same repeated quota as a branch with
-thousands of distinct completions; the usage denominator still pushes the
-batch toward under-covered choices. Weights are evaluated in log space so very
-large exact counts remain numerically stable.
+For `InsidePrev(pc)`, `FrontierSpace` considers current e-node matches whose
+previous parent is `pc`. Each child receives the corresponding
+`InsidePrev(previous_child)` state.
 
-The defaults are:
+For `OutsidePrev`, each child slot receives these possible states:
 
 ```text
-node_penalty       = 2
-profile_penalty    = 1
-child_size_penalty = 1
+OutsidePrev
+InsidePrev(pc) for each previous class in the child's match cover
 ```
 
-Favoring node coverage first prevents an e-node with many profiles from
-immediately dominating all other e-nodes. Profile and child-size coverage then
-spread candidates within each structural family.
+`FrontierSpace` enumerates child-state profiles and rejects every profile that
+exactly completes a known previous-node match. It then uses the state
+histograms and exact convolution to retain only profiles whose children can
+fill the requested parent size.
 
-Coverage is local to a `draw_size` batch. `draw()` creates an empty coverage
-map because one isolated draw has no earlier terms to diversify against.
-Keeping the state local avoids interior mutability, call-order dependence
-between unrelated batches, and synchronization requirements.
+After choosing a production, suffix convolutions restrict each child-size
+choice to values that leave a feasible exact-size remainder for the later
+children. Consequently, the random selection layer receives only feasible
+branches and size splits.
 
-## Work bound and duplicate behavior
+## Selection distributions
 
-`BalancedFrontierDrawer::draw_size` targets the requested number of distinct
-outputs, capped by the exact number of available frontier terms reported by the
-histogram. It retains one coverage map while refilling duplicates, with the
-same `32 × requested` construction budget as the independent drawer.
+`IndependentFrontierDrawer` draws each complete expression without reference
+to earlier expressions in the batch. A `Weigher` controls its local random
+choices:
 
-Completed terms are placed in a set before return. An exact duplicate is
-collapsed and another construction is attempted while budget remains.
-Therefore:
+- `CountWeigher` weights a branch by its number of complete expressions and a
+  child-size split by `child_count * rest_count`.
+- `NaiveWeigher` assigns equal weight to every feasible local branch and
+  child-size choice.
 
-- Runtime remains bounded when the frontier is dominated by similar or
-  identical derivations.
-- The method usually fills duplicate-induced shortfalls, while retaining the
-  coverage policy across refill draws.
-- It can still return fewer than requested after exhausting the bounded work
-  budget, consistent with the `ExactDrawer::draw_size` "up to" contract.
-
-`ExactCandidatePackage::draw_balanced_frontier_candidates` is the production
-entry point. It uses the same size-allocation logic as
-`draw_frontier_candidates`, but always draws from the frontier and applies the
-balanced policy.
-`draw_balanced_frontier_candidates_with_config` exposes the three penalties when
-an experiment needs to tune them.
+Both distributions operate over the same `FrontierSpace`; they can affect
+which valid expression is likely, but not its size or frontier membership.
 
 ## Correctness argument
 
-The two recursive claims are:
+The recursive invariants are:
 
-- Constructing `(c, s, InsidePrev(pc))` returns a size-`s` extraction from
-  current class `c` whose lookup in `prev` is `pc`.
-- Constructing `(c, s, OutsidePrev)` returns a size-`s` extraction from current
-  class `c` whose lookup in `prev` fails.
+- constructing `(c, s, InsidePrev(pc))` returns a size-`s` extraction from
+  current class `c` whose lookup in the previous graph is `pc`; and
+- constructing `(c, s, OutsidePrev)` returns a size-`s` extraction from current
+  class `c` whose lookup in the previous graph fails.
 
-For `InsidePrev(pc)`, `FrontierSpace` exposes only current-node/previous-match
-pairs whose previous parent is `pc`, and gives every child the corresponding
-`InsidePrev(prev_child)` state. The induction hypothesis establishes every
-child lookup, so the translated parent node exists in `pc`.
+For `InsidePrev(pc)`, every exposed current-node/previous-match pair has
+previous parent `pc`, and every child receives the matched previous-child
+state. The induction hypothesis establishes the child lookups, so the
+translated parent exists in `pc`.
 
 For `OutsidePrev`, `FrontierSpace` rejects every child-state profile equal to a
-known previous-node match. If a selected profile contains `OutsidePrev`, the
-induction hypothesis makes a previous parent lookup impossible. If all
-children are `InsidePrev`, the rejected-match check ensures that their
-translated parent node does not exist in `prev`.
+known previous-node match. If the selected profile contains `OutsidePrev`, the
+induction hypothesis makes reconstruction of a previous parent impossible. If
+all children are `InsidePrev`, the rejected-match check establishes that the
+translated parent is absent.
 
-Both independent and balanced policies choose exclusively from these branches,
-so their different selection distributions cannot affect this proof.
+For both states, suffix feasibility makes the selected child sizes sum to
+`s - 1`; adding the current e-node gives total size `s`.
 
-## Future optimizations
+Every recursive child size is strictly smaller than its parent size. The proof
+and construction therefore remain well-founded even when the e-graph contains
+cycles.
 
-The current version deliberately starts with a small, auditable policy.
-Promising follow-up work is:
+## Duplicate collection and work bound
 
-1. **Tunable capacity tempering.** Expose exponents in
-   `capacity^alpha / (1 + usage)^beta` when experiments need a continuum
-   between structural and count-proportional balancing.
+Repeated direct draws can produce the same complete expression. The shared
+`Drawer::draw_size` implementation inserts completed expressions into a set
+and retries until it reaches the requested distinct count or exhausts its
+fixed draw budget.
 
-2. **Exact drawing without replacement.** Implement rank/unrank over the
-   frontier derivation grammar. Production blocks have known counts, and child
-   products can use mixed-radix ranks. Distinct ranks would guarantee distinct
-   terms with no rejection.
+The exact histogram caps the target to the known number of available terms.
+The retry phase is additionally bounded by
+`MAX_DRAW_ATTEMPTS_PER_CANDIDATE * requested_count`. Duplicate handling is
+therefore finite and separate from frontier correctness: every attempted draw
+is already a valid exact-size frontier term.
 
-3. **Hierarchical quota allocation.** Allocate a batch quota among root
-   branches, profiles, and size splits before constructing terms. Concave
-   capacity weights would provide explicit stratification rather than the
-   current online least-used heuristic.
+The returned expressions are sorted after collection, making the result stable
+for a fixed seed and deterministic traversal order.
 
-4. **Cross-size coverage.** Override `draw_batch` and share selected coverage
-   features across size buckets. At present each `draw_size` call starts a
-   fresh coverage map.
+## Possible follow-up work
 
-5. **Lazy profile generation.** The Cartesian product of child-state options
-   is harmless for the usual arity-zero-to-two languages, but a factored
-   dynamic program would avoid materializing every profile for high-arity
-   operators.
+Potential optimizations should preserve the boundary between feasibility and
+selection:
 
-6. **Branch and convolution caches.** Cache feasible branches and suffix
-   convolutions by `(class, size, state)` when repeated batch construction
-   makes their recomputation measurable.
+1. Enumerate child-state profiles lazily so high-arity operators do not require
+   materializing their full Cartesian product.
+2. Cache feasible branches or suffix convolutions by `(class, size, state)` if
+   repeated batch construction makes recomputation significant.
+3. Implement exact rank/unrank over counted frontier derivations if guaranteed
+   drawing without replacement becomes valuable.
 
-7. **Diversity measurements.** Evaluate node/profile coverage, structural
-   shingle Jaccard distance, and downstream search success. Tree-edit distance
-   can remain an offline evaluation metric without entering the drawing hot
-   path.
-
-8. **CLI tuning.** The balanced policy is available as the `balanced`
-   `ExactSelectionPolicy`, as `exact_balanced` in the guide menu, and through the
-   Python driver's `no_replacement_balanced` / `with_replacement_balanced`
-   strategies. A future CLI can expose the individual `BalanceConfig`
-   penalties when experiments need values other than the defaults.
+None of these changes should participate in proving size or frontier status;
+they operate only on productions already established as feasible.

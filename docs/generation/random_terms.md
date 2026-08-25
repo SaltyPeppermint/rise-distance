@@ -106,9 +106,6 @@ The candidate documents describe a separate pipeline:
 - [Exact novel-candidate construction](../candidates/exact_novel_candidates.md)
   counts terms extractable from a current e-graph but absent from a previous
   e-graph.
-- [Exact frontier drawing policies](../candidates/exact_frontier_drawing.md)
-  compares independent count-weighted drawing with coverage-balanced drawing
-  over that constrained space.
 
 ## Filtering in `generate`
 

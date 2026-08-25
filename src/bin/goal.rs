@@ -17,7 +17,7 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 
-use rise_distance::candidates::{ExactCandidatePackage, ExactSelectionPolicy, SizeAllocation};
+use rise_distance::candidates::{ExactCandidatePackage, SelectionPolicy, SizeAllocation};
 use rise_distance::cli::GoalGenMetadata;
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
@@ -57,8 +57,8 @@ struct Args {
     size_allocation: SizeAllocation,
 
     /// Exact policy used to draw goal candidates.
-    #[arg(long, default_value_t = ExactSelectionPolicy::Independent)]
-    exact_selection_policy: ExactSelectionPolicy,
+    #[arg(long, default_value_t = SelectionPolicy::Independent)]
+    exact_selection_policy: SelectionPolicy,
 
     /// How much to grow `max_size` on each exact-size-search retry.
     #[arg(long, default_value_t = 5)]

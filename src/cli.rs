@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::Counter;
-use crate::candidates::ExactSelectionPolicy;
+use crate::candidates::SelectionPolicy;
 use crate::eqsat::EqsatMetadata;
 use crate::{MyLanguage, OriginLang};
 
@@ -21,8 +21,6 @@ pub enum CandidatePool {
     ExactIndependent,
     #[value(name = "exact_naive")]
     ExactNaive,
-    #[value(name = "exact_balanced")]
-    ExactBalanced,
     #[value(name = "smallest_overall")]
     SmallestOverall,
     #[value(name = "smallest_novel")]
@@ -35,7 +33,6 @@ impl CandidatePool {
         match self {
             Self::ExactIndependent => "exact_independent",
             Self::ExactNaive => "exact_naive",
-            Self::ExactBalanced => "exact_balanced",
             Self::SmallestOverall => "smallest_overall",
             Self::SmallestNovel => "smallest_novel",
         }
@@ -48,17 +45,15 @@ impl CandidatePool {
         match self {
             Self::ExactIndependent => 1,
             Self::ExactNaive => 2,
-            Self::ExactBalanced => 3,
             Self::SmallestOverall | Self::SmallestNovel => 0,
         }
     }
 
     #[must_use]
-    pub const fn exact_policy(self) -> Option<ExactSelectionPolicy> {
+    pub const fn exact_policy(self) -> Option<SelectionPolicy> {
         match self {
-            Self::ExactIndependent => Some(ExactSelectionPolicy::Independent),
-            Self::ExactNaive => Some(ExactSelectionPolicy::Naive),
-            Self::ExactBalanced => Some(ExactSelectionPolicy::Balanced),
+            Self::ExactIndependent => Some(SelectionPolicy::Independent),
+            Self::ExactNaive => Some(SelectionPolicy::Naive),
             Self::SmallestOverall | Self::SmallestNovel => None,
         }
     }
@@ -140,36 +135,4 @@ pub struct GoalGenMetadata<C: Counter> {
     pub base_memory: u64,
     /// Largest observed absolute live heap during the unguided goal run.
     pub base_peak_live_heap: u64,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn candidate_pool_names_describe_construction_paths() {
-        let names = [
-            CandidatePool::ExactIndependent,
-            CandidatePool::ExactNaive,
-            CandidatePool::ExactBalanced,
-            CandidatePool::SmallestOverall,
-            CandidatePool::SmallestNovel,
-        ]
-        .map(CandidatePool::name);
-        assert_eq!(
-            names,
-            [
-                "exact_independent",
-                "exact_naive",
-                "exact_balanced",
-                "smallest_overall",
-                "smallest_novel",
-            ]
-        );
-        assert_eq!(CandidatePool::ExactBalanced.rng_salt(), 3);
-        assert_eq!(
-            serde_json::to_string(&CandidatePool::ExactBalanced).unwrap(),
-            "\"exact_balanced\""
-        );
-    }
 }

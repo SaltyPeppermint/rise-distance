@@ -10,7 +10,7 @@ use rand_chacha::ChaCha12Rng;
 use crate::Counter;
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
-pub use frontier::{BalanceConfig, BalancedFrontierDrawer, IndependentFrontierDrawer};
+pub use frontier::IndependentFrontierDrawer;
 pub use plain::PlainDrawer;
 pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
 

@@ -28,7 +28,6 @@ from common import eqsat_limits, exit_if_missing, language_eqsat_flags, run_json
 GoalSelectionPolicy = Literal[
     "independent",
     "naive",
-    "balanced",
 ]
 
 
@@ -54,8 +53,7 @@ class Args:
     """How to allocate the candidate budget across sizes (forwarded if set)."""
 
     exact_selection_policy: GoalSelectionPolicy | None = None
-    """How to draw goal candidates: independent, naive, or balanced
-    (forwarded if set)."""
+    """How to draw goal candidates: independent or naive (forwarded if set)."""
 
     skip_unmeasured: bool = True
     """Skip seeds whose measurement is missing or empty (no iterations were

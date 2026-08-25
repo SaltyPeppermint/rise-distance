@@ -21,42 +21,41 @@ or exit $status
 uv run scripts/generate_goals.py --goals 10 data/seed_terms/plenty-houses/
 or exit $status
 
-# Exact, coverage-balanced candidates across guide-replay memory limits.
-uv run scripts/guided_search.py \
-  --strategy no_replacement_balanced \
-  --goals 5 \
-  --seeds 100 \
-  --k 1 \
-  --attempts 10 \
-  --rng-seed 42 \
-  --full-union --stop-memory 100M \
-  data/seed_terms/plenty-houses
-or exit $status
-
-uv run scripts/guided_search.py \
-  --strategy no_replacement_balanced \
-  --goals 5 \
-  --seeds 100 \
-  --k 1 \
-  --attempts 10 \
-  --rng-seed 42 \
-  --full-union --stop-memory 250M \
-  data/seed_terms/plenty-houses
-or exit $status
-
 # uv run scripts/guided_search.py \
-#   --strategy no_replacement_balanced \
+#   --strategy no_replacement_independent \
 #   --goals 5 \
 #   --seeds 100 \
 #   --k 1 \
 #   --attempts 10 \
 #   --rng-seed 42 \
-#   --full-union --stop-memory 500M \
+#   --full-union --stop-memory 100M \
 #   data/seed_terms/plenty-houses
 # or exit $status
 
 # uv run scripts/guided_search.py \
-#   --strategy no_replacement_balanced \
+#   --strategy no_replacement_independent \
+#   --goals 5 \
+#   --seeds 100 \
+#   --k 1 \
+#   --attempts 10 \
+#   --rng-seed 42 \
+#   --full-union --stop-memory 250M \
+#   data/seed_terms/plenty-houses
+# or exit $status
+
+# uv run scripts/guided_search.py \
+#   --strategy no_replacement_independent \
+#   --goals 5 \
+#   --seeds 100 \
+#   --k 1 \
+#   --attempts 10 \
+#   --rng-seed 42 \
+#   --full-union --stop-memory 1000M \
+#   data/seed_terms/plenty-houses
+# or exit $status
+
+# uv run scripts/guided_search.py \
+#   --strategy no_replacement_independent \
 #   --goals 5 \
 #   --seeds 100 \
 #   --k 1 \

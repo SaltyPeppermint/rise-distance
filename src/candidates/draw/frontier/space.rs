@@ -6,8 +6,6 @@
 //! [`FrontierSpace`], so they cannot accidentally construct a term that
 //! violates the requested frontier state.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
-
 use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
 use rand_chacha::ChaCha12Rng;
@@ -40,38 +38,12 @@ pub(crate) struct ChildSizeChoice<C> {
     pub rest_count: C,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct BranchSite {
-    pub curr: Id,
-    pub state: FrontierState,
-    /// Fingerprint of the parent derivation, tree position, and preceding
-    /// siblings within this construction.
-    pub context: u64,
-}
-
-pub(crate) struct ChildSizeSite<'a> {
-    pub branch: BranchSite,
-    pub node_idx: usize,
-    pub child_states: &'a [FrontierState],
-    pub child_index: usize,
-}
-
 /// A policy for choosing among derivations which are already known to satisfy
 /// the frontier constraint.
 pub(crate) trait FrontierPolicy<C: Counter> {
-    fn pick_branch(
-        &mut self,
-        site: BranchSite,
-        choices: &[FrontierBranch<'_, C>],
-        rng: &mut ChaCha12Rng,
-    ) -> usize;
+    fn pick_branch(&mut self, choices: &[FrontierBranch<'_, C>], rng: &mut ChaCha12Rng) -> usize;
 
-    fn pick_child_size(
-        &mut self,
-        site: ChildSizeSite<'_>,
-        choices: &[ChildSizeChoice<C>],
-        rng: &mut ChaCha12Rng,
-    ) -> usize;
+    fn pick_child_size(&mut self, choices: &[ChildSizeChoice<C>], rng: &mut ChaCha12Rng) -> usize;
 }
 
 /// The constrained derivation space common to all frontier drawers.
@@ -120,34 +92,15 @@ where
     where
         P: FrontierPolicy<C>,
     {
-        self.construct_in_context(id, size, state, 0, policy, rng)
-    }
-
-    fn construct_in_context<P>(
-        &self,
-        id: Id,
-        size: usize,
-        state: FrontierState,
-        context: u64,
-        policy: &mut P,
-        rng: &mut ChaCha12Rng,
-    ) -> RecExpr<OriginLang<L>>
-    where
-        P: FrontierPolicy<C>,
-    {
         let curr = self.graph().find(id);
-        let branch_site = BranchSite {
-            curr,
-            state,
-            context,
-        };
+
         let branches = self.branches(curr, size, state);
         assert!(
             !branches.is_empty(),
             "frontier state has at least one feasible production"
         );
 
-        let branch_idx = policy.pick_branch(branch_site, &branches, rng);
+        let branch_idx = policy.pick_branch(&branches, rng);
         let branch = &branches[branch_idx];
         let node = &self.graph()[curr].nodes[branch.node_idx];
         let child_budget = size - 1;
@@ -155,11 +108,6 @@ where
 
         let mut remaining = child_budget;
         let mut children = Vec::with_capacity(node.children().len());
-        let mut child_context = mix_context(context, usize::from(curr) as u64);
-        child_context = mix_context(child_context, branch.node_idx as u64);
-        for child_state in &branch.child_states {
-            child_context = mix_context(child_context, frontier_state_key(*child_state));
-        }
         for (child_index, &child_id) in node.children().iter().enumerate() {
             let choices = branch.child_hists[child_index]
                 .iter()
@@ -178,31 +126,16 @@ where
                 !choices.is_empty(),
                 "chosen frontier production has a feasible child-size split"
             );
-            let size_idx = policy.pick_child_size(
-                ChildSizeSite {
-                    branch: branch_site,
-                    node_idx: branch.node_idx,
-                    child_states: &branch.child_states,
-                    child_index,
-                },
-                &choices,
-                rng,
-            );
+            let size_idx = policy.pick_child_size(&choices, rng);
             let child_size = choices[size_idx].size;
             remaining -= child_size;
-            let site_context = mix_context(
-                mix_context(child_context, child_index as u64),
-                child_size as u64,
-            );
-            let child = self.construct_in_context(
+            let child = self.construct(
                 child_id,
                 child_size,
                 branch.child_states[child_index],
-                site_context,
                 policy,
                 rng,
             );
-            child_context = mix_context(child_context, expression_hash(&child));
             children.push(child);
         }
 
@@ -306,28 +239,6 @@ where
             })
             .collect()
     }
-}
-
-/// Deterministically combine one more construction-prefix component.
-fn mix_context(context: u64, value: u64) -> u64 {
-    context
-        ^ value
-            .wrapping_add(0x9e37_79b9_7f4a_7c15)
-            .wrapping_add(context << 6)
-            .wrapping_add(context >> 2)
-}
-
-fn frontier_state_key(state: FrontierState) -> u64 {
-    match state {
-        FrontierState::OutsidePrev => 0,
-        FrontierState::InsidePrev(id) => (usize::from(id) as u64).wrapping_add(1),
-    }
-}
-
-fn expression_hash<L: MyLanguage>(expr: &RecExpr<OriginLang<L>>) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    expr.hash(&mut hasher);
-    hasher.finish()
 }
 
 fn enumerate_profiles<T: Clone>(slot_options: &[Vec<T>]) -> Vec<Vec<T>> {

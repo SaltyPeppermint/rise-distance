@@ -12,7 +12,7 @@ Example:
     uv run scripts/guided_search.py data/seed_terms/dusky-cramp \\
         --stop-memory 4G \\
         --attempts 5 --k 10 \\
-        --strategy no_replacement_balanced --full-union
+        --strategy no_replacement_independent --full-union
 """
 
 import dataclasses
@@ -44,10 +44,8 @@ from common import (
 CandidateStrategy = Literal[
     "no_replacement_independent",
     "no_replacement_naive",
-    "no_replacement_balanced",
     "with_replacement_independent",
     "with_replacement_naive",
-    "with_replacement_balanced",
 ]
 SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
 Strategy = Literal[CandidateStrategy, SmallestStrategy]
@@ -55,7 +53,6 @@ SINGLE_CANDIDATE_STRATEGIES = get_args(SmallestStrategy)
 CandidatePool = Literal[
     "exact_independent",
     "exact_naive",
-    "exact_balanced",
     "smallest_novel",
     "smallest_overall",
 ]
@@ -196,8 +193,7 @@ def pool_key(strategy: Strategy) -> CandidatePool:
     """Map a driver strategy to the candidate-pool key `candidates` writes.
 
     The replacement prefix is a Python-side draw policy (`pick_subset`), not a
-    pool: `candidates` emits `exact_independent`, `exact_naive`, and
-    `exact_balanced`, so collapse the prefix to hit one of those.
+    pool: `candidates` emits `exact_independent`, `exact_naive`, so collapse the prefix to hit one of those.
     `smallest_*` keys pass through unchanged.
     """
     if strategy in SINGLE_CANDIDATE_STRATEGIES:
@@ -206,8 +202,6 @@ def pool_key(strategy: Strategy) -> CandidatePool:
         return "exact_independent"
     if strategy.endswith("_naive"):
         return "exact_naive"
-    if strategy.endswith("_balanced"):
-        return "exact_balanced"
     raise ValueError(f"unknown strategy {strategy!r}")
 
 

@@ -13,7 +13,7 @@ The relevant code lives in:
 - [src/candidates/exact/count/novel.rs](../../src/candidates/exact/count/novel.rs) — counting & match enumeration.
 - [src/candidates/exact/draw/frontier/space.rs](../../src/candidates/exact/draw/frontier/space.rs) — the shared frontier-constrained derivation space.
 - [src/candidates/exact/draw/frontier/independent.rs](../../src/candidates/exact/draw/frontier/independent.rs) — independent weighted drawing over that space.
-- [exact_frontier_drawing.md](exact_frontier_drawing.md) — the separation between frontier correctness and drawing policy, including coverage-balanced construction.
+- [exact_frontier_drawing.md](exact_frontier_drawing.md) — the separation between frontier correctness and drawing policy.
 
 ---
 
@@ -453,14 +453,10 @@ let terms = package.draw_frontier_candidates(
 ```
 
 `IndependentFrontierDrawer` implements the
-[`ExactDrawer`](../../src/candidates/exact/draw/mod.rs) trait, so it gets `draw_batch` /
-`draw_root_batch` for free. `BalancedFrontierDrawer` implements the same
-trait but overrides `draw_size` so coverage state is shared across the terms
-in one size bucket; see [exact_frontier_drawing.md](exact_frontier_drawing.md).
+[`Drawer`](../../src/candidates/draw/mod.rs) trait, so it gets `draw_batch` and
+`draw_root_batch` from the shared bounded distinct-collection implementation.
 
 `ExactCandidatePackage` ([src/candidates/exact/package.rs](../../src/candidates/exact/package.rs))
 is the construction boundary. It reconstructs the complete previous lookup,
 computes current-root budgets, performs rooted matching and counting, retains
-only final-budget package data, and then drops the previous boundary. The
-independent and balanced policies consume the same rooted `NovelTermCount`
-inside that package.
+only final-budget package data, and then drops the previous boundary.

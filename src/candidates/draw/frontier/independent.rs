@@ -2,8 +2,8 @@
 //!
 //! [`IndependentFrontierDrawer`] preserves the draw behavior of the
 //! former frontier drawer: every requested term is drawn independently, and a
-//! [`Weigher`] controls whether feasible derivation choices are balanced
-//! locally or weighted by their term counts. The frontier constraint itself
+//! [`Weigher`] controls whether feasible derivation choices are uniform locally
+//! or weighted by their term counts. The frontier constraint itself
 //! lives in [`super::space::FrontierSpace`] and is shared with other
 //! frontier selection policies.
 
@@ -13,10 +13,7 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-use super::space::{
-    BranchSite, ChildSizeChoice, ChildSizeSite, FrontierBranch, FrontierPolicy, FrontierSpace,
-    FrontierState,
-};
+use super::space::{ChildSizeChoice, FrontierBranch, FrontierPolicy, FrontierSpace, FrontierState};
 use crate::Counter;
 use crate::candidates::count::NovelTermCount;
 use crate::candidates::draw::{Drawer, Weigher};
@@ -27,8 +24,7 @@ use crate::{MyAnalysis, MyLanguage, OriginLang};
 ///
 /// `CountWeigher` draws proportionally to the number of complete terms below
 /// each derivation choice. `NaiveWeigher` gives every feasible local choice
-/// equal weight. Neither policy coordinates choices across a batch; use
-/// `BalancedFrontierDrawer` when coverage across drawn candidates matters.
+/// equal weight. Neither policy coordinates choices across a batch
 pub struct IndependentFrontierDrawer<'a, 'g, C, L, N, W>
 where
     C: Counter,
@@ -72,12 +68,7 @@ where
     C: Counter,
     W: Weigher<C>,
 {
-    fn pick_branch(
-        &mut self,
-        _site: BranchSite,
-        choices: &[FrontierBranch<'_, C>],
-        rng: &mut ChaCha12Rng,
-    ) -> usize {
+    fn pick_branch(&mut self, choices: &[FrontierBranch<'_, C>], rng: &mut ChaCha12Rng) -> usize {
         WeightedIndex::new(
             choices
                 .iter()
@@ -87,12 +78,7 @@ where
         .sample(rng)
     }
 
-    fn pick_child_size(
-        &mut self,
-        _site: ChildSizeSite<'_>,
-        choices: &[ChildSizeChoice<C>],
-        rng: &mut ChaCha12Rng,
-    ) -> usize {
+    fn pick_child_size(&mut self, choices: &[ChildSizeChoice<C>], rng: &mut ChaCha12Rng) -> usize {
         WeightedIndex::new(choices.iter().map(|choice| {
             self.weigher
                 .child_weight(&choice.child_count, &choice.rest_count)

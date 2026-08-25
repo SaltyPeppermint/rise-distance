@@ -6,9 +6,9 @@ strategy in that cell then reuses the exact same manifest. A cell is run once
 at ``--attempts``; cumulative prefixes of its result rows give the outcomes at
 smaller budgets without regenerating incompatible candidate pools.
 
-The defaults run independent and balanced exact drawing over greedy, uniform,
-and proportional root-size allocation with several candidate seeds. This is
-intentionally a substantial experiment. Build the release binaries before starting:
+The defaults run independent and naive exact drawing over greedy and uniform
+root-size allocation with several candidate seeds. This is intentionally a
+substantial experiment. Build the release binaries before starting:
 
     cargo build --release --bin candidates --bin verify
     uv run scripts/guided_search_grid.py data/seed_terms/inert-angel \
@@ -47,7 +47,7 @@ class Args:
 
     novel_size_goal: int = 5
 
-    strategies: str = "no_replacement_independent,no_replacement_balanced"
+    strategies: str = "no_replacement_independent,no_replacement_naive"
     """Comma-separated guided-search strategies. All strategies in a cell
     reuse its first strategy's candidate manifest."""
 
@@ -166,7 +166,7 @@ def candidate_pool(strategy: str) -> str:
     """Map a driver strategy to the candidate key emitted by `candidates`."""
     if strategy.startswith("smallest_"):
         return strategy
-    for suffix in ("independent", "naive", "balanced"):
+    for suffix in ("independent", "naive"):
         if strategy.endswith(f"_{suffix}"):
             return f"exact_{suffix}"
     raise ValueError(f"unknown strategy {strategy!r}")

@@ -7,10 +7,9 @@ use crate::candidates::count::{
     find_novel_root_sizes_rooted, prune_matches, root_budgets,
 };
 use crate::candidates::draw::{
-    BalancedFrontierDrawer, CountWeigher, Drawer, IndependentFrontierDrawer, NaiveWeigher,
-    PlainDrawer,
+    CountWeigher, Drawer, IndependentFrontierDrawer, NaiveWeigher, PlainDrawer,
 };
-use crate::candidates::{ExactSelectionPolicy, SizeAllocation};
+use crate::candidates::{SelectionPolicy, SizeAllocation};
 use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
@@ -176,7 +175,7 @@ where
         &self,
         count: usize,
         allocation: SizeAllocation,
-        selection_policy: ExactSelectionPolicy,
+        selection_policy: SelectionPolicy,
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let histogram = self.tc.data().get(&self.root)?;
@@ -184,51 +183,15 @@ where
         let requests = allocation.allocate(histogram, self.min_size, self.max_size, count);
 
         match selection_policy {
-            ExactSelectionPolicy::Naive => {
+            SelectionPolicy::Naive => {
                 IndependentFrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
                     .draw_root_batch(&requests, seed)
             }
-            ExactSelectionPolicy::Independent => {
+            SelectionPolicy::Independent => {
                 IndependentFrontierDrawer::new(&self.tc, &self.egraph, self.root, CountWeigher)
                     .draw_root_batch(&requests, seed)
             }
-            ExactSelectionPolicy::Balanced => {
-                BalancedFrontierDrawer::new(&self.tc, &self.egraph, self.root)
-                    .draw_root_batch(&requests, seed)
-            }
         }
-    }
-
-    /// Draw frontier candidates with batch-local coverage balancing per size.
-    #[must_use]
-    pub fn draw_balanced_frontier_candidates(
-        &self,
-        count: usize,
-        allocation: SizeAllocation,
-        seed: [u64; 2],
-    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
-        let histogram = self.tc.data().get(&self.root)?;
-        let requests = allocation.allocate(histogram, self.min_size, self.max_size, count);
-
-        BalancedFrontierDrawer::new(&self.tc, &self.egraph, self.root)
-            .draw_root_batch(&requests, seed)
-    }
-
-    /// [`Self::draw_balanced_frontier_candidates`] with explicit coverage
-    /// penalties.
-    #[must_use]
-    pub fn draw_balanced_frontier_candidates_with_config(
-        &self,
-        count: usize,
-        allocation: SizeAllocation,
-        seed: [u64; 2],
-        config: crate::candidates::BalanceConfig,
-    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
-        let histogram = self.tc.data().get(&self.root)?;
-        let requests = allocation.allocate(histogram, self.min_size, self.max_size, count);
-
-        BalancedFrontierDrawer::with_config(&self.tc, &self.egraph, self.root, config)
-            .draw_root_batch(&requests, seed)
     }
 
     #[must_use]
@@ -307,46 +270,6 @@ mod tests {
                 .root_histogram()
                 .values()
                 .all(|c| *c == BigUint::from(1u32))
-        );
-    }
-
-    #[test]
-    fn balanced_selection_policy_covers_union_profiles() {
-        let mut curr = EGraph::<Math, ()>::new(());
-        curr.enable_union_event_recording();
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
-        let root = curr.add(Math::Add([a, b]));
-        curr.rebuild();
-        let prev_raw_node_count = curr.nodes().len();
-        let prev_union_event_count = curr.union_event_count();
-        curr.union(a, b);
-        curr.rebuild();
-
-        let result =
-            EqsatResult::new_for_tests(curr, root, prev_raw_node_count, prev_union_event_count);
-        let package =
-            ExactCandidatePackage::<BigUint, _, _>::build(result, 3).expect("frontier package");
-        let terms = package
-            .draw_frontier_candidates(
-                3,
-                SizeAllocation::Greedy,
-                ExactSelectionPolicy::Balanced,
-                [5, 8],
-            )
-            .expect("balanced frontier terms");
-        let lowered = terms
-            .into_iter()
-            .map(|term| crate::lower(term).to_string())
-            .collect::<hashbrown::HashSet<_>>();
-
-        assert_eq!(
-            lowered,
-            hashbrown::HashSet::from([
-                "(+ a a)".to_owned(),
-                "(+ b a)".to_owned(),
-                "(+ b b)".to_owned(),
-            ])
         );
     }
 }
