@@ -11,10 +11,10 @@ use smallvec::SmallVec;
 
 use crate::Counter;
 #[cfg(test)]
-use crate::candidates::exact::count::count_terms_rooted;
+use crate::candidates::count::count_terms_rooted;
 #[cfg(test)]
-use crate::candidates::exact::count::root_budgets;
-use crate::candidates::exact::count::{CountData, LayeredDp, RootBudgets, plain_dp_rooted};
+use crate::candidates::count::root_budgets;
+use crate::candidates::count::{CountData, LayeredDp, RootBudgets, plain_dp_rooted};
 use crate::previous::PreviousLookup;
 
 /// Child class ids, inline for the usual arity of at most two.

@@ -16,8 +16,8 @@ use super::space::{
     FrontierState,
 };
 use crate::Counter;
-use crate::candidates::exact::count::NovelTermCount;
-use crate::candidates::exact::draw::{ExactDrawer, MAX_DRAW_ATTEMPTS_PER_CANDIDATE};
+use crate::candidates::count::NovelTermCount;
+use crate::candidates::draw::{Drawer, MAX_DRAW_ATTEMPTS_PER_CANDIDATE};
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
 /// Relative penalties used when balancing local derivation choices.
@@ -258,7 +258,7 @@ fn capacity_priority<C: Counter>(capacity: &C, usage: u64, coverage_enabled: boo
     capacity.ln() - (usage as f64 + 1.0).ln()
 }
 
-impl<C, L, N> ExactDrawer<C, L, N> for BalancedFrontierDrawer<'_, '_, C, L, N>
+impl<C, L, N> Drawer<C, L, N> for BalancedFrontierDrawer<'_, '_, C, L, N>
 where
     C: Counter,
     L: MyLanguage,

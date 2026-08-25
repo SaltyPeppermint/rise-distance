@@ -88,7 +88,7 @@ where
 
 /// Histograms and per-node suffix convolutions from one counting run.
 #[derive(Debug)]
-pub(crate) struct CountData<C> {
+pub struct CountData<C> {
     /// Distinct-term counts by size and canonical class.
     pub(crate) data: HashMap<Id, HashMap<usize, C>>,
     /// Per-class, per-node suffix convolutions used to split child sizes.

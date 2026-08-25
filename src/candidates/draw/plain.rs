@@ -4,11 +4,9 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-// TODO: reenable zs_min_distance drawer
-
 use crate::Counter;
-use crate::candidates::exact::count::CountData;
-use crate::candidates::exact::draw::{ExactDrawer, Weigher};
+use crate::candidates::count::CountData;
+use crate::candidates::draw::{Drawer, Weigher};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 pub struct PlainDrawer<'a, 'b, C, L, N, W>
@@ -47,7 +45,7 @@ where
     }
 }
 
-impl<C, L, N, W> ExactDrawer<C, L, N> for PlainDrawer<'_, '_, C, L, N, W>
+impl<C, L, N, W> Drawer<C, L, N> for PlainDrawer<'_, '_, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -120,8 +118,8 @@ mod tests {
     use num::BigUint;
 
     use super::*;
-    use crate::candidates::exact::count::{CountData, count_terms_rooted, root_budgets};
-    use crate::candidates::exact::draw::{CountWeigher, NaiveWeigher};
+    use crate::candidates::count::{CountData, count_terms_rooted, root_budgets};
+    use crate::candidates::draw::{CountWeigher, NaiveWeigher};
     use crate::langs::math::Math;
     use crate::lower;
     use crate::utils::combined_rng;

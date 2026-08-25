@@ -15,7 +15,7 @@ pub use plain::PlainDrawer;
 pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
 
 /// Draws size-targeted candidates from an e-graph.
-pub trait ExactDrawer<C, L, N>
+pub trait Drawer<C, L, N>
 where
     C: Counter,
     L: MyLanguage,

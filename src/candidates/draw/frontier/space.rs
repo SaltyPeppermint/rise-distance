@@ -13,7 +13,7 @@ use hashbrown::HashMap;
 use rand_chacha::ChaCha12Rng;
 
 use crate::Counter;
-use crate::candidates::exact::count::{NodeMatch, NovelTermCount, convolve, suffix_convolutions};
+use crate::candidates::count::{NodeMatch, NovelTermCount, convolve, suffix_convolutions};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// Whether a current-graph extraction is outside the previous graph or agrees

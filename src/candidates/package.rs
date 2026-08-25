@@ -2,12 +2,12 @@ use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
 
 use crate::Counter;
-use crate::candidates::exact::count::{
+use crate::candidates::count::{
     NodeMatches, NovelTermCount, count_terms_rooted, enumerate_matches_rooted,
     find_novel_root_sizes_rooted, prune_matches, root_budgets,
 };
-use crate::candidates::exact::draw::{
-    BalancedFrontierDrawer, CountWeigher, ExactDrawer, IndependentFrontierDrawer, NaiveWeigher,
+use crate::candidates::draw::{
+    BalancedFrontierDrawer, CountWeigher, Drawer, IndependentFrontierDrawer, NaiveWeigher,
     PlainDrawer,
 };
 use crate::candidates::{ExactSelectionPolicy, SizeAllocation};
@@ -60,7 +60,7 @@ where
         result: EqsatResult<L, N>,
         max_size: usize,
         matches: NodeMatches,
-        budgets: &crate::candidates::exact::count::RootBudgets,
+        budgets: &crate::candidates::count::RootBudgets,
     ) -> Option<ExactCandidatePackage<C, L, N>> {
         let (egraph, root) = result.into_curr();
         let plain = count_terms_rooted(&egraph, budgets);

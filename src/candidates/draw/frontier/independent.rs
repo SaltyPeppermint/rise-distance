@@ -18,8 +18,8 @@ use super::space::{
     FrontierState,
 };
 use crate::Counter;
-use crate::candidates::exact::count::NovelTermCount;
-use crate::candidates::exact::draw::{ExactDrawer, Weigher};
+use crate::candidates::count::NovelTermCount;
+use crate::candidates::draw::{Drawer, Weigher};
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
 /// Draws each frontier term independently using the supplied local weighting
@@ -102,7 +102,7 @@ where
     }
 }
 
-impl<C, L, N, W> ExactDrawer<C, L, N> for IndependentFrontierDrawer<'_, '_, C, L, N, W>
+impl<C, L, N, W> Drawer<C, L, N> for IndependentFrontierDrawer<'_, '_, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -136,7 +136,7 @@ mod tests {
     use num::BigUint;
 
     use super::*;
-    use crate::candidates::exact::draw::CountWeigher;
+    use crate::candidates::draw::CountWeigher;
     use crate::langs::math::Math;
     use crate::lower;
     use crate::utils::{combined_rng, sym};
