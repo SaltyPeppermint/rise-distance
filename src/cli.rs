@@ -9,52 +9,43 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::Counter;
-use crate::candidates::SelectionPolicy;
 use crate::eqsat::EqsatMetadata;
 use crate::{MyLanguage, OriginLang};
 
 /// One guide-candidate construction pool emitted by `candidates`.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
-pub enum CandidatePool {
-    #[value(name = "exact_independent")]
-    ExactIndependent,
-    #[value(name = "exact_naive")]
-    ExactNaive,
+pub enum Policy {
+    #[value(name = "count")]
+    Count,
+    #[value(name = "naive")]
+    Naive,
     #[value(name = "smallest_overall")]
     SmallestOverall,
     #[value(name = "smallest_novel")]
     SmallestNovel,
 }
 
-impl CandidatePool {
-    #[must_use]
-    pub const fn name(self) -> &'static str {
+impl std::fmt::Display for Policy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ExactIndependent => "exact_independent",
-            Self::ExactNaive => "exact_naive",
-            Self::SmallestOverall => "smallest_overall",
-            Self::SmallestNovel => "smallest_novel",
+            Self::Count => write!(f, "count"),
+            Self::Naive => write!(f, "naive"),
+            Self::SmallestOverall => write!(f, "smallest_overall"),
+            Self::SmallestNovel => write!(f, "smallest_novel"),
         }
     }
+}
 
+impl Policy {
     /// Deterministic per-pool RNG salt so construction policies do not share a
     /// random stream within one seed record.
     #[must_use]
     pub const fn rng_salt(self) -> u64 {
         match self {
-            Self::ExactIndependent => 1,
-            Self::ExactNaive => 2,
+            Self::Count => 2,
+            Self::Naive => 3,
             Self::SmallestOverall | Self::SmallestNovel => 0,
-        }
-    }
-
-    #[must_use]
-    pub const fn exact_policy(self) -> Option<SelectionPolicy> {
-        match self {
-            Self::ExactIndependent => Some(SelectionPolicy::Independent),
-            Self::ExactNaive => Some(SelectionPolicy::Naive),
-            Self::SmallestOverall | Self::SmallestNovel => None,
         }
     }
 }

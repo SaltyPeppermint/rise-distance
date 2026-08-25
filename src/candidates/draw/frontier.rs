@@ -1,6 +1,6 @@
-//! Independent weighted frontier-candidate drawing.
+//!  Weighted frontier-candidate drawing.
 //!
-//! [`IndependentFrontierDrawer`] preserves the draw behavior of the
+//! [`FrontierDrawer`] preserves the draw behavior of the
 //! former frontier drawer: every requested term is drawn independently, and a
 //! [`Weigher`] controls whether feasible derivation choices are uniform locally
 //! or weighted by their term counts.
@@ -26,7 +26,7 @@ use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 /// `CountWeigher` draws proportionally to the number of complete terms below
 /// each derivation choice. `NaiveWeigher` gives every feasible local choice
 /// equal weight. Neither policy coordinates choices across a batch
-pub struct IndependentFrontierDrawer<'a, 'g, C, L, N, W>
+pub struct FrontierDrawer<'a, 'g, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -38,7 +38,7 @@ where
     weigher: W,
 }
 
-impl<'a, 'g, C, L, N, W> IndependentFrontierDrawer<'a, 'g, C, L, N, W>
+impl<'a, 'g, C, L, N, W> FrontierDrawer<'a, 'g, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -60,36 +60,7 @@ where
     }
 }
 
-struct IndependentPolicy<'a, W> {
-    weigher: &'a W,
-}
-
-impl<C, W> FrontierPolicy<C> for IndependentPolicy<'_, W>
-where
-    C: Counter,
-    W: Weigher<C>,
-{
-    fn pick_branch(&mut self, choices: &[FrontierBranch<'_, C>], rng: &mut ChaCha12Rng) -> usize {
-        WeightedIndex::new(
-            choices
-                .iter()
-                .map(|choice| self.weigher.node_weight(&choice.count)),
-        )
-        .expect("frontier branch weights contain a positive choice")
-        .sample(rng)
-    }
-
-    fn pick_child_size(&mut self, choices: &[ChildSizeChoice<C>], rng: &mut ChaCha12Rng) -> usize {
-        WeightedIndex::new(choices.iter().map(|choice| {
-            self.weigher
-                .child_weight(&choice.child_count, &choice.rest_count)
-        }))
-        .expect("frontier child-size weights contain a positive choice")
-        .sample(rng)
-    }
-}
-
-impl<C, L, N, W> Drawer<C, L, N> for IndependentFrontierDrawer<'_, '_, C, L, N, W>
+impl<C, L, N, W> Drawer<C, L, N> for FrontierDrawer<'_, '_, C, L, N, W>
 where
     C: Counter,
     L: MyLanguage,
@@ -109,11 +80,8 @@ where
     }
 
     fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
-        let mut policy = IndependentPolicy {
-            weigher: &self.weigher,
-        };
         self.space
-            .construct(id, size, FrontierState::OutsidePrev, &mut policy, rng)
+            .construct(id, size, FrontierState::OutsidePrev, &self.weigher, rng)
     }
 }
 
@@ -141,15 +109,7 @@ pub(crate) struct ChildSizeChoice<C> {
     pub rest_count: C,
 }
 
-/// A policy for choosing among derivations which are already known to satisfy
-/// the frontier constraint.
-trait FrontierPolicy<C: Counter> {
-    fn pick_branch(&mut self, choices: &[FrontierBranch<'_, C>], rng: &mut ChaCha12Rng) -> usize;
-
-    fn pick_child_size(&mut self, choices: &[ChildSizeChoice<C>], rng: &mut ChaCha12Rng) -> usize;
-}
-
-/// The constrained derivation space common to all frontier drawers.
+/// The constrained derivation space.
 ///
 /// `OutsidePrev` corresponds to the old `Novel` recursion mode and
 /// `InsidePrev(pc)` to the old `AgreeWith(pc)` mode. Counts and match data come
@@ -183,17 +143,51 @@ where
         self.counts
     }
 
+    fn pick_branch<W>(
+        weigher: &W,
+        choices: &[FrontierBranch<'_, C>],
+        rng: &mut ChaCha12Rng,
+    ) -> usize
+    where
+        W: Weigher<C>,
+    {
+        WeightedIndex::new(
+            choices
+                .iter()
+                .map(|choice| weigher.node_weight(&choice.count)),
+        )
+        .expect("frontier branch weights contain a positive choice")
+        .sample(rng)
+    }
+
+    fn pick_child_size<W>(
+        weigher: &W,
+        choices: &[ChildSizeChoice<C>],
+        rng: &mut ChaCha12Rng,
+    ) -> usize
+    where
+        W: Weigher<C>,
+    {
+        WeightedIndex::new(
+            choices
+                .iter()
+                .map(|choice| weigher.child_weight(&choice.child_count, &choice.rest_count)),
+        )
+        .expect("frontier child-size weights contain a positive choice")
+        .sample(rng)
+    }
+
     /// Construct a term in `state` using only feasible frontier productions.
-    fn construct<P>(
+    fn construct<W>(
         &self,
         id: Id,
         size: usize,
         state: FrontierState,
-        policy: &mut P,
+        weigher: &W,
         rng: &mut ChaCha12Rng,
     ) -> RecExpr<OriginLang<L>>
     where
-        P: FrontierPolicy<C>,
+        W: Weigher<C>,
     {
         let curr = self.graph().find(id);
 
@@ -203,7 +197,7 @@ where
             "frontier state has at least one feasible production"
         );
 
-        let branch_idx = policy.pick_branch(&branches, rng);
+        let branch_idx = Self::pick_branch(weigher, &branches, rng);
         let branch = &branches[branch_idx];
         let node = &self.graph()[curr].nodes[branch.node_idx];
         let child_budget = size - 1;
@@ -229,14 +223,14 @@ where
                 !choices.is_empty(),
                 "chosen frontier production has a feasible child-size split"
             );
-            let size_idx = policy.pick_child_size(&choices, rng);
+            let size_idx = Self::pick_child_size(weigher, &choices, rng);
             let child_size = choices[size_idx].size;
             remaining -= child_size;
             let child = self.construct(
                 child_id,
                 child_size,
                 branch.child_states[child_index],
-                policy,
+                weigher,
                 rng,
             );
             children.push(child);
@@ -398,7 +392,7 @@ mod tests {
         curr.rebuild();
 
         let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
-        let drawer = IndependentFrontierDrawer::new(&novel, &curr, root, CountWeigher);
+        let drawer = FrontierDrawer::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..50_u64 {
             let mut rng = combined_rng([seed]);
@@ -423,7 +417,7 @@ mod tests {
         curr.rebuild();
 
         let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
-        let drawer = IndependentFrontierDrawer::new(&novel, &curr, root, CountWeigher);
+        let drawer = FrontierDrawer::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..100_u64 {
             let mut rng = combined_rng([seed]);
@@ -443,7 +437,7 @@ mod tests {
         graph.rebuild();
 
         let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &graph, &graph, a);
-        let drawer = IndependentFrontierDrawer::new(&novel, &graph, a, CountWeigher);
+        let drawer = FrontierDrawer::new(&novel, &graph, a, CountWeigher);
 
         assert!(!drawer.possible_size(a, 1, 0));
     }

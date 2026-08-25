@@ -6,7 +6,7 @@ pub mod count;
 pub mod draw;
 mod package;
 
-pub use allocation::{SelectionPolicy, SizeAllocation, uniform_candidate_allocation};
+pub use allocation::{SizeAllocation, uniform_candidate_allocation};
 
 pub use package::ExactCandidatePackage;
 

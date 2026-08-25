@@ -17,8 +17,8 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 
-use rise_distance::candidates::{ExactCandidatePackage, SelectionPolicy, SizeAllocation};
-use rise_distance::cli::GoalGenMetadata;
+use rise_distance::candidates::{ExactCandidatePackage, SizeAllocation};
+use rise_distance::cli::{GoalGenMetadata, Policy};
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::lower;
@@ -57,8 +57,8 @@ struct Args {
     size_allocation: SizeAllocation,
 
     /// Exact policy used to draw goal candidates.
-    #[arg(long, default_value_t = SelectionPolicy::Independent)]
-    exact_selection_policy: SelectionPolicy,
+    #[arg(long, default_value_t = Policy::Count)]
+    selection_policy: Policy,
 
     /// How much to grow `max_size` on each exact-size-search retry.
     #[arg(long, default_value_t = 5)]
@@ -174,7 +174,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
         .draw_frontier_candidates(
             args.goals,
             args.size_allocation,
-            args.exact_selection_policy,
+            args.selection_policy,
             [0, 0],
         )
         .ok_or_else(|| "exact frontier candidate drawing failed".to_owned())?;

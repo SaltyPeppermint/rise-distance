@@ -6,13 +6,6 @@ use serde::Serialize;
 
 use crate::Counter;
 
-#[derive(Serialize, serde::Deserialize, Debug, Clone, Copy, clap::ValueEnum, strum::Display)]
-#[strum(serialize_all = "kebab-case")]
-pub enum SelectionPolicy {
-    Independent,
-    Naive,
-}
-
 #[derive(Debug, Clone, Copy, Serialize)]
 pub enum SizeAllocation {
     /// Fill the candidate budget greedily from the smallest size upward: take as

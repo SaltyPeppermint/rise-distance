@@ -12,7 +12,7 @@ use num::BigUint;
 use time::OffsetDateTime;
 
 use rise_distance::candidates::{ExactCandidatePackage, SizeAllocation};
-use rise_distance::cli::{CandidatePool, GuideExpr, SeedCandidates};
+use rise_distance::cli::{GuideExpr, Policy, SeedCandidates};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
@@ -72,7 +72,7 @@ struct Args {
 
     /// Candidate pool to emit. Repeat for a shared multi-pool manifest.
     #[arg(long = "candidate-pool", value_enum, required = true)]
-    candidate_pools: Vec<CandidatePool>,
+    candidate_pools: Vec<Policy>,
 }
 
 fn main() {
@@ -149,15 +149,19 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     );
 
     let start_size = AstSize.cost_rec(&seed_expr);
-    let pools = args.candidate_pools.iter().copied().fold(
-        Vec::<CandidatePool>::new(),
-        |mut unique, pool| {
-            if !unique.iter().any(|existing| existing.name() == pool.name()) {
-                unique.push(pool);
-            }
-            unique
-        },
-    );
+    let pools =
+        args.candidate_pools
+            .iter()
+            .copied()
+            .fold(Vec::<Policy>::new(), |mut unique, pool| {
+                if !unique
+                    .iter()
+                    .any(|existing| existing.to_string() == pool.to_string())
+                {
+                    unique.push(pool);
+                }
+                unique
+            });
 
     let mut candidates = BTreeMap::new();
 
@@ -181,7 +185,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
 fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     result: EqsatResult<L, N>,
-    pools: &[CandidatePool],
+    pools: &[Policy],
     start_size: usize,
 ) -> Result<BTreeMap<String, Vec<GuideExpr<L>>>, String> {
     let mut root_log = String::new();
@@ -210,7 +214,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
         .map(|pool| {
             let terms = draw_exact_candidates(args, pool, &package);
             (
-                pool.name().to_owned(),
+                pool.to_string().clone(),
                 terms.into_iter().map(GuideExpr::from_recexpr).collect(),
             )
         })
@@ -220,31 +224,21 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
 /// Draw one candidate pool; smallest-term pools contain one term.
 fn draw_exact_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
-    pool: CandidatePool,
+    policy: Policy,
     package: &ExactCandidatePackage<BigUint, L, N>,
 ) -> Vec<RecExpr<OriginLang<L>>> {
-    match pool.exact_policy() {
-        // Replacement is a driver concern (how it re-draws subsets from the
-        // pool across restarts); the pool itself is one novel candidate batch
-        // either way. Exact selection policies always draw novel terms.
-        Some(policy) => package
-            .draw_frontier_candidates(
-                args.candidates_per_pool,
-                args.size_allocation,
-                policy,
-                [args.candidate_seed, pool.rng_salt()],
-            )
-            .unwrap_or_else(|| {
-                eprintln!(
-                    "WARNING: strategy {} drew 0 candidates (empty novel frontier); \
-                     driver legs for this strategy will have no guides to pick from",
-                    pool.name()
-                );
-                Vec::new()
-            }),
-        None => vec![
-            package
-                .smallest_candidate(package.root(), matches!(pool, CandidatePool::SmallestNovel)),
-        ],
-    }
+    package
+        .draw_frontier_candidates(
+            args.candidates_per_pool,
+            args.size_allocation,
+            policy,
+            [args.candidate_seed, policy.rng_salt()],
+        )
+        .unwrap_or_else(|| {
+            eprintln!(
+                "WARNING: strategy {policy} drew 0 candidates (empty novel frontier); \
+                     driver legs for this strategy will have no guides to pick from"
+            );
+            Vec::new()
+        })
 }

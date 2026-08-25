@@ -2,14 +2,13 @@ use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
 
 use crate::Counter;
+use crate::candidates::SizeAllocation;
 use crate::candidates::count::{
     NodeMatches, NovelTermCount, count_terms_rooted, enumerate_matches_rooted,
     find_novel_root_sizes_rooted, prune_matches, root_budgets,
 };
-use crate::candidates::draw::{
-    CountWeigher, Drawer, IndependentFrontierDrawer, NaiveWeigher, PlainDrawer,
-};
-use crate::candidates::{SelectionPolicy, SizeAllocation};
+use crate::candidates::draw::{CountWeigher, Drawer, FrontierDrawer, NaiveWeigher, PlainDrawer};
+use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
@@ -175,7 +174,7 @@ where
         &self,
         count: usize,
         allocation: SizeAllocation,
-        selection_policy: SelectionPolicy,
+        selection_policy: Policy,
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let histogram = self.tc.data().get(&self.root)?;
@@ -183,24 +182,18 @@ where
         let requests = allocation.allocate(histogram, self.min_size, self.max_size, count);
 
         match selection_policy {
-            SelectionPolicy::Naive => {
-                IndependentFrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
-                    .draw_root_batch(&requests, seed)
-            }
-            SelectionPolicy::Independent => {
-                IndependentFrontierDrawer::new(&self.tc, &self.egraph, self.root, CountWeigher)
-                    .draw_root_batch(&requests, seed)
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn smallest_candidate(&self, id: Id, novel: bool) -> RecExpr<OriginLang<L>> {
-        if novel {
-            IndependentFrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
-                .smallest(id)
-        } else {
-            PlainDrawer::new(self.tc.plain(), &self.egraph, self.root, NaiveWeigher).smallest(id)
+            Policy::Naive => FrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
+                .draw_root_batch(&requests, seed),
+            Policy::Count => FrontierDrawer::new(&self.tc, &self.egraph, self.root, CountWeigher)
+                .draw_root_batch(&requests, seed),
+            Policy::SmallestOverall => Some(vec![
+                PlainDrawer::new(self.tc.plain(), &self.egraph, self.root, NaiveWeigher)
+                    .smallest(self.root),
+            ]),
+            Policy::SmallestNovel => Some(vec![
+                FrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
+                    .smallest(self.root),
+            ]),
         }
     }
 
