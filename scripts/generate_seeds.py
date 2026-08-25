@@ -107,7 +107,7 @@ class Running:
 
 
 def derive_seed(global_seed: int, size: int, slot: int, attempt: int) -> int:
-    """Stable 64-bit BLAKE2 seed; independent of Python and scheduling."""
+    """Stable 64-bit BLAKE2 seed; count of Python and scheduling."""
     h = hashlib.blake2b(digest_size=8, person=b"rise-seed-v1")
     for value in (global_seed, size, slot, attempt):
         h.update(int(value).to_bytes(16, "little", signed=True))

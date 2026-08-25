@@ -12,7 +12,7 @@ Example:
     uv run scripts/guided_search.py data/seed_terms/dusky-cramp \\
         --stop-memory 4G \\
         --attempts 5 --k 10 \\
-        --strategy no_replacement_independent --full-union
+        --strategy no_replacement_count --full-union
 """
 
 import dataclasses
@@ -42,16 +42,16 @@ from common import (
 # The `with_replacement_*` pools are re-drawn *with* replacement across a leg's
 # `k` picks; everything else is drawn without replacement.
 CandidateStrategy = Literal[
-    "no_replacement_independent",
+    "no_replacement_count",
     "no_replacement_naive",
-    "with_replacement_independent",
+    "with_replacement_count",
     "with_replacement_naive",
 ]
 SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
 Strategy = Literal[CandidateStrategy, SmallestStrategy]
 SINGLE_CANDIDATE_STRATEGIES = get_args(SmallestStrategy)
 CandidatePool = Literal[
-    "exact_independent",
+    "exact_count",
     "exact_naive",
     "smallest_novel",
     "smallest_overall",
@@ -61,7 +61,7 @@ CandidatePool = Literal[
 # polars dtype to pin for each. `verify` omits these on an unreached leg
 # (`skip_serializing_if`), so they land as None; an unreached-heavy prefix would
 # otherwise make polars infer Null and reject the first real value. Pinning the
-# dtypes makes the schema independent of row order (and of runs that reach
+# dtypes makes the schema count of row order (and of runs that reach
 # nothing).
 LEG_RESULT_DTYPES = {
     "iters": pl.Int64,
@@ -139,7 +139,7 @@ class Args:
     """How many legs to try per (seed, goal) pair, each with a freshly resampled
     guide subset. Counts the first try, so `attempts=1` means a single leg with
     no resampling. Stops early on the first reach; gives up after the last."""
-    strategy: Strategy = "no_replacement_independent"
+    strategy: Strategy = "no_replacement_count"
     """Which candidate pool to restart with."""
     k: int = 1
     """Guide-set size: each seed/goal pair runs one attempt loop drawing `k`
@@ -193,13 +193,13 @@ def pool_key(strategy: Strategy) -> CandidatePool:
     """Map a driver strategy to the candidate-pool key `candidates` writes.
 
     The replacement prefix is a Python-side draw policy (`pick_subset`), not a
-    pool: `candidates` emits `exact_independent`, `exact_naive`, so collapse the prefix to hit one of those.
+    pool: `candidates` emits `exact_count`, `exact_naive`, so collapse the prefix to hit one of those.
     `smallest_*` keys pass through unchanged.
     """
     if strategy in SINGLE_CANDIDATE_STRATEGIES:
         return strategy
-    if strategy.endswith("_independent"):
-        return "exact_independent"
+    if strategy.endswith("_count"):
+        return "exact_count"
     if strategy.endswith("_naive"):
         return "exact_naive"
     raise ValueError(f"unknown strategy {strategy!r}")
@@ -461,7 +461,7 @@ def resolve_output_dir(args: Args) -> Path:
 
 
 def build_work_items(seed_records: list, strategy: str) -> list[WorkItem]:
-    """Flatten `candidates`'s seed records into independent (seed, goal) items.
+    """Flatten `candidates`'s seed records into count (seed, goal) items.
 
     Each item runs its own sequential attempt loop (early-stops on first reach);
     items run concurrently.
