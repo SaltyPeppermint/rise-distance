@@ -1,12 +1,8 @@
-//!  Weighted frontier-candidate drawing.
+//! Weighted frontier-candidate drawing.
 //!
-//! [`FrontierDrawer`] preserves the draw behavior of the
-//! former frontier drawer: every requested term is drawn independently, and a
-//! [`Weigher`] controls whether feasible derivation choices are uniform locally
-//! or weighted by their term counts.
-//! The drawer chooses between productions returned by
-//! [`FrontierSpace`], so they cannot accidentally construct a term that
-//! violates the requested frontier state.
+//! Every requested term is drawn independently, and a [`Weigher`] controls
+//! whether feasible derivation choices are uniform locally or weighted by their
+//! term counts.
 
 use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
@@ -25,7 +21,7 @@ use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 ///
 /// `CountWeigher` draws proportionally to the number of complete terms below
 /// each derivation choice. `NaiveWeigher` gives every feasible local choice
-/// equal weight. Neither policy coordinates choices across a batch
+/// equal weight. Neither policy coordinates choices across a batch.
 pub struct FrontierDrawer<'a, 'g, C, L, N, W>
 where
     C: Counter,
@@ -33,7 +29,8 @@ where
     N: MyAnalysis<L>,
     W: Weigher<C>,
 {
-    space: FrontierSpace<'a, 'g, C, L, N>,
+    counts: &'a NovelTermCount<C>,
+    graph: &'g EGraph<L, N>,
     root: Id,
     weigher: W,
 }
@@ -53,10 +50,175 @@ where
         weigher: W,
     ) -> Self {
         Self {
-            space: FrontierSpace::new(counts, graph),
+            counts,
+            graph,
             root,
             weigher,
         }
+    }
+
+    fn pick_branch(&self, choices: &[Branch<'_, C>], rng: &mut ChaCha12Rng) -> usize {
+        WeightedIndex::new(
+            choices
+                .iter()
+                .map(|choice| self.weigher.node_weight(&choice.count)),
+        )
+        .expect("frontier branch weights contain a positive choice")
+        .sample(rng)
+    }
+
+    fn histogram(&self, child: Id, state: State) -> Option<&HashMap<usize, C>> {
+        match state {
+            State::Novel => self.counts.novel_histogram(self.graph, child),
+            State::SharedWith(prev) => self.counts.joint_histogram(self.graph, child, prev),
+        }
+    }
+
+    fn make_branch(
+        &self,
+        curr: Id,
+        node_idx: usize,
+        child_states: Vec<State>,
+        child_budget: usize,
+    ) -> Option<Branch<'_, C>> {
+        let child_hists = self.graph[curr].nodes[node_idx]
+            .children()
+            .iter()
+            .copied()
+            .zip(child_states.iter().copied())
+            .map(|(child, state)| self.histogram(child, state))
+            .collect::<Option<Vec<_>>>()?;
+        let count = convolve_at::<C>(&child_hists, child_budget)?;
+        Some(Branch {
+            node_idx,
+            child_states,
+            count,
+            child_hists,
+        })
+    }
+
+    /// Construct a term in `state` using only feasible frontier productions.
+    fn construct(
+        &self,
+        id: Id,
+        size: usize,
+        state: State,
+        rng: &mut ChaCha12Rng,
+    ) -> RecExpr<OriginLang<L>> {
+        let curr = self.graph.find(id);
+
+        let branches = self.branches(curr, size, state);
+        assert!(
+            !branches.is_empty(),
+            "frontier state has at least one feasible production"
+        );
+
+        let branch_idx = self.pick_branch(&branches, rng);
+        let branch = &branches[branch_idx];
+        let node = &self.graph[curr].nodes[branch.node_idx];
+        let child_budget = size - 1;
+        let suffix = suffix_convolutions(&branch.child_hists, child_budget);
+
+        let mut remaining = child_budget;
+        let mut children = Vec::with_capacity(node.children().len());
+        for (child_index, &child_id) in node.children().iter().enumerate() {
+            let choices = branch.child_hists[child_index]
+                .iter()
+                .filter_map(|(&child_size, child_count)| {
+                    let rest_size = remaining.checked_sub(child_size)?;
+                    let rest_count = suffix[child_index + 1].get(&rest_size)?;
+                    (*rest_count != C::zero()).then(|| {
+                        (
+                            child_size,
+                            self.weigher.child_weight(child_count, rest_count),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            assert!(
+                !choices.is_empty(),
+                "chosen frontier production has a feasible child-size split"
+            );
+            let size_idx = WeightedIndex::new(choices.iter().map(|(_, weight)| weight))
+                .expect("frontier child-size weights contain a positive choice")
+                .sample(rng);
+            let child_size = choices[size_idx].0;
+            remaining -= child_size;
+            let child = self.construct(child_id, child_size, branch.child_states[child_index], rng);
+            children.push(child);
+        }
+
+        stack_children(&children, OriginLang::new(node.clone(), curr))
+    }
+
+    fn branches(&self, curr: Id, size: usize, state: State) -> Vec<Branch<'_, C>> {
+        match state {
+            State::Novel => self.novel_branches(curr, size),
+            State::SharedWith(prev) => self.shared_branches(curr, size, prev),
+        }
+    }
+
+    fn shared_branches(&self, curr: Id, size: usize, prev: Id) -> Vec<Branch<'_, C>> {
+        let eclass = &self.graph[curr];
+        let child_budget = size - 1;
+
+        eclass
+            .nodes
+            .iter()
+            .enumerate()
+            .flat_map(|(node_idx, _)| {
+                self.counts
+                    .matches_of(self.graph, curr, node_idx)
+                    .iter()
+                    .filter(move |m| m.prev_class == prev)
+                    .filter_map(move |matched| {
+                        let child_states = matched
+                            .prev_children
+                            .iter()
+                            .copied()
+                            .map(State::SharedWith)
+                            .collect();
+                        self.make_branch(curr, node_idx, child_states, child_budget)
+                    })
+            })
+            .collect()
+    }
+
+    fn novel_branches(&self, curr: Id, size: usize) -> Vec<Branch<'_, C>> {
+        let eclass = &self.graph[curr];
+        let child_budget = size - 1;
+
+        eclass
+            .nodes
+            .iter()
+            .enumerate()
+            .flat_map(|(node_idx, node)| {
+                let matches = self.counts.matches_of(self.graph, curr, node_idx);
+                let children = node.children();
+                let slot_options = children
+                    .iter()
+                    .map(|child| {
+                        let mut options = vec![State::Novel];
+                        options.extend(
+                            self.counts
+                                .cover_of(self.graph, *child)
+                                .iter()
+                                .copied()
+                                .map(State::SharedWith),
+                        );
+                        options
+                    })
+                    .collect::<Vec<_>>();
+
+                enumerate_profiles(&slot_options)
+                    .into_iter()
+                    .filter(|profile| !completes_some_match(profile, matches))
+                    .filter_map(move |child_states| {
+                        self.make_branch(curr, node_idx, child_states, child_budget)
+                    })
+            })
+            .collect()
     }
 }
 
@@ -72,270 +234,31 @@ where
     }
 
     fn find(&self, id: Id) -> Id {
-        self.space.graph().find(id)
+        self.graph.find(id)
     }
 
     fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, C>> {
-        self.space.counts().data().get(&self.find(id))
+        self.counts.data().get(&self.find(id))
     }
 
     fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
-        self.space
-            .construct(id, size, FrontierState::OutsidePrev, &self.weigher, rng)
+        self.construct(id, size, State::Novel, rng)
     }
 }
 
-/// Whether a current-graph extraction is outside the previous graph or agrees
-/// with one particular previous e-class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum FrontierState {
-    OutsidePrev,
-    InsidePrev(Id),
+/// Whether an extraction is novel or shared with one previous e-class.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+    Novel,
+    SharedWith(Id),
 }
 
 /// One feasible root-production/profile choice at a `(class, size, state)`.
-pub(crate) struct FrontierBranch<'a, C> {
-    pub node_idx: usize,
-    pub child_states: Vec<FrontierState>,
-    pub count: C,
+struct Branch<'a, C> {
+    node_idx: usize,
+    child_states: Vec<State>,
+    count: C,
     child_hists: Vec<&'a HashMap<usize, C>>,
-}
-
-/// One feasible size for the current child, together with the counts needed
-/// by count-proportional policies.
-pub(crate) struct ChildSizeChoice<C> {
-    pub size: usize,
-    pub child_count: C,
-    pub rest_count: C,
-}
-
-/// The constrained derivation space.
-///
-/// `OutsidePrev` corresponds to the old `Novel` recursion mode and
-/// `InsidePrev(pc)` to the old `AgreeWith(pc)` mode. Counts and match data come
-/// from [`NovelTermCount`]; this type turns them into feasible productions and
-/// performs policy-directed recursive construction.
-struct FrontierSpace<'a, 'g, C, L, N>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
-    counts: &'a NovelTermCount<C>,
-    graph: &'g EGraph<L, N>,
-}
-
-impl<'a, 'g, C, L, N> FrontierSpace<'a, 'g, C, L, N>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
-    const fn new(counts: &'a NovelTermCount<C>, graph: &'g EGraph<L, N>) -> Self {
-        Self { counts, graph }
-    }
-
-    const fn graph(&self) -> &'g EGraph<L, N> {
-        self.graph
-    }
-
-    pub const fn counts(&self) -> &'a NovelTermCount<C> {
-        self.counts
-    }
-
-    fn pick_branch<W>(
-        weigher: &W,
-        choices: &[FrontierBranch<'_, C>],
-        rng: &mut ChaCha12Rng,
-    ) -> usize
-    where
-        W: Weigher<C>,
-    {
-        WeightedIndex::new(
-            choices
-                .iter()
-                .map(|choice| weigher.node_weight(&choice.count)),
-        )
-        .expect("frontier branch weights contain a positive choice")
-        .sample(rng)
-    }
-
-    fn pick_child_size<W>(
-        weigher: &W,
-        choices: &[ChildSizeChoice<C>],
-        rng: &mut ChaCha12Rng,
-    ) -> usize
-    where
-        W: Weigher<C>,
-    {
-        WeightedIndex::new(
-            choices
-                .iter()
-                .map(|choice| weigher.child_weight(&choice.child_count, &choice.rest_count)),
-        )
-        .expect("frontier child-size weights contain a positive choice")
-        .sample(rng)
-    }
-
-    /// Construct a term in `state` using only feasible frontier productions.
-    fn construct<W>(
-        &self,
-        id: Id,
-        size: usize,
-        state: FrontierState,
-        weigher: &W,
-        rng: &mut ChaCha12Rng,
-    ) -> RecExpr<OriginLang<L>>
-    where
-        W: Weigher<C>,
-    {
-        let curr = self.graph().find(id);
-
-        let branches = self.branches(curr, size, state);
-        assert!(
-            !branches.is_empty(),
-            "frontier state has at least one feasible production"
-        );
-
-        let branch_idx = Self::pick_branch(weigher, &branches, rng);
-        let branch = &branches[branch_idx];
-        let node = &self.graph()[curr].nodes[branch.node_idx];
-        let child_budget = size - 1;
-        let suffix = suffix_convolutions(&branch.child_hists, child_budget);
-
-        let mut remaining = child_budget;
-        let mut children = Vec::with_capacity(node.children().len());
-        for (child_index, &child_id) in node.children().iter().enumerate() {
-            let choices = branch.child_hists[child_index]
-                .iter()
-                .filter_map(|(&child_size, child_count)| {
-                    let rest_size = remaining.checked_sub(child_size)?;
-                    let rest_count = suffix[child_index + 1].get(&rest_size)?;
-                    (*rest_count != C::zero()).then(|| ChildSizeChoice {
-                        size: child_size,
-                        child_count: child_count.clone(),
-                        rest_count: rest_count.clone(),
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            assert!(
-                !choices.is_empty(),
-                "chosen frontier production has a feasible child-size split"
-            );
-            let size_idx = Self::pick_child_size(weigher, &choices, rng);
-            let child_size = choices[size_idx].size;
-            remaining -= child_size;
-            let child = self.construct(
-                child_id,
-                child_size,
-                branch.child_states[child_index],
-                weigher,
-                rng,
-            );
-            children.push(child);
-        }
-
-        stack_children(&children, OriginLang::new(node.clone(), curr))
-    }
-
-    fn branches(&self, curr: Id, size: usize, state: FrontierState) -> Vec<FrontierBranch<'_, C>> {
-        match state {
-            FrontierState::OutsidePrev => self.outside_branches(curr, size),
-            FrontierState::InsidePrev(prev) => self.inside_branches(curr, size, prev),
-        }
-    }
-
-    fn inside_branches(&self, curr: Id, size: usize, prev: Id) -> Vec<FrontierBranch<'_, C>> {
-        let eclass = &self.graph()[curr];
-        let child_budget = size - 1;
-
-        eclass
-            .nodes
-            .iter()
-            .enumerate()
-            .flat_map(|(node_idx, node)| {
-                self.counts
-                    .matches_of(self.graph, curr, node_idx)
-                    .iter()
-                    .filter(move |m| m.prev_class == prev)
-                    .filter_map(move |m| {
-                        let child_hists = node
-                            .children()
-                            .iter()
-                            .zip(m.prev_children.iter())
-                            .map(|(child, &pc)| self.counts.joint_histogram(self.graph, *child, pc))
-                            .collect::<Option<Vec<_>>>()?;
-                        let count = convolve_at::<C>(&child_hists, child_budget)?;
-                        Some(FrontierBranch {
-                            node_idx,
-                            child_states: m
-                                .prev_children
-                                .iter()
-                                .copied()
-                                .map(FrontierState::InsidePrev)
-                                .collect(),
-                            count,
-                            child_hists,
-                        })
-                    })
-            })
-            .collect()
-    }
-
-    fn outside_branches(&self, curr: Id, size: usize) -> Vec<FrontierBranch<'_, C>> {
-        let eclass = &self.graph()[curr];
-        let child_budget = size - 1;
-
-        eclass
-            .nodes
-            .iter()
-            .enumerate()
-            .flat_map(|(node_idx, node)| {
-                let matches = self.counts.matches_of(self.graph, curr, node_idx);
-                let children = node.children();
-                let slot_options = children
-                    .iter()
-                    .map(|child| {
-                        let mut options = vec![FrontierState::OutsidePrev];
-                        options.extend(
-                            self.counts
-                                .cover_of(self.graph, *child)
-                                .iter()
-                                .copied()
-                                .map(FrontierState::InsidePrev),
-                        );
-                        options
-                    })
-                    .collect::<Vec<_>>();
-
-                enumerate_profiles(&slot_options)
-                    .into_iter()
-                    .filter(|profile| !completes_some_match(profile, matches))
-                    .filter_map(move |child_states| {
-                        let child_hists = children
-                            .iter()
-                            .zip(child_states.iter())
-                            .map(|(child, state)| match state {
-                                FrontierState::OutsidePrev => {
-                                    self.counts.novel_histogram(self.graph, *child)
-                                }
-                                FrontierState::InsidePrev(pc) => {
-                                    self.counts.joint_histogram(self.graph, *child, *pc)
-                                }
-                            })
-                            .collect::<Option<Vec<_>>>()?;
-                        let count = convolve_at::<C>(&child_hists, child_budget)?;
-                        Some(FrontierBranch {
-                            node_idx,
-                            child_states,
-                            count,
-                            child_hists,
-                        })
-                    })
-            })
-            .collect()
-    }
 }
 
 fn enumerate_profiles<T: Clone>(slot_options: &[Vec<T>]) -> Vec<Vec<T>> {
@@ -354,13 +277,13 @@ fn enumerate_profiles<T: Clone>(slot_options: &[Vec<T>]) -> Vec<Vec<T>> {
     profiles
 }
 
-fn completes_some_match(profile: &[FrontierState], matches: &[NodeMatch]) -> bool {
+fn completes_some_match(profile: &[State], matches: &[NodeMatch]) -> bool {
     matches.iter().any(|m| {
         profile.len() == m.prev_children.len()
             && profile
                 .iter()
                 .zip(m.prev_children.iter())
-                .all(|(state, &pc)| *state == FrontierState::InsidePrev(pc))
+                .all(|(state, &pc)| *state == State::SharedWith(pc))
     })
 }
 
