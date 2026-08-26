@@ -82,7 +82,7 @@ impl<L: MyLanguage> GuideExpr<L> {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(bound = "L: MyLanguage")]
 pub struct SeedCandidates<L: MyLanguage> {
-    pub seed: String,
+    pub start_term: String,
     pub policy: String,
 
     pub candidates: Vec<GuideExpr<L>>,

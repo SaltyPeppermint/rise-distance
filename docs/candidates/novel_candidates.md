@@ -447,7 +447,7 @@ let package = ExactCandidatePackage::<C, _, _>::build(result, max_size)?;
 let terms = package.draw_frontier_candidates(
     count,
     allocation,
-    selection_policy,
+    policy,
     seed,
 )?;
 ```

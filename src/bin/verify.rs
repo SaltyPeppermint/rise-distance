@@ -1,4 +1,4 @@
-//! Run one (seed, goal) pair's attempt loop: for each guide subset, union the
+//! Run one (start, goal) pair's attempt loop: for each guide subset, union the
 //! guides, saturate, and report goal reachability, stopping at the first reach.
 //!
 //! Stateless wrapper over [`verify_reachability`] — no guide egraph replay or
@@ -22,7 +22,7 @@ use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]
 #[command(
-    about = "Run one (seed, goal) pair's attempt loop: union guides, saturate, report reachability",
+    about = "Run one (start, goal) pair's attempt loop: union guides, saturate, report reachability",
     after_help = "\
 Reads the pair's attempt subsets as a JSON array of guide-node-list arrays on
 stdin and prints a JSON array of `LegResult` on stdout (one per subset run,
@@ -40,11 +40,11 @@ struct Args {
 
     /// The goal as a lowered s-expression string.
     #[arg(long)]
-    goal: String,
+    goal_term: String,
 
-    /// Run an ordinary single-seed baseline instead of reading guide subsets.
+    /// Run an ordinary single-start-term baseline instead of reading guide subsets.
     #[arg(long)]
-    seed: Option<String>,
+    start_term: Option<String>,
 
     /// Use the full-union add for the leg egraph.
     #[arg(long)]
@@ -85,7 +85,7 @@ struct LegResult {
 fn main() {
     let args = Args::parse();
 
-    let subsets_json = if args.seed.is_none() {
+    let subsets_json = if args.start_term.is_none() {
         // The pair's attempt subsets come in on stdin as a JSON array of arrays
         // of serialized `GuideExpr` node lists.
         let mut json = String::new();
@@ -98,7 +98,7 @@ fn main() {
     };
 
     let results = match args.language {
-        AvailableLanguages::Diospyros if args.seed.is_some() => {
+        AvailableLanguages::Diospyros if args.start_term.is_some() => {
             vec![run_unguided::<_, ()>(
                 &args,
                 &diospyros::rules(false, false),
@@ -107,13 +107,13 @@ fn main() {
         AvailableLanguages::Diospyros => {
             run_legs::<_, ()>(&subsets_json, &args, &diospyros::rules(false, false))
         }
-        AvailableLanguages::Math if args.seed.is_some() => {
+        AvailableLanguages::Math if args.start_term.is_some() => {
             vec![run_unguided::<_, math::ConstantFold>(&args, &math::rules())]
         }
         AvailableLanguages::Math => {
             run_legs::<_, math::ConstantFold>(&subsets_json, &args, &math::rules())
         }
-        AvailableLanguages::Prop if args.seed.is_some() => {
+        AvailableLanguages::Prop if args.start_term.is_some() => {
             vec![run_unguided::<_, prop::ConstantFold>(&args, &prop::rules())]
         }
         AvailableLanguages::Prop => {
@@ -141,9 +141,9 @@ fn run_legs<L: MyLanguage, N: MyAnalysis<L>>(
     );
 
     let goal_expr = args
-        .goal
+        .goal_term
         .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse goal '{}': {e}", args.goal));
+        .unwrap_or_else(|e| panic!("Failed to parse goal '{}': {e}", args.goal_term));
     let goal = Goal::Expr(goal_expr);
 
     let mut results = Vec::with_capacity(subsets.len());
@@ -183,16 +183,19 @@ fn run_unguided<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     rules: &[Rewrite<L, N>],
 ) -> LegResult {
-    let seed_text = args.seed.as_ref().expect("unguided mode needs --seed");
-    let seed = seed_text
+    let start_text = args
+        .start_term
+        .as_ref()
+        .expect("unguided mode needs --start-term");
+    let start_term = start_text
         .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse seed '{seed_text}': {e}"));
+        .unwrap_or_else(|e| panic!("Failed to parse start term '{start_text}': {e}"));
     let goal_expr = args
-        .goal
+        .goal_term
         .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse goal '{}': {e}", args.goal));
+        .unwrap_or_else(|e| panic!("Failed to parse goal term '{}': {e}", args.goal_term));
     result_to_leg(verify_unguided(
-        &seed,
+        &start_term,
         &Goal::Expr(goal_expr),
         rules,
         &args.eqsat,

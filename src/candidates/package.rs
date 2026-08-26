@@ -173,14 +173,14 @@ where
     pub fn draw_frontier_candidates(
         &self,
         count: usize,
-        selection_policy: Policy,
+        policy: Policy,
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let histogram = self.tc.data().get(&self.root)?;
 
         let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
 
-        match selection_policy {
+        match policy {
             Policy::Naive => FrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
                 .draw_root_batch(&requests, seed),
             Policy::Count => FrontierDrawer::new(&self.tc, &self.egraph, self.root, CountWeigher)

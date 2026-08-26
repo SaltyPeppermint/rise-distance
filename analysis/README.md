@@ -8,7 +8,7 @@ Guided-search experiments plus the eqsat memory model.
 - `grid_search.ipynb` compares grid-policy success across cumulative attempt
   budgets and full-budget peak RSS.
 - `memory_prediction.ipynb` explores upcoming-iteration memory prediction from
-  the per-iteration traces in `data/seed_terms/*/terms.json`. The deployed
+  the per-iteration traces in `data/start_terms/*/terms.json`. The deployed
   pipeline in `iteration_data.py` builds explicit pre-search decision rows and
   predicts the iteration-local peak, not the later final live allocation.
 

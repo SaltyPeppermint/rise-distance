@@ -74,7 +74,7 @@ fn main() {
 
     eprintln!("Starting at {}", OffsetDateTime::now_local().unwrap());
     eprintln!("Language: {:?}", args.language);
-    eprintln!("Seed: {}", args.start_term);
+    eprintln!("Start Term: {}", args.start_term);
 
     match args.language {
         AvailableLanguages::Diospyros => {
@@ -94,7 +94,7 @@ fn main() {
 /// Build one language-specific seed's candidate record and print it as JSON.
 fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
     eprintln!(
-        "\n=== Seed: {} (max-iters={}) ===",
+        "\n=== Start Term: {} (max-iters={}) ===",
         args.start_term, args.eqsat.max_iters
     );
 
@@ -106,7 +106,10 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, 
         }
     };
 
-    eprintln!("Finished seed at {}", OffsetDateTime::now_local().unwrap());
+    eprintln!(
+        "Finished start term at {}",
+        OffsetDateTime::now_local().unwrap()
+    );
 
     serde_json::to_writer(std::io::stdout(), &out).expect("write candidates JSON");
     println!();
@@ -121,7 +124,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     let seed_expr = args
         .start_term
         .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse seed '{}': {e}", args.start_term));
+        .unwrap_or_else(|e| panic!("Failed to parse start term '{}': {e}", args.start_term));
 
     // Replay the guide phase under the effective limits the driver computed;
     // the replay ends at whichever limit trips first.
@@ -146,7 +149,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     let candidates = build_full_analysis_candidates(args, result, args.policy, start_size)?;
 
     Ok(SeedCandidates {
-        seed: args.start_term.clone(),
+        start_term: args.start_term.clone(),
         policy: args.policy.to_string(),
         candidates,
 

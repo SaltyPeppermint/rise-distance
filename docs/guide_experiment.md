@@ -8,7 +8,7 @@ guide phase.
 
 The guide experiment measures how well constructed guide candidates steer
 equality saturation toward a goal. It runs in four stages, each feeding the
-next through a seed folder (`data/seed_terms/<name>/`) that accumulates
+next through a seed folder (`data/start_terms/<name>/`) that accumulates
 `terms.json` and `args.json`:
 
 ```
@@ -39,7 +39,7 @@ cargo build --release \
 
 ## 1. Generate seed terms (skip if you already have a seed folder)
 
-Writes `data/seed_terms/<auto-name>/terms.json` and `generation_args.json`.
+Writes `data/start_terms/<auto-name>/terms.json` and `generation_args.json`.
 Pick the language here—it flows through every later stage. Generated terms
 have exact sizes; only those that pass the eqsat validity check are kept.
 
@@ -52,8 +52,8 @@ uv run scripts/generate_seeds.py \
     --backoff-scheduler
 ```
 
-Note the printed output dir (e.g. `data/seed_terms/dusky-cramp`) and use it
-below. Pass `--path data/seed_terms/<name>` to choose the name yourself.
+Note the printed output dir (e.g. `data/start_terms/dusky-cramp`) and use it
+below. Pass `--path data/start_terms/<name>` to choose the name yourself.
 
 ## 2. Enrich seeds with goal terms
 
@@ -61,7 +61,7 @@ below. Pass `--path data/seed_terms/<name>` to choose the name yourself.
 `goal_terms.json` plus `goal_args.json`. Start with `--seeds` to keep it quick.
 
 ```bash
-uv run scripts/generate_goals.py data/seed_terms/dusky-cramp \
+uv run scripts/generate_goals.py data/start_terms/dusky-cramp \
     --goals 10 --seeds 3
 ```
 
@@ -71,7 +71,7 @@ uv run scripts/generate_goals.py data/seed_terms/dusky-cramp \
 across cores. Pass at least one guide-replay `--stop-*` limit.
 
 ```bash
-uv run scripts/guided_search.py data/seed_terms/dusky-cramp \
+uv run scripts/guided_search.py data/start_terms/dusky-cramp \
     --stop-memory 4G --seeds 3 --attempts 5 --k 10 \
     --strategy no_replacement_independent
 ```
@@ -91,7 +91,7 @@ size-allocation/candidate-seed cell. Each policy reuses that manifest, and
 smaller attempt budgets can be analyzed as prefixes of the same run:
 
 ```bash
-uv run scripts/guided_search_grid.py data/seed_terms/dusky-cramp \
+uv run scripts/guided_search_grid.py data/start_terms/dusky-cramp \
     --stop-memory 4G --k 10 --attempts 250 --full-union
 ```
 
@@ -100,7 +100,7 @@ uv run scripts/guided_search_grid.py data/seed_terms/dusky-cramp \
 ## Repository experiment script
 
 [`experiment.fish`](../experiment.fish) runs a concrete end-to-end experiment
-for `data/seed_terms/plenty-houses`:
+for `data/start_terms/plenty-houses`:
 
 1. Generate 1,000 validated Math seed terms of sizes 10 through 50.
 2. Generate ten goal terms per retained seed.

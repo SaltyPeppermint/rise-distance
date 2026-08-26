@@ -503,7 +503,7 @@ where
 /// Run single-seed eqsat until `goal` is reached or a limit stops the run.
 #[expect(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 pub fn verify_unguided<L, N>(
-    seed: &RecExpr<L>,
+    start: &RecExpr<L>,
     goal: &Goal<L>,
     rules: &[Rewrite<L, N>],
     eqsat: &EqsatConfig,
@@ -513,7 +513,7 @@ where
     N: MyAnalysis<L> + Default,
 {
     let goal_clone = goal.clone();
-    let mut runner = eqsat.build_runner::<L, N, ()>(seed);
+    let mut runner = eqsat.build_runner::<L, N, ()>(start);
     // Check the goal before the predictive hook at each decision boundary.
     runner.hooks.insert(
         0,
@@ -529,7 +529,7 @@ where
     let Ok(mut runner) =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules)))
     else {
-        eprintln!("Panic caught in unguided verification for seed: {seed:?}");
+        eprintln!("Panic caught in unguided verification for start term: {start:?}");
         return Err(GuideError::PanicWhileAttempt);
     };
     let memory = runner

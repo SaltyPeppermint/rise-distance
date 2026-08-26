@@ -1,4 +1,4 @@
-"""Generate validated seed terms in isolated Rust processes.
+"""Generate validated start terms in isolated Rust processes.
 
 The Rust ``generate plan`` command supplies the uniform size-allocation plan and
 ``generate one`` produces one term per invocation. This coordinator provides
@@ -17,7 +17,7 @@ measured wall times and allocator statistics in payloads remain observational.
 
 Example:
     cargo build --release --bin generate
-    uv run scripts/generate_seeds.py --total-samples 10 --min-size 10 \
+    uv run scripts/generate_starts.py --total-samples 10 --min-size 10 \
       --max-size 12 --language math --seed 42
 """
 
@@ -65,7 +65,7 @@ def generate_unique_dir(parent: Path, max_attempts: int = 100) -> Path:
 @dataclass
 class Args:
     path: Path | None = None
-    """Output directory. A fresh data/seed_terms directory is used if omitted."""
+    """Output directory. A fresh data/start_terms directory is used if omitted."""
 
     generate_binary: Path = Path("target/release/generate")
     total_samples: int = tyro.MISSING
@@ -640,7 +640,7 @@ def main() -> int:
     try:
         validate_args(args)
         if args.path is None:
-            args.path = generate_unique_dir(Path("data/seed_terms"))
+            args.path = generate_unique_dir(Path("data/start_terms"))
             print(f"Auto-generated output dir: {args.path}", file=sys.stderr)
         else:
             args.path.mkdir(parents=True, exist_ok=True)
@@ -658,7 +658,7 @@ def main() -> int:
         print("Interrupted; completed checkpoints are safe to resume.", file=sys.stderr)
         return 130
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
-        print(f"generate_seeds: {error}", file=sys.stderr)
+        print(f"generated start terms: {error}", file=sys.stderr)
         return 2
 
 

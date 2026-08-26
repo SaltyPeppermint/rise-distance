@@ -1,6 +1,6 @@
 guide_driver/
 guide_eval/
-seed_terms/
+start_terms/
 goal_gen/
 guided_search/
 guided_search_grid/

@@ -7,8 +7,8 @@ driver's arguments.
 
 Example:
     cargo build --release --bin goal
-    uv run scripts/generate_goals.py data/seed_terms/dusky-cramp \\
-        --goals 10 --jobs 8
+    uv run scripts/generate_goals.py data/start_terms/dusky-cramp \\
+        --goal-terms 10 --jobs 8
 """
 
 import dataclasses
@@ -35,29 +35,29 @@ GoalSelectionPolicy = Literal[
 class Args:
     # I/O
     path: tyro.conf.Positional[Path]
-    """Seed folder with `terms.json` and `generation_args.json`. The enriched
+    """Folder with `terms.json` and `generation_args.json`. The enriched
     per-seed goal data is written to `goal_terms.json` in the same folder,
     alongside a `goal_args.json` sidecar."""
 
     force: bool = False
-    """Overwrite existing `goal_terms.json`/`goal_args.json` in the seed
+    """Overwrite existing `goal_terms.json`/`goal_args.json` in the start
     folder instead of refusing."""
 
     goal_binary: Path = Path("target/release/goal")
 
     # goal generation
-    goals: int = 10
-    """Number of goal candidates to draw per seed."""
+    n: int = 10
+    """Number of goal candidates to draw per start term."""
 
     size_allocation: str | None = None
     """How to allocate the candidate budget across sizes (forwarded if set)."""
 
-    selection_policy: GoalSelectionPolicy | None = None
+    policy: GoalSelectionPolicy | None = None
     """How to draw goal candidates: count or naive (forwarded if set)."""
 
     skip_unmeasured: bool = True
-    """Skip seeds whose measurement is missing or empty (no iterations were
-    recorded for the seed during generation)."""
+    """Skip start terms whose measurement is missing or empty (no iterations were
+    recorded for the start term during generation)."""
 
     retry_step: int = 5
     """How much to grow `max_size` on each exact-size-search retry."""
@@ -69,14 +69,14 @@ class Args:
     """How many novel root sizes exact construction must find."""
 
     # fan-out
-    seeds: int | None = None
-    """Only process the first N seed terms (sorted order, so stable across
-    runs). All seeds if omitted."""
+    cutoff: int | None = None
+    """Only process the first N start terms (sorted order, so stable across
+    runs). All start terms if omitted."""
 
     jobs: int | None = None
     """Max concurrent `goal` subprocesses (one seed each). Defaults to
     `os.cpu_count()`. Lower it if the per-seed eqsat egraphs exhaust RAM, since
-    each seed's eqsat can use several GB."""
+    each start term's eqsat can use several GB."""
 
 
 def is_measured(record: object) -> bool:
@@ -93,33 +93,33 @@ def is_measured(record: object) -> bool:
     return isinstance(iterations, list) and len(iterations) > 0
 
 
-def flatten_seeds(args: Args) -> list[str]:
+def flatten_start_terms(args: Args) -> list[str]:
     """Flatten `terms.json` into the list of seed s-expressions to process.
 
     Groups in file order; terms sorted within each group for deterministic
-    `--seeds`; then the `skip_unmeasured` filter.
+    `--n`; then the `skip_unmeasured` filter.
     """
     groups = json.loads((args.path / "terms.json").read_text())
-    seeds: list[str] = []
+    start_terms: list[str] = []
     for _size, terms_map in groups:
         for term in sorted(terms_map):
             if args.skip_unmeasured and not is_measured(terms_map[term]):
                 continue
-            seeds.append(term)
-    if args.seeds is not None:
-        seeds = seeds[: args.seeds]
-    return seeds
+            start_terms.append(term)
+    if args.cutoff is not None:
+        start_terms = start_terms[: args.cutoff]
+    return start_terms
 
 
-def run_goal_shard(args: Args, base_flags: list[str], seed: str) -> object:
+def run_goal_shard(args: Args, base_flags: list[str], start_term: str) -> object:
     """Run `goal` for a single seed and return its parsed stdout payload."""
     cmd = [
         str(args.goal_binary),
-        "--seed",
-        seed,
+        "--start-term",
+        start_term,
         *base_flags,
-        "--goals",
-        str(args.goals),
+        "--n",
+        str(args.n),
         "--retry-step",
         str(args.retry_step),
         "--max-retries",
@@ -129,23 +129,27 @@ def run_goal_shard(args: Args, base_flags: list[str], seed: str) -> object:
     ]
     if args.size_allocation is not None:
         cmd += ["--size-allocation", args.size_allocation]
-    if args.selection_policy is not None:
-        cmd += ["--exact-selection-policy", args.selection_policy]
-    return run_json_subprocess(cmd, what=f"goal for seed {seed!r}")
+    if args.policy is not None:
+        cmd += ["--exact-selection-policy", args.policy]
+    return run_json_subprocess(cmd, what=f"goal for start term {start_term!r}")
 
 
-def run_all_seeds(args: Args, base_flags: list[str], seeds: list[str]) -> dict[str, object]:
-    """Run one `goal` subprocess per seed and collect `{seed_str: payload}`."""
+def run_all_start_terms(
+    args: Args, base_flags: list[str], start_terms: list[str]
+) -> dict[str, object]:
+    """Run one `goal` subprocess per seed and collect `{start_str: payload}`."""
     jobs = args.jobs or os.cpu_count() or 1
     print(
-        f"Generating goals for {len(seeds)} seed(s) ({jobs} workers)",
+        f"Generating goals for {len(start_terms)} start term(s) ({jobs} workers)",
         file=sys.stderr,
     )
 
     enriched: dict[str, object] = {}
     with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = {pool.submit(run_goal_shard, args, base_flags, seed): seed for seed in seeds}
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="seeds", unit="seed"):
+        futures = {
+            pool.submit(run_goal_shard, args, base_flags, seed): seed for seed in start_terms
+        }
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="start terms", unit="term"):
             enriched[futures[fut]] = fut.result()
     return enriched
 
@@ -153,8 +157,8 @@ def run_all_seeds(args: Args, base_flags: list[str], seeds: list[str]) -> dict[s
 def write_enriched_terms(src: Path, dst: Path, enriched: dict[str, object]) -> int:
     """Write the enriched copy of `src` (the seed `terms.json`) to `dst`,
     replacing each seed's record with its enriched payload. Preserves the
-    `[size, {term: payload}]` grouping; seeds absent from `enriched` (e.g.
-    dropped by `--seeds`) are omitted, and groups left empty are dropped.
+    `[size, {term: payload}]` grouping; start terms absent from `enriched` (e.g.
+    dropped by `--n`) are omitted, and groups left empty are dropped.
     """
     groups = json.loads(src.read_text())
     out_groups = []
@@ -184,9 +188,9 @@ def main() -> int:
             )
             return 2
 
-    seeds = flatten_seeds(args)
-    if not seeds:
-        print("No seeds to process after filtering.", file=sys.stderr)
+    start_terms = flatten_start_terms(args)
+    if not start_terms:
+        print("No start terms to process after filtering.", file=sys.stderr)
         return 0
 
     raw_cfg = json.loads((args.path / "generation_args.json").read_text())
@@ -199,11 +203,11 @@ def main() -> int:
         json.dumps({**cfg, "driver_args": dataclasses.asdict(args)}, indent=2, default=str)
     )
 
-    enriched = run_all_seeds(args, language_eqsat_flags(cfg), seeds)
+    enriched = run_all_start_terms(args, language_eqsat_flags(cfg), start_terms)
 
     written = write_enriched_terms(args.path / "terms.json", goal_terms_path, enriched)
     print(
-        f"\nWrote {written} enriched seed(s) to {goal_terms_path}",
+        f"\nWrote {written} enriched start terms(s) to {goal_terms_path}",
         file=sys.stderr,
     )
     return 0

@@ -1,7 +1,7 @@
 """Drive the guide search from Python.
 
-This driver reads enriched seeds, constructs a guide-candidate menu per seed,
-and verifies one attempt loop per seed/goal pair. It owns the JSON/parquet I/O; the Rust
+This driver reads enriched starts, constructs a guide-candidate menu per starts,
+and verifies one attempt loop per start/goal pair. It owns the JSON/parquet I/O; the Rust
 ``candidates`` and ``verify`` binaries communicate through argv, stdin, and stdout.
 
 Guide replay and leg search share the required ``--stop-*`` budget. Dimensions
@@ -9,7 +9,7 @@ without an override retain their search-phase limits from ``goal_args.json``.
 
 Example:
     cargo build --release --bin candidates --bin verify
-    uv run scripts/guided_search.py data/seed_terms/dusky-cramp \\
+    uv run scripts/guided_search.py data/start_terms/dusky-cramp \\
         --stop-memory 4G \\
         --attempts 5 --k 10 \\
         --strategy no_replacement_count --full-union
@@ -79,8 +79,8 @@ LEG_RESULT_DTYPES = {
 # in the Rust payload: doing so would overwrite the measured value with None.
 LEG_RESULT_FIELDS = tuple(field for field in LEG_RESULT_DTYPES if field != "verify_peak_rss_bytes")
 ATTEMPT_SCHEMA = {
-    "seed": pl.String,
-    "goal": pl.String,
+    "start_term": pl.String,
+    "goal_term": pl.String,
     "strategy": pl.String,
     "k": pl.Int64,
     "attempt": pl.Int64,
@@ -102,7 +102,7 @@ ATTEMPT_SCHEMA = {
 class Args:
     # I/O
     path: tyro.conf.Positional[Path]
-    """Seed folder with `goal_terms.json` and `goal_args.json` (both written
+    """Start Term folder with `goal_terms.json` and `goal_args.json` (both written
     by `generate_goals.py`)."""
 
     output: Path | None = None
@@ -112,7 +112,7 @@ class Args:
     candidates_input: Path | None = None
     """Existing `candidates.json` candidate manifest to reuse. When set, skip
     guide replay and candidate construction. This permits paired strategy runs over
-    exactly the same per-seed menus."""
+    exactly the same per-start term menus."""
 
     unguided_input: Path | None = None
     """Existing `unguided_results.parquet` to reuse. The pair universe and
@@ -136,46 +136,42 @@ class Args:
 
     # search policy
     attempts: int = 5
-    """How many legs to try per (seed, goal) pair, each with a freshly resampled
+    """How many legs to try per (start, goal) pair, each with a freshly resampled
     guide subset. Counts the first try, so `attempts=1` means a single leg with
     no resampling. Stops early on the first reach; gives up after the last."""
     strategy: Strategy = "no_replacement_count"
     """Which candidate pool to restart with."""
     k: int = 1
-    """Guide-set size: each seed/goal pair runs one attempt loop drawing `k`
+    """Guide-set size: each start/goal pair runs one attempt loop drawing `k`
     guides per leg. Forced to `1` for the `smallest_*` strategies."""
-    full_union: bool = False
+    full_union: bool = True
     """Use the experimental full-union add for the leg egraph."""
 
     start_terms: int | None = None
-    """Only process the first N seed terms (sorted order, so stable across
-    runs). All seeds if omitted."""
+    """Only process the first N start terms (sorted order, so stable across
+    runs). All start terms if omitted."""
 
     goal_terms: int | None = None
-    """Only use the first N goals per seed term (file order, so stable across
+    """Only use the first N goals per start term (file order, so stable across
     runs). All goals if omitted."""
 
-    rng_seed: int = 0
-    """RNG seed for subset selection (offset per attempt)."""
-
     seed: int = 0
-    """Rust candidate-construction seed. Unlike `rng_seed`, this controls which
-    terms enter each strategy's candidate menu."""
+    """RNG seed. Used in Python and Rust"""
 
     size_goal: int = 5
     """Number of novel sizes the analysis must find."""
 
     jobs: int | None = None
-    """Max concurrent `verify` legs (one seed/goal pair per worker). Each pair's
+    """Max concurrent `verify` legs (one start/goal pair per worker). Each pair's
     attempt loop stays sequential, so this parallelises across pairs. Defaults to
     `os.cpu_count()`. Lower it if the large leg egraphs exhaust RAM."""
 
 
 @dataclass
 class WorkItem:
-    """One seed/goal unit, its guide pool, and seed-level guide metadata."""
+    """One start/goal unit, its guide pool, and start-level guide metadata."""
 
-    start_expr: str
+    start_term: str
     goal: str
     pool: list
     guide_meta: dict
@@ -216,31 +212,31 @@ def replay_limits(args: Args, cfg: dict) -> dict:
 
 
 @dataclass
-class SeedSpec:
-    """One seed's `candidates` input (`seed`) and its goals, merged back onto the
+class StartSpec:
+    """One start terms's `candidates` input (`start_term`) and its goals, merged back onto the
     output record Python-side."""
 
-    start: str
-    goals: list[str]
+    start_term: str
+    goal_terms: list[str]
 
 
-def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
-    """Flatten the goal-enriched `goal_terms.json` into per-seed specs.
+def flatten_enriched_start_terms(args: Args) -> list[StartSpec]:
+    """Flatten the goal-enriched `goal_terms.json` into per-start term specs.
 
     Drop ``Err`` payloads, sort terms within file-ordered groups, and apply the
-    optional seed and per-seed goal limits.
+    optional start term and per-start goal limits.
     """
     groups = json.loads((args.path / "goal_terms.json").read_text())
-    specs: list[SeedSpec] = []
+    specs: list[StartSpec] = []
     for _size, terms_map in groups:
-        for seed in sorted(terms_map):
-            ok = terms_map[seed].get("Ok")
+        for start in sorted(terms_map):
+            ok = terms_map[start].get("Ok")
             if ok is None:
-                continue  # Err seed: goal stage failed, nothing to replay.
+                continue  # Err start: goal stage failed, nothing to replay.
             goals = ok["goals"]
             if args.goal_terms is not None:
                 goals = goals[: args.goal_terms]
-            specs.append(SeedSpec(seed, goals))
+            specs.append(StartSpec(start, goals))
     if args.start_terms is not None:
         specs = specs[: args.start_terms]
     return specs
@@ -251,44 +247,46 @@ def build_candidate_shard(
     base_flags: list[str],
     limits: dict,
     menu_size: int,
-    spec: SeedSpec,
+    spec: StartSpec,
 ) -> list[dict]:
-    """Run ``candidates`` for one seed and attach its goals to the result."""
+    """Run ``candidates`` for one start term and attach its goals to the result."""
     cmd = [
         str(args.candidates_binary),
         *base_flags,
         *limit_flags(limits),
         "--start-term",
-        spec.start,
+        spec.start_term,
         "--n-candidates",
         str(menu_size),
     ]
 
-    measured = run_json_subprocess_measured(cmd, what=f"candidates for seed {spec.start!r}")
+    measured = run_json_subprocess_measured(
+        cmd, what=f"candidates for start term {spec.start_term!r}"
+    )
     records = measured.payload
     if not records:
         return [
             {
-                "seed": spec.start,
-                "goals": spec.goals,
+                "start_term": spec.start_term,
+                "goal_terms": spec.goal_terms,
                 "candidates": {},
                 "candidate_status": "failed",
                 "candidate_peak_rss_bytes": measured.peak_rss_bytes,
             }
         ]
     for record in records:
-        record["goals"] = spec.goals
+        record["goal_terms"] = spec.goal_terms
         record["candidate_status"] = "ok"
         record["candidate_peak_rss_bytes"] = measured.peak_rss_bytes
     return records
 
 
 def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path:
-    """Construct guide menus in parallel, one `candidates` subprocess per seed.
+    """Construct guide menus in parallel, one `candidates` subprocess per start term.
 
-    Merge results in seed order and write ``candidates.json`` for provenance.
+    Merge results in start terms order and write ``candidates.json`` for provenance.
     """
-    specs = flatten_enriched_seeds(args)
+    specs = flatten_enriched_start_terms(args)
     policy = pool_key(args.strategy)
     candidate_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
@@ -308,7 +306,7 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
     menu_size = args.k * args.attempts
     print(
         f"Constructing guide-candidate menu ({menu_size}/strategy, policy={policy}) "
-        f"for {len(specs)} seed(s) "
+        f"for {len(specs)} start terms(s) "
         f"-> {candidate_out} ({jobs} workers)",
         file=sys.stderr,
     )
@@ -330,7 +328,7 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
             as_completed(futures),
             total=len(futures),
             desc="candidates",
-            unit="seed",
+            unit="start term",
         ):
             shard_records[futures[fut]] = fut.result()
 
@@ -343,7 +341,7 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
 def build_attempt_subsets(
     pool: list, strategy: str, k: int, attempts: int, rng: random.Random
 ) -> list[list]:
-    """Prepare each attempt's guide subset for one seed/goal pair.
+    """Prepare each attempt's guide subset for one start/goal pair.
 
     `smallest_*` yields a single term per attempt; `with_replacement_*` makes `k`
     picks with replacement per attempt.
@@ -377,12 +375,12 @@ def run_legs(
     goal: str,
     subsets: list[list],
 ) -> tuple[list[dict], int]:
-    """Verify one seed/goal pair and return the legs run before early stopping.
+    """Verify one start/goal pair and return the legs run before early stopping.
 
     Attempt subsets are sent as JSON on stdin. Panic-guarded legs still produce
     results; process-level failures raise.
     """
-    cmd = [str(args.verify_binary), *base_flags, "--goal", goal]
+    cmd = [str(args.verify_binary), *base_flags, "--goal-term", goal]
     if args.full_union:
         cmd.append("--full-union")
     measured = run_json_subprocess_measured(
@@ -392,16 +390,16 @@ def run_legs(
 
 
 def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
-    """Run one seed/goal pair's attempt loop and return its result rows.
+    """Run one start/goal pair's attempt loop and return its result rows.
 
     The final row is marked ``gave_up`` only if all attempts ran and failed.
     Reported ``k`` is the effective subset size. An empty pool is an error.
     """
-    rng = random.Random(f"{args.rng_seed}:{item.start_expr}:{item.goal}")
+    rng = random.Random(f"{args.seed}:{item.start_term}:{item.goal}")
     attempt_subsets = build_attempt_subsets(item.pool, args.strategy, args.k, args.attempts, rng)
     if any(not guides for guides in attempt_subsets):
         raise RuntimeError(
-            f"empty candidate pool for seed {item.start_expr!r} goal {item.goal!r}: "
+            f"empty candidate pool for start term {item.start_term!r} goal {item.goal!r}: "
             f"strategy {args.strategy!r} drew no guides"
         )
 
@@ -409,8 +407,8 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     rows: list[dict] = []
     for attempt, (guides, result) in enumerate(zip(attempt_subsets, results)):
         row = {
-            "seed": item.start_expr,
-            "goal": item.goal,
+            "start_term": item.start_term,
+            "goal_term": item.goal,
             "strategy": args.strategy,
             "k": len(guides),
             "attempt": attempt,
@@ -443,14 +441,14 @@ def resolve_output_dir(args: Args) -> Path:
     return out
 
 
-def build_work_items(seed_records: list, strategy: str) -> list[WorkItem]:
-    """Flatten `candidates`'s seed records into count (seed, goal) items.
+def build_work_items(start_term_records: list) -> list[WorkItem]:
+    """Flatten `candidates`'s start term records into count (start, goal) items.
 
     Each item runs its own sequential attempt loop (early-stops on first reach);
     items run concurrently.
     """
     items: list[WorkItem] = []
-    for record in seed_records:
+    for record in start_term_records:
         if record.get("candidate_status") != "ok":
             continue
         pool = record["candidates"]
@@ -463,8 +461,8 @@ def build_work_items(seed_records: list, strategy: str) -> list[WorkItem]:
             "candidate_peak_rss_bytes": record["candidate_peak_rss_bytes"],
             "guide_stop_reason": record["stop_reason"],
         }
-        for goal in record["goals"]:
-            items.append(WorkItem(record["seed"], goal, pool, guide_meta))
+        for goal in record["goal_terms"]:
+            items.append(WorkItem(record["start_term"], goal, pool, guide_meta))
     return items
 
 
@@ -495,7 +493,7 @@ def warn_pool_shortfall(items: list[WorkItem], strategy: str, k: int, attempts: 
 
 def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> list[dict]:
     """Run every work item's attempt loop concurrently and collect result rows."""
-    print(f"Running legs for {len(items)} (seed, goal) item(s)", file=sys.stderr)
+    print(f"Running legs for {len(items)} (start, goal) item(s)", file=sys.stderr)
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=args.jobs or os.cpu_count() or 1) as pool_exec:
         futures = [pool_exec.submit(run_pair, args, base_flags, item) for item in items]
@@ -504,37 +502,40 @@ def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> l
     return rows
 
 
-def expected_pairs(seed_records: list[dict]) -> list[dict]:
-    """Return every planned pair, including seeds whose construction failed."""
+def expected_pairs(start_records: list[dict]) -> list[dict]:
+    """Return every planned pair, including start terms whose construction failed."""
     return [
         {
-            "seed": record["seed"],
-            "goal": goal,
+            "start_term": record["start_term"],
+            "goal_term": goal_term,
             "candidate_status": record["candidate_status"],
             "candidate_peak_rss_bytes": record["candidate_peak_rss_bytes"],
             "guide_peak_live_heap": record.get("guide_peak_live_heap"),
             "guide_stop_reason": record.get("stop_reason"),
         }
-        for record in seed_records
-        for goal in record["goals"]
+        for record in start_records
+        for goal_term in record["goal_terms"]
     ]
 
 
 def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
-    """Run the pair-matched single-seed baseline with predictive stopping."""
+    """Run the pair-matched single-start baseline with predictive stopping."""
+    print(pair)
     cmd = [
         str(args.verify_binary),
         *base_flags,
-        "--start",
-        pair["start"],
-        "--goal",
-        pair["goal"],
+        "--start-term",
+        pair["start_term"],
+        "--goal-term",
+        pair["goal_term"],
     ]
-    measured = run_json_subprocess_measured(cmd, what=f"unguided verify for goal {pair['goal']!r}")
+    measured = run_json_subprocess_measured(
+        cmd, what=f"unguided verify for goal term {pair['goal_term']!r}"
+    )
     result = measured.payload[0]
     return {
-        "seed": pair["start"],
-        "goal": pair["goal"],
+        "start_term": pair["start_term"],
+        "goal_term": pair["goal_term"],
         "unguided_success": result["reached"],
         "unguided_stop_reason": result.get("stop_reason"),
         "unguided_panic": result.get("panic", False),
@@ -556,18 +557,18 @@ def run_all_unguided(args: Args, base_flags: list[str], pairs: list[dict]) -> li
 
 def summarize_pairs(
     args: Args,
-    seed_records: list[dict],
+    start_records: list[dict],
     rows: list[dict],
 ) -> list[dict]:
     """Collapse attempt rows to one guided workflow row per planned pair."""
     attempts_by_pair: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
-        attempts_by_pair.setdefault((row["seed"], row["goal"]), []).append(row)
+        attempts_by_pair.setdefault((row["start_term"], row["goal_term"]), []).append(row)
 
     summary = []
-    for pair in expected_pairs(seed_records):
+    for pair in expected_pairs(start_records):
         attempts = sorted(
-            attempts_by_pair.get((pair["seed"], pair["goal"]), []),
+            attempts_by_pair.get((pair["start_term"], pair["goal_term"]), []),
             key=lambda row: row["attempt"],
         )
         successes = [row for row in attempts if row["reached"]]
@@ -610,7 +611,7 @@ def summarize_pairs(
 def report_results(
     args: Args,
     out: Path,
-    seed_records: list[dict],
+    start_records: list[dict],
     rows: list[dict],
     unguided_rows: list[dict],
     limits: dict,
@@ -622,12 +623,12 @@ def report_results(
 
     pair_rows = summarize_pairs(
         args,
-        seed_records,
+        start_records,
         rows,
     )
     pairs = pl.DataFrame(pair_rows)
     unguided = pl.DataFrame(unguided_rows)
-    comparison = pairs.join(unguided, on=["seed", "goal"], how="left", validate="1:1")
+    comparison = pairs.join(unguided, on=["start_term", "goal_term"], how="left", validate="1:1")
     pairs.write_parquet(out / "pair_results.parquet")
     unguided.write_parquet(out / "unguided_results.parquet")
     comparison.write_parquet(out / "comparison.parquet")
@@ -641,7 +642,7 @@ def report_results(
     total_pairs = len(pairs)
     reach_rate = reached_pairs / total_pairs if total_pairs else 0.0
     print(
-        f"\nReached {reached_pairs}/{total_pairs} seed/goal pairs "
+        f"\nReached {reached_pairs}/{total_pairs} start/goal pairs "
         f"(reach rate {reach_rate:.2f}) at k={args.k}. "
         f"Wrote {out / 'comparison.parquet'}",
         file=sys.stderr,
@@ -696,13 +697,13 @@ def main() -> int:
             print(f"Candidate manifest not found: {candidates_path}", file=sys.stderr)
             return 2
         print(f"Reusing candidate manifest {candidates_path}", file=sys.stderr)
-    seed_records = json.loads(candidates_path.read_text())
-    items = build_work_items(seed_records, args.strategy)
+    start_records = json.loads(candidates_path.read_text())
+    items = build_work_items(start_records)
     warn_pool_shortfall(items, args.strategy, args.k, args.attempts)
 
     rows = run_all_pairs(args, base_flags, items)
 
-    pairs = expected_pairs(seed_records)
+    pairs = expected_pairs(start_records)
     if args.unguided_input is None:
         unguided_rows = run_all_unguided(args, base_flags, pairs)
     else:
@@ -710,8 +711,8 @@ def main() -> int:
             print(f"Unguided result file not found: {args.unguided_input}", file=sys.stderr)
             return 2
         unguided_rows = pl.read_parquet(args.unguided_input).to_dicts()
-        planned_keys = {(pair["seed"], pair["goal"]) for pair in pairs}
-        baseline_keys = {(row["seed"], row["goal"]) for row in unguided_rows}
+        planned_keys = {(pair["start_term"], pair["goal_term"]) for pair in pairs}
+        baseline_keys = {(row["start_term"], row["goal_term"]) for row in unguided_rows}
         if planned_keys != baseline_keys:
             print(
                 "Unguided result pair universe does not match this run "
@@ -720,7 +721,7 @@ def main() -> int:
             )
             return 2
 
-    report_results(args, out, seed_records, rows, unguided_rows, limits)
+    report_results(args, out, start_records, rows, unguided_rows, limits)
     return 0
 
 

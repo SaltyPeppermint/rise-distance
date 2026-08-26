@@ -6,7 +6,7 @@ sibling ``generation_args.json``. Output is written to
 
 Example:
     cargo build --release --bin measure-cost
-    uv run scripts/measure_cost.py --path data/seed_terms/foo-bar/terms.json
+    uv run scripts/measure_cost.py --path data/start_terms/foo-bar/terms.json
 """
 
 import argparse
@@ -27,7 +27,7 @@ def main() -> int:
         "--path",
         type=Path,
         required=True,
-        help="Seed-terms JSON (e.g. data/seed_terms/foo-bar/terms.json). "
+        help="Seed-terms JSON (e.g. data/start_terms/foo-bar/terms.json). "
         "Its sibling `generation_args.json` is read for the egg limits.",
     )
     parser.add_argument("--binary", type=Path, default=Path("target/release/measure-cost"))
