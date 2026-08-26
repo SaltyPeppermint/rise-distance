@@ -13,7 +13,7 @@ use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
 pub use frontier::{FrontierDrawer, FrontierPackage};
 pub use plain::{PlainDrawer, PlainPackage};
-pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
+pub use weigher::{CountWeigher, UniformWeigher, Weigher};
 
 /// Draws size-targeted candidates from an e-graph.
 pub trait Drawer<C, L, N>
@@ -40,32 +40,6 @@ where
             return false;
         };
         C::from_u64(requested_count).is_some_and(|s| count > &s)
-    }
-
-    /// All sizes for which `id` has at least one extractable term under this
-    /// drawer's constraints. Iteration order is unspecified.
-    fn term_sizes(&self, id: Id) -> Vec<usize> {
-        let canon_id = self.find(id);
-        self.size_histogram(canon_id)
-            .map(|h| h.keys().copied().collect())
-            .unwrap_or_default()
-    }
-
-    /// Smallest size with at least one extractable term.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the class has no extractable terms under this drawer's
-    /// constraints.
-    fn min_size(&self, id: Id) -> usize {
-        self.term_sizes(id).into_iter().min().unwrap()
-    }
-
-    /// Returns a random (but stable) smallest term
-    fn smallest(&self, id: Id) -> RecExpr<OriginLang<L>> {
-        let size = self.min_size(id);
-        let mut rng = ChaCha12Rng::seed_from_u64(0);
-        self.draw(id, size, &mut rng)
     }
 
     /// Precondition: `possible_size(id, size, 0)`.
@@ -141,6 +115,42 @@ where
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         self.draw_batch(self.root(), requests, seed)
+    }
+
+    /// All sizes for which `id` has at least one extractable term under this
+    /// drawer's constraints. Iteration order is unspecified.
+    fn term_sizes(&self, id: Id) -> Vec<usize> {
+        let canon_id = self.find(id);
+        self.size_histogram(canon_id)
+            .map(|h| h.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Smallest size with at least one extractable term.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the class has no extractable terms under this drawer's
+    /// constraints.
+    fn min_size(&self, id: Id) -> usize {
+        *self
+            .size_histogram(self.find(id))
+            .map(|h| h.keys())
+            .unwrap_or_default()
+            .min()
+            .unwrap()
+    }
+
+    /// Returns a random (but stable) smallest term
+    fn smallest(&self, id: Id) -> RecExpr<OriginLang<L>> {
+        let size = self.min_size(id);
+        let mut rng = ChaCha12Rng::seed_from_u64(0);
+        self.draw(id, size, &mut rng)
+    }
+
+    /// Returns a random (but stable) root term
+    fn smallest_root(&self) -> RecExpr<OriginLang<L>> {
+        self.smallest(self.root())
     }
 }
 

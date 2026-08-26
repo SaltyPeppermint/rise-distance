@@ -5,9 +5,9 @@ pub trait Weigher<C: Counter> {
     fn child_weight(&self, child_count: &C, rest_count: &C) -> C;
 }
 
-pub struct NaiveWeigher;
+pub struct UniformWeigher;
 
-impl<C: Counter> Weigher<C> for NaiveWeigher {
+impl<C: Counter> Weigher<C> for UniformWeigher {
     fn node_weight(&self, _count: &C) -> C {
         C::one()
     }

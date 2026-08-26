@@ -160,7 +160,7 @@ where
             eqsat_meta: vec![cut_meta],
         };
     };
-    // package.log_root_counts();
+    // log_root_counts(package.root_histogram(), &mut log);
 
     let Some(candidates) = package.draw_candidates(
         args.candidate_count,

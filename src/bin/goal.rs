@@ -17,8 +17,7 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 
-use rise_distance::candidates::FrontierPackage;
-use rise_distance::candidates::draw::DrawerPackage;
+use rise_distance::candidates::{DrawerPackage, FrontierPackage};
 use rise_distance::cli::{GoalGenMetadata, Policy};
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};

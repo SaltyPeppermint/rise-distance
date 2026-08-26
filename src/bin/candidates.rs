@@ -7,10 +7,9 @@
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
-use rise_distance::candidates::draw::DrawerPackage;
 use time::OffsetDateTime;
 
-use rise_distance::candidates::FrontierPackage;
+use rise_distance::candidates::{DrawerPackage, FrontierPackage};
 use rise_distance::cli::{GuideExpr, Policy, SeedCandidates};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};

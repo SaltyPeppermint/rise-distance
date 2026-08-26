@@ -16,7 +16,7 @@ use crate::candidates::count::{
     NodeMatches, count_terms_rooted, enumerate_matches_rooted, find_novel_root_sizes,
     prune_matches, root_budgets,
 };
-use crate::candidates::draw::{CountWeigher, DrawerPackage, NaiveWeigher};
+use crate::candidates::draw::{CountWeigher, DrawerPackage, UniformWeigher};
 use crate::candidates::draw::{Drawer, Weigher};
 use crate::candidates::greedy_distribute_alloc;
 use crate::candidates::{convolve_at, suffix_convolutions};
@@ -457,8 +457,8 @@ where
         let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
 
         match policy {
-            Policy::Naive => {
-                FrontierDrawer::new(&self.counts, &self.egraph, self.root, NaiveWeigher)
+            Policy::Uniform => {
+                FrontierDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
                     .draw_root_batch(&requests, seed)
             }
             Policy::Count => {

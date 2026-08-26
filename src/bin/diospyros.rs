@@ -4,8 +4,7 @@ use clap::{Parser, Subcommand};
 use egg::{Extractor, RecExpr};
 
 use num::BigUint;
-use rise_distance::candidates::FrontierPackage;
-use rise_distance::candidates::draw::DrawerPackage;
+use rise_distance::candidates::{DrawerPackage, FrontierPackage};
 use rise_distance::cli::Policy;
 use rise_distance::eqsat::{EqsatConfig, EqsatMetadata, EqsatResult};
 use rise_distance::langs::diospyros::VecLang;

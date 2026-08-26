@@ -16,8 +16,8 @@ use crate::{MyLanguage, OriginLang};
 pub enum Policy {
     #[value(name = "count")]
     Count,
-    #[value(name = "naive")]
-    Naive,
+    #[value(name = "uniform")]
+    Uniform,
     // #[value(name = "smallest_overall")]
     // SmallestOverall,
     // #[value(name = "smallest_novel")]
@@ -28,7 +28,7 @@ impl std::fmt::Display for Policy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Count => write!(f, "count"),
-            Self::Naive => write!(f, "naive"),
+            Self::Uniform => write!(f, "uniform"),
             // Self::SmallestOverall => write!(f, "smallest_overall"),
             // Self::SmallestNovel => write!(f, "smallest_novel"),
         }
@@ -42,7 +42,7 @@ impl Policy {
     pub const fn rng_salt(self) -> u64 {
         match self {
             Self::Count => 2,
-            Self::Naive => 3,
+            Self::Uniform => 3,
             // Self::SmallestOverall | Self::SmallestNovel => 0,
         }
     }

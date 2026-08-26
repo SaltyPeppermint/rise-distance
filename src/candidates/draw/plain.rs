@@ -7,7 +7,7 @@ use rand_chacha::ChaCha12Rng;
 use crate::Counter;
 use crate::candidates::count::{CountData, RootBudgets};
 use crate::candidates::count::{count_terms_rooted, find_plain_root_sizes, root_budgets};
-use crate::candidates::draw::{CountWeigher, Drawer, DrawerPackage, NaiveWeigher, Weigher};
+use crate::candidates::draw::{CountWeigher, Drawer, DrawerPackage, UniformWeigher, Weigher};
 use crate::candidates::greedy_distribute_alloc;
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
@@ -271,8 +271,10 @@ where
         let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
 
         match policy {
-            Policy::Naive => PlainDrawer::new(&self.counts, &self.egraph, self.root, NaiveWeigher)
-                .draw_root_batch(&requests, seed),
+            Policy::Uniform => {
+                PlainDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
+                    .draw_root_batch(&requests, seed)
+            }
             Policy::Count => PlainDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
                 .draw_root_batch(&requests, seed),
         }
@@ -290,7 +292,7 @@ mod tests {
 
     use super::*;
     use crate::candidates::count::{CountData, count_terms_rooted, root_budgets};
-    use crate::candidates::draw::{CountWeigher, NaiveWeigher};
+    use crate::candidates::draw::{CountWeigher, UniformWeigher};
     use crate::langs::math::Math;
     use crate::lower;
     use crate::utils::combined_rng;
@@ -365,7 +367,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, NaiveWeigher);
+        let drawer = PlainDrawer::new(&counts, &graph, root, UniformWeigher);
 
         let mut rng = combined_rng([42]);
         let term = drawer.draw(root, 1, &mut rng);
@@ -381,7 +383,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, a);
-        let drawer = PlainDrawer::new(&counts, &graph, a, NaiveWeigher);
+        let drawer = PlainDrawer::new(&counts, &graph, a, UniformWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -398,7 +400,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, NaiveWeigher);
+        let drawer = PlainDrawer::new(&counts, &graph, root, UniformWeigher);
 
         assert!(!drawer.possible_size(root, 1, 0));
         assert!(!drawer.possible_size(root, 3, 0));
@@ -421,7 +423,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, NaiveWeigher);
+        let drawer = PlainDrawer::new(&counts, &graph, root, UniformWeigher);
 
         let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
         assert!(result.len() <= 6);
@@ -522,7 +524,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, NaiveWeigher);
+        let drawer = PlainDrawer::new(&counts, &graph, root, UniformWeigher);
 
         let mixed = drawer
             .draw_root_batch(&[(2, 5), (5, 5)], [1, 2])
