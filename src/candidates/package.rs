@@ -6,16 +6,16 @@ use crate::candidates::count::{
     NodeMatches, NovelTermCount, count_terms_rooted, enumerate_matches_rooted,
     find_novel_root_sizes_rooted, prune_matches, root_budgets,
 };
-use crate::candidates::draw::{CountWeigher, Drawer, FrontierDrawer, NaiveWeigher, PlainDrawer};
+use crate::candidates::draw::{CountWeigher, Drawer, FrontierDrawer, NaiveWeigher};
 use crate::candidates::greedy_distribute_alloc;
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang};
 
-/// Final e-graph and complete count tables for exact candidate construction.
+/// Final e-graph and complete count tables for frontier candidate construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
-pub struct ExactCandidatePackage<C, L, N>
+pub struct FrontierPackage<C, L, N>
 where
     L: MyLanguage,
     N: MyAnalysis<L>,
@@ -28,7 +28,7 @@ where
     root: Id,
 }
 
-impl<C, L, N> ExactCandidatePackage<C, L, N>
+impl<C, L, N> FrontierPackage<C, L, N>
 where
     L: MyLanguage,
     N: MyAnalysis<L>,
@@ -37,10 +37,7 @@ where
     /// Build counts through `max_size` relative to the previous boundary.
     /// Returns `None` for an empty frontier.
     #[must_use]
-    pub fn build(
-        result: EqsatResult<L, N>,
-        max_size: usize,
-    ) -> Option<ExactCandidatePackage<C, L, N>> {
+    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<FrontierPackage<C, L, N>> {
         let curr = result.curr();
         let root = curr.find(result.root());
         let budgets = root_budgets(curr, root, max_size);
@@ -59,7 +56,7 @@ where
         max_size: usize,
         matches: NodeMatches,
         budgets: &crate::candidates::count::RootBudgets,
-    ) -> Option<ExactCandidatePackage<C, L, N>> {
+    ) -> Option<FrontierPackage<C, L, N>> {
         let (egraph, root) = result.into_curr();
         let plain = count_terms_rooted(&egraph, budgets);
         let tc = NovelTermCount::from_rooted_matches(&egraph, plain, matches, budgets);
@@ -68,7 +65,7 @@ where
         let histogram = tc.data().get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
-        Some(ExactCandidatePackage {
+        Some(FrontierPackage {
             egraph,
             tc,
             min_size,
@@ -185,14 +182,14 @@ where
                 .draw_root_batch(&requests, seed),
             Policy::Count => FrontierDrawer::new(&self.tc, &self.egraph, self.root, CountWeigher)
                 .draw_root_batch(&requests, seed),
-            Policy::SmallestOverall => Some(vec![
-                PlainDrawer::new(self.tc.plain(), &self.egraph, self.root, NaiveWeigher)
-                    .smallest(self.root),
-            ]),
-            Policy::SmallestNovel => Some(vec![
-                FrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
-                    .smallest(self.root),
-            ]),
+            //   Policy::SmallestOverall => Some(vec![
+            //         PlainDrawer::new(self.tc.plain(), &self.egraph, self.root, NaiveWeigher)
+            //             .smallest(self.root),
+            //     ]),
+            //     Policy::SmallestNovel => Some(vec![
+            //         FrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)
+            //             .smallest(self.root),
+            //     ]),
         }
     }
 
@@ -245,11 +242,10 @@ mod tests {
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
         let mut log = String::new();
-        let (used_max_size, package) =
-            ExactCandidatePackage::<BigUint, _, _>::build_through_novel_sizes(
-                result, 3, 10, 2, 3, &mut log,
-            )
-            .expect("build_through_novel_sizes should succeed");
+        let (used_max_size, package) = FrontierPackage::<BigUint, _, _>::build_through_novel_sizes(
+            result, 3, 10, 2, 3, &mut log,
+        )
+        .expect("build_through_novel_sizes should succeed");
 
         assert_eq!(used_max_size, 9, "log:\n{log}");
         assert_eq!(package.max_size, 9);

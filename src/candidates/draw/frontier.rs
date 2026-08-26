@@ -11,9 +11,17 @@ use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
 use crate::Counter;
-use crate::candidates::count::{NodeMatch, NovelTermCount};
+use crate::candidates::count::{NodeMatch, NovelTermCount, RootBudgets};
+use crate::candidates::count::{
+    NodeMatches, count_terms_rooted, enumerate_matches_rooted, find_novel_root_sizes,
+    prune_matches, root_budgets,
+};
+use crate::candidates::draw::{CountWeigher, DrawerPackage, NaiveWeigher};
 use crate::candidates::draw::{Drawer, Weigher};
+use crate::candidates::greedy_distribute_alloc;
 use crate::candidates::{convolve_at, suffix_convolutions};
+use crate::cli::Policy;
+use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// Draws each frontier term independently using the supplied local weighting
@@ -287,6 +295,191 @@ fn completes_some_match(profile: &[State], matches: &[NodeMatch]) -> bool {
     })
 }
 
+/// Final e-graph and complete count tables for frontier candidate construction.
+///
+/// Construction consumes [`EqsatResult`] and discards its run metadata.
+pub struct FrontierPackage<C, L, N>
+where
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+    C: Counter,
+{
+    egraph: EGraph<L, N>,
+    counts: NovelTermCount<C>,
+    min_size: usize,
+    max_size: usize,
+    root: Id,
+}
+
+impl<C, L, N> FrontierPackage<C, L, N>
+where
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+    C: Counter,
+{
+    /// Build counts through `max_size` relative to the previous boundary.
+    /// Returns `None` for an empty frontier.
+    #[must_use]
+    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<FrontierPackage<C, L, N>> {
+        let curr = result.curr();
+        let root = curr.find(result.root());
+        let budgets = root_budgets(curr, root, max_size);
+
+        let prev = result.prev_index();
+        let mut matches = enumerate_matches_rooted(curr, &prev, &budgets);
+        drop(prev);
+        prune_matches(curr, &mut matches, &budgets);
+        Self::from_rooted_matches(result, max_size, matches, &budgets)
+    }
+
+    /// Finish [`build`](Self::build) from matches already restricted
+    /// to the supplied final root budgets.
+    fn from_rooted_matches(
+        result: EqsatResult<L, N>,
+        max_size: usize,
+        matches: NodeMatches,
+        budgets: &RootBudgets,
+    ) -> Option<FrontierPackage<C, L, N>> {
+        let (egraph, root) = result.into_curr();
+        let plain = count_terms_rooted(&egraph, budgets);
+        let counts = NovelTermCount::from_rooted_matches(&egraph, plain, matches, budgets);
+
+        let root = egraph.find(root);
+        let histogram = counts.data().get(&root)?;
+
+        let min_size = histogram.keys().min().copied().unwrap_or(1);
+        Some(FrontierPackage {
+            egraph,
+            counts,
+            min_size,
+            max_size,
+            root,
+        })
+    }
+
+    /// Build a package ending at the `novel_size_goal`-th novel root size.
+    ///
+    /// The exact scan stops at the cap `start_size + max_retries * retry_step`.
+    /// See `docs/counting/novel_size_search.md`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the cap if the scan or package finds too few novel sizes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `novel_size_goal` is zero or writing to `log` fails.
+    pub fn build_through_novel_sizes<W: std::fmt::Write>(
+        result: EqsatResult<L, N>,
+        start_size: usize,
+        max_retries: usize,
+        retry_step: usize,
+        novel_size_goal: usize,
+        log: &mut W,
+    ) -> Result<(usize, Self), usize> {
+        assert!(novel_size_goal > 0, "novel_size_goal must be nonzero");
+
+        let cap = start_size + max_retries * retry_step;
+
+        let prev = result.prev_index();
+        let curr = result.curr();
+        let root = curr.find(result.root());
+        let cap_budgets = root_budgets(curr, root, cap);
+        let mut matches = enumerate_matches_rooted(curr, &prev, &cap_budgets);
+
+        drop(prev);
+
+        let novel_sizes =
+            find_novel_root_sizes(curr, root, &matches, novel_size_goal, &cap_budgets);
+        if novel_sizes.len() < novel_size_goal {
+            writeln!(
+                log,
+                "found {found} of {novel_size_goal} novel sizes (max_size={cap})",
+                found = novel_sizes.len()
+            )
+            .unwrap();
+            return Err(cap);
+        }
+        let max_size = novel_sizes[novel_size_goal - 1];
+        let final_budgets = root_budgets(curr, root, max_size);
+        prune_matches(curr, &mut matches, &final_budgets);
+
+        let Some(package) = Self::from_rooted_matches(result, max_size, matches, &final_budgets)
+        else {
+            writeln!(
+                log,
+                "package construction found no novel terms (max_size={max_size})"
+            )
+            .unwrap();
+            return Err(cap);
+        };
+        if package.root_histogram().len() < novel_size_goal {
+            writeln!(
+                log,
+                "package construction found fewer than {novel_size_goal} novel sizes \
+                 (max_size={max_size})"
+            )
+            .unwrap();
+            return Err(cap);
+        }
+
+        Ok((max_size, package))
+    }
+}
+
+impl<C, L, N> DrawerPackage<C, L, N> for FrontierPackage<C, L, N>
+where
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+    C: Counter,
+{
+    /// Novel root-term counts by size.
+    ///
+    /// # Panics
+    ///
+    /// Panics if package construction violated its root-histogram invariant.
+    fn root_histogram(&self) -> &HashMap<usize, C> {
+        self.counts
+            .data()
+            .get(&self.root)
+            .expect("root histogram present iff build returned Some")
+    }
+
+    /// Draw exact root candidates absent from the previous boundary.
+    fn draw_candidates(
+        &self,
+        count: usize,
+        policy: Policy,
+        seed: [u64; 2],
+    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
+        let histogram = self.counts.data().get(&self.root)?;
+
+        let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
+
+        match policy {
+            Policy::Naive => {
+                FrontierDrawer::new(&self.counts, &self.egraph, self.root, NaiveWeigher)
+                    .draw_root_batch(&requests, seed)
+            }
+            Policy::Count => {
+                FrontierDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
+                    .draw_root_batch(&requests, seed)
+            } //   Policy::SmallestOverall => Some(vec![
+              //         PlainDrawer::new(self.counts.plain(), &self.egraph, self.root, NaiveWeigher)
+              //             .smallest(self.root),
+              //     ]),
+              //     Policy::SmallestNovel => Some(vec![
+              //         FrontierDrawer::new(&self.counts, &self.egraph, self.root, NaiveWeigher)
+              //             .smallest(self.root),
+              //     ]),
+        }
+    }
+
+    fn root(&self) -> Id {
+        self.root
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use egg::EGraph;
@@ -297,6 +490,46 @@ mod tests {
     use crate::langs::math::Math;
     use crate::lower;
     use crate::utils::{combined_rng, sym};
+
+    #[test]
+    fn build_through_novel_sizes_runs_analysis_at_kth_novel_size() {
+        // Unioning `a` with the root of (+ a b) creates a cycle: the root
+        // class extracts a, (+ a b), (+ (+ a b) b), ... (sizes 1, 3, 5, ...).
+        // `a` and (+ a b) already exist in prev, so the novel sizes are
+        // 5, 7, 9, ... asking for 3 sizes must yield max_size = 9.
+        let mut curr = EGraph::<Math, ()>::new(());
+        curr.enable_union_event_recording();
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let apb = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev_raw_node_count = curr.nodes().len();
+        let prev_union_event_count = curr.union_event_count();
+
+        curr.union(a, apb);
+        curr.rebuild();
+
+        let result =
+            EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
+        let mut log = String::new();
+        let (used_max_size, package) = FrontierPackage::<BigUint, _, _>::build_through_novel_sizes(
+            result, 3, 10, 2, 3, &mut log,
+        )
+        .expect("build_through_novel_sizes should succeed");
+
+        assert_eq!(used_max_size, 9, "log:\n{log}");
+        assert_eq!(package.max_size, 9);
+        assert_eq!(package.min_size, 5);
+        let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, vec![5, 7, 9]);
+        assert!(
+            package
+                .root_histogram()
+                .values()
+                .all(|c| *c == BigUint::from(1u32))
+        );
+    }
 
     #[test]
     fn independent_frontier_draw_picks_only_frontier_term() {

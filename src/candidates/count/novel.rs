@@ -10,11 +10,10 @@ use num::BigUint;
 use smallvec::SmallVec;
 
 use crate::Counter;
+use crate::candidates::count::budgets::RootBudgets;
 #[cfg(test)]
 use crate::candidates::count::count_terms_rooted;
-#[cfg(test)]
-use crate::candidates::count::root_budgets;
-use crate::candidates::count::{CountData, LayeredDp, RootBudgets, plain_dp_rooted};
+use crate::candidates::count::{CountData, LayeredDp, plain_dp_rooted};
 use crate::previous::PreviousLookup;
 
 /// Child class ids, inline for the usual arity of at most two.
@@ -76,6 +75,8 @@ impl<C: Counter> NovelTermCount<C> {
         N: Analysis<L>,
         P: PreviousLookup<L> + ?Sized,
     {
+        use crate::candidates::count::budgets::root_budgets;
+
         let budgets = root_budgets(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
         let plain = count_terms_rooted(curr, &budgets);
@@ -349,7 +350,7 @@ fn joint_children_of<L: Language, N: Analysis<L>>(
 // ============================================================================
 
 /// Find the first `stop_after` novel root sizes within `rooted`.
-pub(crate) fn find_novel_root_sizes_rooted<L: Language, N: Analysis<L>>(
+pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     root: Id,
     matches: &NodeMatches,
@@ -464,6 +465,7 @@ mod tests {
     use num::BigUint;
 
     use super::*;
+    use crate::candidates::count::budgets::root_budgets;
     use crate::langs::math::Math;
     use crate::utils::sym;
 
@@ -530,8 +532,7 @@ mod tests {
             let root = curr.find(class.id);
             let budgets = root_budgets(curr, root, max_size);
             let rooted_matches = enumerate_matches_rooted(curr, prev, &budgets);
-            let found =
-                find_novel_root_sizes_rooted(curr, root, &rooted_matches, usize::MAX, &budgets);
+            let found = find_novel_root_sizes(curr, root, &rooted_matches, usize::MAX, &budgets);
             let rooted_plain = count_terms_rooted::<BigUint, _, _>(curr, &budgets);
             let rooted =
                 NovelTermCount::from_rooted_matches(curr, rooted_plain, rooted_matches, &budgets);

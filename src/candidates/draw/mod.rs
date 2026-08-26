@@ -8,10 +8,11 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 
 use crate::Counter;
+use crate::cli::Policy;
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
-pub use frontier::FrontierDrawer;
-pub use plain::PlainDrawer;
+pub use frontier::{FrontierDrawer, FrontierPackage};
+pub use plain::{PlainDrawer, PlainPackage};
 pub use weigher::{CountWeigher, NaiveWeigher, Weigher};
 
 /// Draws size-targeted candidates from an e-graph.
@@ -141,6 +142,43 @@ where
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         self.draw_batch(self.root(), requests, seed)
     }
+}
+
+pub trait DrawerPackage<C, L, N>
+where
+    C: Counter,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+{
+    /// Log the stats about the root into `out`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there are no terms in the root, or if writing to `out` fails.
+    fn log_root_counts<W: std::fmt::Write>(&self, out: &mut W) {
+        let histogram = self.root_histogram();
+        let mut sorted_hist = histogram
+            .iter()
+            .map(|(a, b)| (*a, b.to_owned()))
+            .collect::<Vec<_>>();
+        sorted_hist.sort_unstable_by_key(|(size, _)| *size);
+        writeln!(out, "Terms in frontier:").unwrap();
+        for (k, v) in &sorted_hist {
+            writeln!(out, "{v} terms of size {k}").unwrap();
+        }
+    }
+
+    fn draw_candidates(
+        &self,
+        count: usize,
+        policy: Policy,
+        seed: [u64; 2],
+    ) -> Option<Vec<RecExpr<OriginLang<L>>>>;
+
+    fn root_histogram(&self) -> &HashMap<usize, C>;
+
+    #[must_use]
+    fn root(&self) -> Id;
 }
 
 /// Cap on how many draws `draw_size` attempts per requested candidate.

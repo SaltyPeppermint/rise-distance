@@ -7,84 +7,12 @@
 
 use std::hash::Hash;
 
-use egg::{Analysis, AstSize, EGraph, Id, Language};
+use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::HashMap;
+use num::BigUint;
 
 use crate::Counter;
-use crate::analysis::semilattice::SemiLatticeAnalysis;
-use crate::utils::UniqueQueue;
-
-/// Per-class size bounds and minima for extractions from one root.
-#[derive(Debug, Clone)]
-pub(crate) struct RootBudgets {
-    budgets: HashMap<Id, usize>,
-    min_sizes: HashMap<Id, usize>,
-    limit: usize,
-}
-
-impl RootBudgets {
-    #[must_use]
-    pub(crate) fn budget(&self, id: Id) -> Option<usize> {
-        self.budgets.get(&id).copied()
-    }
-
-    #[must_use]
-    pub(crate) fn min_size(&self, id: Id) -> usize {
-        self.min_sizes[&id]
-    }
-
-    #[must_use]
-    pub(crate) const fn budgets(&self) -> &HashMap<Id, usize> {
-        &self.budgets
-    }
-
-    #[must_use]
-    pub(crate) const fn limit(&self) -> usize {
-        self.limit
-    }
-
-    /// Whether `node` fits its class budget at minimum child sizes.
-    #[must_use]
-    pub(crate) fn node_fits<L, N>(&self, egraph: &EGraph<L, N>, class: Id, node: &L) -> bool
-    where
-        L: Language,
-        N: Analysis<L>,
-    {
-        let Some(budget) = self.budget(class) else {
-            return false;
-        };
-        node.children()
-            .iter()
-            .try_fold(1usize, |size, &child| {
-                size.checked_add(self.min_size(egraph.find(child)))
-            })
-            .is_some_and(|minimum| minimum <= budget)
-    }
-}
-
-/// Compute canonical class budgets and minima for a root and size limit.
-pub(crate) fn root_budgets<L, N>(egraph: &EGraph<L, N>, root: Id, limit: usize) -> RootBudgets
-where
-    L: Language,
-    N: Analysis<L>,
-{
-    assert!(egraph.clean);
-    let mut raw_min_sizes = HashMap::new();
-    AstSize.one_shot_analysis(egraph, &mut raw_min_sizes);
-    let min_sizes = egraph
-        .classes()
-        .map(|class| {
-            let id = egraph.find(class.id);
-            (id, raw_min_sizes[&id])
-        })
-        .collect();
-    let budgets = class_budgets(egraph, egraph.find(root), limit, &min_sizes);
-    RootBudgets {
-        budgets,
-        min_sizes,
-        limit,
-    }
-}
+use crate::candidates::count::budgets::RootBudgets;
 
 /// Histograms and per-node suffix convolutions from one counting run.
 #[derive(Debug)]
@@ -146,6 +74,39 @@ where
         (id, per_node)
     })
     .collect()
+}
+
+// ============================================================================
+// Exact root-size scan.
+// ============================================================================
+
+/// Find the first `stop_after` root sizes with terms within `rooted`.
+///
+/// The plain analogue of `find_novel_root_sizes`: with no previous boundary to
+/// subtract, every size the root can extract at counts.
+pub(crate) fn find_plain_root_sizes<L: Language, N: Analysis<L>>(
+    egraph: &EGraph<L, N>,
+    root: Id,
+    stop_after: usize,
+    rooted: &RootBudgets,
+) -> Vec<usize> {
+    let root = egraph.find(root);
+    let mut plain: LayeredDp<Id, BigUint> = plain_dp_rooted(egraph, rooted);
+
+    let mut sizes = Vec::new();
+    for _ in 0..rooted.limit() {
+        let size = plain.step();
+
+        // Final as of this layer. Zero-count entries are absent and read as 0.
+        let count = plain.data().get(&root).and_then(|hist| hist.get(&size));
+        if count.is_some_and(|count| *count != BigUint::ZERO) {
+            sizes.push(size);
+            if sizes.len() >= stop_after {
+                break;
+            }
+        }
+    }
+    sizes
 }
 
 /// Per key: size -> count histogram.
@@ -293,54 +254,12 @@ fn convolve_entry<C: Counter>(
         .fold(C::zero(), |acc, c| acc + c)
 }
 
-/// Largest subterm size usable by each class below `limit` from `root`.
-/// Unreachable classes are omitted.
-fn class_budgets<L, N>(
-    egraph: &EGraph<L, N>,
-    root: Id,
-    limit: usize,
-    min_sizes: &HashMap<Id, usize>,
-) -> HashMap<Id, usize>
-where
-    L: Language,
-    N: Analysis<L>,
-{
-    let mut budgets = HashMap::from([(egraph.find(root), limit)]);
-    let mut pending: UniqueQueue<Id> = budgets.keys().copied().collect();
-
-    while let Some(id) = pending.pop() {
-        let Some(children_total) = budgets[&id].checked_sub(1) else {
-            continue;
-        };
-        for node in &egraph[id].nodes {
-            let children = node.children();
-            let mins_sum: usize = children
-                .iter()
-                .map(|&child| min_sizes[&egraph.find(child)])
-                .sum();
-            if mins_sum > children_total {
-                // The node cannot fit within this class's budget at all.
-                continue;
-            }
-            for &child in children {
-                let child = egraph.find(child);
-                // The child gets whatever remains when its siblings are as
-                // small as possible.
-                let child_budget = children_total - (mins_sum - min_sizes[&child]);
-                if budgets.get(&child).is_none_or(|&b| b < child_budget) {
-                    budgets.insert(child, child_budget);
-                    pending.insert(child);
-                }
-            }
-        }
-    }
-    budgets
-}
-
 #[cfg(test)]
 mod tests {
     use egg::{EGraph, SymbolLang};
     use num::BigUint;
+
+    use crate::candidates::count::budgets::root_budgets;
 
     use super::super::super::suffix_convolutions;
     use super::*;

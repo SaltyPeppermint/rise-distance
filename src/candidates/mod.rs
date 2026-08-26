@@ -2,9 +2,8 @@
 
 pub mod count;
 pub mod draw;
-mod package;
 
-pub use package::ExactCandidatePackage;
+pub use draw::{DrawerPackage, FrontierPackage, PlainPackage};
 
 use std::borrow::Borrow;
 

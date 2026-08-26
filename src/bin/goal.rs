@@ -17,7 +17,8 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 
-use rise_distance::candidates::ExactCandidatePackage;
+use rise_distance::candidates::FrontierPackage;
+use rise_distance::candidates::draw::DrawerPackage;
 use rise_distance::cli::{GoalGenMetadata, Policy};
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
@@ -142,22 +143,21 @@ fn process_start_term<L: MyLanguage, N: MyAnalysis<L>>(
     let now = Instant::now();
 
     let start_size = AstSize.cost_rec(start);
-    let (used_max_size, package) =
-        ExactCandidatePackage::<BigUint, L, _>::build_through_novel_sizes(
-            result,
-            start_size,
-            args.max_retries,
-            args.retry_step,
-            args.size_goal,
-            log,
-        )
-        .map_err(|tried_max_size| {
-            format!(
-                "exact goal-candidate construction found too few novel sizes after {} retries \
+    let (used_max_size, package) = FrontierPackage::<BigUint, L, _>::build_through_novel_sizes(
+        result,
+        start_size,
+        args.max_retries,
+        args.retry_step,
+        args.size_goal,
+        log,
+    )
+    .map_err(|tried_max_size| {
+        format!(
+            "exact goal-candidate construction found too few novel sizes after {} retries \
              (goal_iters={}, max_size={})",
-                args.max_retries, goal.iters, tried_max_size
-            )
-        })?;
+            args.max_retries, goal.iters, tried_max_size
+        )
+    })?;
     writeln!(
         log,
         "Exact candidate package built in {:.2}s",
@@ -167,7 +167,7 @@ fn process_start_term<L: MyLanguage, N: MyAnalysis<L>>(
     package.log_root_counts(log);
 
     let goals = package
-        .draw_frontier_candidates(args.n, args.policy, [0, 0])
+        .draw_candidates(args.n, args.policy, [0, 0])
         .ok_or_else(|| "exact frontier candidate drawing failed".to_owned())?;
 
     let goal_strings = goals

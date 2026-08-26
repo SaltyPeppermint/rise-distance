@@ -5,8 +5,12 @@ use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
 use crate::Counter;
-use crate::candidates::count::CountData;
-use crate::candidates::draw::{Drawer, Weigher};
+use crate::candidates::count::{CountData, RootBudgets};
+use crate::candidates::count::{count_terms_rooted, find_plain_root_sizes, root_budgets};
+use crate::candidates::draw::{CountWeigher, Drawer, DrawerPackage, NaiveWeigher, Weigher};
+use crate::candidates::greedy_distribute_alloc;
+use crate::cli::Policy;
+use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 pub struct PlainDrawer<'a, 'b, C, L, N, W>
@@ -16,7 +20,7 @@ where
     N: MyAnalysis<L>,
     W: Weigher<C>,
 {
-    term_count: &'a CountData<C>,
+    counts: &'a CountData<C>,
     graph: &'b EGraph<L, N>,
     root: Id,
     weigher: W,
@@ -31,13 +35,13 @@ where
 {
     #[must_use]
     pub const fn new(
-        term_count: &'a CountData<C>,
+        counts: &'a CountData<C>,
         graph: &'b EGraph<L, N>,
         root: Id,
         weigher: W,
     ) -> Self {
         Self {
-            term_count,
+            counts,
             graph,
             root,
             weigher,
@@ -61,14 +65,14 @@ where
     }
 
     fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, C>> {
-        self.term_count.data.get(&id)
+        self.counts.data.get(&id)
     }
 
     fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
         let canon_id = self.graph.find(id);
         let eclass = &self.graph[canon_id];
         let child_budget = size - 1;
-        let cached = &self.term_count.suffix[&canon_id];
+        let cached = &self.counts.suffix[&canon_id];
 
         let weights = cached
             .iter()
@@ -89,7 +93,7 @@ where
             .iter()
             .enumerate()
             .map(|(i, &c_id)| {
-                let histogram = self.term_count.data.get(&self.graph.find(c_id));
+                let histogram = self.counts.data.get(&self.graph.find(c_id));
                 let candidates = histogram
                     .into_iter()
                     .flatten()
@@ -112,6 +116,173 @@ where
     }
 }
 
+/// Final e-graph and complete count tables for whole-graph candidate
+/// construction.
+///
+/// Construction consumes [`EqsatResult`] and discards its run metadata.
+pub struct PlainPackage<C, L, N>
+where
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+    C: Counter,
+{
+    egraph: EGraph<L, N>,
+    counts: CountData<C>,
+    min_size: usize,
+    max_size: usize,
+    root: Id,
+}
+
+impl<C, L, N> PlainPackage<C, L, N>
+where
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+    C: Counter,
+{
+    /// Build counts through `max_size` over the whole e-graph.
+    /// Returns `None` if the root has no terms within `max_size`.
+    #[must_use]
+    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<PlainPackage<C, L, N>> {
+        let curr = result.curr();
+        let root = curr.find(result.root());
+        let budgets = root_budgets(curr, root, max_size);
+
+        Self::from_root_budget(result, max_size, &budgets)
+    }
+
+    fn from_root_budget(
+        result: EqsatResult<L, N>,
+        max_size: usize,
+        budgets: &RootBudgets,
+    ) -> Option<PlainPackage<C, L, N>> {
+        let (egraph, root) = result.into_curr();
+        let counts = count_terms_rooted(&egraph, budgets);
+
+        let root = egraph.find(root);
+        let histogram = counts.data.get(&root)?;
+
+        let min_size = histogram.keys().min().copied().unwrap_or(1);
+        Some(PlainPackage {
+            egraph,
+            counts,
+            min_size,
+            max_size,
+            root,
+        })
+    }
+
+    /// Build a package ending at the `size_goal`-th root size with terms.
+    ///
+    /// The exact scan stops at the cap `start_size + max_retries * retry_step`.
+    /// Unlike the frontier package there is no previous boundary to subtract,
+    /// so every size the root can extract at counts toward the goal.
+    /// See `docs/counting/novel_size_search.md`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the cap if the scan or package finds too few sizes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `size_goal` is zero or writing to `log` fails.
+    pub fn build_through_sizes<W: std::fmt::Write>(
+        result: EqsatResult<L, N>,
+        start_size: usize,
+        max_retries: usize,
+        retry_step: usize,
+        size_goal: usize,
+        log: &mut W,
+    ) -> Result<(usize, Self), usize> {
+        assert!(size_goal > 0, "size_goal must be nonzero");
+
+        let cap = start_size + max_retries * retry_step;
+
+        let curr = result.curr();
+        let root = curr.find(result.root());
+        let cap_budgets = root_budgets(curr, root, cap);
+
+        let sizes = find_plain_root_sizes(curr, root, size_goal, &cap_budgets);
+        if sizes.len() < size_goal {
+            writeln!(
+                log,
+                "found {found} of {size_goal} sizes (max_size={cap})",
+                found = sizes.len()
+            )
+            .unwrap();
+            return Err(cap);
+        }
+        let max_size = sizes[size_goal - 1];
+        let final_budgets = root_budgets(curr, root, max_size);
+
+        let Some(package) = Self::from_root_budget(result, max_size, &final_budgets) else {
+            writeln!(
+                log,
+                "package construction found no terms (max_size={max_size})"
+            )
+            .unwrap();
+            return Err(cap);
+        };
+        if package.root_histogram().len() < size_goal {
+            writeln!(
+                log,
+                "package construction found fewer than {size_goal} sizes \
+                 (max_size={max_size})"
+            )
+            .unwrap();
+            return Err(cap);
+        }
+
+        Ok((max_size, package))
+    }
+
+    #[must_use]
+    pub const fn root(&self) -> Id {
+        self.root
+    }
+}
+
+impl<C, L, N> DrawerPackage<C, L, N> for PlainPackage<C, L, N>
+where
+    L: MyLanguage,
+    N: MyAnalysis<L>,
+    C: Counter,
+{
+    /// Root-term counts by size.
+    ///
+    /// # Panics
+    ///
+    /// Panics if package construction violated its root-histogram invariant.
+    fn root_histogram(&self) -> &HashMap<usize, C> {
+        self.counts
+            .data
+            .get(&self.root)
+            .expect("root histogram present iff build returned Some")
+    }
+
+    /// Draw exact root candidates from the whole e-graph.
+    fn draw_candidates(
+        &self,
+        count: usize,
+        policy: Policy,
+        seed: [u64; 2],
+    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
+        let histogram = self.root_histogram();
+
+        let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
+
+        match policy {
+            Policy::Naive => PlainDrawer::new(&self.counts, &self.egraph, self.root, NaiveWeigher)
+                .draw_root_batch(&requests, seed),
+            Policy::Count => PlainDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
+                .draw_root_batch(&requests, seed),
+        }
+    }
+
+    fn root(&self) -> Id {
+        self.root
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use egg::EGraph;
@@ -131,13 +302,70 @@ mod tests {
     }
 
     #[test]
+    fn build_through_sizes_stops_at_kth_nonempty_size() {
+        // Unioning `a` with the root of (+ a b) creates a cycle: the root
+        // class extracts a, (+ a b), (+ (+ a b) b), ... (sizes 1, 3, 5, ...).
+        // The naive package ignores prev entirely, so asking for 3 sizes
+        // must yield max_size = 5 (where the frontier would yield 9).
+        let mut curr = EGraph::<Math, ()>::new(());
+        curr.enable_union_event_recording();
+        let a = curr.add(sym("a"));
+        let b = curr.add(sym("b"));
+        let apb = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev_raw_node_count = curr.nodes().len();
+        let prev_union_event_count = curr.union_event_count();
+
+        curr.union(a, apb);
+        curr.rebuild();
+
+        let result =
+            EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
+        let mut log = String::new();
+        let (used_max_size, package) =
+            PlainPackage::<BigUint, _, _>::build_through_sizes(result, 3, 10, 2, 3, &mut log)
+                .expect("build_through_sizes should succeed");
+
+        assert_eq!(used_max_size, 5, "log:\n{log}");
+        assert_eq!(package.max_size, 5);
+        assert_eq!(package.min_size, 1);
+        let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn build_through_sizes_reports_cap_when_short() {
+        // A single leaf has exactly one extractable size, so a goal of 3
+        // can never be met and the scan must report the cap.
+        let mut graph = EGraph::<Math, ()>::new(());
+        graph.enable_union_event_recording();
+        let root = graph.add(sym("a"));
+        graph.rebuild();
+        let prev_raw_node_count = graph.nodes().len();
+        let prev_union_event_count = graph.union_event_count();
+
+        let result =
+            EqsatResult::new_for_tests(graph, root, prev_raw_node_count, prev_union_event_count);
+        let mut log = String::new();
+        let Err(cap) =
+            PlainPackage::<BigUint, _, _>::build_through_sizes(result, 3, 10, 2, 3, &mut log)
+        else {
+            panic!("a single size cannot satisfy a goal of 3");
+        };
+
+        assert_eq!(cap, 23, "cap = start_size + max_retries * retry_step");
+        assert!(log.contains("found 1 of 3 sizes"), "log:\n{log}");
+    }
+
+    #[test]
     fn naive_draw_single_leaf() {
         let mut graph = EGraph::<Math, ()>::new(());
         let root = graph.add(sym("a"));
         graph.rebuild();
 
-        let tc = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&tc, &graph, root, NaiveWeigher);
+        let counts = rooted_counts(10, &graph, root);
+        let drawer = PlainDrawer::new(&counts, &graph, root, NaiveWeigher);
 
         let mut rng = combined_rng([42]);
         let term = drawer.draw(root, 1, &mut rng);
@@ -152,8 +380,8 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let tc = rooted_counts(10, &graph, a);
-        let drawer = PlainDrawer::new(&tc, &graph, a, NaiveWeigher);
+        let counts = rooted_counts(10, &graph, a);
+        let drawer = PlainDrawer::new(&counts, &graph, a, NaiveWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -169,8 +397,8 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let tc = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&tc, &graph, root, NaiveWeigher);
+        let counts = rooted_counts(10, &graph, root);
+        let drawer = PlainDrawer::new(&counts, &graph, root, NaiveWeigher);
 
         assert!(!drawer.possible_size(root, 1, 0));
         assert!(!drawer.possible_size(root, 3, 0));
@@ -192,8 +420,8 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&tc, &graph, root, NaiveWeigher);
+        let counts = rooted_counts(10, &graph, root);
+        let drawer = PlainDrawer::new(&counts, &graph, root, NaiveWeigher);
 
         let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
         assert!(result.len() <= 6);
@@ -205,8 +433,8 @@ mod tests {
         let root = graph.add(sym("a"));
         graph.rebuild();
 
-        let tc = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&tc, &graph, root, CountWeigher);
+        let counts = rooted_counts(10, &graph, root);
+        let drawer = PlainDrawer::new(&counts, &graph, root, CountWeigher);
 
         let mut rng = combined_rng([42]);
         let term = drawer.draw(root, 1, &mut rng);
@@ -221,8 +449,8 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let tc = rooted_counts(10, &graph, a);
-        let drawer = PlainDrawer::new(&tc, &graph, a, CountWeigher);
+        let counts = rooted_counts(10, &graph, a);
+        let drawer = PlainDrawer::new(&counts, &graph, a, CountWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -245,8 +473,8 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&tc, &graph, root, CountWeigher);
+        let counts = rooted_counts(10, &graph, root);
+        let drawer = PlainDrawer::new(&counts, &graph, root, CountWeigher);
 
         let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
 
@@ -270,8 +498,8 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let tc = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&tc, &graph, root, CountWeigher);
+        let counts = rooted_counts(10, &graph, root);
+        let drawer = PlainDrawer::new(&counts, &graph, root, CountWeigher);
 
         let result = drawer
             .draw_root_batch(&[(3, 1000)], [1, 2])
@@ -293,8 +521,8 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let tc = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&tc, &graph, root, NaiveWeigher);
+        let counts = rooted_counts(10, &graph, root);
+        let drawer = PlainDrawer::new(&counts, &graph, root, NaiveWeigher);
 
         let mixed = drawer
             .draw_root_batch(&[(2, 5), (5, 5)], [1, 2])

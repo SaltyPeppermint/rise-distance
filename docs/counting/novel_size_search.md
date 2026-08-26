@@ -1,6 +1,6 @@
 # Root-restricted novel-size search and exact package construction
 
-`ExactCandidatePackage::build_through_novel_sizes` finds the requested novel
+`FrontierPackage::build_through_novel_sizes` finds the requested novel
 root sizes and builds all data needed for exact drawing without enumerating or
 counting classes, e-nodes, or current/previous pairs that the selected root
 cannot use.
@@ -31,7 +31,7 @@ cap_budgets = root_budgets(curr, root, cap)
 matches = enumerate_matches_rooted(curr, prev_lookup, cap_budgets)
 drop(prev_lookup)
 
-novel_sizes = find_novel_root_sizes_rooted(
+novel_sizes = find_novel_root_sizes(
     curr, root, matches, stop_after=sizes, cap_budgets
 )
 
@@ -47,7 +47,7 @@ joint = count_joint_rooted(curr, matches, final_budgets)
 package = derive_novel_and_retain_package_data(plain, joint, matches)
 ```
 
-`ExactCandidatePackage::build(result, max_size)` already knows its final
+`FrontierPackage::build(result, max_size)` already knows its final
 limit. It computes final budgets immediately, enumerates matches inside that
 domain, and builds the package without the cap scan.
 

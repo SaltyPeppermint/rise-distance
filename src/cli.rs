@@ -18,10 +18,10 @@ pub enum Policy {
     Count,
     #[value(name = "naive")]
     Naive,
-    #[value(name = "smallest_overall")]
-    SmallestOverall,
-    #[value(name = "smallest_novel")]
-    SmallestNovel,
+    // #[value(name = "smallest_overall")]
+    // SmallestOverall,
+    // #[value(name = "smallest_novel")]
+    // SmallestNovel,
 }
 
 impl std::fmt::Display for Policy {
@@ -29,8 +29,8 @@ impl std::fmt::Display for Policy {
         match self {
             Self::Count => write!(f, "count"),
             Self::Naive => write!(f, "naive"),
-            Self::SmallestOverall => write!(f, "smallest_overall"),
-            Self::SmallestNovel => write!(f, "smallest_novel"),
+            // Self::SmallestOverall => write!(f, "smallest_overall"),
+            // Self::SmallestNovel => write!(f, "smallest_novel"),
         }
     }
 }
@@ -43,7 +43,7 @@ impl Policy {
         match self {
             Self::Count => 2,
             Self::Naive => 3,
-            Self::SmallestOverall | Self::SmallestNovel => 0,
+            // Self::SmallestOverall | Self::SmallestNovel => 0,
         }
     }
 }

@@ -14,7 +14,7 @@ use std::fmt::Display;
 use egg::{Language, RecExpr, Rewrite};
 
 use crate::Counter;
-use crate::candidates::ExactCandidatePackage;
+use crate::candidates::{DrawerPackage, FrontierPackage};
 use crate::cli::Policy;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
 use crate::sketch::Sketch;
@@ -152,7 +152,7 @@ where
     let cut_meta = EqsatMetadata::from_iterations(result.data());
     let cut_iters = result.iters();
 
-    let Some(package) = ExactCandidatePackage::<C, _, _>::build(result, args.max_size) else {
+    let Some(package) = FrontierPackage::<C, _, _>::build(result, args.max_size) else {
         println!("{search_name}: exact candidate package found an empty frontier");
         return ReachResult {
             reached: None,
@@ -162,7 +162,7 @@ where
     };
     // package.log_root_counts();
 
-    let Some(candidates) = package.draw_frontier_candidates(
+    let Some(candidates) = package.draw_candidates(
         args.candidate_count,
         Policy::Count,
         [args.cut_iters as u64, 0],

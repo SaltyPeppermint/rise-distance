@@ -7,9 +7,10 @@
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
+use rise_distance::candidates::draw::DrawerPackage;
 use time::OffsetDateTime;
 
-use rise_distance::candidates::ExactCandidatePackage;
+use rise_distance::candidates::FrontierPackage;
 use rise_distance::cli::{GuideExpr, Policy, SeedCandidates};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
@@ -170,7 +171,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     start_size: usize,
 ) -> Result<Vec<GuideExpr<L>>, String> {
     let mut root_log = String::new();
-    let (max_size, package) = ExactCandidatePackage::<BigUint, _, _>::build_through_novel_sizes(
+    let (max_size, package) = FrontierPackage::<BigUint, _, _>::build_through_novel_sizes(
         result,
         start_size,
         args.max_retries,
@@ -197,10 +198,10 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
 fn draw_candiates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     policy: Policy,
-    package: &ExactCandidatePackage<BigUint, L, N>,
+    package: &FrontierPackage<BigUint, L, N>,
 ) -> Vec<RecExpr<OriginLang<L>>> {
     package
-        .draw_frontier_candidates(args.n_candidates, policy, [args.seed, policy.rng_salt()])
+        .draw_candidates(args.n_candidates, policy, [args.seed, policy.rng_salt()])
         .unwrap_or_else(|| {
             eprintln!(
                 "WARNING: strategy {policy} drew 0 candidates (empty novel frontier); \
