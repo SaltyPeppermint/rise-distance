@@ -17,13 +17,55 @@ REQUIRED_COMPARISON_COLUMNS = {
     "verify_peak_rss_bytes",
     "guided_peak_rss_bytes",
     "unguided_peak_rss_bytes",
+    "guided_peak_live_heap_bytes",
+    "unguided_peak_live_heap_bytes",
     "attempts_run",
     "success_attempt",
     "setup_status",
 }
+
+MEMORY_METRICS = {
+    "live_heap": {
+        "label": "peak live heap",
+        "guided_workflow": "guided_peak_live_heap_bytes",
+        "unguided": "unguided_peak_live_heap_bytes",
+        "guided_verification": "guided_peak_live_heap_bytes",
+        "components": (
+            ("guided workflow", "guided_peak_live_heap_bytes"),
+            ("unguided verification", "unguided_peak_live_heap_bytes"),
+        ),
+    },
+    "rss": {
+        "label": "peak RSS",
+        "guided_workflow": "guided_peak_rss_bytes",
+        "unguided": "unguided_peak_rss_bytes",
+        # The decisive leg (the one that reached, else the last tried).
+        "guided_verification": "verify_peak_rss_bytes",
+        "components": (
+            ("candidate construction", "candidate_peak_rss_bytes"),
+            ("guided verification (decisive leg)", "verify_peak_rss_bytes"),
+            ("guided verification (max leg)", "verify_peak_rss_bytes_max"),
+            ("guided workflow", "guided_peak_rss_bytes"),
+            ("unguided verification", "unguided_peak_rss_bytes"),
+        ),
+    },
+}
+DEFAULT_MEMORY_METRIC = "rss"
+
+
+def _metric(metric: str) -> dict:
+    try:
+        return MEMORY_METRICS[metric]
+    except KeyError:
+        raise ValueError(
+            f"unknown memory metric {metric!r}; expected one of {sorted(MEMORY_METRICS)}"
+        ) from None
+
+
 MEMORY_SUMMARY_SCHEMA = {
     "mode": pl.String,
     "guided_peak_scope": pl.String,
+    "memory_metric": pl.String,
     "n_paired_successes": pl.Int64,
     "guided_median_peak_mib": pl.Float64,
     "unguided_median_peak_mib": pl.Float64,
@@ -39,6 +81,7 @@ MEMORY_COMPONENT_SUMMARY_SCHEMA = {
     "n": pl.Int64,
     "median_peak_mib": pl.Float64,
     "p90_peak_mib": pl.Float64,
+    "memory_metric": pl.String,
 }
 
 
@@ -271,51 +314,66 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def _paired_successes_for_peak(
-    frame: pl.DataFrame, guided_peak_column: str, guided_peak_scope: str
+    frame: pl.DataFrame,
+    guided_peak_column: str,
+    guided_peak_scope: str,
+    unguided_peak_column: str,
+    metric_label: str,
 ) -> pl.DataFrame:
     """Build a guided/unguided comparison for one explicitly named guided peak."""
     return (
         frame.filter(pl.col("guided_success") & pl.col("unguided_success"))
-        .drop_nulls([guided_peak_column, "unguided_peak_rss_bytes"])
-        .filter((pl.col(guided_peak_column) > 0) & (pl.col("unguided_peak_rss_bytes") > 0))
+        .drop_nulls([guided_peak_column, unguided_peak_column])
+        .filter((pl.col(guided_peak_column) > 0) & (pl.col(unguided_peak_column) > 0))
         .with_columns(
             pl.lit(guided_peak_scope).alias("guided_peak_scope"),
+            pl.lit(metric_label).alias("memory_metric"),
             (pl.col(guided_peak_column) / 2**20).alias("guided_peak_mib"),
-            (pl.col("unguided_peak_rss_bytes") / 2**20).alias("unguided_peak_mib"),
-            (pl.col(guided_peak_column) / pl.col("unguided_peak_rss_bytes")).alias("peak_ratio"),
+            (pl.col(unguided_peak_column) / 2**20).alias("unguided_peak_mib"),
+            (pl.col(guided_peak_column) / pl.col(unguided_peak_column)).alias("peak_ratio"),
         )
         .with_columns(((1 - pl.col("peak_ratio")) * 100).alias("memory_saved_pct"))
     )
 
 
-def paired_verification_successes(frame: pl.DataFrame) -> pl.DataFrame:
+def paired_verification_successes(
+    frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC
+) -> pl.DataFrame:
     """Paired successes comparing guided verification with unguided verification."""
-    return _paired_successes_for_peak(frame, "verify_peak_rss_bytes", "guided verification")
+    spec = _metric(metric)
+    scope = (
+        "guided verification"
+        if spec["guided_verification"] != spec["guided_workflow"]
+        else "guided workflow"
+    )
+    return _paired_successes_for_peak(
+        frame, spec["guided_verification"], scope, spec["unguided"], spec["label"]
+    )
 
 
-def paired_workflow_successes(frame: pl.DataFrame) -> pl.DataFrame:
+def paired_workflow_successes(
+    frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC
+) -> pl.DataFrame:
     """Paired successes comparing the complete guided workflow with unguided verification."""
-    return _paired_successes_for_peak(frame, "guided_peak_rss_bytes", "guided workflow")
+    spec = _metric(metric)
+    return _paired_successes_for_peak(
+        frame, spec["guided_workflow"], "guided workflow", spec["unguided"], spec["label"]
+    )
 
 
-def paired_successes(frame: pl.DataFrame) -> pl.DataFrame:
+def paired_successes(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
     """Complete-workflow comparison for grid analyses."""
-    return paired_workflow_successes(frame)
+    return paired_workflow_successes(frame, metric)
 
 
-def memory_component_summary(frame: pl.DataFrame) -> pl.DataFrame:
-    """Peak RSS for setup, verification, and the complete workflow.
-
-    Every component is conditional on both methods reporting success. Null
-    telemetry is excluded per component, so `n` makes incomplete old runs
-    visible rather than silently substituting another phase's measurement.
-    """
+def memory_component_summary(
+    frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC
+) -> pl.DataFrame:
+    """Per-phase peak memory for the selected metric."""
     paired = frame.filter(pl.col("guided_success") & pl.col("unguided_success"))
-    components = (
-        ("candidate construction", "candidate_peak_rss_bytes"),
-        ("guided verification", "verify_peak_rss_bytes"),
-        ("guided workflow", "guided_peak_rss_bytes"),
-        ("unguided verification", "unguided_peak_rss_bytes"),
+    spec = _metric(metric)
+    components = tuple(
+        (component, column) for component, column in spec["components"] if column in frame.columns
     )
     summaries = []
     for component, column in components:
@@ -344,19 +402,24 @@ def memory_component_summary(frame: pl.DataFrame) -> pl.DataFrame:
         return pl.DataFrame(schema=MEMORY_COMPONENT_SUMMARY_SCHEMA)
     return (
         pl.concat(summaries)
-        .with_columns(pl.col("median_peak_mib", "p90_peak_mib").round(3))
+        .with_columns(
+            pl.col("median_peak_mib", "p90_peak_mib").round(3),
+            pl.lit(spec["label"]).alias("memory_metric"),
+        )
         .sort("mode", "component")
     )
 
 
 def memory_summary(paired: pl.DataFrame) -> pl.DataFrame:
-    """Peak-RSS statistics conditional on both methods succeeding."""
+    """Paired peak-memory statistics conditional on both methods succeeding."""
     if paired.is_empty():
         return pl.DataFrame(schema=MEMORY_SUMMARY_SCHEMA)
     if "guided_peak_scope" not in paired.columns:
         paired = paired.with_columns(pl.lit("guided workflow").alias("guided_peak_scope"))
+    if "memory_metric" not in paired.columns:
+        paired = paired.with_columns(pl.lit("unknown").alias("memory_metric"))
     return (
-        paired.group_by("mode", "guided_peak_scope", maintain_order=True)
+        paired.group_by("mode", "guided_peak_scope", "memory_metric", maintain_order=True)
         .agg(
             pl.len().alias("n_paired_successes"),
             pl.col("guided_peak_mib").median().alias("guided_median_peak_mib"),
@@ -367,7 +430,9 @@ def memory_summary(paired: pl.DataFrame) -> pl.DataFrame:
             pl.col("memory_saved_pct").median().alias("median_memory_saved_pct"),
             (pl.col("peak_ratio") < 1).mean().alias("guided_lower_peak_share"),
         )
-        .with_columns(pl.exclude("mode", "guided_peak_scope", "n_paired_successes").round(3))
+        .with_columns(
+            pl.exclude("mode", "guided_peak_scope", "memory_metric", "n_paired_successes").round(3)
+        )
     )
 
 
@@ -492,8 +557,8 @@ def grid_success_by_budget(grid_dir: Path, budgets: Sequence[int]) -> pl.DataFra
     )
 
 
-def grid_policy_summary(frame: pl.DataFrame) -> pl.DataFrame:
-    """Full-budget success and paired peak-RSS statistics by grid policy."""
+def grid_policy_summary(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
+    """Full-budget success and paired peak-memory statistics by grid policy."""
     success = success_summary(frame)
-    memory = memory_summary(paired_workflow_successes(frame)).drop("guided_peak_scope")
+    memory = memory_summary(paired_workflow_successes(frame, metric)).drop("guided_peak_scope")
     return success.join(memory, on="mode", how="left").sort("mode")

@@ -4,6 +4,10 @@ This driver reads enriched starts, constructs a guide-candidate menu per starts,
 and verifies one attempt loop per start/goal pair. It owns the JSON/parquet I/O; the Rust
 ``candidates`` and ``verify`` binaries communicate through argv, stdin, and stdout.
 
+Each leg is a separate ``verify`` process running one eqsat, so its peak RSS
+covers the same unit of work as an unguided baseline process.
+The loop early-stops on the first reach.
+
 Guide replay and leg search share the required ``--stop-*`` budget. Dimensions
 without an override retain their search-phase limits from ``goal_args.json``.
 
@@ -172,7 +176,7 @@ class WorkItem:
     """One start/goal unit, its guide pool, and start-level guide metadata."""
 
     start_term: str
-    goal: str
+    goal_term: str
     pool: list
     guide_meta: dict
 
@@ -260,6 +264,8 @@ def build_candidate_shard(
         str(menu_size),
     ]
 
+    print(f"CMD: {cmd}")
+
     measured = run_json_subprocess(cmd, what=f"candidates for start term {spec.start_term!r}")
     records = measured.payload
     if not records:
@@ -276,7 +282,9 @@ def build_candidate_shard(
         record["goal_terms"] = spec.goal_terms
         record["candidate_status"] = "ok"
         record["candidate_peak_rss_bytes"] = measured.peak_rss_bytes
-        print(f"!!! sampling_peak_rss_bytes {measured.peak_rss_bytes}")
+        print(
+            f"!!! sampling_peak_rss_bytes = {measured.peak_rss_bytes} | Start = {spec.start_term}"
+        )
     return records
 
 
@@ -368,61 +376,71 @@ def build_attempt_subsets(
     return [sequence[a * eff_k : (a + 1) * eff_k] for a in range(attempts)]
 
 
-def run_legs(
+def run_leg(
     args: Args,
     base_flags: list[str],
     goal: str,
-    subsets: list[list],
-) -> tuple[list[dict], int]:
-    """Verify one start/goal pair and return the legs run before early stopping.
+    subset: list,
+) -> tuple[dict, int]:
+    """Verify one leg in its own process and return its result and peak RSS.
 
-    Attempt subsets are sent as JSON on stdin. Panic-guarded legs still produce
-    results; process-level failures raise.
+    The leg's guide subset is sent as JSON on stdin. `verify` runs exactly one
+    eqsat here, so the returned `ru_maxrss` covers the same unit of work as an
+    unguided baseline process, which is what makes the two peaks comparable.
+    Panic-guarded legs still produce a result; process-level failures raise.
     """
     cmd = [str(args.verify_binary), *base_flags, "--goal-term", goal]
     if args.full_union:
         cmd.append("--full-union")
-    measured = run_json_subprocess(cmd, what=f"verify for goal {goal!r}", input=json.dumps(subsets))
-    print(f"!!! guided_attempt_peak_rss_bytes {measured.peak_rss_bytes}")
+    measured = run_json_subprocess(cmd, what=f"verify for goal {goal!r}", input=json.dumps(subset))
     return measured.payload, measured.peak_rss_bytes
 
 
 def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     """Run one start/goal pair's attempt loop and return its result rows.
 
+    Each attempt is a separate `verify` process, so `verify_peak_rss_bytes` is
+    that leg's own peak rather than a high-water mark shared across the pair.
+    The loop early-stops on the first reach, so a pair contributes as many rows
+    as attempts actually ran.
+
     The final row is marked ``gave_up`` only if all attempts ran and failed.
     Reported ``k`` is the effective subset size. An empty pool is an error.
     """
-    rng = random.Random(f"{args.seed}:{item.start_term}:{item.goal}")
+    rng = random.Random(f"{args.seed}:{item.start_term}:{item.goal_term}")
     attempt_subsets = build_attempt_subsets(item.pool, args.strategy, args.k, args.attempts, rng)
     if any(not guides for guides in attempt_subsets):
         raise RuntimeError(
-            f"empty candidate pool for start term {item.start_term!r} goal {item.goal!r}: "
+            f"empty candidate pool for start term {item.start_term!r} goal {item.goal_term!r}: "
             f"strategy {args.strategy!r} drew no guides"
         )
 
-    results, verify_peak_rss_bytes = run_legs(args, base_flags, item.goal, attempt_subsets)
     rows: list[dict] = []
-    for attempt, (guides, result) in enumerate(zip(attempt_subsets, results)):
-        row = {
-            "start_term": item.start_term,
-            "goal_term": item.goal,
-            "strategy": args.strategy,
-            "k": len(guides),
-            "attempt": attempt,
-            "reached": result["reached"],
-            "gave_up": False,
-            "panic": result.get("panic", False),
-            "verify_peak_rss_bytes": verify_peak_rss_bytes,
-            **{field: result.get(field) for field in LEG_RESULT_FIELDS},
-            **item.guide_meta,
-        }
-        rows.append(row)
+    ran_every_attempt = True
+    for attempt, guides in enumerate(attempt_subsets):
+        result, leg_peak_rss_bytes = run_leg(args, base_flags, item.goal_term, guides)
+        rows.append(
+            {
+                "start_term": item.start_term,
+                "goal_term": item.goal_term,
+                "strategy": args.strategy,
+                "k": len(guides),
+                "attempt": attempt,
+                "reached": result["reached"],
+                "gave_up": False,
+                "panic": result.get("panic", False),
+                "verify_peak_rss_bytes": leg_peak_rss_bytes,
+                **{field: result.get(field) for field in LEG_RESULT_FIELDS},
+                **item.guide_meta,
+            }
+        )
+        if result["reached"]:
+            # Early stop: later attempts are not run, so they contribute no rows.
+            ran_every_attempt = False
+            break
 
-    # Fewer results than subsets means `verify` early-stopped on a reach, so the
-    # last row is a reach, not a give-up. Only mark give-up when every attempt
-    # ran without reaching.
-    if rows and len(results) == len(attempt_subsets) and not rows[-1]["reached"]:
+    # Only mark give-up when every attempt ran without reaching.
+    if rows and ran_every_attempt and not rows[-1]["reached"]:
         rows[-1]["gave_up"] = True
     return rows
 
@@ -527,8 +545,10 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
         pair["goal_term"],
     ]
     measured = run_json_subprocess(cmd, what=f"unguided verify for goal term {pair['goal_term']!r}")
-    result = measured.payload[0]
-    print(f"!!! unguided_brute_force_peak_rss_bytes {measured.peak_rss_bytes}")
+    result = measured.payload
+    print(
+        f"!!! unguided_brute_force_peak_rss_bytes = {measured.peak_rss_bytes} | Start = {pair['start_term']} | Goal = {pair['goal_term']}"
+    )
     return {
         "start_term": pair["start_term"],
         "goal_term": pair["goal_term"],
@@ -569,8 +589,24 @@ def summarize_pairs(
         )
         successes = [row for row in attempts if row["reached"]]
         candidate_peak = pair["candidate_peak_rss_bytes"]
-        verify_peak = attempts[0]["verify_peak_rss_bytes"] if attempts else None
-        rss_peaks = [peak for peak in (candidate_peak, verify_peak) if peak is not None]
+
+        # Each attempt is now its own process, so pick which leg's peak to
+        # report rather than inheriting a shared high-water mark.
+        #
+        # `verify_peak_rss_bytes` is the *decisive* leg: the one that reached, or
+        # the last one tried if none did.
+        # `verify_peak_rss_bytes_max` is the max across every leg run, which is
+        # what the pair cost end to end.
+        decisive = successes[0] if successes else (attempts[-1] if attempts else None)
+        verify_peak = decisive["verify_peak_rss_bytes"] if decisive else None
+        leg_peaks = [
+            row["verify_peak_rss_bytes"]
+            for row in attempts
+            if row.get("verify_peak_rss_bytes") is not None
+        ]
+        verify_peak_max = max(leg_peaks) if leg_peaks else None
+
+        rss_peaks = [peak for peak in (candidate_peak, verify_peak_max) if peak is not None]
         live_peaks = [
             peak
             for peak in (
@@ -597,6 +633,7 @@ def summarize_pairs(
                 "guided_panic": any(row["panic"] for row in attempts),
                 "setup_status": setup_status,
                 "verify_peak_rss_bytes": verify_peak,
+                "verify_peak_rss_bytes_max": verify_peak_max,
                 "guided_peak_rss_bytes": max(rss_peaks) if rss_peaks else None,
                 "guided_peak_live_heap_bytes": max(live_peaks) if live_peaks else None,
             }

@@ -56,6 +56,14 @@ def _guided_peak_scope(paired: pl.DataFrame) -> str:
     return str(scopes[0]) if len(scopes) == 1 else "guided"
 
 
+def _memory_metric(frame: pl.DataFrame) -> str:
+    """Metric label carried by `paired_*_successes`, for axis titles."""
+    if "memory_metric" not in frame.columns:
+        return "peak memory"
+    labels = frame["memory_metric"].drop_nulls().unique().to_list()
+    return str(labels[0]) if len(labels) == 1 else "peak memory"
+
+
 def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
     """Success rates with Wilson intervals."""
     points = (
@@ -111,6 +119,7 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
 def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
     """One explicitly scoped guided peak versus unguided verification."""
     guided_scope = _guided_peak_scope(paired)
+    metric = _memory_metric(paired)
     title = f"{guided_scope.title()} vs unguided verification"
     points = (
         alt.Chart(paired)
@@ -118,12 +127,12 @@ def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(
             x=alt.X(
                 "unguided_peak_mib:Q",
-                title="unguided peak RSS (MiB, log)",
+                title=f"unguided {metric} (MiB, log)",
                 scale=alt.Scale(type="log"),
             ),
             y=alt.Y(
                 "guided_peak_mib:Q",
-                title=f"{guided_scope} peak RSS (MiB, log)",
+                title=f"{guided_scope} {metric} (MiB, log)",
                 scale=alt.Scale(type="log"),
             ),
             color=_mode_color(meta["modes"]),
@@ -164,6 +173,7 @@ def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
 def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
     """ECDF of one explicitly scoped guided peak versus unguided verification."""
     guided_scope = _guided_peak_scope(paired)
+    metric = _memory_metric(paired)
     data = paired.with_columns(
         (pl.col("peak_ratio").rank("max").over("mode") / pl.len().over("mode")).alias("cdf")
     ).sort("mode", "peak_ratio")
@@ -173,7 +183,7 @@ def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(
             x=alt.X(
                 "peak_ratio:Q",
-                title=f"{guided_scope} / unguided verification peak RSS (log)",
+                title=f"{guided_scope} / unguided verification {metric} (log)",
                 scale=alt.Scale(type="log"),
             ),
             y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
@@ -192,12 +202,13 @@ def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(x=alt.X("ratio:Q", scale=alt.Scale(type="log")))
     )
     return (curves + parity).properties(
-        title=_title(f"{guided_scope.title()} peak RSS ratio", meta), width=460
+        title=_title(f"{guided_scope.title()} {metric} ratio", meta), width=460
     )
 
 
 def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Absolute guided/unguided verification RSS, excluding candidate construction."""
+    """Absolute guided/unguided verification peaks, excluding candidate construction."""
+    metric = _memory_metric(paired)
     data = pl.concat(
         [
             paired.select(
@@ -222,7 +233,7 @@ def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(
             x=alt.X(
                 "peak_mib:Q",
-                title="verification peak RSS (MiB, log)",
+                title=f"verification {metric} (MiB, log)",
                 scale=alt.Scale(type="log"),
             ),
             y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
@@ -244,7 +255,7 @@ def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
         .properties(
-            title=_title("Verification-only peak RSS (candidate construction excluded)", meta),
+            title=_title(f"Verification-only {metric} (candidate construction excluded)", meta),
             width=300,
             height=240,
         )
@@ -300,13 +311,14 @@ def grid_success_curve(curves: pl.DataFrame, meta: dict) -> alt.Chart:
 
 
 def success_memory_pareto(summary: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Full-budget success rate versus median guided peak RSS."""
+    """Full-budget success rate versus median guided peak memory."""
     data = summary.drop_nulls(["success_rate_guided", "guided_median_peak_mib"])
+    metric = _memory_metric(summary)
     return (
         alt.Chart(data)
         .mark_circle(size=100)
         .encode(
-            x=alt.X("guided_median_peak_mib:Q", title="median guided peak RSS (MiB)"),
+            x=alt.X("guided_median_peak_mib:Q", title=f"median guided {metric} (MiB)"),
             y=alt.Y(
                 "success_rate_guided:Q",
                 title="guided success rate",
@@ -321,5 +333,5 @@ def success_memory_pareto(summary: pl.DataFrame, meta: dict) -> alt.Chart:
                 "n_paired_successes:Q",
             ],
         )
-        .properties(title=_title("Full-budget success and peak RSS", meta), width=460)
+        .properties(title=_title(f"Full-budget success and {metric}", meta), width=460)
     )

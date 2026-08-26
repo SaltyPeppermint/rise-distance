@@ -60,6 +60,7 @@
             lldb
             clang
             lld
+            valgrind
             pkg-config
             uv
             fish

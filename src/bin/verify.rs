@@ -1,11 +1,17 @@
-//! Run one (start, goal) pair's attempt loop: for each guide subset, union the
-//! guides, saturate, and report goal reachability, stopping at the first reach.
+//! Run one leg: union a single guide subset, saturate, and report goal
+//! reachability.
 //!
 //! Stateless wrapper over [`verify_reachability`] — no guide egraph replay or
-//! candidate construction. `guided_search.py` spawns this once per pair, passing the pair's
-//! attempt subsets (serialized [`GuideExpr`] node lists) as a JSON array of
-//! arrays on stdin and the goal on argv. Prints a JSON array of `LegResult`, one
-//! per subset run — early-stopped, so possibly shorter than the input.
+//! candidate construction. `guided_search.py` spawns this once per leg, passing
+//! that leg's guide subset (serialized [`GuideExpr`] node lists) as a JSON array
+//! on stdin and the goal on argv. Prints the leg's `LegResult` as a JSON object.
+//!
+//! One leg per process is deliberate: peak RSS (`ru_maxrss`) is a per-process
+//! lifetime high-water mark, so batching several legs into one invocation would
+//! report the max over all of them while the unguided baseline — a single eqsat
+//! run in its own process — reports just one. Keeping the work per process
+//! identical across both arms is what makes the two peaks comparable. The driver
+//! owns the attempt loop and its early stop.
 
 use std::io::Read;
 
@@ -18,18 +24,20 @@ use rise_distance::eqsat::{
     EqsatConfig, Goal, GuideError, ReachedRun, verify_reachability, verify_unguided,
 };
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
-use rise_distance::{MyAnalysis, MyLanguage};
+use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
 
 #[derive(Parser)]
 #[command(
-    about = "Run one (start, goal) pair's attempt loop: union guides, saturate, report reachability",
+    about = "Run one leg: union a single guide subset, saturate, report reachability",
     after_help = "\
-Reads the pair's attempt subsets as a JSON array of guide-node-list arrays on
-stdin and prints a JSON array of `LegResult` on stdout (one per subset run,
-early-stopped at the first reach). `--goal`, `--language`, and the eqsat limits
-come from argv. Example:
-  echo '[[...],[...]]' \\
-    | verify --language math --goal '(+ x 0)' --max-iters 200 \\
+Reads one leg's guide subset as a JSON array of guide-node-lists on stdin and
+prints its `LegResult` as a JSON object. With `--start-term` it instead runs the
+unguided baseline and reads nothing from stdin. `--goal-term`, `--language`, and
+the eqsat limits come from argv. The driver runs the attempt loop, one process
+per leg, so each process's peak RSS covers exactly one eqsat run — the same unit
+as the unguided baseline. Example:
+  echo '[...]' \\
+    | verify --language math --goal-term '(+ x 0)' --max-iters 200 \\
       --max-nodes 1000000 --max-time 10
 "
 )]
@@ -85,121 +93,58 @@ struct LegResult {
 fn main() {
     let args = Args::parse();
 
-    let subsets_json = if args.start_term.is_none() {
-        // The pair's attempt subsets come in on stdin as a JSON array of arrays
-        // of serialized `GuideExpr` node lists.
-        let mut json = String::new();
-        std::io::stdin()
-            .read_to_string(&mut json)
-            .expect("read guide subsets from stdin");
-        json
-    } else {
-        String::new()
+    let result = match args.language {
+        AvailableLanguages::Diospyros => run::<_, ()>(&args, &diospyros::rules(false, false)),
+        AvailableLanguages::Math => run::<_, math::ConstantFold>(&args, &math::rules()),
+        AvailableLanguages::Prop => run::<_, prop::ConstantFold>(&args, &prop::rules()),
     };
 
-    let results = match args.language {
-        AvailableLanguages::Diospyros if args.start_term.is_some() => {
-            vec![run_unguided::<_, ()>(
-                &args,
-                &diospyros::rules(false, false),
-            )]
-        }
-        AvailableLanguages::Diospyros => {
-            run_legs::<_, ()>(&subsets_json, &args, &diospyros::rules(false, false))
-        }
-        AvailableLanguages::Math if args.start_term.is_some() => {
-            vec![run_unguided::<_, math::ConstantFold>(&args, &math::rules())]
-        }
-        AvailableLanguages::Math => {
-            run_legs::<_, math::ConstantFold>(&subsets_json, &args, &math::rules())
-        }
-        AvailableLanguages::Prop if args.start_term.is_some() => {
-            vec![run_unguided::<_, prop::ConstantFold>(&args, &prop::rules())]
-        }
-        AvailableLanguages::Prop => {
-            run_legs::<_, prop::ConstantFold>(&subsets_json, &args, &prop::rules())
-        }
-    };
-
-    serde_json::to_writer(std::io::stdout(), &results).expect("write leg results JSON");
+    serde_json::to_writer(std::io::stdout(), &result).expect("write leg result JSON");
     println!();
 }
 
-/// Run the pair's attempt loop: one leg per subset, stopping at the first
-/// reach. Parses the goal once; a panicked leg surfaces as `panic: true` (caught
-/// in [`verify_reachability`]) and the loop continues.
-fn run_legs<L: MyLanguage, N: MyAnalysis<L>>(
-    subsets_json: &str,
-    args: &Args,
-    rules: &[Rewrite<L, N>],
-) -> Vec<LegResult> {
-    let subsets: Vec<Vec<GuideExpr<L>>> =
-        serde_json::from_str(subsets_json).expect("parse guide subset node lists");
-    assert!(
-        !subsets.is_empty(),
-        "pair needs at least one attempt subset"
-    );
-
-    let goal_expr = args
-        .goal_term
-        .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse goal '{}': {e}", args.goal_term));
-    let goal = Goal::Expr(goal_expr);
-
-    let mut results = Vec::with_capacity(subsets.len());
-    for guide_exprs in subsets {
-        let result = run_leg(guide_exprs, &goal, args, rules);
-        let reached = result.reached;
-        results.push(result);
-        if reached {
-            break;
-        }
-    }
-    results
-}
-
-fn run_leg<L: MyLanguage, N: MyAnalysis<L>>(
-    guide_exprs: Vec<GuideExpr<L>>,
-    goal: &Goal<L>,
-    args: &Args,
-    rules: &[Rewrite<L, N>],
-) -> LegResult {
-    assert!(!guide_exprs.is_empty(), "leg needs at least one guide");
-    let guides: Vec<RecExpr<_>> = guide_exprs
-        .into_iter()
-        .map(GuideExpr::into_recexpr)
-        .collect();
-
-    result_to_leg(verify_reachability(
-        &guides,
-        goal,
-        rules,
-        &args.eqsat,
-        args.full_union,
-    ))
-}
-
-fn run_unguided<L: MyLanguage, N: MyAnalysis<L>>(
-    args: &Args,
-    rules: &[Rewrite<L, N>],
-) -> LegResult {
-    let start_text = args
-        .start_term
-        .as_ref()
-        .expect("unguided mode needs --start-term");
-    let start_term = start_text
-        .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse start term '{start_text}': {e}"));
+/// Run this process's single eqsat: the unguided baseline when `--start-term`
+/// is given, otherwise the guided leg whose subset arrives on stdin.
+///
+/// A panic surfaces as `panic: true` (caught inside the `verify_*` helpers)
+/// rather than aborting, so the driver still gets a result for the attempt.
+fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) -> LegResult {
     let goal_expr = args
         .goal_term
         .parse::<RecExpr<L>>()
         .unwrap_or_else(|e| panic!("Failed to parse goal term '{}': {e}", args.goal_term));
-    result_to_leg(verify_unguided(
-        &start_term,
-        &Goal::Expr(goal_expr),
-        rules,
-        &args.eqsat,
-    ))
+    let goal = Goal::Expr(goal_expr);
+
+    let Some(start_text) = args.start_term.as_ref() else {
+        return result_to_leg(verify_reachability(
+            &read_guides(),
+            &goal,
+            rules,
+            &args.eqsat,
+            args.full_union,
+        ));
+    };
+
+    let start_term = start_text
+        .parse::<RecExpr<L>>()
+        .unwrap_or_else(|e| panic!("Failed to parse start term '{start_text}': {e}"));
+    result_to_leg(verify_unguided(&start_term, &goal, rules, &args.eqsat))
+}
+
+/// Read this leg's guide subset from stdin: a JSON array of serialized
+/// [`GuideExpr`] node lists.
+fn read_guides<L: MyLanguage>() -> Vec<RecExpr<OriginLang<L>>> {
+    let mut json = String::new();
+    std::io::stdin()
+        .read_to_string(&mut json)
+        .expect("read guide subset from stdin");
+    let guide_exprs: Vec<GuideExpr<L>> =
+        serde_json::from_str(&json).expect("parse guide subset node lists");
+    assert!(!guide_exprs.is_empty(), "leg needs at least one guide");
+    guide_exprs
+        .into_iter()
+        .map(GuideExpr::into_recexpr)
+        .collect()
 }
 
 fn result_to_leg<L: MyLanguage>(result: Result<ReachedRun<L>, GuideError>) -> LegResult {
