@@ -43,16 +43,16 @@ from common import (
 # `k` picks; everything else is drawn without replacement.
 CandidateStrategy = Literal[
     "no_replacement_count",
-    "no_replacement_naive",
+    "no_replacement_uniform",
     "with_replacement_count",
-    "with_replacement_naive",
+    "with_replacement_uniform",
 ]
 SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
 Strategy = Literal[CandidateStrategy, SmallestStrategy]
 SINGLE_CANDIDATE_STRATEGIES = get_args(SmallestStrategy)
 Policies = Literal[
     "count",
-    "naive",
+    "uniform",
     "smallest_novel",
     "smallest_overall",
 ]
@@ -181,15 +181,15 @@ def pool_key(strategy: Strategy) -> Policies:
     """Map a driver strategy to the candidate-pool key `candidates` writes.
 
     The replacement prefix is a Python-side draw policy (`pick_subset`), not a
-    pool: `candidates` emits `count`, `naive`, so collapse the prefix to hit one of those.
+    pool: `candidates` emits `count`, `uniform`, so collapse the prefix to hit one of those.
     `smallest_*` keys pass through unchanged.
     """
     if strategy in SINGLE_CANDIDATE_STRATEGIES:
         return strategy
     if strategy.endswith("_count"):
         return "count"
-    if strategy.endswith("_naive"):
-        return "naive"
+    if strategy.endswith("_uniform"):
+        return "uniform"
     raise ValueError(f"unknown strategy {strategy!r}")
 
 
@@ -276,6 +276,7 @@ def build_candidate_shard(
         record["goal_terms"] = spec.goal_terms
         record["candidate_status"] = "ok"
         record["candidate_peak_rss_bytes"] = measured.peak_rss_bytes
+        print(f"!!! sampling_peak_rss_bytes {measured.peak_rss_bytes}")
     return records
 
 
@@ -382,6 +383,7 @@ def run_legs(
     if args.full_union:
         cmd.append("--full-union")
     measured = run_json_subprocess(cmd, what=f"verify for goal {goal!r}", input=json.dumps(subsets))
+    print(f"!!! guided_attempt_peak_rss_bytes {measured.peak_rss_bytes}")
     return measured.payload, measured.peak_rss_bytes
 
 
@@ -516,7 +518,6 @@ def expected_pairs(start_records: list[dict]) -> list[dict]:
 
 def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
     """Run the pair-matched single-start baseline with predictive stopping."""
-    print(pair)
     cmd = [
         str(args.verify_binary),
         *base_flags,
@@ -527,6 +528,7 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
     ]
     measured = run_json_subprocess(cmd, what=f"unguided verify for goal term {pair['goal_term']!r}")
     result = measured.payload[0]
+    print(f"!!! unguided_brute_force_peak_rss_bytes {measured.peak_rss_bytes}")
     return {
         "start_term": pair["start_term"],
         "goal_term": pair["goal_term"],

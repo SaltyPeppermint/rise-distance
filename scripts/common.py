@@ -77,6 +77,7 @@ def run_json_subprocess(
         if input is not None:
             stdin_file.write(input)
             stdin_file.seek(0)
+        # print(f"------\n{' '.join(cmd)}\n-----")
         proc = subprocess.Popen(
             cmd,
             stdin=stdin_file if input is not None else subprocess.DEVNULL,

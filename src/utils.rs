@@ -216,6 +216,11 @@ pub fn live_heap_bytes() -> u64 {
         as u64
 }
 
+pub fn log_live_heap_bytes(context: &'static str) {
+    let current = live_heap_bytes();
+    eprintln!("CURRENT HEAP BYTES: {current}. CONTEXT: {context}");
+}
+
 #[cfg(test)]
 #[must_use]
 pub fn sym(name: &str) -> crate::langs::math::Math {

@@ -32,7 +32,7 @@ from common import (
 
 GoalSelectionPolicy = Literal[
     "count",
-    "naive",
+    "uniform",
 ]
 
 
@@ -58,7 +58,7 @@ class Args:
     """How to allocate the candidate budget across sizes (forwarded if set)."""
 
     policy: GoalSelectionPolicy | None = None
-    """How to draw goal candidates: count or naive (forwarded if set)."""
+    """How to draw goal candidates: count or uniform (forwarded if set)."""
 
     skip_unmeasured: bool = True
     """Skip start terms whose measurement is missing or empty (no iterations were
