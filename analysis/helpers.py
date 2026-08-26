@@ -9,8 +9,8 @@ from pathlib import Path
 import polars as pl
 
 REQUIRED_COMPARISON_COLUMNS = {
-    "seed",
-    "goal",
+    "start_term",
+    "goal_term",
     "guided_success",
     "unguided_success",
     "candidate_peak_rss_bytes",
@@ -132,13 +132,13 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
             frame.with_columns(
                 pl.lit(run.label).alias("mode"),
                 pl.lit(run.directory.name).alias("run"),
-                pl.concat_str(["seed", "goal"], separator="│").alias("pair"),
+                pl.concat_str(["start_term", "goal_term"], separator="│").alias("pair"),
             )
         )
     data = pl.concat(frames, how="diagonal_relaxed")
     meta = {
         "modes": [run.label for run in runs],
-        "n_pairs": data.select("seed", "goal").unique().height,
+        "n_pairs": data.select("start_term", "goal_term").unique().height,
         "subtitle": [f"{data.height} planned pair observations"],
     }
     return data, meta
@@ -423,7 +423,7 @@ def load_grid(grid_dir: Path) -> tuple[pl.DataFrame, dict]:
                 pl.lit(candidate_seed).alias("candidate_seed"),
                 pl.lit(strategy).alias("strategy"),
                 pl.lit(_grid_mode(allocation, strategy)).alias("mode"),
-                pl.concat_str(["seed", "goal"], separator="│").alias("pair"),
+                pl.concat_str(["start_term", "goal_term"], separator="│").alias("pair"),
             )
         )
         loaded.add((allocation, candidate_seed, strategy))
@@ -444,7 +444,7 @@ def load_grid(grid_dir: Path) -> tuple[pl.DataFrame, dict]:
     data = pl.concat(frames, how="diagonal_relaxed")
     meta = {
         "modes": modes,
-        "n_pairs": data.select("seed", "goal").unique().height,
+        "n_pairs": data.select("start_term", "goal_term").unique().height,
         "max_attempts": int(config["attempts"]),
         "candidate_seeds": data["candidate_seed"].n_unique(),
         "missing_cells": len(expected - loaded),
@@ -468,16 +468,16 @@ def grid_success_by_budget(grid_dir: Path, budgets: Sequence[int]) -> pl.DataFra
         allocation = str(config["size_allocation"])
         candidate_seed = int(config["candidate_seed"])
         strategy = str(config["strategy"])
-        base = pl.read_parquet(comparison_path, columns=["seed", "goal"])
+        base = pl.read_parquet(comparison_path, columns=["start_term", "goal_term"])
         attempts = pl.read_parquet(run_dir / "results.parquet")
         for budget in budgets:
             reached = (
                 attempts.filter(pl.col("attempt") < budget)
-                .group_by("seed", "goal")
+                .group_by("start_term", "goal_term")
                 .agg(pl.col("reached").any().alias("guided_success"))
             )
             frames.append(
-                base.join(reached, on=["seed", "goal"], how="left").with_columns(
+                base.join(reached, on=["start_term", "goal_term"], how="left").with_columns(
                     pl.col("guided_success").fill_null(False),
                     pl.lit(allocation).alias("allocation"),
                     pl.lit(candidate_seed).alias("candidate_seed"),
