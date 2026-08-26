@@ -51,29 +51,13 @@ def exit_if_missing(*binaries: Path) -> None:
         raise SystemExit(2)
 
 
-def run_json_subprocess(
-    cmd: list[str],
-    *,
-    what: str,
-    input: str | None = None,
-    timeout: float | None = None,
-) -> Any:
-    """Run `cmd`, expecting a JSON payload on stdout.
-
-    Raises RuntimeError with stdout/stderr attached on a nonzero exit or
-    non-JSON stdout; `what` names the failing unit in those messages
-    (e.g. "goal for seed '(+ a b)'").
-    """
-    return run_json_subprocess_measured(cmd, what=what, input=input, timeout=timeout).payload
-
-
 @dataclass(frozen=True)
 class MeasuredJson:
     payload: Any
     peak_rss_bytes: int
 
 
-def run_json_subprocess_measured(
+def run_json_subprocess(
     cmd: list[str],
     *,
     what: str,
@@ -169,8 +153,3 @@ def limit_flags(limits: dict) -> list[str]:
     if model_path := limits.get("predict_next_memory"):
         flags += ["--predict-next-memory", str(model_path)]
     return flags
-
-
-def language_eqsat_flags(cfg: dict) -> list[str]:
-    """`--language` plus the eqsat limit flags, from a raw config dict."""
-    return ["--language", str(cfg["language"]), *limit_flags(eqsat_limits(cfg))]

@@ -35,7 +35,7 @@ from common import (
     exit_if_missing,
     limit_flags,
     parse_size,
-    run_json_subprocess_measured,
+    run_json_subprocess,
 )
 
 # Candidate-pool names emitted by `candidates` (see CandidatePool::name in src/cli.rs).
@@ -260,9 +260,7 @@ def build_candidate_shard(
         str(menu_size),
     ]
 
-    measured = run_json_subprocess_measured(
-        cmd, what=f"candidates for start term {spec.start_term!r}"
-    )
+    measured = run_json_subprocess(cmd, what=f"candidates for start term {spec.start_term!r}")
     records = measured.payload
     if not records:
         return [
@@ -383,9 +381,7 @@ def run_legs(
     cmd = [str(args.verify_binary), *base_flags, "--goal-term", goal]
     if args.full_union:
         cmd.append("--full-union")
-    measured = run_json_subprocess_measured(
-        cmd, what=f"verify for goal {goal!r}", input=json.dumps(subsets)
-    )
+    measured = run_json_subprocess(cmd, what=f"verify for goal {goal!r}", input=json.dumps(subsets))
     return measured.payload, measured.peak_rss_bytes
 
 
@@ -529,9 +525,7 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
         "--goal-term",
         pair["goal_term"],
     ]
-    measured = run_json_subprocess_measured(
-        cmd, what=f"unguided verify for goal term {pair['goal_term']!r}"
-    )
+    measured = run_json_subprocess(cmd, what=f"unguided verify for goal term {pair['goal_term']!r}")
     result = measured.payload[0]
     return {
         "start_term": pair["start_term"],

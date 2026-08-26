@@ -23,7 +23,12 @@ from typing import Literal
 import tyro
 from tqdm import tqdm
 
-from common import eqsat_limits, exit_if_missing, language_eqsat_flags, run_json_subprocess
+from common import (
+    eqsat_limits,
+    exit_if_missing,
+    limit_flags,
+    run_json_subprocess,
+)
 
 GoalSelectionPolicy = Literal[
     "count",
@@ -131,7 +136,7 @@ def run_goal_shard(args: Args, base_flags: list[str], start_term: str) -> object
         cmd += ["--size-allocation", args.size_allocation]
     if args.policy is not None:
         cmd += ["--exact-selection-policy", args.policy]
-    return run_json_subprocess(cmd, what=f"goal for start term {start_term!r}")
+    return run_json_subprocess(cmd, what=f"goal for start term {start_term!r}").payload
 
 
 def run_all_start_terms(
@@ -203,7 +208,9 @@ def main() -> int:
         json.dumps({**cfg, "driver_args": dataclasses.asdict(args)}, indent=2, default=str)
     )
 
-    enriched = run_all_start_terms(args, language_eqsat_flags(cfg), start_terms)
+    enriched = run_all_start_terms(
+        args, ["--language", str(cfg["language"]), *limit_flags(eqsat_limits(cfg))], start_terms
+    )
 
     written = write_enriched_terms(args.path / "terms.json", goal_terms_path, enriched)
     print(
