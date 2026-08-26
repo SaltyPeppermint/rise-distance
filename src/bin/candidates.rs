@@ -98,11 +98,14 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, 
         args.start_term, args.eqsat.max_iters
     );
 
-    let mut out = Vec::new();
-    match build_candidate_record(args, rules) {
-        Ok(record) => out.push(record),
-        Err(e) => eprintln!("ERROR OCCURRED:\n{e}"),
-    }
+    let out = match build_candidate_record(args, rules) {
+        Ok(record) => vec![record],
+        Err(e) => {
+            eprintln!("ERROR OCCURRED:\n{e}");
+            vec![]
+        }
+    };
+
     eprintln!("Finished seed at {}", OffsetDateTime::now_local().unwrap());
 
     serde_json::to_writer(std::io::stdout(), &out).expect("write candidates JSON");
