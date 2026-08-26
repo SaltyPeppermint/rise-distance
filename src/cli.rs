@@ -1,8 +1,6 @@
 //! Shared wire types for the guide experiment's `goal`, `candidates`, and `verify`
 //! binaries.
 
-use std::collections::BTreeMap;
-
 use clap::ValueEnum;
 use egg::RecExpr;
 use hashbrown::HashMap;
@@ -85,9 +83,9 @@ impl<L: MyLanguage> GuideExpr<L> {
 #[serde(bound = "L: MyLanguage")]
 pub struct SeedCandidates<L: MyLanguage> {
     pub seed: String,
-    /// Requested guide candidates keyed by [`CandidatePool::name`]. Batch pools
-    /// hold up to the requested candidate count; `Smallest` holds exactly one.
-    pub candidates: BTreeMap<String, Vec<GuideExpr<L>>>,
+    pub policy: String,
+
+    pub candidates: Vec<GuideExpr<L>>,
     pub guide_nodes: usize,
     pub guide_classes: usize,
     pub guide_iters: usize,

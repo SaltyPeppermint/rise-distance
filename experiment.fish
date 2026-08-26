@@ -32,22 +32,22 @@
 #   data/seed_terms/plenty-houses
 # or exit $status
 
-uv run scripts/guided_search.py \
-  --strategy no_replacement_count \
-  --goals 5 \
-  --seeds 100 \
-  --k 1 \
-  --attempts 10 \
-  --rng-seed 42 \
-  --full-union --stop-memory 250M \
-  data/seed_terms/plenty-houses
-or exit $status
+# uv run scripts/guided_search.py \
+#   --strategy no_replacement_count \
+#   --goal-terms 5 \
+#   --start-terms 100 \
+#   --k 1 \
+#   --attempts 10 \
+#   --rng-seed 42 \
+#   --full-union --stop-memory 250M \
+#   data/seed_terms/plenty-houses
+# or exit $status
 
 
 uv run scripts/guided_search.py \
   --strategy no_replacement_naive \
-  --goals 5 \
-  --seeds 100 \
+  --goal-terms 5 \
+  --start-terms 1 \
   --k 1 \
   --attempts 10 \
   --rng-seed 42 \

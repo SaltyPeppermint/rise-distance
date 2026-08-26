@@ -4,7 +4,6 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use egg::{RecExpr, Rewrite, StopReason};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
-use rise_distance::candidates::uniform_candidate_allocation;
 use serde::Serialize;
 
 use rise_distance::eqsat::{EqsatConfig, HeapData, Measurement};
@@ -84,7 +83,7 @@ fn main() {
 
 fn emit_plan(args: &PlanArgs) {
     let sizes = (args.min_size..=args.max_size).collect::<Vec<_>>();
-    let plan = uniform_candidate_allocation(&sizes, args.total_samples);
+    let plan = rise_distance::candidates::uniform_candidate_allocation(&sizes, args.total_samples);
     serde_json::to_writer(std::io::stdout().lock(), &plan).unwrap();
     println!();
 }

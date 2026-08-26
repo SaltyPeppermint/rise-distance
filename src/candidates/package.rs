@@ -2,12 +2,12 @@ use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
 
 use crate::Counter;
-use crate::candidates::SizeAllocation;
 use crate::candidates::count::{
     NodeMatches, NovelTermCount, count_terms_rooted, enumerate_matches_rooted,
     find_novel_root_sizes_rooted, prune_matches, root_budgets,
 };
 use crate::candidates::draw::{CountWeigher, Drawer, FrontierDrawer, NaiveWeigher, PlainDrawer};
+use crate::candidates::greedy_distribute_alloc;
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang};
@@ -173,13 +173,12 @@ where
     pub fn draw_frontier_candidates(
         &self,
         count: usize,
-        allocation: SizeAllocation,
         selection_policy: Policy,
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let histogram = self.tc.data().get(&self.root)?;
 
-        let requests = allocation.allocate(histogram, self.min_size, self.max_size, count);
+        let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
 
         match selection_policy {
             Policy::Naive => FrontierDrawer::new(&self.tc, &self.egraph, self.root, NaiveWeigher)

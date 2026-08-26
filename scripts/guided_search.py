@@ -50,7 +50,7 @@ CandidateStrategy = Literal[
 SmallestStrategy = Literal["smallest_novel", "smallest_overall"]
 Strategy = Literal[CandidateStrategy, SmallestStrategy]
 SINGLE_CANDIDATE_STRATEGIES = get_args(SmallestStrategy)
-CandidatePool = Literal[
+Policies = Literal[
     "count",
     "naive",
     "smallest_novel",
@@ -147,31 +147,23 @@ class Args:
     full_union: bool = False
     """Use the experimental full-union add for the leg egraph."""
 
-    seeds: int | None = None
+    start_terms: int | None = None
     """Only process the first N seed terms (sorted order, so stable across
     runs). All seeds if omitted."""
 
-    goals: int | None = None
+    goal_terms: int | None = None
     """Only use the first N goals per seed term (file order, so stable across
     runs). All goals if omitted."""
 
     rng_seed: int = 0
     """RNG seed for subset selection (offset per attempt)."""
 
-    candidate_seed: int = 0
+    seed: int = 0
     """Rust candidate-construction seed. Unlike `rng_seed`, this controls which
     terms enter each strategy's candidate menu."""
 
-    size_allocation: str = "greedy"
-    """How `candidates` allocates the candidate budget across root term sizes:
-    `greedy` or `uniform`"""
-
     size_goal: int = 5
     """Number of novel sizes the analysis must find."""
-
-    candidate_pools: tuple[CandidatePool, ...] = ()
-    """Candidate pools to generate. Defaults to the pool selected by `strategy`;
-    grid runs provide the pools shared by a cell."""
 
     jobs: int | None = None
     """Max concurrent `verify` legs (one seed/goal pair per worker). Each pair's
@@ -183,13 +175,13 @@ class Args:
 class WorkItem:
     """One seed/goal unit, its guide pool, and seed-level guide metadata."""
 
-    seed: str
+    start_expr: str
     goal: str
     pool: list
     guide_meta: dict
 
 
-def pool_key(strategy: Strategy) -> CandidatePool:
+def pool_key(strategy: Strategy) -> Policies:
     """Map a driver strategy to the candidate-pool key `candidates` writes.
 
     The replacement prefix is a Python-side draw policy (`pick_subset`), not a
@@ -203,12 +195,6 @@ def pool_key(strategy: Strategy) -> CandidatePool:
     if strategy.endswith("_naive"):
         return "naive"
     raise ValueError(f"unknown strategy {strategy!r}")
-
-
-def requested_candidate_pools(args: Args) -> list[CandidatePool]:
-    """Resolve and deduplicate the candidate pools the Rust builder should emit."""
-    pools = args.candidate_pools or (pool_key(args.strategy),)
-    return list(dict.fromkeys(pools))
 
 
 def replay_limits(args: Args, cfg: dict) -> dict:
@@ -234,7 +220,7 @@ class SeedSpec:
     """One seed's `candidates` input (`seed`) and its goals, merged back onto the
     output record Python-side."""
 
-    seed: str
+    start: str
     goals: list[str]
 
 
@@ -252,11 +238,11 @@ def flatten_enriched_seeds(args: Args) -> list[SeedSpec]:
             if ok is None:
                 continue  # Err seed: goal stage failed, nothing to replay.
             goals = ok["goals"]
-            if args.goals is not None:
-                goals = goals[: args.goals]
+            if args.goal_terms is not None:
+                goals = goals[: args.goal_terms]
             specs.append(SeedSpec(seed, goals))
-    if args.seeds is not None:
-        specs = specs[: args.seeds]
+    if args.start_terms is not None:
+        specs = specs[: args.start_terms]
     return specs
 
 
@@ -265,7 +251,6 @@ def build_candidate_shard(
     base_flags: list[str],
     limits: dict,
     menu_size: int,
-    pools: list[str],
     spec: SeedSpec,
 ) -> list[dict]:
     """Run ``candidates`` for one seed and attach its goals to the result."""
@@ -273,19 +258,18 @@ def build_candidate_shard(
         str(args.candidates_binary),
         *base_flags,
         *limit_flags(limits),
-        "--seed",
-        spec.seed,
-        "--candidates-per-pool",
+        "--start-term",
+        spec.start,
+        "--n-candidates",
         str(menu_size),
     ]
-    for pool in pools:
-        cmd.extend(["--candidate-pool", pool])
-    measured = run_json_subprocess_measured(cmd, what=f"candidates for seed {spec.seed!r}")
+
+    measured = run_json_subprocess_measured(cmd, what=f"candidates for seed {spec.start!r}")
     records = measured.payload
     if not records:
         return [
             {
-                "seed": spec.seed,
+                "seed": spec.start,
                 "goals": spec.goals,
                 "candidates": {},
                 "candidate_status": "failed",
@@ -305,25 +289,25 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
     Merge results in seed order and write ``candidates.json`` for provenance.
     """
     specs = flatten_enriched_seeds(args)
-    pools = requested_candidate_pools(args)
+    policy = pool_key(args.strategy)
     candidate_out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
     candidate_flags = [
         "--language",
         str(cfg["language"]),
-        "--size-allocation",
-        args.size_allocation,
-        "--candidate-seed",
-        str(args.candidate_seed),
+        "--seed",
+        str(args.seed),
         "--size-goal",
         str(args.size_goal),
+        "--policy",
+        str(policy),
     ]
     limits = replay_limits(args, cfg)
     # Menu size = exactly what the attempt loop consumes: no_replacement_* needs
     # k distinct guides per attempt across `attempts` disjoint attempts.
     menu_size = args.k * args.attempts
     print(
-        f"Constructing guide-candidate menu ({menu_size}/strategy, pools={','.join(pools)}) "
+        f"Constructing guide-candidate menu ({menu_size}/strategy, policy={policy}) "
         f"for {len(specs)} seed(s) "
         f"-> {candidate_out} ({jobs} workers)",
         file=sys.stderr,
@@ -338,7 +322,6 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
                 candidate_flags,
                 limits,
                 menu_size,
-                pools,
                 spec,
             ): i
             for i, spec in enumerate(specs)
@@ -414,11 +397,11 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     The final row is marked ``gave_up`` only if all attempts ran and failed.
     Reported ``k`` is the effective subset size. An empty pool is an error.
     """
-    rng = random.Random(f"{args.rng_seed}:{item.seed}:{item.goal}")
+    rng = random.Random(f"{args.rng_seed}:{item.start_expr}:{item.goal}")
     attempt_subsets = build_attempt_subsets(item.pool, args.strategy, args.k, args.attempts, rng)
     if any(not guides for guides in attempt_subsets):
         raise RuntimeError(
-            f"empty candidate pool for seed {item.seed!r} goal {item.goal!r}: "
+            f"empty candidate pool for seed {item.start_expr!r} goal {item.goal!r}: "
             f"strategy {args.strategy!r} drew no guides"
         )
 
@@ -426,7 +409,7 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     rows: list[dict] = []
     for attempt, (guides, result) in enumerate(zip(attempt_subsets, results)):
         row = {
-            "seed": item.seed,
+            "seed": item.start_expr,
             "goal": item.goal,
             "strategy": args.strategy,
             "k": len(guides),
@@ -470,7 +453,7 @@ def build_work_items(seed_records: list, strategy: str) -> list[WorkItem]:
     for record in seed_records:
         if record.get("candidate_status") != "ok":
             continue
-        pool = record["candidates"].get(pool_key(strategy), [])
+        pool = record["candidates"]
         guide_meta = {
             "guide_nodes": record["guide_nodes"],
             "guide_classes": record["guide_classes"],
@@ -542,15 +525,15 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
     cmd = [
         str(args.verify_binary),
         *base_flags,
-        "--seed",
-        pair["seed"],
+        "--start",
+        pair["start"],
         "--goal",
         pair["goal"],
     ]
     measured = run_json_subprocess_measured(cmd, what=f"unguided verify for goal {pair['goal']!r}")
     result = measured.payload[0]
     return {
-        "seed": pair["seed"],
+        "seed": pair["start"],
         "goal": pair["goal"],
         "unguided_success": result["reached"],
         "unguided_stop_reason": result.get("stop_reason"),

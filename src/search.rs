@@ -14,7 +14,7 @@ use std::fmt::Display;
 use egg::{Language, RecExpr, Rewrite};
 
 use crate::Counter;
-use crate::candidates::{ExactCandidatePackage, SizeAllocation};
+use crate::candidates::ExactCandidatePackage;
 use crate::cli::Policy;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
 use crate::sketch::Sketch;
@@ -164,7 +164,6 @@ where
 
     let Some(candidates) = package.draw_frontier_candidates(
         args.candidate_count,
-        SizeAllocation::Greedy,
         Policy::Count,
         [args.cut_iters as u64, 0],
     ) else {

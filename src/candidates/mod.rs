@@ -1,12 +1,8 @@
 //! Guide-candidate construction from an e-graph.
 
-mod allocation;
-
 pub mod count;
 pub mod draw;
 mod package;
-
-pub use allocation::{SizeAllocation, uniform_candidate_allocation};
 
 pub use package::ExactCandidatePackage;
 
@@ -79,4 +75,50 @@ pub fn suffix_convolutions<C: Counter, H: Borrow<HashMap<usize, C>>>(
     }
 
     suffix
+}
+
+/// Distribute `total_candidates` uniformly across `sizes`.
+///
+/// Any remainder is assigned to the first sizes, so the returned counts always
+/// add up to `total_candidates` when at least one size is supplied.
+///
+/// # Panics
+///
+/// On platforms where `usize` is wider than `u64`, panics if the per-size
+/// candidate count cannot be represented as a `u64`.
+#[must_use]
+pub fn uniform_candidate_allocation(sizes: &[usize], total_candidates: usize) -> Vec<(usize, u64)> {
+    if sizes.is_empty() {
+        return vec![];
+    }
+    let size_count = sizes.len();
+    let base = u64::try_from(total_candidates / size_count).unwrap();
+    let remainder = total_candidates % size_count;
+    sizes
+        .iter()
+        .enumerate()
+        .map(|(i, &size)| (size, base + u64::from(i < remainder)))
+        .collect()
+}
+
+#[must_use]
+#[expect(clippy::missing_panics_doc)]
+pub fn greedy_distribute_alloc<C: Counter>(
+    min_size: usize,
+    max_size: usize,
+    count: usize,
+    histogram: &HashMap<usize, C>,
+) -> Vec<(usize, u64)> {
+    (min_size..=max_size)
+        .scan(u64::try_from(count).unwrap(), |remaining, size| {
+            let available = histogram
+                .get(&size)
+                .map_or(0, |c| c.to_u64().unwrap_or(u64::MAX));
+
+            let take = (*remaining).min(available);
+            *remaining = remaining.saturating_sub(available);
+
+            Some((size, take))
+        })
+        .collect::<Vec<_>>()
 }

@@ -4,14 +4,12 @@
 //! Arguments come from `guided_search.py`; output is a one-element JSON array
 //! on stdout, or an empty array on failure. Logs go to stderr.
 
-use std::collections::BTreeMap;
-
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 use time::OffsetDateTime;
 
-use rise_distance::candidates::{ExactCandidatePackage, SizeAllocation};
+use rise_distance::candidates::ExactCandidatePackage;
 use rise_distance::cli::{GuideExpr, Policy, SeedCandidates};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
@@ -40,23 +38,19 @@ struct Args {
 
     /// Seed s-expression.
     #[arg(long)]
-    seed: String,
+    start_term: String,
 
     /// Guide replay limits.
     #[command(flatten)]
     eqsat: EqsatConfig,
 
-    /// How to allocate the guide-candidate budget across sizes.
-    #[arg(long, default_value_t = SizeAllocation::Greedy)]
-    size_allocation: SizeAllocation,
-
     /// Candidates per construction pool. `Smallest` contributes one.
     #[arg(long, default_value_t = 1000)]
-    candidates_per_pool: usize,
+    n_candidates: usize,
 
     /// Candidate-construction seed, independent of the batch size.
     #[arg(long, default_value_t = 0)]
-    candidate_seed: u64,
+    seed: u64,
 
     /// How much to grow `max_size` on each exact-size-search retry.
     #[arg(long, default_value_t = 5)]
@@ -70,9 +64,9 @@ struct Args {
     #[arg(long, default_value_t = 5)]
     size_goal: usize,
 
-    /// Candidate pool to emit. Repeat for a shared multi-pool manifest.
-    #[arg(long = "candidate-pool", value_enum, required = true)]
-    candidate_pools: Vec<Policy>,
+    /// Candidate policy to emit.
+    #[arg(long, value_enum)]
+    policy: Policy,
 }
 
 fn main() {
@@ -80,8 +74,7 @@ fn main() {
 
     eprintln!("Starting at {}", OffsetDateTime::now_local().unwrap());
     eprintln!("Language: {:?}", args.language);
-    eprintln!("Size allocation: {}", args.size_allocation);
-    eprintln!("Seed: {}", args.seed);
+    eprintln!("Seed: {}", args.start_term);
 
     match args.language {
         AvailableLanguages::Diospyros => {
@@ -102,7 +95,7 @@ fn main() {
 fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
     eprintln!(
         "\n=== Seed: {} (max-iters={}) ===",
-        args.seed, args.eqsat.max_iters
+        args.start_term, args.eqsat.max_iters
     );
 
     let mut out = Vec::new();
@@ -123,9 +116,9 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     assert!(args.size_goal > 0, "--size-goal must be positive");
 
     let seed_expr = args
-        .seed
+        .start_term
         .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse seed '{}': {e}", args.seed));
+        .unwrap_or_else(|e| panic!("Failed to parse seed '{}': {e}", args.start_term));
 
     // Replay the guide phase under the effective limits the driver computed;
     // the replay ends at whichever limit trips first.
@@ -146,29 +139,14 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     );
 
     let start_size = AstSize.cost_rec(&seed_expr);
-    let pools =
-        args.candidate_pools
-            .iter()
-            .copied()
-            .fold(Vec::<Policy>::new(), |mut unique, pool| {
-                if !unique
-                    .iter()
-                    .any(|existing| existing.to_string() == pool.to_string())
-                {
-                    unique.push(pool);
-                }
-                unique
-            });
 
-    let mut candidates = BTreeMap::new();
-
-    candidates.extend(build_full_analysis_candidates(
-        args, result, &pools, start_size,
-    )?);
+    let candidates = build_full_analysis_candidates(args, result, args.policy, start_size)?;
 
     Ok(SeedCandidates {
-        seed: args.seed.clone(),
+        seed: args.start_term.clone(),
+        policy: args.policy.to_string(),
         candidates,
+
         guide_nodes,
         guide_classes,
         guide_iters,
@@ -182,9 +160,9 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
 fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     result: EqsatResult<L, N>,
-    pools: &[Policy],
+    policy: Policy,
     start_size: usize,
-) -> Result<BTreeMap<String, Vec<GuideExpr<L>>>, String> {
+) -> Result<Vec<GuideExpr<L>>, String> {
     let mut root_log = String::new();
     let (max_size, package) = ExactCandidatePackage::<BigUint, _, _>::build_through_novel_sizes(
         result,
@@ -204,18 +182,9 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     eprintln!("Exact candidate package succeeded with max_size {max_size}!");
     package.log_root_counts(&mut root_log);
     eprint!("{root_log}");
+    let terms = draw_candiates(args, policy, &package);
 
-    Ok(pools
-        .iter()
-        .copied()
-        .map(|pool| {
-            let terms = draw_candiates(args, pool, &package);
-            (
-                pool.to_string().clone(),
-                terms.into_iter().map(GuideExpr::from_recexpr).collect(),
-            )
-        })
-        .collect())
+    Ok(terms.into_iter().map(GuideExpr::from_recexpr).collect())
 }
 
 /// Draw one candidate pool; smallest-term pools contain one term.
@@ -225,12 +194,7 @@ fn draw_candiates<L: MyLanguage, N: MyAnalysis<L>>(
     package: &ExactCandidatePackage<BigUint, L, N>,
 ) -> Vec<RecExpr<OriginLang<L>>> {
     package
-        .draw_frontier_candidates(
-            args.candidates_per_pool,
-            args.size_allocation,
-            policy,
-            [args.candidate_seed, policy.rng_salt()],
-        )
+        .draw_frontier_candidates(args.n_candidates, policy, [args.seed, policy.rng_salt()])
         .unwrap_or_else(|| {
             eprintln!(
                 "WARNING: strategy {policy} drew 0 candidates (empty novel frontier); \

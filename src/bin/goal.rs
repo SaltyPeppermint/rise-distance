@@ -17,7 +17,7 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
 
-use rise_distance::candidates::{ExactCandidatePackage, SizeAllocation};
+use rise_distance::candidates::ExactCandidatePackage;
 use rise_distance::cli::{GoalGenMetadata, Policy};
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
@@ -51,10 +51,6 @@ struct Args {
     /// Number of goal candidates to draw per seed.
     #[arg(long, default_value_t = 10)]
     goals: usize,
-
-    /// How to allocate the goal-candidate budget across sizes.
-    #[arg(long, default_value_t = SizeAllocation::Greedy)]
-    size_allocation: SizeAllocation,
 
     /// Policy used to draw goal candidates.
     #[arg(long, default_value_t = Policy::Count)]
@@ -171,12 +167,7 @@ fn process_seed<L: MyLanguage, N: MyAnalysis<L>>(
     package.log_root_counts(log);
 
     let goals = package
-        .draw_frontier_candidates(
-            args.goals,
-            args.size_allocation,
-            args.selection_policy,
-            [0, 0],
-        )
+        .draw_frontier_candidates(args.goals, args.selection_policy, [0, 0])
         .ok_or_else(|| "exact frontier candidate drawing failed".to_owned())?;
 
     let goal_strings = goals

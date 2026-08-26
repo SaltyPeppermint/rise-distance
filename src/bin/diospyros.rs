@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use egg::{Extractor, RecExpr};
 
 use num::BigUint;
-use rise_distance::candidates::{ExactCandidatePackage, SizeAllocation};
+use rise_distance::candidates::ExactCandidatePackage;
 use rise_distance::cli::Policy;
 use rise_distance::eqsat::{EqsatConfig, EqsatMetadata, EqsatResult};
 use rise_distance::langs::diospyros::VecLang;
@@ -251,7 +251,6 @@ fn run_cut(
 
     let Some(candidates) = package.draw_frontier_candidates(
         args.candidate_count,
-        SizeAllocation::Greedy,
         Policy::Count,
         [args.cut_iters as u64, 0],
     ) else {
