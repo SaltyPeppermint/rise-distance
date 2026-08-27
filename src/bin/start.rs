@@ -1,13 +1,12 @@
 use std::time::Instant;
 
 use clap::Parser;
-use egg::{RecExpr, Rewrite, StopReason};
+use egg::{Iteration, RecExpr, Rewrite, StopReason};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
-use rise_distance::utils::peak_rss_bytes;
 use serde::Serialize;
 
-use rise_distance::eqsat::{EqsatConfig, HeapData, Measurement};
+use rise_distance::eqsat::{EqsatConfig, HeapData};
 use rise_distance::generator::{Samplable, SizeUniformSampler};
 use rise_distance::langs::{AvailableLanguages, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -18,7 +17,7 @@ use rise_distance::{MyAnalysis, MyLanguage};
     after_help = "\
 Examples:
 
-  generate --size 17 --seed 42 --language math \\
+  start --size 17 --seed 42 --language math \\
     --max-iters 50 --max-nodes 100000 --max-time 10
 "
 )]
@@ -68,7 +67,7 @@ where
     let mut rng = ChaCha12Rng::seed_from_u64(args.seed);
     for attempts in 1..=args.retry_limit {
         let candidate = sampler.sample(&mut rng);
-        if let Some(measurement) = validity_hook(&candidate, validity_config, rules) {
+        if let Some(measurement) = validity_check(&candidate, validity_config, rules) {
             return GoalTerm {
                 term: candidate.to_string(),
                 attempt: attempts,
@@ -89,8 +88,20 @@ struct GoalTerm {
     payload: Measurement,
 }
 
+/// Eqsat iterations and absolute process live-heap measurements.
+/// Byte counts use the same scale as `memory_limit`.
+#[derive(Debug, Serialize)]
+pub struct Measurement {
+    pub iterations: Vec<Iteration<HeapData>>,
+    pub eqsat_mem_tracking_allocated: u64,
+    pub eqsat_mem_tracking_peak_allocated: u64,
+    pub eqsat_memory_limit: Option<u64>,
+    pub stop_time: f64,
+    pub stop_reason: StopReason,
+}
+
 #[must_use]
-pub fn validity_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
+pub fn validity_check<L: MyLanguage, N: MyAnalysis<L> + Default>(
     expr: &RecExpr<L>,
     config: &EqsatConfig,
     rules: &[Rewrite<L, N>],
@@ -99,7 +110,7 @@ pub fn validity_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
 
     let start = Instant::now();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules)))
-        .map_err(|_| {
+        .map_err(|_panic| {
             eprintln!("panic caught in iter_check_hook for expr: {expr}");
             eprintln!("It is safe to ignore the output of egg here");
         })
@@ -125,7 +136,6 @@ pub fn validity_hook<L: MyLanguage, N: MyAnalysis<L> + Default>(
         eqsat_mem_tracking_allocated: mem_report.final_reading,
         eqsat_mem_tracking_peak_allocated: mem_report.peak_reading,
         eqsat_memory_limit: mem_report.absolute_limit,
-        peak_rss: peak_rss_bytes(),
         stop_time,
         stop_reason,
     })

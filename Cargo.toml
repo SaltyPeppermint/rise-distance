@@ -91,12 +91,8 @@ name = "verify"
 path = "src/bin/verify.rs"
 
 [[bin]]
-name = "goal"
-path = "src/bin/goal.rs"
-
-[[bin]]
-name = "generate"
-path = "src/bin/generate.rs"
+name = "start"
+path = "src/bin/start.rs"
 
 [[bin]]
 name = "rise"

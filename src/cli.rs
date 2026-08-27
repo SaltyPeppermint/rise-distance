@@ -48,44 +48,20 @@ impl Policy {
     }
 }
 
-/// One guide candidate on the wire. Stored as its node list rather than an
-/// s-expression string so the per-node `origin` id survives the
-/// Rust -> Python -> Rust round trip.
-/// egg's `RecExpr` serde goes through `Display`,
-/// which drops the origin and would break `--full-union`.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(bound = "L: MyLanguage")]
-pub struct GuideExpr<L: MyLanguage> {
-    pub nodes: Vec<OriginLang<L>>,
-}
-
-impl<L: MyLanguage> GuideExpr<L> {
-    /// Consume a constructed expression and reuse its node allocation for the wire
-    /// representation.
-    #[must_use]
-    pub fn from_recexpr(expr: RecExpr<OriginLang<L>>) -> Self {
-        Self { nodes: expr.into() }
-    }
-
-    #[must_use]
-    pub fn into_recexpr(self) -> RecExpr<OriginLang<L>> {
-        RecExpr::from(self.nodes)
-    }
-}
-
 /// A per-seed candidate record the `candidates` binary prints to stdout (which
 /// `guided_search.py` collects into `candidates.json`). Carries the
 /// guide candidates for each requested pool
 /// Python may restart with, plus replay metadata for Python's logging. The
 /// goals and `max_size` are not here: the driver keeps them Python-side (from
 /// `goal_terms.json`) and re-associates by seed.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(bound = "L: MyLanguage")]
-pub struct SeedCandidates<L: MyLanguage> {
+/// For Serialization purposes we have to go via Vec instead of using `RecExpr`
+#[derive(Serialize, Debug, Clone)]
+pub struct Candidates<L: MyLanguage> {
     pub start_term: String,
     pub policy: String,
 
-    pub candidates: Vec<GuideExpr<L>>,
+    pub candidates: Vec<Vec<OriginLang<L>>>,
+    pub candidate_s_expr: Vec<RecExpr<L>>,
     pub guide_nodes: usize,
     pub guide_classes: usize,
     pub guide_iters: usize,

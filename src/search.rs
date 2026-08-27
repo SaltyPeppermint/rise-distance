@@ -184,7 +184,7 @@ where
         println!("{}", lower(candidate.to_owned()));
     }
 
-    let verify = eqsat::verify_reachability(
+    let verify = eqsat::guided_eqsat(
         &candidates,
         &Goal::Sketches(sketch_goals),
         rules,
@@ -238,7 +238,7 @@ where
         .map(|n| OriginLang::new(n.clone(), id0()))
         .collect();
 
-    let verify = eqsat::verify_reachability(
+    let verify = eqsat::guided_eqsat(
         std::slice::from_ref(&guide),
         &Goal::Sketches(sketch_goals),
         rules,

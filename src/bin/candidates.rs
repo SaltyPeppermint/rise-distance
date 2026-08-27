@@ -10,10 +10,10 @@ use num::BigUint;
 use time::OffsetDateTime;
 
 use rise_distance::candidates::{DrawerPackage, FrontierPackage};
-use rise_distance::cli::{GuideExpr, Policy, SeedCandidates};
+use rise_distance::cli::{Candidates, Policy};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
-use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
+use rise_distance::{MyAnalysis, MyLanguage, OriginLang, lower};
 
 #[derive(Parser)]
 #[command(
@@ -118,7 +118,7 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, 
 fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     rules: &[Rewrite<L, N>],
-) -> Result<SeedCandidates<L>, String> {
+) -> Result<Candidates<L>, String> {
     assert!(args.size_goal > 0, "--size-goal must be positive");
 
     let seed_expr = args
@@ -148,11 +148,11 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
 
     let candidates = build_full_analysis_candidates(args, result, args.policy, start_size)?;
 
-    Ok(SeedCandidates {
+    Ok(Candidates {
         start_term: args.start_term.clone(),
         policy: args.policy.to_string(),
-        candidates,
-
+        candidates: candidates.clone().into_iter().map(|e| e.to_vec()).collect(),
+        candidate_s_expr: candidates.into_iter().map(lower).collect(),
         guide_nodes,
         guide_classes,
         guide_iters,
@@ -168,7 +168,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     result: EqsatResult<L, N>,
     policy: Policy,
     start_size: usize,
-) -> Result<Vec<GuideExpr<L>>, String> {
+) -> Result<Vec<RecExpr<OriginLang<L>>>, String> {
     let mut root_log = String::new();
     let (max_size, package) = FrontierPackage::<BigUint, _, _>::build_through_novel_sizes(
         result,
@@ -188,9 +188,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     eprintln!("Exact candidate package succeeded with max_size {max_size}!");
     package.log_root_counts(&mut root_log);
     eprint!("{root_log}");
-    let terms = draw_candiates(args, policy, &package);
-
-    Ok(terms.into_iter().map(GuideExpr::from_recexpr).collect())
+    Ok(draw_candiates(args, policy, &package))
 }
 
 /// Draw one candidate pool; smallest-term pools contain one term.

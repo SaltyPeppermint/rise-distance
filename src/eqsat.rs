@@ -262,19 +262,6 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
     }
 }
 
-/// Eqsat iterations and absolute process live-heap measurements.
-/// Byte counts use the same scale as `memory_limit`.
-#[derive(Debug, Serialize)]
-pub struct Measurement {
-    pub iterations: Vec<Iteration<HeapData>>,
-    pub eqsat_mem_tracking_allocated: u64,
-    pub eqsat_mem_tracking_peak_allocated: u64,
-    pub eqsat_memory_limit: Option<u64>,
-    pub peak_rss: u64,
-    pub stop_time: f64,
-    pub stop_reason: StopReason,
-}
-
 /// Run eqsat and retain the last distinct boundary before the final e-graph.
 /// Returns `None` when too few iterations or distinct states exist.
 ///
@@ -402,6 +389,7 @@ impl<L: MyLanguage> Goal<L> {
 }
 
 /// Outputs from a reached run, including the rebuilt final e-graph size.
+#[derive(Serialize)]
 pub struct ReachedRun<L: MyLanguage> {
     pub iterations: Vec<egg::Iteration<()>>,
     pub target: RecExpr<L>,
@@ -423,7 +411,7 @@ pub struct ReachedRun<L: MyLanguage> {
 /// # Panics
 ///
 /// Panics if `guides` is empty.
-pub fn verify_reachability<L, N>(
+pub fn guided_eqsat<L, N>(
     guides: &[RecExpr<OriginLang<L>>],
     goal: &Goal<L>,
     rules: &[Rewrite<L, N>],
@@ -435,26 +423,14 @@ where
     N: MyAnalysis<L> + Default,
 {
     assert!(!guides.is_empty(), "must have at least one guide");
-    let goal_clone = goal.clone();
 
-    // Predictive stopping is deliberately disabled here: a multi-guide run
-    // has no training-compatible single `term_size`. The hard limit remains.
-    // Adding and unioning guide expressions below is included in this run.
-    let mut runner =
-        Runner::new_with_memory_tracker(N::default(), live_heap_bytes, eqsat.max_memory)
-            .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
-            .with_node_limit(eqsat.max_nodes)
-            .with_iter_limit(eqsat.max_iters)
-            .with_scheduler(BackoffScheduler::default())
-            .with_hook(move |runner| {
-                let root = runner.roots[0];
-                if goal_clone.reached(&runner.egraph, root) {
-                    return Err("goal found".to_owned());
-                }
-                Ok(())
-            });
+    let runner = Runner::new_with_memory_tracker(N::default(), live_heap_bytes, eqsat.max_memory)
+        .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
+        .with_node_limit(eqsat.max_nodes)
+        .with_iter_limit(eqsat.max_iters)
+        .with_scheduler(BackoffScheduler::default());
 
-    runner = if full_union {
+    let mut runner = if full_union {
         add_with_full_union(runner, guides)
     } else {
         add_with_root_union(runner, guides)
@@ -462,37 +438,12 @@ where
 
     runner.egraph.rebuild();
 
-    let Ok(mut r) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules)))
-    else {
-        eprintln!("Panic caught verify_reachability for guides: {guides:?}");
-        return Err(GuideError::PanicWhileAttempt);
-    };
-    let memory = r
-        .final_memory_report()
-        .expect("configured reachability runner has final memory report");
-    r.egraph.rebuild();
-    let root = r.roots[0];
-    if let Some(target) = goal.extract(&r.egraph, root) {
-        Ok(ReachedRun {
-            iterations: r.iterations,
-            target,
-            nodes: r.egraph.total_number_of_nodes(),
-            classes: r.egraph.classes().len(),
-            allocated: memory.final_reading,
-            peak_allocated: memory.peak_reading,
-        })
-    } else {
-        Err(GuideError::Unreached {
-            stop_reason: r.stop_reason.clone().unwrap(),
-            final_allocated: memory.final_reading,
-            peak_allocated: memory.peak_reading,
-        })
-    }
+    run_until_goal(runner, goal, rules, format_args!("guides: {guides:?}"))
 }
 
 /// Run single-seed eqsat until `goal` is reached or a limit stops the run.
-#[expect(clippy::missing_panics_doc, clippy::missing_errors_doc)]
-pub fn verify_unguided<L, N>(
+#[expect(clippy::missing_errors_doc)]
+pub fn unguided_eqsat<L, N>(
     start: &RecExpr<L>,
     goal: &Goal<L>,
     rules: &[Rewrite<L, N>],
@@ -502,12 +453,26 @@ where
     L: MyLanguage + 'static,
     N: MyAnalysis<L> + Default,
 {
+    let runner = eqsat.build_runner::<L, N, ()>(start);
+    run_until_goal(runner, goal, rules, format_args!("start term: {start:?}"))
+}
+
+/// Run `rules` on a prepared `runner` until `goal` is reached or a limit stops
+/// the run, then report the final e-graph.
+fn run_until_goal<L, N>(
+    mut runner: Runner<L, N, ()>,
+    goal: &Goal<L>,
+    rules: &[Rewrite<L, N>],
+    context: std::fmt::Arguments,
+) -> Result<ReachedRun<L>, GuideError>
+where
+    L: MyLanguage + 'static,
+    N: MyAnalysis<L>,
+{
     let goal_clone = goal.clone();
-    let mut runner = eqsat.build_runner::<L, N, ()>(start);
-    // Check the goal before the predictive hook at each decision boundary.
     runner.hooks.insert(
         0,
-        Box::new(move |r| {
+        Box::new(move |r: &mut Runner<L, N, ()>| {
             let root = r.roots[0];
             if goal_clone.reached(&r.egraph, root) {
                 return Err("goal found".to_owned());
@@ -519,12 +484,12 @@ where
     let Ok(mut runner) =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules)))
     else {
-        eprintln!("Panic caught in unguided verification for start term: {start:?}");
+        eprintln!("Panic caught during verification for {context}");
         return Err(GuideError::PanicWhileAttempt);
     };
     let memory = runner
         .final_memory_report()
-        .expect("configured unguided runner has final memory report");
+        .expect("configured runner has final memory report");
     runner.egraph.rebuild();
     let root = runner.roots[0];
     if let Some(target) = goal.extract(&runner.egraph, root) {
@@ -621,7 +586,7 @@ mod tests {
     use clap::Parser;
     use egg::{RecExpr, StopReason};
 
-    use super::{EqsatConfig, Goal, GuideError, run_eqsat, verify_reachability, verify_unguided};
+    use super::{EqsatConfig, Goal, GuideError, guided_eqsat, run_eqsat, unguided_eqsat};
     use crate::OriginLang;
     use crate::langs::math::{self, ConstantFold, Math};
     use crate::previous::PreviousLookup;
@@ -686,13 +651,8 @@ mod tests {
             max_memory: Some(0),
         };
 
-        let result = verify_reachability::<Math, ConstantFold>(
-            &[guide],
-            &goal,
-            &math::rules(),
-            &config,
-            false,
-        );
+        let result =
+            guided_eqsat::<Math, ConstantFold>(&[guide], &goal, &math::rules(), &config, false);
         assert!(matches!(
             result,
             Err(GuideError::Unreached {
@@ -713,7 +673,7 @@ mod tests {
             max_memory: None,
         };
 
-        let result = verify_unguided::<Math, ConstantFold>(&seed, &goal, &math::rules(), &config);
+        let result = unguided_eqsat::<Math, ConstantFold>(&seed, &goal, &math::rules(), &config);
         assert!(
             result.is_ok(),
             "(+ x 0) and x share the root e-class even after x becomes its representative"
