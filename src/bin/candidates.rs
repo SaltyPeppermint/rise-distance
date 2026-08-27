@@ -201,8 +201,8 @@ fn draw_candiates<L: MyLanguage, N: MyAnalysis<L>>(
         .draw_candidates(args.n_candidates, policy, [args.seed, policy.rng_salt()])
         .unwrap_or_else(|| {
             eprintln!(
-                "WARNING: strategy {policy} drew 0 candidates (empty novel frontier); \
-                     driver legs for this strategy will have no guides to pick from"
+                "WARNING: policy {policy} drew 0 candidates (empty novel frontier); \
+                     driver legs for this policy will have no guides to pick from"
             );
             Vec::new()
         })

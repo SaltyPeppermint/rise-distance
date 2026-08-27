@@ -138,8 +138,8 @@ def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
             color=_mode_color(meta["modes"]),
             tooltip=[
                 "mode:N",
-                "seed:N",
-                "goal:N",
+                "start_term:N",
+                "goal_term:N",
                 alt.Tooltip("guided_peak_mib:Q", format=".1f"),
                 alt.Tooltip("unguided_peak_mib:Q", format=".1f"),
                 alt.Tooltip("peak_ratio:Q", format=".3f"),
@@ -276,62 +276,4 @@ def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:
             tooltip=["mode:N", "success_attempt:O", "count():Q"],
         )
         .properties(title=_title("Attempts to success", meta), width=180, height=180)
-    )
-
-
-def grid_success_curve(curves: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Grid success rate over cumulative attempt budget."""
-    band = (
-        alt.Chart(curves)
-        .mark_area(opacity=0.12)
-        .encode(
-            x=alt.X("budget:Q", title="attempt budget", scale=alt.Scale(type="log")),
-            y=alt.Y("ci_low:Q", title="success rate", axis=alt.Axis(format="%")),
-            y2="ci_high:Q",
-            color=_mode_color(meta["modes"]),
-        )
-    )
-    line = (
-        alt.Chart(curves)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("budget:Q", scale=alt.Scale(type="log")),
-            y="success_rate:Q",
-            color=_mode_color(meta["modes"]),
-            tooltip=[
-                "mode:N",
-                "budget:Q",
-                "successes:Q",
-                "n:Q",
-                alt.Tooltip("success_rate:Q", format=".1%"),
-            ],
-        )
-    )
-    return (band + line).properties(title=_title("Success by attempt budget", meta), width=520)
-
-
-def success_memory_pareto(summary: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Full-budget success rate versus median guided peak memory."""
-    data = summary.drop_nulls(["success_rate_guided", "guided_median_peak_mib"])
-    metric = _memory_metric(summary)
-    return (
-        alt.Chart(data)
-        .mark_circle(size=100)
-        .encode(
-            x=alt.X("guided_median_peak_mib:Q", title=f"median guided {metric} (MiB)"),
-            y=alt.Y(
-                "success_rate_guided:Q",
-                title="guided success rate",
-                axis=alt.Axis(format="%"),
-            ),
-            color=_mode_color(meta["modes"]),
-            tooltip=[
-                "mode:N",
-                alt.Tooltip("success_rate_guided:Q", format=".1%"),
-                alt.Tooltip("guided_median_peak_mib:Q", format=".1f"),
-                alt.Tooltip("median_peak_ratio:Q", format=".3f"),
-                "n_paired_successes:Q",
-            ],
-        )
-        .properties(title=_title(f"Full-budget success and {metric}", meta), width=460)
     )

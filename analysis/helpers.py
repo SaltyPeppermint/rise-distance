@@ -106,10 +106,6 @@ def _run_dirs(pattern: str, subdir: str) -> list[Path]:
     )
 
 
-def _short_strategy(strategy: str) -> str:
-    return strategy.removeprefix("no_replacement_").removeprefix("with_replacement_")
-
-
 def _format_memory_limit(value: int | None) -> str:
     if value is None:
         return "unbounded"
@@ -122,10 +118,7 @@ def _format_memory_limit(value: int | None) -> str:
 def _run_label(directory: Path, config: dict) -> str:
     limits = config.get("effective_limits", {})
     memory = _format_memory_limit(limits.get("max_memory"))
-    return (
-        f"{_short_strategy(config['strategy'])} · k={config['k']} · "
-        f"memory={memory} · {directory.name}"
-    )
+    return f"{config['policy']} · memory={memory} · {directory.name}"
 
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
@@ -450,115 +443,21 @@ def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def resolve_grid(pattern: str = "") -> Path:
+def problem_pairs(pattern: str = "") -> pl.DataFrame:
+    """Load the `problems.json` a run was built from, for provenance.
+
+    Carries each pair's generation-time unguided measurement (`peak_rss_bytes`
+    above `--min-rss` is why the pair was kept).
+    """
+    base = _data_dir("problems")
     matches = [
         directory
-        for directory in _run_dirs(pattern, "guided_search_grid")
-        if (directory / "grid_config.json").is_file()
+        for directory in _run_dirs(pattern, "problems")
+        if (directory / "problems.json").is_file()
     ]
     if not matches:
-        raise FileNotFoundError(f"No guided-search grid matching {pattern!r}")
-    return matches[-1]
-
-
-def grid_prefix_budgets(grid_dir: Path) -> list[int]:
-    config = json.loads((grid_dir / "grid_config.json").read_text())
-    return [int(value) for value in config["prefix_budgets"]]
-
-
-def _grid_mode(allocation: str, strategy: str) -> str:
-    return f"{_short_strategy(strategy)} · {allocation}"
-
-
-def load_grid(grid_dir: Path) -> tuple[pl.DataFrame, dict]:
-    """Load completed grid cells using their pair-level comparison files."""
-    config = json.loads((grid_dir / "grid_config.json").read_text())
-    frames = []
-    loaded = set()
-    for path in sorted(grid_dir.glob("allocation.*/candidate_seed.*/*/comparison.parquet")):
-        run_config = json.loads((path.parent / "config.json").read_text())
-        allocation = str(run_config["size_allocation"])
-        candidate_seed = int(run_config["candidate_seed"])
-        strategy = str(run_config["strategy"])
-        frame = pl.read_parquet(path)
-        _validate_comparison(frame, path)
-        frames.append(
-            frame.with_columns(
-                pl.lit(allocation).alias("allocation"),
-                pl.lit(candidate_seed).alias("candidate_seed"),
-                pl.lit(strategy).alias("strategy"),
-                pl.lit(_grid_mode(allocation, strategy)).alias("mode"),
-                pl.concat_str(["start_term", "goal_term"], separator="│").alias("pair"),
-            )
-        )
-        loaded.add((allocation, candidate_seed, strategy))
-    if not frames:
-        raise FileNotFoundError(f"No completed comparison cells under {grid_dir}")
-
-    expected = {
-        (allocation, int(seed), strategy)
-        for allocation in config["size_allocations_expanded"]
-        for seed in config["candidate_seeds_expanded"]
-        for strategy in config["strategies_expanded"]
-    }
-    modes = [
-        _grid_mode(allocation, strategy)
-        for allocation in config["size_allocations_expanded"]
-        for strategy in config["strategies_expanded"]
-    ]
-    data = pl.concat(frames, how="diagonal_relaxed")
-    meta = {
-        "modes": modes,
-        "n_pairs": data.select("start_term", "goal_term").unique().height,
-        "max_attempts": int(config["attempts"]),
-        "candidate_seeds": data["candidate_seed"].n_unique(),
-        "missing_cells": len(expected - loaded),
-        "subtitle": [
-            f"{len(loaded)}/{len(expected)} grid cells",
-            f"{data['candidate_seed'].n_unique()} candidate seeds",
-        ],
-        "grid_dir": grid_dir,
-    }
-    return data, meta
-
-
-def grid_success_by_budget(grid_dir: Path, budgets: Sequence[int]) -> pl.DataFrame:
-    """Success observations at cumulative attempt budgets, including setup failures."""
-    frames = []
-    for comparison_path in sorted(
-        grid_dir.glob("allocation.*/candidate_seed.*/*/comparison.parquet")
-    ):
-        run_dir = comparison_path.parent
-        config = json.loads((run_dir / "config.json").read_text())
-        allocation = str(config["size_allocation"])
-        candidate_seed = int(config["candidate_seed"])
-        strategy = str(config["strategy"])
-        base = pl.read_parquet(comparison_path, columns=["start_term", "goal_term"])
-        attempts = pl.read_parquet(run_dir / "results.parquet")
-        for budget in budgets:
-            reached = (
-                attempts.filter(pl.col("attempt") < budget)
-                .group_by("start_term", "goal_term")
-                .agg(pl.col("reached").any().alias("guided_success"))
-            )
-            frames.append(
-                base.join(reached, on=["start_term", "goal_term"], how="left").with_columns(
-                    pl.col("guided_success").fill_null(False),
-                    pl.lit(allocation).alias("allocation"),
-                    pl.lit(candidate_seed).alias("candidate_seed"),
-                    pl.lit(strategy).alias("strategy"),
-                    pl.lit(_grid_mode(allocation, strategy)).alias("mode"),
-                    pl.lit(int(budget)).alias("budget"),
-                )
-            )
-    observations = pl.concat(frames, how="vertical")
-    return pl.DataFrame(_rate_rows(observations, ["mode", "budget"], "guided_success")).sort(
-        "mode", "budget"
+        raise FileNotFoundError(f"No problem folder with problems.json under {base}")
+    directory = matches[-1]
+    return pl.DataFrame(json.loads((directory / "problems.json").read_text())).with_columns(
+        pl.lit(directory.name).alias("problem_set")
     )
-
-
-def grid_policy_summary(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
-    """Full-budget success and paired peak-memory statistics by grid policy."""
-    success = success_summary(frame)
-    memory = memory_summary(paired_workflow_successes(frame, metric)).drop("guided_peak_scope")
-    return success.join(memory, on="mode", how="left").sort("mode")

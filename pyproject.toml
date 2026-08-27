@@ -13,9 +13,9 @@ dependencies = [
     "jupyter",
     "tqdm",
     "diceware",
-    "tyro",
     "altair>=6.2.2",
     "vl-convert-python>=1.9.0.post1",
+    "pydantic-settings>=2.15.0",
 ]
 
 [dependency-groups]

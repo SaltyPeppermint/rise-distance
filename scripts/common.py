@@ -135,9 +135,68 @@ def run_json_subprocess(
     return MeasuredJson(payload=payload, peak_rss_bytes=int(usage.ru_maxrss) * 1024)
 
 
+def stop_reason_name(raw: Any) -> str:
+    """Render egg's serialized `StopReason` the way Rust's `{:?}` does
+    (`Saturated`, `NodeLimit(1000)`), which is what the analysis matches on."""
+    if isinstance(raw, str):
+        return raw
+    variant, payload = next(iter(raw.items()))
+    return f"{variant}({json.dumps(payload)})"
+
+
+VERIFY_FIELDS = (
+    "reached",
+    "panic",
+    "stop_reason",
+    "iters",
+    "nodes",
+    "classes",
+    "total_applied",
+    "total_time",
+    "memory",
+    "peak_live_heap",
+)
+
+
+def verify_summary(payload: Any) -> dict[str, Any]:
+    """Flatten `verify`'s `Result<ReachedRun, GuideError>` stdout payload.
+
+    Unreached and panicked runs leave the egraph-shape fields at `None`.
+    """
+    empty: dict[str, Any] = dict.fromkeys(VERIFY_FIELDS)
+    if "Ok" in payload:
+        run = payload["Ok"]
+        iterations = run["iterations"]
+        return {
+            **empty,
+            "reached": True,
+            "panic": False,
+            "stop_reason": "goal_found",
+            "iters": len(iterations),
+            "nodes": run["nodes"],
+            "classes": run["classes"],
+            "total_applied": sum(sum(it["applied"].values()) for it in iterations),
+            "total_time": sum(it["total_time"] for it in iterations),
+            "memory": run["allocated"],
+            "peak_live_heap": run["peak_allocated"],
+        }
+    err = payload["Err"]
+    if isinstance(err, dict) and "Unreached" in err:
+        unreached = err["Unreached"]
+        return {
+            **empty,
+            "reached": False,
+            "panic": False,
+            "stop_reason": stop_reason_name(unreached["stop_reason"]),
+            "memory": unreached["final_allocated"],
+            "peak_live_heap": unreached["peak_allocated"],
+        }
+    return {**empty, "reached": False, "panic": True, "stop_reason": "panic"}
+
+
 def eqsat_limits(cfg: dict) -> dict:
-    """Extract the eqsat limits from a raw config dict (`generation_args.json`
-    / `goal_args.json`). `max_memory` is an optional absolute process
+    """Extract the eqsat limits from a raw config dict (`problem_args.json`).
+    `max_memory` is an optional absolute process
     live-heap ceiling (jemalloc `stats.allocated`), accepted as a human size
     string (e.g. `"1G"`) or a raw byte count, normalized to bytes. Rust compares
     it directly against the process live heap, with nothing subtracted out."""
