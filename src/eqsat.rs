@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use egg::{
     Analysis, AstSize, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language,
-    MemoryReport, MemorySamplePhase, RecExpr, Rewrite, Runner, SchedulerSnapshot, StopReason,
+    MemorySamplePhase, RecExpr, Rewrite, Runner, SchedulerSnapshot, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -267,22 +267,12 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
 #[derive(Debug, Serialize)]
 pub struct Measurement {
     pub iterations: Vec<Iteration<HeapData>>,
-    pub total_allocated: u64,
-    pub peak_allocated: u64,
-    pub memory_limit: Option<u64>,
-}
-
-impl Measurement {
-    /// Combine a final memory report with its iteration log.
-    #[must_use]
-    pub fn from_run(report: MemoryReport, iterations: Vec<Iteration<HeapData>>) -> Self {
-        Self {
-            iterations,
-            total_allocated: report.final_reading,
-            peak_allocated: report.peak_reading,
-            memory_limit: report.absolute_limit,
-        }
-    }
+    pub eqsat_mem_tracking_allocated: u64,
+    pub eqsat_mem_tracking_peak_allocated: u64,
+    pub eqsat_memory_limit: Option<u64>,
+    pub peak_rss: u64,
+    pub stop_time: f64,
+    pub stop_reason: StopReason,
 }
 
 /// Run eqsat and retain the last distinct boundary before the final e-graph.
@@ -629,12 +619,9 @@ mod tests {
     use std::sync::Mutex;
 
     use clap::Parser;
-    use egg::{MemoryReport, RecExpr, StopReason};
+    use egg::{RecExpr, StopReason};
 
-    use super::{
-        EqsatConfig, Goal, GuideError, HeapData, Measurement, run_eqsat, verify_reachability,
-        verify_unguided,
-    };
+    use super::{EqsatConfig, Goal, GuideError, run_eqsat, verify_reachability, verify_unguided};
     use crate::OriginLang;
     use crate::langs::math::{self, ConstantFold, Math};
     use crate::previous::PreviousLookup;
@@ -741,20 +728,6 @@ mod tests {
         );
     }
 
-    /// Memory figures use the configured limit's absolute scale.
-    #[test]
-    fn measurement_reports_absolute_memory_figures() {
-        let report = MemoryReport {
-            final_reading: 12_000,
-            peak_reading: 13_000,
-            absolute_limit: Some(14_096),
-        };
-        let measurement = Measurement::from_run(report, Vec::new());
-        assert_eq!(measurement.memory_limit, Some(14_096));
-        assert_eq!(measurement.total_allocated, 12_000);
-        assert_eq!(measurement.peak_allocated, 13_000);
-    }
-
     /// Readings include heap allocated before the runner.
     #[test]
     fn readings_include_heap_held_before_the_runner_existed() {
@@ -777,31 +750,6 @@ mod tests {
             reading >= BYTES as u64,
             "pre-existing heap was excluded from the absolute reading: {reading}"
         );
-    }
-
-    #[test]
-    fn heap_data_and_measurement_agree_on_absolute_readings() {
-        let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let expr: RecExpr<Math> = "(+ x 0)".parse().unwrap();
-        let config = EqsatConfig {
-            max_iters: 1,
-            max_nodes: usize::MAX,
-            max_time: 60.0,
-            max_memory: None,
-        };
-        let runner = config.build_runner::<_, ConstantFold, HeapData>(&expr);
-        let runner = runner.run(&[]);
-        let report = runner.final_memory_report().unwrap();
-        let iteration_allocated = runner.iterations[0].data.allocated;
-        let measurement = Measurement::from_run(report, runner.iterations);
-
-        assert_eq!(
-            measurement.iterations[0].data.allocated,
-            iteration_allocated
-        );
-        assert_eq!(measurement.total_allocated, report.final_reading);
-        assert_eq!(measurement.peak_allocated, report.peak_reading);
-        assert_eq!(measurement.memory_limit, report.absolute_limit);
     }
 
     #[test]

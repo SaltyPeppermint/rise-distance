@@ -89,35 +89,9 @@ class Args:
     poll_interval: float = 0.1
 
 
-@dataclass(frozen=True, order=True)
-class Job:
-    size: int
-    slot: int
-    attempt: int
-
-
-@dataclass
-class Running:
-    job: Job
-    seed: int
-    process: subprocess.Popen[str]
-    output_path: Path
-    started: float
-    peak_rss: int = 0
-
-
-def derive_seed(global_seed: int, size: int, slot: int, attempt: int) -> int:
-    """Stable 64-bit BLAKE2 seed; count of Python and scheduling."""
-    h = hashlib.blake2b(digest_size=8, person=b"rise-seed-v1")
-    for value in (global_seed, size, slot, attempt):
-        h.update(int(value).to_bytes(16, "little", signed=True))
-    return int.from_bytes(h.digest(), "little")
-
-
 def semantic_config(args: Args) -> dict[str, Any]:
     """Arguments that affect the requested terms and their validation."""
     return {
-        "coordinator_state_version": COORDINATOR_STATE_VERSION,
         "generate_binary": str(args.generate_binary),
         "total_samples": args.total_samples,
         "min_size": args.min_size,
@@ -129,27 +103,7 @@ def semantic_config(args: Args) -> dict[str, Any]:
         "max_nodes": args.max_nodes,
         "max_time": args.max_time,
         "max_memory": args.max_memory,
-        "predict_next_memory": (
-            str(args.predict_next_memory) if args.predict_next_memory is not None else None
-        ),
-        "seed_derivation": "BLAKE2b-64(person=rise-seed-v1; signed-le128 fields)",
-        "allocation_source": "generate plan",
     }
-
-
-def generation_record(args: Args) -> dict[str, Any]:
-    # Keep historical keys top-level for all downstream readers.
-    record = {
-        key: str(value) if isinstance(value, Path) else value
-        for key, value in dataclasses.asdict(args).items()
-    }
-    record["coordinator_state_version"] = COORDINATOR_STATE_VERSION
-    record["reproducibility"] = (
-        "Slot seeds use stable BLAKE2 derivation and intentionally differ from "
-        "the old monolithic ChaCha RNG stream."
-    )
-    record["compatibility"] = semantic_config(args)
-    return record
 
 
 def _eqsat_flags(args: Args) -> list[str]:
@@ -200,41 +154,6 @@ def request_plan(args: Args) -> list[tuple[int, int]]:
     return plan
 
 
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """Read JSONL, tolerating only a malformed/truncated final record."""
-    if not path.exists():
-        return []
-    lines = path.read_bytes().splitlines()
-    records = []
-    for index, raw in enumerate(lines):
-        if not raw.strip():
-            continue
-        try:
-            records.append(json.loads(raw))
-        except json.JSONDecodeError, UnicodeDecodeError:
-            if index != len(lines) - 1:
-                raise RuntimeError(f"Corrupt non-final JSONL record in {path} at line {index + 1}")
-    return records
-
-
-def repair_jsonl_tail(path: Path) -> None:
-    """Remove a malformed final JSONL record so later appends stay readable."""
-    if not path.exists():
-        return
-    raw = path.read_bytes()
-    lines = raw.splitlines(keepends=True)
-    if not lines:
-        return
-    try:
-        json.loads(lines[-1])
-    except json.JSONDecodeError, UnicodeDecodeError:
-        valid_length = sum(len(line) for line in lines[:-1])
-        with path.open("r+b") as handle:
-            handle.truncate(valid_length)
-            handle.flush()
-            os.fsync(handle.fileno())
-
-
 def append_jsonl(handle: Any, record: dict[str, Any]) -> None:
     handle.write(json.dumps(record, separators=(",", ":")) + "\n")
     handle.flush()
@@ -248,16 +167,6 @@ def atomic_json(path: Path, value: Any, *, indent: int | None = None) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
-
-
-def _rss_bytes(pid: int) -> int:
-    try:
-        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
-            if line.startswith("VmRSS:"):
-                return int(line.split()[1]) * 1024
-    except FileNotFoundError, ProcessLookupError:
-        pass
-    return 0
 
 
 def _poll_with_rusage(running: Running) -> int | None:

@@ -16,6 +16,7 @@ lexpr = "0.2"
 indicatif = "0.18"
 tikv-jemallocator = "0.6"
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+procfs = "0.18"
 # log = "0.4"
 num = { version = "0.4", features = ["serde", "rand"] }
 # Exact pre-release pin: the predictive hook depends on ort's v2 session API.

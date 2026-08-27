@@ -24,8 +24,8 @@
 
 uv run scripts/guided_search.py \
   --strategy no_replacement_uniform \
+  --start-terms 100 \
   --goal-terms 5 \
-  --start-terms 5 \
   --k 1 \
   --attempts 10 \
   --seed 42 \
@@ -34,14 +34,14 @@ uv run scripts/guided_search.py \
   data/start_terms/plenty-houses
 or exit $status
 
-# uv run scripts/guided_search.py \
-#   --strategy no_replacement_count \
-#   --goal-terms 5 \
-#   --start-terms 100 \
-#   --k 1 \
-#   --attempts 10 \
-#   --seed 42 \
-#   --full-union \
-#   --stop-memory 250M \
-#   data/start_terms/plenty-houses
-# or exit $status
+uv run scripts/guided_search.py \
+  --strategy no_replacement_count \
+  --start-terms 100 \
+  --goal-terms 5 \
+  --k 1 \
+  --attempts 10 \
+  --seed 42 \
+  --full-union \
+  --stop-memory 250M \
+  data/start_terms/plenty-houses
+or exit $status

@@ -57,10 +57,25 @@ class MeasuredJson:
     peak_rss_bytes: int
 
 
+def prefix_rss_cap(argv: list[str], limit_bytes) -> list[str]:
+    return [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        f"MemoryMax={limit_bytes}",
+        "-p",
+        "MemorySwapMax=0",
+        "--",
+    ] + argv
+
+
 def run_json_subprocess(
     cmd: list[str],
     *,
     what: str,
+    rss_max_bytes: int | None = None,
     input: str | None = None,
     timeout: float | None = None,
 ) -> MeasuredJson:
@@ -79,7 +94,7 @@ def run_json_subprocess(
             stdin_file.seek(0)
         # print(f"------\n{' '.join(cmd)}\n-----")
         proc = subprocess.Popen(
-            cmd,
+            prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd,
             stdin=stdin_file if input is not None else subprocess.DEVNULL,
             stdout=stdout_file,
             stderr=stderr_file,
@@ -151,6 +166,18 @@ def limit_flags(limits: dict) -> list[str]:
     ]
     if limits.get("max_memory") is not None:
         flags += ["--max-memory", str(limits["max_memory"])]
-    if model_path := limits.get("predict_next_memory"):
-        flags += ["--predict-next-memory", str(model_path)]
     return flags
+
+
+def uniform_candidate_allocation(
+    sizes: list[int],
+    total_candidates: int,
+) -> list[tuple[int, int]]:
+    if not sizes:
+        return []
+
+    size_count = len(sizes)
+    base = total_candidates // size_count
+    remainder = total_candidates % size_count
+
+    return [(size, base + int(i < remainder)) for i, size in enumerate(sizes)]

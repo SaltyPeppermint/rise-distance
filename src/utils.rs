@@ -5,6 +5,7 @@ use egg::{
     Analysis, CostFunction, Extractor, Id, Language, LpCostFunction, LpExtractor, RecExpr, Runner,
 };
 use hashbrown::{HashMap, HashSet};
+use procfs::process::Process;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 
@@ -219,6 +220,13 @@ pub fn live_heap_bytes() -> u64 {
 pub fn log_live_heap_bytes(context: &'static str) {
     let current = live_heap_bytes();
     eprintln!("CURRENT HEAP BYTES: {current}. CONTEXT: {context}");
+}
+
+#[expect(clippy::missing_panics_doc)]
+#[must_use]
+pub fn peak_rss_bytes() -> u64 {
+    let status = Process::myself().unwrap().status().unwrap();
+    status.vmhwm.unwrap() * 1024
 }
 
 #[cfg(test)]
