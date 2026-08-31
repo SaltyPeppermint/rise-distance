@@ -208,7 +208,6 @@ def eqsat_limits(cfg: dict) -> dict:
         "max_nodes": cfg["max_nodes"],
         "max_time": cfg["max_time"],
         "max_memory": max_memory,
-        "predict_next_memory": cfg.get("predict_next_memory"),
     }
 
 

@@ -1,10 +1,12 @@
 //! Run one leg: union a single guide subset, saturate, and report goal
 //! reachability.
 //!
-//! Stateless wrapper over [`verify_reachability`] — no guide egraph replay or
-//! candidate construction. `guided_search.py` spawns this once per leg, passing
-//! that leg's guide subset (serialized [`GuideExpr`] node lists) as a JSON array
-//! on stdin and the goal on argv. Prints the leg's `LegResult` as a JSON object.
+//! Stateless — no guide egraph replay or candidate construction.
+//! `guided_search.py` spawns this once per leg, passing everything on argv: the
+//! goal via `--goal-term` and, with `--is-guide`, that leg's guide as a JSON
+//! array of [`OriginLang`] nodes via `--start-term`. Without `--is-guide` the
+//! same flag takes a plain s-expression and the run is the unguided baseline.
+//! Prints the run's `Result<ReachedRun, GuideError>` as a JSON object.
 //!
 //! One leg per process is deliberate: peak RSS (`ru_maxrss`) is a per-process
 //! lifetime high-water mark, so batching several legs into one invocation would
@@ -24,19 +26,18 @@ use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
 #[command(
     about = "Run one leg: union a single guide subset, saturate, report reachability",
     after_help = "\
-Reads one leg's guide subset as a JSON array of guide-node-lists on stdin and
-prints its `LegResult` as a JSON object. With `--start-term` it instead runs the
-unguided baseline and reads nothing from stdin. `--goal-term`, `--language`, and
-the eqsat limits come from argv. The driver runs the attempt loop, one process
-per leg, so each process's peak RSS covers exactly one eqsat run — the same unit
-as the unguided baseline. Example:
-  echo '[...]' \\
-    | verify --language math --goal-term '(+ x 0)' --max-iters 200 \\
-      --max-nodes 1000000 --max-time 10
+Reads nothing on stdin. With `--is-guide`, `--start-term` is one leg's guide as a
+JSON array of guide nodes; without it, `--start-term` is a plain s-expression and
+this is the unguided baseline. Either way the result is printed as a JSON object.
+`--goal-term`, `--language`, and the eqsat limits come from argv. The driver runs
+the attempt loop, one process per leg, so each process's peak RSS covers exactly
+one eqsat run — the same unit as the unguided baseline. Example:
+  verify --language math --goal-term '(+ x 0)' --start-term 'x' \\
+    --max-iters 200 --max-nodes 1000000 --max-time 10
 "
 )]
 struct Args {
-    /// Which language's rules to run under (from the folder's `goal_args.json`).
+    /// Which language's rules to run under (from the folder's `problem_args.json`).
     #[arg(long)]
     language: AvailableLanguages,
 
@@ -44,10 +45,12 @@ struct Args {
     #[arg(long)]
     goal_term: String,
 
-    /// Run an ordinary single-start-term baseline instead of reading guide subsets.
+    /// The start of the run: a JSON array of guide nodes with `--is-guide`,
+    /// otherwise a plain s-expression for the unguided baseline.
     #[arg(long)]
     start_term: String,
 
+    /// Read `--start-term` as a guide rather than as a baseline s-expression.
     #[arg(long, default_value_t = false)]
     is_guide: bool,
 

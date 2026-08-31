@@ -1,6 +1,6 @@
-//! Produce the guide-candidate menu for one seed.
+//! Produce the guide-candidate menu for one start term.
 //!
-//! Replays guide-phase eqsat and constructs the requested candidate pools.
+//! Replays guide-phase eqsat and draws the requested candidate pool.
 //! Arguments come from `guided_search.py`; output is a one-element JSON array
 //! on stdout, or an empty array on failure. Logs go to stderr.
 
@@ -17,18 +17,15 @@ use rise_distance::{MyAnalysis, MyLanguage, OriginLang, lower};
 
 #[derive(Parser)]
 #[command(
-    about = "Construct the guide-candidate menu for one seed (feeds guided_search.py)",
+    about = "Construct the guide-candidate menu for one start term (feeds guided_search.py)",
     after_help = "\
-Reads nothing on stdin: `--seed`, `--language`, and the replay's eqsat limits
-come from argv. Prints a one-element `[SeedCandidates]` array to stdout (empty on
-failure); logs go to stderr. `guided_search.py` fans out one invocation per seed,
-passing the effective replay limits (search-phase limits overridden by its
-`--stop-*` budget flags); the replay ends at whichever limit trips first.
+Prints a one-element `[Candidates]` array to stdout (empty
+on failure); logs go to stderr.
 Example:
-  candidates --language math --seed '(+ x 0)' \\
+  candidates --language math --start-term '(+ x 0)' \\
     --max-iters 38 --max-nodes 1000000 --max-time 10 \\
     --max-memory 2000000000 \\
-    --candidate-pool count
+    --policy count
 "
 )]
 struct Args {
@@ -36,7 +33,7 @@ struct Args {
     #[arg(long)]
     language: AvailableLanguages,
 
-    /// Seed s-expression.
+    /// Start-term s-expression whose guide phase gets replayed.
     #[arg(long)]
     start_term: String,
 
@@ -44,7 +41,7 @@ struct Args {
     #[command(flatten)]
     eqsat: EqsatConfig,
 
-    /// Candidates per construction pool. `Smallest` contributes one.
+    /// Number of candidates to draw.
     #[arg(long, default_value_t = 1000)]
     n_candidates: usize,
 
@@ -64,7 +61,7 @@ struct Args {
     #[arg(long, default_value_t = 5)]
     size_goal: usize,
 
-    /// Candidate policy to emit.
+    /// Policy used to draw candidates.
     #[arg(long, value_enum)]
     policy: Policy,
 }

@@ -2,8 +2,8 @@ use std::iter;
 use std::time::Duration;
 
 use egg::{
-    Analysis, AstSize, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language,
-    MemorySamplePhase, RecExpr, Rewrite, Runner, SchedulerSnapshot, StopReason,
+    Analysis, AstSize, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language, RecExpr,
+    Rewrite, Runner, StopReason,
 };
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -227,40 +227,6 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for Boundary {
 
 /// Minimum iterations needed for a meaningful guide/goal split.
 const MIN_ITERS: usize = 3;
-
-/// Per-iteration scheduler and live-heap telemetry.
-///
-/// Start fields describe the pre-search boundary; `allocated` is the final
-/// reading and `iteration_peak_allocated` includes transient peaks.
-#[derive(Debug, Clone, Serialize)]
-pub struct HeapData {
-    /// Final live heap after rebuild.
-    pub allocated: u64,
-    pub iteration_start_allocated: u64,
-    pub iteration_peak_allocated: u64,
-    pub iteration_peak_phase: MemorySamplePhase,
-    pub iteration_peak_rule: Option<egg::Symbol>,
-    /// Scheduler state before hooks and search.
-    pub scheduler: SchedulerSnapshot,
-}
-
-impl<L: Language, N: Analysis<L>> IterationData<L, N> for HeapData {
-    fn make(runner: &Runner<L, N, Self>) -> Self {
-        let peak = runner
-            .iteration_memory_peak()
-            .expect("configured measurement runner has memory tracking");
-        Self {
-            allocated: runner
-                .memory_reading()
-                .expect("configured measurement runner has memory tracking"),
-            iteration_start_allocated: peak.iteration_start_allocated,
-            iteration_peak_allocated: peak.iteration_peak_allocated,
-            iteration_peak_phase: peak.peak_phase,
-            iteration_peak_rule: peak.peak_rule,
-            scheduler: runner.scheduler_snapshot.clone(),
-        }
-    }
-}
 
 /// Run eqsat and retain the last distinct boundary before the final e-graph.
 /// Returns `None` when too few iterations or distinct states exist.

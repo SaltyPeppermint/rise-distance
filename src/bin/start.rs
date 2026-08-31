@@ -6,7 +6,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use serde::Serialize;
 
-use rise_distance::eqsat::{EqsatConfig, HeapData};
+use rise_distance::eqsat::EqsatConfig;
 use rise_distance::generator::{Samplable, SizeUniformSampler};
 use rise_distance::langs::{AvailableLanguages, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage};
@@ -92,7 +92,7 @@ struct GoalTerm {
 /// Byte counts use the same scale as `memory_limit`.
 #[derive(Debug, Serialize)]
 pub struct Measurement {
-    pub iterations: Vec<Iteration<HeapData>>,
+    pub iterations: Vec<Iteration<()>>,
     pub eqsat_mem_tracking_allocated: u64,
     pub eqsat_mem_tracking_peak_allocated: u64,
     pub eqsat_memory_limit: Option<u64>,

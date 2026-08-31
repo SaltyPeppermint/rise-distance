@@ -1,16 +1,13 @@
-//! Shared wire types for the guide experiment's `goal`, `candidates`, and `verify`
+//! Shared wire types for the guide experiment's `candidates` and `verify`
 //! binaries.
 
 use clap::ValueEnum;
 use egg::RecExpr;
-use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::Counter;
-use crate::eqsat::EqsatMetadata;
 use crate::{MyLanguage, OriginLang};
 
-/// One guide-candidate construction pool emitted by `candidates`.
+/// How `candidates` samples the novel frontier when drawing a guides.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum Policy {
@@ -48,12 +45,6 @@ impl Policy {
     }
 }
 
-/// A per-seed candidate record the `candidates` binary prints to stdout (which
-/// `guided_search.py` collects into `candidates.json`). Carries the
-/// guide candidates for each requested pool
-/// Python may restart with, plus replay metadata for Python's logging. The
-/// goals and `max_size` are not here: the driver keeps them Python-side (from
-/// `goal_terms.json`) and re-associates by seed.
 /// For Serialization purposes we have to go via Vec instead of using `RecExpr`
 #[derive(Serialize, Debug, Clone)]
 pub struct Candidates<L: MyLanguage> {
@@ -76,28 +67,4 @@ pub struct Candidates<L: MyLanguage> {
     /// Largest observed absolute live heap during guide replay.
     pub guide_peak_live_heap: u64,
     pub stop_reason: String,
-}
-
-/// Per-seed payload written by `goal` into the value slot of `goal_terms.json` (one
-/// entry per seed s-expression). Serializes via `Result`'s `{"Ok": ..}` /
-/// `{"Err": ..}` shape (`goal` returns a `Result<GoalGenMetadata, String>`).
-/// `guided_search.py` parses the enriched `goal_terms.json` and pulls each `Ok` seed's
-/// goals from it (the replay budget comes from its own `--stop-*` flags).
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(bound(serialize = "C: Counter", deserialize = "C: Counter"))]
-pub struct GoalGenMetadata<C: Counter> {
-    pub max_size: usize,
-    pub goals: Vec<String>,
-    /// Histogram of novel root extractions by size. Keys are size-as-string
-    /// because JSON object keys must be strings and `serde_json` doesn't
-    /// auto-convert numeric strings back to `usize` on read.
-    pub frontier_histogram: HashMap<String, C>,
-    pub stop_reason: String,
-    pub goal_egraph: EqsatMetadata,
-    /// Eqsat's absolute live allocation (bytes): jemalloc `stats.allocated`
-    /// for the whole process, the same coordinate system the configured memory
-    /// ceiling is expressed in.
-    pub base_memory: u64,
-    /// Largest observed absolute live heap during the unguided goal run.
-    pub base_peak_live_heap: u64,
 }
