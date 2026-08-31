@@ -16,12 +16,17 @@ Example:
     uv run scripts/guided_search.py data/problems/dusky-cramp \\
         --stop-memory 4G --attempts 5 \\
         --policy count --full-union
+
+Pass ``--capped-sampling`` to additionally hold each ``candidates`` process to
+``--stop-memory`` as a cgroup RSS cap, retrying a killed replay at the last
+iteration that completed.
 """
 
 import json
 import os
 import random
 import sys
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,13 +38,20 @@ from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 from tqdm import tqdm
 
 from common import (
+    MeasuredJson,
+    MemoryKilled,
+    eqsat_finished,
     eqsat_limits,
     exit_if_missing,
     limit_flags,
     parse_size,
     run_json_subprocess,
     verify_summary,
+    with_max_iters,
 )
+
+# Runs one `candidates` command; `None` when it could not be kept under its cap.
+RunCandidates = Callable[[list[str], str], MeasuredJson | None]
 
 # TODO: the `smallest_novel`/`smallest_overall` policies are gone until the
 # matching `Policy` variants are uncommented in src/cli.rs.
@@ -163,6 +175,16 @@ class Args(BaseSettings):
         ),
     )
 
+    capped_sampling: bool = Field(
+        default=False,
+        description=(
+            "Run each `candidates` process under a cgroup RSS cap of "
+            "`--stop-memory` bytes. A process killed during guide replay is "
+            "retried, still capped, with `--max-iters` cut to the iterations "
+            "that completed."
+        ),
+    )
+
     policy: Policy = Field(default="count", description="Candidate-pool sampling starteg.")
 
     full_union: bool = Field(
@@ -215,6 +237,9 @@ class Args(BaseSettings):
                 "at least one of stop_iters, stop_nodes, stop_time, or "
                 "stop_memory must be specified"
             )
+
+        if self.capped_sampling and self.stop_memory is None:
+            raise ValueError("capped_sampling needs stop_memory as its RSS cap")
 
         return self
 
@@ -269,6 +294,7 @@ def build_candidate_shard(
     limits: dict,
     menu_size: int,
     spec: StartSpec,
+    run: RunCandidates,
 ) -> list[dict]:
     """Run ``candidates`` for one start term and attach its goals to the result."""
     cmd = [
@@ -283,18 +309,19 @@ def build_candidate_shard(
 
     # print(f"CMD: {' '.join(cmd)}")
 
-    measured = run_json_subprocess(cmd, what=f"candidates for start term {spec.start_term!r}")
-    records = measured.payload
-    if not records:
+    measured = run(cmd, f"candidates for start term {spec.start_term!r}")
+    if measured is None or not measured.payload:
         return [
             {
                 "start_term": spec.start_term,
                 "goal_terms": spec.goal_terms,
                 "candidates": {},
                 "candidate_status": "failed",
-                "candidate_peak_rss_bytes": measured.peak_rss_bytes,
+                # A capped-out child never printed its `Measured` envelope.
+                "candidate_peak_rss_bytes": None if measured is None else measured.peak_rss_bytes,
             }
         ]
+    records = measured.payload
     for record in records:
         record["goal_terms"] = spec.goal_terms
         record["candidate_status"] = "ok"
@@ -322,6 +349,35 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         str(args.policy),
     ]
     limits = replay_limits(args, cfg)
+
+    def run_plain(cmd: list[str], what: str) -> MeasuredJson | None:
+        return run_json_subprocess(cmd, what=what)
+
+    def run_capped(cmd: list[str], what: str) -> MeasuredJson | None:
+        """Run under the RSS cap, retrying a replay-phase kill once with the
+        replay cut to the iterations that survived."""
+        assert args.stop_memory is not None  # validated alongside capped_sampling
+        cap = parse_size(args.stop_memory)
+        cmd = [*cmd, "--print-success-iters"]
+        try:
+            return run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
+        except MemoryKilled as killed:
+            iters = killed.last_iter
+            if eqsat_finished(killed.stderr):
+                print(f"{what}: killed at RSS cap after replay, no retry", file=sys.stderr)
+                return None
+            if not iters:
+                print(f"{what}: killed at RSS cap before any iteration", file=sys.stderr)
+                return None
+            print(f"{what}: killed at RSS cap, retrying at --max-iters {iters}", file=sys.stderr)
+            try:
+                return run_json_subprocess(with_max_iters(cmd, iters), what=what, rss_max_bytes=cap)
+            except MemoryKilled:
+                print(f"{what}: killed again at --max-iters {iters}", file=sys.stderr)
+                return None
+
+    run = run_capped if args.capped_sampling else run_plain
+
     # Menu size = exactly what the attempt loop consumes: one guide per attempt.
     print(
         f"Constructing guide-candidate menu ({args.attempts}/policy, policy={args.policy}) "
@@ -340,6 +396,7 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
                 limits,
                 args.attempts,
                 spec,
+                run,
             ): i
             for i, spec in enumerate(specs)
         }

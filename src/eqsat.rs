@@ -16,6 +16,10 @@ use crate::previous::PrevIndex;
 use crate::sketch::{self, Sketch};
 use crate::utils::live_heap_bytes;
 
+/// Prefix of the machine-readable eqsat progress events written to stderr,
+/// to avoid confusion with human-intended logging
+pub const EVENT_PREFIX: &str = "@EQSAT";
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EqsatMetadata {
     pub nodes: usize,
@@ -69,9 +73,13 @@ pub struct EqsatConfig {
     pub max_time: f64,
 
     /// Process live-heap ceiling in bytes, or unbounded when unset.
-    #[serde(default)]
     #[arg(long)]
     pub max_memory: Option<u64>,
+
+    /// Print machine-readable progress events (`@EQSAT iter=N`, one per
+    /// completed iteration, then `@EQSAT done ...`) to stderr.
+    #[arg(long, default_value_t = false)]
+    pub print_success_iters: bool,
 }
 
 impl EqsatConfig {
@@ -83,11 +91,24 @@ impl EqsatConfig {
         N: MyAnalysis<L>,
         D: IterationData<L, N>,
     {
-        Runner::<L, N, D>::new_with_memory_tracker(N::default(), live_heap_bytes, self.max_memory)
-            .with_iter_limit(self.max_iters)
-            .with_node_limit(self.max_nodes)
-            .with_time_limit(Duration::from_secs_f64(self.max_time))
-            .with_scheduler(BackoffScheduler::default())
+        let mut runner = Runner::<L, N, D>::new_with_memory_tracker(
+            N::default(),
+            live_heap_bytes,
+            self.max_memory,
+        )
+        .with_iter_limit(self.max_iters)
+        .with_node_limit(self.max_nodes)
+        .with_time_limit(Duration::from_secs_f64(self.max_time))
+        .with_scheduler(BackoffScheduler::default());
+        if self.print_success_iters {
+            runner = runner.with_hook(|r| {
+                // Hooks run before iteration `iterations.len()`, so the value
+                // is the count of iterations that completed.
+                eprintln!("{EVENT_PREFIX} iter={}", r.iterations.len());
+                Ok(())
+            });
+        }
+        runner
     }
 }
 
@@ -263,6 +284,9 @@ where
         .final_memory_report()
         .expect("configured eqsat runner has final memory report");
     let stop_reason = runner.stop_reason.unwrap();
+    if config.print_success_iters {
+        eprintln!("{EVENT_PREFIX} done stop_reason={stop_reason:?}");
+    }
 
     let root = runner.roots[0];
     let iter_data = runner.iterations;
@@ -553,6 +577,7 @@ mod tests {
             max_nodes: 100,
             max_time: 60.0,
             max_memory: None,
+            print_success_iters: false,
         };
 
         let result = run_eqsat::<Math, (), _>(&start, rules.iter(), &config)
@@ -587,6 +612,7 @@ mod tests {
             max_nodes: usize::MAX,
             max_time: 60.0,
             max_memory: Some(0),
+            print_success_iters: false,
         };
 
         let result =
@@ -609,6 +635,7 @@ mod tests {
             max_nodes: 10_000,
             max_time: 60.0,
             max_memory: None,
+            print_success_iters: false,
         };
 
         let result = unguided_eqsat::<Math, ConstantFold>(&seed, &goal, &math::rules(), &config);
@@ -666,6 +693,7 @@ mod tests {
             max_nodes: usize::MAX,
             max_time: 60.0,
             max_memory: None,
+            print_success_iters: false,
         };
         let runner = config
             .build_runner::<_, ConstantFold, ()>()

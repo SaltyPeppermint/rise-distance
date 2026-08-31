@@ -134,6 +134,7 @@ where
         max_nodes: args.max_nodes,
         max_time: args.max_time,
         max_memory: None,
+        print_success_iters: false,
     };
 
     let Some(result) = eqsat::run_eqsat::<L, N, _>(start, rules.iter(), &eqsat_config) else {
@@ -228,6 +229,7 @@ where
         max_nodes: args.max_nodes,
         max_time: args.max_time,
         max_memory: None,
+        print_success_iters: false,
     };
 
     // Lift the plain start expr into an OriginLang guide (inverse of `lower`);

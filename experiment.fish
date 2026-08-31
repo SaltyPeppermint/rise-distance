@@ -19,7 +19,28 @@
 #   --path data/problems/plenty-houses
 # or exit $status
 
+# uv run scripts/guided_search.py \
+#   --policy count \
+#   --start-terms 100 \
+#   --attempts 10 \
+#   --seed 42 \
+#   --full-union \
+#   --stop-memory 250M \
+#   data/problems/plenty-houses
+# or exit $status
+
+# uv run scripts/guided_search.py \
+#   --policy count \
+#   --start-terms 100 \
+#   --attempts 10 \
+#   --seed 42 \
+#   --full-union \
+#   --stop-memory 100M \
+#   data/problems/plenty-houses
+# or exit $status
+
 uv run scripts/guided_search.py \
+  --capped-sampling \
   --policy count \
   --start-terms 100 \
   --attempts 10 \
@@ -30,6 +51,7 @@ uv run scripts/guided_search.py \
 or exit $status
 
 uv run scripts/guided_search.py \
+  --capped-sampling \
   --policy count \
   --start-terms 100 \
   --attempts 10 \

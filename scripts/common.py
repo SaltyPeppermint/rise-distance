@@ -2,6 +2,7 @@
 plumbing, binary checks, and eqsat CLI flag building."""
 
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -67,6 +68,37 @@ def prefix_rss_cap(argv: list[str], limit_bytes) -> list[str]:
     ] + argv
 
 
+# Machine-readable eqsat progress events (`EVENT_PREFIX` in src/eqsat.rs),
+# emitted under `--print-success-iters`.
+EQSAT_ITER_RE = re.compile(r"^@EQSAT iter=(\d+)$", re.MULTILINE)
+EQSAT_DONE_RE = re.compile(r"^@EQSAT done\b", re.MULTILINE)
+
+# The cgroup OOM killer SIGKILLs the child; `systemd-run` reports that as
+# 128+SIGKILL, a direct child as -SIGKILL.
+OOM_RETURNCODES = (-9, 137)
+
+
+def last_success_iter(stderr: str) -> int | None:
+    """Last announced iteration, which is the number of iterations that
+    completed before the child died."""
+    matches = EQSAT_ITER_RE.findall(stderr)
+    return int(matches[-1]) if matches else None
+
+
+def eqsat_finished(stderr: str) -> bool:
+    """Whether the eqsat run itself reached a stop reason."""
+    return EQSAT_DONE_RE.search(stderr) is not None
+
+
+class MemoryKilled(RuntimeError):
+    """A capped child was SIGKILLed by its cgroup memory limit."""
+
+    def __init__(self, what: str, stderr: str) -> None:
+        super().__init__(f"{what} was killed at its RSS cap")
+        self.stderr = stderr
+        self.last_iter = last_success_iter(stderr)
+
+
 def run_json_subprocess(
     cmd: list[str],
     *,
@@ -80,6 +112,8 @@ def run_json_subprocess(
     The child prints a `Measured` envelope (`src/cli.rs`): the payload it would
     otherwise print, under a `peak_rss_bytes` the binary reads from its own
     `VmHWM` just before serializing.
+
+    Raises `MemoryKilled` when `rss_max_bytes` is set and the cap killed it.
     """
     proc = subprocess.run(
         prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd,
@@ -90,6 +124,8 @@ def run_json_subprocess(
         timeout=timeout,
         check=False,
     )
+    if rss_max_bytes is not None and proc.returncode in OOM_RETURNCODES:
+        raise MemoryKilled(what, proc.stderr)
     if proc.returncode != 0:
         raise RuntimeError(f"{what} failed (code {proc.returncode}):\n{proc.stderr}")
     try:
@@ -192,6 +228,13 @@ def limit_flags(limits: dict) -> list[str]:
     if limits.get("max_memory") is not None:
         flags += ["--max-memory", str(limits["max_memory"])]
     return flags
+
+
+def with_max_iters(cmd: list[str], max_iters: int) -> list[str]:
+    """Copy `cmd` with its `--max-iters` value replaced."""
+    out = list(cmd)
+    out[out.index("--max-iters") + 1] = str(max_iters)
+    return out
 
 
 def uniform_candidate_allocation(
