@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use egg::{
@@ -43,7 +41,7 @@ impl EqsatMetadata {
     ///
     /// Panics if `iterations` is empty (a runner always logs at least one).
     #[must_use]
-    pub fn from_iterations(iterations: &[Iteration<()>]) -> Self {
+    pub fn from_iterations<D>(iterations: &[Iteration<D>]) -> Self {
         let last = iterations.last().expect("eqsat run logged no iterations");
         Self {
             nodes: last.egraph_nodes,
@@ -100,7 +98,7 @@ where
     L: Language,
     N: Analysis<L>,
 {
-    iter_data: Vec<Iteration<()>>,
+    iter_data: Vec<Iteration<Boundary>>,
     prev_boundary: Boundary,
     curr: EGraph<L, N>,
     root: Id,
@@ -158,7 +156,7 @@ where
 
     /// Per-iteration metadata, starting with the initial e-graph iteration.
     #[must_use]
-    pub fn data(&self) -> &[Iteration<()>] {
+    pub fn data(&self) -> &[Iteration<Boundary>] {
         &self.iter_data
     }
 
@@ -203,10 +201,28 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Boundary {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Boundary {
     raw_node_count: usize,
     union_event_count: usize,
+}
+
+impl Boundary {
+    fn of<L: Language, N: Analysis<L>>(egraph: &EGraph<L, N>) -> Self {
+        Self {
+            raw_node_count: egraph.nodes().len(),
+            union_event_count: egraph.union_event_count(),
+        }
+    }
+}
+
+/// Recorded at the end of each iteration, after apply and rebuild, so every
+/// logged boundary describes a clean e-graph.
+impl<L: Language, N: Analysis<L>> IterationData<L, N> for Boundary {
+    fn make(runner: &Runner<L, N, Self>) -> Self {
+        debug_assert!(runner.egraph.clean, "iteration boundary must be clean");
+        Self::of(&runner.egraph)
+    }
 }
 
 /// Latest two distinct topology boundaries, stored as history cursors.
@@ -278,27 +294,26 @@ where
     N: MyAnalysis<L> + Default + 'static,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
-    let history = Rc::new(RefCell::new(FrontierHistory::default()));
-    let hook_history = Rc::clone(&history);
-
     // Analysis hooks may union while the initial expression is inserted, so
     // recording must precede `with_expr`.
-    let mut runner =
-        Runner::new_with_memory_tracker(N::default(), live_heap_bytes, config.max_memory)
-            .with_time_limit(Duration::try_from_secs_f64(config.max_time).unwrap_or(Duration::MAX))
-            .with_node_limit(config.max_nodes)
-            .with_iter_limit(config.max_iters)
-            .with_union_event_recording()
-            .with_expr(start)
-            .with_scheduler(BackoffScheduler::default())
-            .with_hook(move |runner| {
-                debug_assert!(runner.egraph.clean, "iteration boundary must be clean");
-                hook_history.borrow_mut().observe(Boundary {
-                    raw_node_count: runner.egraph.nodes().len(),
-                    union_event_count: runner.egraph.union_event_count(),
-                });
-                Ok(())
-            });
+    let mut runner = Runner::<L, N, Boundary>::new_with_memory_tracker(
+        N::default(),
+        live_heap_bytes,
+        config.max_memory,
+    )
+    .with_time_limit(Duration::try_from_secs_f64(config.max_time).unwrap_or(Duration::MAX))
+    .with_node_limit(config.max_nodes)
+    .with_iter_limit(config.max_iters)
+    .with_union_event_recording()
+    .with_expr(start)
+    .with_scheduler(BackoffScheduler::default());
+
+    // The pre-search state is never an iteration, so record it by hand. `run`
+    // rebuilds before its first iteration; do it here so this boundary is
+    // clean and its congruence unions are already in the log.
+    runner.egraph.rebuild();
+    let mut history = FrontierHistory::default();
+    history.observe(Boundary::of(&runner.egraph));
 
     runner = runner.run(rules);
 
@@ -308,37 +323,30 @@ where
     let stop_reason = runner.stop_reason.unwrap();
 
     let root = runner.roots[0];
-    // Drop hook closures so the history Rc has only our local clone left.
-    runner.hooks.clear();
     let iter_data = runner.iterations;
-    let mut curr = runner.egraph;
+    let curr = runner.egraph;
 
     if iter_data.len() < MIN_ITERS {
         return None;
     }
 
-    // A stop may occur after application but before another hook. Rebuild to
-    // make the final boundary clean and include any resulting congruence
-    // unions in the log.
-    curr.rebuild();
-    let final_boundary = Boundary {
-        raw_node_count: curr.nodes().len(),
-        union_event_count: curr.union_event_count(),
-    };
+    for iteration in &iter_data {
+        history.observe(iteration.data);
+    }
 
-    let FrontierHistory {
-        latest_distinct,
-        previous_distinct,
-    } = Rc::try_unwrap(history)
-        .expect("hooks cleared, history Rc should be unique")
-        .into_inner();
+    // Every iteration rebuilds before recording its data, so the last logged
+    // boundary already describes the final e-graph.
+    debug_assert!(curr.clean, "a finished run leaves a clean e-graph");
+    let final_boundary = history
+        .latest_distinct
+        .expect("history was seeded with the initial boundary");
+    debug_assert_eq!(
+        final_boundary,
+        Boundary::of(&curr),
+        "last logged boundary must match the final e-graph"
+    );
 
-    let prev_boundary = match latest_distinct {
-        Some(latest) if latest == final_boundary => previous_distinct,
-        latest => latest,
-    };
-
-    let Some(prev_boundary) = prev_boundary else {
+    let Some(prev_boundary) = history.previous_distinct else {
         eprintln!("Egraph never produced a distinct earlier state");
         return None;
     };
