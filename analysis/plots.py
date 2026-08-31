@@ -1,4 +1,4 @@
-"""Altair plots for guided/unguided success and peak-memory comparisons."""
+"""Altair plots for guided success and guided-vs-brute-force peak-memory comparisons."""
 
 from collections.abc import Sequence
 
@@ -19,6 +19,8 @@ PALETTE = [
 ]
 OUTCOME_ORDER = ["both", "guided only", "unguided only", "neither"]
 OUTCOME_COLORS = ["#4c9f70", "#2a78d6", "#eb6834", "#b8b8b4"]
+WIN_ORDER = ["below brute force", "at or above"]
+WIN_COLORS = ["#4c9f70", "#eb6834"]
 
 THEME = {
     "config": {
@@ -49,15 +51,15 @@ def _mode_color(modes: Sequence[str]) -> alt.Color:
     )
 
 
-def _guided_peak_scope(paired: pl.DataFrame) -> str:
-    if "guided_peak_scope" not in paired.columns:
+def _guided_peak_scope(comparison: pl.DataFrame) -> str:
+    if "guided_peak_scope" not in comparison.columns:
         return "guided workflow"
-    scopes = paired["guided_peak_scope"].drop_nulls().unique().to_list()
+    scopes = comparison["guided_peak_scope"].drop_nulls().unique().to_list()
     return str(scopes[0]) if len(scopes) == 1 else "guided"
 
 
 def _memory_metric(frame: pl.DataFrame) -> str:
-    """Metric label carried by `paired_*_successes`, for axis titles."""
+    """Metric label carried by the `*_vs_brute` builders, for axis titles."""
     if "memory_metric" not in frame.columns:
         return "peak memory"
     labels = frame["memory_metric"].drop_nulls().unique().to_list()
@@ -105,29 +107,24 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
                 legend=alt.Legend(title=None),
             ),
             order=alt.Order("outcome:N", sort="ascending"),
-            tooltip=[
-                "mode:N",
-                "outcome:N",
-                "count:Q",
-                alt.Tooltip("share:Q", format=".1%"),
-            ],
+            tooltip=["mode:N", "outcome:N", "count:Q", alt.Tooltip("share:Q", format=".1%")],
         )
         .properties(title=_title("Paired outcomes", meta), height=alt.Step(30))
     )
 
 
-def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
-    """One explicitly scoped guided peak versus unguided verification."""
-    guided_scope = _guided_peak_scope(paired)
-    metric = _memory_metric(paired)
-    title = f"{guided_scope.title()} vs unguided verification"
+def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
+    """One explicitly scoped guided peak versus the brute-force proof cost."""
+    guided_scope = _guided_peak_scope(comparison)
+    metric = _memory_metric(comparison)
+    title = f"{guided_scope.title()} vs brute-force proof"
     points = (
-        alt.Chart(paired)
+        alt.Chart(comparison)
         .mark_circle(size=45, opacity=0.58)
         .encode(
             x=alt.X(
-                "unguided_peak_mib:Q",
-                title=f"unguided {metric} (MiB, log)",
+                "brute_peak_mib:Q",
+                title=f"brute-force proof {metric} (MiB, log)",
                 scale=alt.Scale(type="log"),
             ),
             y=alt.Y(
@@ -141,20 +138,20 @@ def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
                 "start_term:N",
                 "goal_term:N",
                 alt.Tooltip("guided_peak_mib:Q", format=".1f"),
-                alt.Tooltip("unguided_peak_mib:Q", format=".1f"),
+                alt.Tooltip("brute_peak_mib:Q", format=".1f"),
                 alt.Tooltip("peak_ratio:Q", format=".3f"),
             ],
         )
     )
-    if paired.is_empty():
+    if comparison.is_empty():
         return points.properties(
             title=_title(title, meta),
             width=420,
             height=380,
         )
-    bounds = paired.select(
-        pl.min_horizontal("guided_peak_mib", "unguided_peak_mib").min().alias("lo"),
-        pl.max_horizontal("guided_peak_mib", "unguided_peak_mib").max().alias("hi"),
+    bounds = comparison.select(
+        pl.min_horizontal("guided_peak_mib", "brute_peak_mib").min().alias("lo"),
+        pl.max_horizontal("guided_peak_mib", "brute_peak_mib").max().alias("hi"),
     ).row(0, named=True)
     diagonal = (
         alt.Chart(pl.DataFrame({"x": [bounds["lo"], bounds["hi"]]}))
@@ -170,11 +167,53 @@ def paired_peak_scatter(paired: pl.DataFrame, meta: dict) -> alt.Chart:
     )
 
 
-def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
-    """ECDF of one explicitly scoped guided peak versus unguided verification."""
-    guided_scope = _guided_peak_scope(paired)
-    metric = _memory_metric(paired)
-    data = paired.with_columns(
+def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Guided successes below versus at or above the brute-force proof peak."""
+    metric = _memory_metric(counts)
+    data = counts.unpivot(
+        index=["mode", "guided_peak_scope"],
+        on=["n_below", "n_at_or_above"],
+        variable_name="side",
+        value_name="count",
+    ).with_columns(
+        pl.col("side").replace_strict({"n_below": WIN_ORDER[0], "n_at_or_above": WIN_ORDER[1]}),
+        # Stack in WIN_ORDER rather than alphabetically by label.
+        pl.col("side").replace_strict({"n_below": 0, "n_at_or_above": 1}).alias("side_order"),
+    )
+    return (
+        alt.Chart(data)
+        .mark_bar()
+        .encode(
+            x=alt.X("count:Q", title="guided successes"),
+            y=alt.Y("guided_peak_scope:N", title=None),
+            color=alt.Color(
+                "side:N",
+                sort=WIN_ORDER,
+                scale=alt.Scale(domain=WIN_ORDER, range=WIN_COLORS),
+                legend=alt.Legend(title=None),
+            ),
+            order=alt.Order("side_order:Q", sort="ascending"),
+            row=alt.Row(
+                "mode:N",
+                title=None,
+                sort=list(meta["modes"]),
+                header=alt.Header(labelAngle=0, labelAlign="left", labelFontSize=11),
+            ),
+            tooltip=["mode:N", "guided_peak_scope:N", "side:N", "count:Q"],
+        )
+        .properties(
+            title=_title(f"Guided {metric} versus brute-force proof", meta),
+            width=420,
+            height=alt.Step(26),
+        )
+    )
+
+
+def peak_ratio_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
+    """ECDF of one explicitly scoped guided peak over the brute-force proof cost."""
+    guided_scope = _guided_peak_scope(comparison)
+    metric = _memory_metric(comparison)
+    data = comparison.with_columns(
         (pl.col("peak_ratio").rank("max").over("mode") / pl.len().over("mode")).alias("cdf")
     ).sort("mode", "peak_ratio")
     curves = (
@@ -183,7 +222,7 @@ def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(
             x=alt.X(
                 "peak_ratio:Q",
-                title=f"{guided_scope} / unguided verification {metric} (log)",
+                title=f"{guided_scope} / brute-force proof {metric} (log)",
                 scale=alt.Scale(type="log"),
             ),
             y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
@@ -206,20 +245,21 @@ def peak_ratio_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
     )
 
 
-def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Absolute guided/unguided verification peaks, excluding candidate construction."""
-    metric = _memory_metric(paired)
+def absolute_peak_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Absolute guided and brute-force peaks on a shared axis."""
+    guided_scope = _guided_peak_scope(comparison)
+    metric = _memory_metric(comparison)
     data = pl.concat(
         [
-            paired.select(
+            comparison.select(
                 "mode",
                 (pl.col("guided_peak_mib")).alias("peak_mib"),
-                pl.lit("guided verification").alias("method"),
+                pl.lit(guided_scope).alias("method"),
             ),
-            paired.select(
+            comparison.select(
                 "mode",
-                (pl.col("unguided_peak_mib")).alias("peak_mib"),
-                pl.lit("unguided verification").alias("method"),
+                (pl.col("brute_peak_mib")).alias("peak_mib"),
+                pl.lit("brute-force proof").alias("method"),
             ),
         ]
     ).with_columns(
@@ -231,17 +271,12 @@ def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
         alt.Chart(data)
         .mark_line(interpolate="step-after", strokeWidth=2)
         .encode(
-            x=alt.X(
-                "peak_mib:Q",
-                title=f"verification {metric} (MiB, log)",
-                scale=alt.Scale(type="log"),
-            ),
+            x=alt.X("peak_mib:Q", title=f"{metric} (MiB, log)", scale=alt.Scale(type="log")),
             y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
             color=alt.Color(
                 "method:N",
                 scale=alt.Scale(
-                    domain=["guided verification", "unguided verification"],
-                    range=[PALETTE[0], PALETTE[1]],
+                    domain=[guided_scope, "brute-force proof"], range=[PALETTE[0], PALETTE[1]]
                 ),
                 legend=alt.Legend(title=None),
             ),
@@ -255,7 +290,7 @@ def verification_peak_ecdf(paired: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
         .properties(
-            title=_title(f"Verification-only {metric} (candidate construction excluded)", meta),
+            title=_title(f"{guided_scope.title()} vs brute-force proof {metric}", meta),
             width=300,
             height=240,
         )

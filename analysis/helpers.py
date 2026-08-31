@@ -1,4 +1,4 @@
-"""Load and summarize guided/unguided peak-memory experiments."""
+"""Load and summarize guided peak-memory experiments against brute-force proof cost."""
 
 import json
 import math
@@ -16,37 +16,46 @@ REQUIRED_COMPARISON_COLUMNS = {
     "candidate_peak_rss_bytes",
     "verify_peak_rss_bytes",
     "guided_peak_rss_bytes",
-    "unguided_peak_rss_bytes",
     "guided_peak_live_heap_bytes",
-    "unguided_peak_live_heap_bytes",
     "attempts_run",
     "success_attempt",
     "setup_status",
+}
+
+# The brute-force baseline: what proving the pair cost the unguided run that
+# admitted it to the problem set, under that run's own generous limits. The
+# `unguided_*` columns of a comparison file are a different quantity -- an
+# unguided run re-capped at the guided budget, which by construction fails on
+# every pair here -- so they carry no usable peak and stay out of the memory
+# statistics.
+BRUTE_COLUMNS = {
+    "peak_rss_bytes": "brute_peak_rss_bytes",
+    "peak_live_heap": "brute_peak_live_heap_bytes",
 }
 
 MEMORY_METRICS = {
     "live_heap": {
         "label": "peak live heap",
         "guided_workflow": "guided_peak_live_heap_bytes",
-        "unguided": "unguided_peak_live_heap_bytes",
         "guided_verification": "guided_peak_live_heap_bytes",
+        "brute": "brute_peak_live_heap_bytes",
         "components": (
             ("guided workflow", "guided_peak_live_heap_bytes"),
-            ("unguided verification", "unguided_peak_live_heap_bytes"),
+            ("brute-force proof", "brute_peak_live_heap_bytes"),
         ),
     },
     "rss": {
         "label": "peak RSS",
         "guided_workflow": "guided_peak_rss_bytes",
-        "unguided": "unguided_peak_rss_bytes",
         # The decisive leg (the one that reached, else the last tried).
         "guided_verification": "verify_peak_rss_bytes",
+        "brute": "brute_peak_rss_bytes",
         "components": (
             ("candidate construction", "candidate_peak_rss_bytes"),
             ("guided verification (decisive leg)", "verify_peak_rss_bytes"),
             ("guided verification (max leg)", "verify_peak_rss_bytes_max"),
             ("guided workflow", "guided_peak_rss_bytes"),
-            ("unguided verification", "unguided_peak_rss_bytes"),
+            ("brute-force proof", "brute_peak_rss_bytes"),
         ),
     },
 }
@@ -66,14 +75,24 @@ MEMORY_SUMMARY_SCHEMA = {
     "mode": pl.String,
     "guided_peak_scope": pl.String,
     "memory_metric": pl.String,
-    "n_paired_successes": pl.Int64,
+    "n_guided_successes": pl.Int64,
     "guided_median_peak_mib": pl.Float64,
-    "unguided_median_peak_mib": pl.Float64,
+    "brute_median_peak_mib": pl.Float64,
     "guided_p90_peak_mib": pl.Float64,
-    "unguided_p90_peak_mib": pl.Float64,
+    "brute_p90_peak_mib": pl.Float64,
     "median_peak_ratio": pl.Float64,
     "median_memory_saved_pct": pl.Float64,
     "guided_lower_peak_share": pl.Float64,
+}
+PEAK_WIN_SCHEMA = {
+    "mode": pl.String,
+    "guided_peak_scope": pl.String,
+    "memory_metric": pl.String,
+    "n_guided_successes": pl.Int64,
+    "n_below": pl.UInt32,
+    "n_at_or_above": pl.UInt32,
+    "share_below": pl.Float64,
+    "median_peak_ratio": pl.Float64,
 }
 MEMORY_COMPONENT_SUMMARY_SCHEMA = {
     "mode": pl.String,
@@ -158,12 +177,52 @@ def _validate_comparison(frame: pl.DataFrame, source: Path) -> None:
         raise ValueError(f"{source} is missing comparison fields: {sorted(missing)}")
 
 
+def _brute_baseline(run: Run) -> pl.DataFrame:
+    """Per-pair brute-force proof cost from the problem set the run was built on."""
+    directory = Path(__file__).parent / ".." / run.config["path"]
+    problems = directory / "problems.json"
+    if not problems.is_file():
+        raise FileNotFoundError(
+            f"{run.directory.name} was built on {run.config['path']}, which has no problems.json"
+        )
+    frame = pl.DataFrame(json.loads(problems.read_text()))
+    missing = ({"start_term", "goal_term", "reached"} | set(BRUTE_COLUMNS)) - set(frame.columns)
+    if missing:
+        raise ValueError(f"{problems} is missing baseline fields: {sorted(missing)}")
+
+    # A pair that never reached the goal has no proof cost, only a censored
+    # lower bound, so it cannot serve as a baseline.
+    unreached = frame.filter(~pl.col("reached").fill_null(False)).height
+    if unreached:
+        raise ValueError(
+            f"{problems} has {unreached} pairs that never reached the goal; "
+            "the brute-force baseline is only defined for proven pairs"
+        )
+    keys = frame.select("start_term", "goal_term")
+    if keys.unique().height != keys.height:
+        raise ValueError(f"{problems} repeats start/goal pairs; the baseline join would fan out")
+
+    return frame.select(
+        "start_term",
+        "goal_term",
+        *(pl.col(source).alias(target) for source, target in BRUTE_COLUMNS.items()),
+        pl.lit(directory.name).alias("problem_set"),
+    )
+
+
 def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
-    """Stack one-row-per-pair comparison files from individual runs."""
+    """Stack one-row-per-pair comparison files, joining each run's brute-force baseline."""
     frames = []
     for run in runs:
         frame = pl.read_parquet(run.directory / "comparison.parquet")
         _validate_comparison(frame, run.directory)
+        frame = frame.join(_brute_baseline(run), on=["start_term", "goal_term"], how="left")
+        unmatched = frame.filter(pl.col("brute_peak_rss_bytes").is_null()).height
+        if unmatched:
+            raise ValueError(
+                f"{run.directory.name} has {unmatched} pairs absent from {run.config['path']}; "
+                "the run and its problem set disagree"
+            )
         frames.append(
             frame.with_columns(
                 pl.lit(run.label).alias("mode"),
@@ -175,6 +234,7 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     meta = {
         "modes": [run.label for run in runs],
         "n_pairs": data.select("start_term", "goal_term").unique().height,
+        "problem_sets": data["problem_set"].unique().sort().to_list(),
         "subtitle": [f"{data.height} planned pair observations"],
     }
     return data, meta
@@ -272,12 +332,23 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
     Guided setup failures take precedence over any panic observed in the
     attempt workflow; panic then takes precedence over the terminal stop
     reason. Unguided runs have no guide-candidate construction stage.
+
+    A "setup failure" is a non-ok ``setup_status``: the guide-candidate menu
+    could not be built, so the pair never ran a `verify` leg. Since candidate
+    construction runs once per start term, one failed start term marks all of
+    its goal pairs, and the count is inflated relative to distinct events.
+
+    The status is kept in the label (``setup failure: failed`` when the
+    `candidates` subprocess returned an empty payload, ``setup failure:
+    empty_pool`` when a menu was built but no attempt ran) rather than
+    collapsed, so a new status shows up as its own row instead of silently
+    joining an existing bucket.
     """
     guided = frame.filter(~pl.col("guided_success").fill_null(False)).select(
         "mode",
         pl.lit("guided").alias("method"),
         pl.when(pl.col("setup_status") != "ok")
-        .then(pl.lit("setup failure"))
+        .then(pl.lit("setup failure: ") + pl.col("setup_status"))
         .when(pl.col("guided_panic").fill_null(False))
         .then(pl.lit("panic"))
         .otherwise(_stop_category(pl.col("guided_stop_reason")))
@@ -306,126 +377,91 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _paired_successes_for_peak(
+def _guided_vs_brute(
     frame: pl.DataFrame,
     guided_peak_column: str,
     guided_peak_scope: str,
-    unguided_peak_column: str,
+    brute_peak_column: str,
     metric_label: str,
 ) -> pl.DataFrame:
-    """Build a guided/unguided comparison for one explicitly named guided peak."""
+    """Compare one explicitly named guided peak with the brute-force proof cost.
+
+    Conditioned on guided success only: a guided failure has no peak to
+    compare, just the budget it exhausted. The brute-force baseline exists for
+    every pair, so nothing is dropped on its account.
+    """
     return (
-        frame.filter(pl.col("guided_success") & pl.col("unguided_success"))
-        .drop_nulls([guided_peak_column, unguided_peak_column])
-        .filter((pl.col(guided_peak_column) > 0) & (pl.col(unguided_peak_column) > 0))
+        frame.filter(pl.col("guided_success"))
+        .drop_nulls([guided_peak_column, brute_peak_column])
+        .filter((pl.col(guided_peak_column) > 0) & (pl.col(brute_peak_column) > 0))
         .with_columns(
             pl.lit(guided_peak_scope).alias("guided_peak_scope"),
             pl.lit(metric_label).alias("memory_metric"),
             (pl.col(guided_peak_column) / 2**20).alias("guided_peak_mib"),
-            (pl.col(unguided_peak_column) / 2**20).alias("unguided_peak_mib"),
-            (pl.col(guided_peak_column) / pl.col(unguided_peak_column)).alias("peak_ratio"),
+            (pl.col(brute_peak_column) / 2**20).alias("brute_peak_mib"),
+            (pl.col(guided_peak_column) / pl.col(brute_peak_column)).alias("peak_ratio"),
         )
         .with_columns(((1 - pl.col("peak_ratio")) * 100).alias("memory_saved_pct"))
     )
 
 
-def paired_verification_successes(
-    frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC
-) -> pl.DataFrame:
-    """Paired successes comparing guided verification with unguided verification."""
+def verification_vs_brute(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
+    """Guided verification versus the brute-force proof cost for the same pair."""
     spec = _metric(metric)
     scope = (
         "guided verification"
         if spec["guided_verification"] != spec["guided_workflow"]
         else "guided workflow"
     )
-    return _paired_successes_for_peak(
-        frame, spec["guided_verification"], scope, spec["unguided"], spec["label"]
-    )
+    return _guided_vs_brute(frame, spec["guided_verification"], scope, spec["brute"], spec["label"])
 
 
-def paired_workflow_successes(
-    frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC
-) -> pl.DataFrame:
-    """Paired successes comparing the complete guided workflow with unguided verification."""
+def workflow_vs_brute(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
+    """The complete guided workflow versus the brute-force proof cost for the same pair."""
     spec = _metric(metric)
-    return _paired_successes_for_peak(
-        frame, spec["guided_workflow"], "guided workflow", spec["unguided"], spec["label"]
+    return _guided_vs_brute(
+        frame, spec["guided_workflow"], "guided workflow", spec["brute"], spec["label"]
     )
 
 
-def paired_successes(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
+def guided_vs_brute(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
     """Complete-workflow comparison for grid analyses."""
-    return paired_workflow_successes(frame, metric)
+    return workflow_vs_brute(frame, metric)
 
 
-def memory_component_summary(
-    frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC
-) -> pl.DataFrame:
-    """Per-phase peak memory for the selected metric."""
-    paired = frame.filter(pl.col("guided_success") & pl.col("unguided_success"))
-    spec = _metric(metric)
-    components = tuple(
-        (component, column) for component, column in spec["components"] if column in frame.columns
-    )
-    summaries = []
-    for component, column in components:
-        valid = paired.drop_nulls(column).filter(pl.col(column) > 0)
-        if valid.is_empty():
-            summaries.append(
-                paired.select("mode")
-                .unique(maintain_order=True)
-                .with_columns(
-                    pl.lit(component).alias("component"),
-                    pl.lit(0, dtype=pl.UInt32).alias("n"),
-                    pl.lit(None, dtype=pl.Float64).alias("median_peak_mib"),
-                    pl.lit(None, dtype=pl.Float64).alias("p90_peak_mib"),
-                )
-            )
+def peak_win_counts(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
+    """How many guided successes peak below the brute-force proof, per guided scope.
+
+    A ratio of exactly 1 is counted as `n_at_or_above`, so the two counts
+    partition `n_guided_successes`.
+    """
+    counts = []
+    for builder in (verification_vs_brute, workflow_vs_brute):
+        comparison = builder(frame, metric)
+        if comparison.is_empty():
             continue
-        summaries.append(
-            valid.group_by("mode", maintain_order=True).agg(
-                pl.lit(component).first().alias("component"),
-                pl.len().alias("n"),
-                (pl.col(column) / 2**20).median().alias("median_peak_mib"),
-                (pl.col(column) / 2**20).quantile(0.9).alias("p90_peak_mib"),
+        counts.append(
+            comparison.group_by(
+                "mode", "guided_peak_scope", "memory_metric", maintain_order=True
+            ).agg(
+                pl.len().alias("n_guided_successes"),
+                (pl.col("peak_ratio") < 1).sum().alias("n_below"),
+                (pl.col("peak_ratio") >= 1).sum().alias("n_at_or_above"),
+                pl.col("peak_ratio").median().alias("median_peak_ratio"),
             )
         )
-    if not summaries:
-        return pl.DataFrame(schema=MEMORY_COMPONENT_SUMMARY_SCHEMA)
+    if not counts:
+        return pl.DataFrame(schema=PEAK_WIN_SCHEMA)
     return (
-        pl.concat(summaries)
+        pl.concat(counts)
+        # On a metric where verification and workflow read the same column the
+        # two builders describe one scope, not two.
+        .unique(subset=["mode", "guided_peak_scope"], keep="first", maintain_order=True)
         .with_columns(
-            pl.col("median_peak_mib", "p90_peak_mib").round(3),
-            pl.lit(spec["label"]).alias("memory_metric"),
+            (pl.col("n_below") / pl.col("n_guided_successes")).round(3).alias("share_below"),
+            pl.col("median_peak_ratio").round(3),
         )
-        .sort("mode", "component")
-    )
-
-
-def memory_summary(paired: pl.DataFrame) -> pl.DataFrame:
-    """Paired peak-memory statistics conditional on both methods succeeding."""
-    if paired.is_empty():
-        return pl.DataFrame(schema=MEMORY_SUMMARY_SCHEMA)
-    if "guided_peak_scope" not in paired.columns:
-        paired = paired.with_columns(pl.lit("guided workflow").alias("guided_peak_scope"))
-    if "memory_metric" not in paired.columns:
-        paired = paired.with_columns(pl.lit("unknown").alias("memory_metric"))
-    return (
-        paired.group_by("mode", "guided_peak_scope", "memory_metric", maintain_order=True)
-        .agg(
-            pl.len().alias("n_paired_successes"),
-            pl.col("guided_peak_mib").median().alias("guided_median_peak_mib"),
-            pl.col("unguided_peak_mib").median().alias("unguided_median_peak_mib"),
-            pl.col("guided_peak_mib").quantile(0.9).alias("guided_p90_peak_mib"),
-            pl.col("unguided_peak_mib").quantile(0.9).alias("unguided_p90_peak_mib"),
-            pl.col("peak_ratio").median().alias("median_peak_ratio"),
-            pl.col("memory_saved_pct").median().alias("median_memory_saved_pct"),
-            (pl.col("peak_ratio") < 1).mean().alias("guided_lower_peak_share"),
-        )
-        .with_columns(
-            pl.exclude("mode", "guided_peak_scope", "memory_metric", "n_paired_successes").round(3)
-        )
+        .sort("mode", "guided_peak_scope")
     )
 
 
@@ -446,8 +482,9 @@ def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
 def problem_pairs(pattern: str = "") -> pl.DataFrame:
     """Load the `problems.json` a run was built from, for provenance.
 
-    Carries each pair's generation-time unguided measurement (`peak_rss_bytes`
-    above `--min-rss` is why the pair was kept).
+    Carries each pair's brute-force proof measurement (`peak_rss_bytes` above
+    `--min-rss` is why the pair was kept). `load_comparisons` already joins the
+    columns the memory statistics need; this is for inspecting the rest.
     """
     base = _data_dir("problems")
     matches = [
