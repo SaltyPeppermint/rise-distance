@@ -40,7 +40,7 @@
 # or exit $status
 
 uv run scripts/guided_search.py \
-  --capped-sampling \
+  --sampling-rss-max 500M \
   --policy count \
   --start-terms 100 \
   --attempts 10 \
@@ -51,7 +51,7 @@ uv run scripts/guided_search.py \
 or exit $status
 
 uv run scripts/guided_search.py \
-  --capped-sampling \
+  --sampling-rss-max 500M \
   --policy count \
   --start-terms 100 \
   --attempts 10 \

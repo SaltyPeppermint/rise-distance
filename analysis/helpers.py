@@ -137,8 +137,9 @@ def _format_memory_limit(value: int | None) -> str:
 def _run_label(directory: Path, config: dict) -> str:
     limits = config.get("effective_limits", {})
     memory = _format_memory_limit(limits.get("max_memory"))
-    # Absent in runs predating `--capped-sampling`.
-    capped = " · capped sampling" if config.get("capped_sampling") else ""
+    # Absent in runs predating `--sampling-rss-max`.
+    cap = config.get("sampling_rss_max")
+    capped = f" · sampling cap={cap}" if cap else ""
     return f"{config['policy']} · memory={memory}{capped} · {directory.name}"
 
 

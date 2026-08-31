@@ -17,9 +17,8 @@ Example:
         --stop-memory 4G --attempts 5 \\
         --policy count --full-union
 
-Pass ``--capped-sampling`` to additionally hold each ``candidates`` process to
-``--stop-memory`` as a cgroup RSS cap, retrying a killed replay at the last
-iteration that completed.
+Pass ``--sampling-rss-max`` to hold each ``candidates`` process to a cgroup RSS
+cap, retrying a killed replay at the last iteration that completed.
 """
 
 import json
@@ -175,13 +174,13 @@ class Args(BaseSettings):
         ),
     )
 
-    capped_sampling: bool = Field(
-        default=False,
+    sampling_rss_max: str | None = Field(
+        default=None,
         description=(
-            "Run each `candidates` process under a cgroup RSS cap of "
-            "`--stop-memory` bytes. A process killed during guide replay is "
-            "retried, still capped, with `--max-iters` cut to the iterations "
-            "that completed."
+            "Cap each `candidates` process at this cgroup RSS limit, as a human "
+            "size such as `4G`. A process killed during guide replay is retried, "
+            "still capped, with `--max-iters` cut to the iterations that "
+            "completed. Uncapped if omitted."
         ),
     )
 
@@ -238,8 +237,15 @@ class Args(BaseSettings):
                 "stop_memory must be specified"
             )
 
-        if self.capped_sampling and self.stop_memory is None:
-            raise ValueError("capped_sampling needs stop_memory as its RSS cap")
+        if (
+            self.sampling_rss_max is not None
+            and self.stop_memory is not None
+            and parse_size(self.sampling_rss_max) < parse_size(self.stop_memory)
+        ):
+            raise ValueError(
+                f"sampling_rss_max ({self.sampling_rss_max}) is below "
+                f"stop_memory ({self.stop_memory})"
+            )
 
         return self
 
@@ -349,6 +355,16 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         str(args.policy),
     ]
     limits = replay_limits(args, cfg)
+    cap = parse_size(args.sampling_rss_max) if args.sampling_rss_max is not None else None
+    # The ceiling can also come from `problem_args.json`, which the arg
+    # validator cannot see.
+    heap_ceiling = limits.get("max_memory")
+    if cap is not None and heap_ceiling is not None and cap < heap_ceiling:
+        print(
+            f"WARNING: sampling RSS cap {cap} is below the effective live-heap "
+            f"ceiling {heap_ceiling}; replays get killed before it trips.",
+            file=sys.stderr,
+        )
 
     def run_plain(cmd: list[str], what: str) -> MeasuredJson | None:
         return run_json_subprocess(cmd, what=what)
@@ -356,8 +372,6 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
     def run_capped(cmd: list[str], what: str) -> MeasuredJson | None:
         """Run under the RSS cap, retrying a replay-phase kill once with the
         replay cut to the iterations that survived."""
-        assert args.stop_memory is not None  # validated alongside capped_sampling
-        cap = parse_size(args.stop_memory)
         cmd = [*cmd, "--print-success-iters"]
         try:
             return run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
@@ -376,7 +390,7 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
                 print(f"{what}: killed again at --max-iters {iters}", file=sys.stderr)
                 return None
 
-    run = run_capped if args.capped_sampling else run_plain
+    run = run_plain if cap is None else run_capped
 
     # Menu size = exactly what the attempt loop consumes: one guide per attempt.
     print(
