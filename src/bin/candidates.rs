@@ -50,12 +50,12 @@ struct Args {
     seed: u64,
 
     /// How much to grow `max_size` on each exact-size-search retry.
-    #[arg(long, default_value_t = 5)]
-    retry_step: usize,
+    #[arg(long, default_value_t = 2)]
+    size_search_step: usize,
 
     /// Number of exact-size-search increments.
-    #[arg(long, default_value_t = 20)]
-    max_retries: usize,
+    #[arg(long, default_value_t = 100)]
+    size_search_steps: usize,
 
     /// Policy used to draw candidates.
     #[arg(long, value_enum)]
@@ -160,25 +160,21 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     policy: Policy,
     start_size: usize,
 ) -> Result<Vec<RecExpr<OriginLang<L>>>, String> {
-    let mut root_log = String::new();
     let (max_size, package) = FrontierPackage::<BigUint, _, _>::build_through_novel_sizes(
         result,
         start_size,
-        args.max_retries,
-        args.retry_step,
+        args.size_search_steps,
         args.n_candidates * 10, // More than 10x the terms should be present so we can easily sample
-        &mut root_log,
     )
     .map_err(|tried_max_size| {
         format!(
-            "exact candidate construction found too few novel sizes after {} retries \
+            "candidate construction found too few novel sizes after {} retries \
                  (max_size={})",
-            args.max_retries, tried_max_size
+            args.size_search_steps, tried_max_size
         )
     })?;
-    eprintln!("Exact candidate package succeeded with max_size {max_size}!");
-    package.log_root_counts(&mut root_log);
-    eprint!("{root_log}");
+    eprintln!("Candidate package succeeded with max_size {max_size}!");
+    package.log_root_counts();
     Ok(draw_candiates(args, policy, &package))
 }
 

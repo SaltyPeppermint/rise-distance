@@ -90,7 +90,6 @@ def run_json_subprocess(
         timeout=timeout,
         check=False,
     )
-    print(proc.stderr)
     if proc.returncode != 0:
         raise RuntimeError(f"{what} failed (code {proc.returncode}):\n{proc.stderr}")
     try:

@@ -165,16 +165,16 @@ where
     /// # Panics
     ///
     /// Panics if there are no terms in the root, or if writing to `out` fails.
-    fn log_root_counts<W: std::fmt::Write>(&self, out: &mut W) {
+    fn log_root_counts(&self) {
         let histogram = self.root_histogram();
         let mut sorted_hist = histogram
             .iter()
             .map(|(a, b)| (*a, b.to_owned()))
             .collect::<Vec<_>>();
         sorted_hist.sort_unstable_by_key(|(size, _)| *size);
-        writeln!(out, "Terms in frontier:").unwrap();
+        eprintln!("Terms in frontier:");
         for (k, v) in &sorted_hist {
-            writeln!(out, "{v} terms of size {k}").unwrap();
+            eprintln!("{v} terms of size {k}");
         }
     }
 

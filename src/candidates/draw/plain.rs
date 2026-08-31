@@ -173,7 +173,7 @@ where
 
     /// Build a package ending at the `size_goal`-th root size with terms.
     ///
-    /// The exact scan stops at the cap `start_size + max_retries * retry_step`.
+    /// The exact scan stops at the cap `start_size + search_steps`.
     /// Unlike the frontier package there is no previous boundary to subtract,
     /// so every size the root can extract at counts toward the goal.
     /// See `docs/counting/novel_size_search.md`.
@@ -185,17 +185,15 @@ where
     /// # Panics
     ///
     /// Panics if `size_goal` is zero or writing to `log` fails.
-    pub fn build_through_sizes<W: std::fmt::Write>(
+    pub fn build_through_sizes(
         result: EqsatResult<L, N>,
         start_size: usize,
-        max_retries: usize,
-        retry_step: usize,
+        search_steps: usize,
         size_goal: usize,
-        log: &mut W,
     ) -> Result<(usize, Self), usize> {
         assert!(size_goal > 0, "size_goal must be nonzero");
 
-        let cap = start_size + max_retries * retry_step;
+        let cap = start_size + search_steps;
 
         let curr = result.curr();
         let root = curr.find(result.root());
@@ -203,32 +201,24 @@ where
 
         let sizes = find_plain_root_sizes(curr, root, size_goal, &cap_budgets);
         if sizes.len() < size_goal {
-            writeln!(
-                log,
+            eprintln!(
                 "found {found} of {size_goal} sizes (max_size={cap})",
                 found = sizes.len()
-            )
-            .unwrap();
+            );
             return Err(cap);
         }
         let max_size = sizes[size_goal - 1];
         let final_budgets = root_budgets(curr, root, max_size);
 
         let Some(package) = Self::from_root_budget(result, max_size, &final_budgets) else {
-            writeln!(
-                log,
-                "package construction found no terms (max_size={max_size})"
-            )
-            .unwrap();
+            eprintln!("package construction found no terms (max_size={max_size})");
             return Err(cap);
         };
         if package.root_histogram().len() < size_goal {
-            writeln!(
-                log,
+            eprintln!(
                 "package construction found fewer than {size_goal} sizes \
                  (max_size={max_size})"
-            )
-            .unwrap();
+            );
             return Err(cap);
         }
 
@@ -323,12 +313,11 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let mut log = String::new();
         let (used_max_size, package) =
-            PlainPackage::<BigUint, _, _>::build_through_sizes(result, 3, 10, 2, 3, &mut log)
+            PlainPackage::<BigUint, _, _>::build_through_sizes(result, 30, 2, 3)
                 .expect("build_through_sizes should succeed");
 
-        assert_eq!(used_max_size, 5, "log:\n{log}");
+        assert_eq!(used_max_size, 5);
         assert_eq!(package.max_size, 5);
         assert_eq!(package.min_size, 1);
         let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
@@ -349,15 +338,11 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(graph, root, prev_raw_node_count, prev_union_event_count);
-        let mut log = String::new();
-        let Err(cap) =
-            PlainPackage::<BigUint, _, _>::build_through_sizes(result, 3, 10, 2, 3, &mut log)
-        else {
+        let Err(cap) = PlainPackage::<BigUint, _, _>::build_through_sizes(result, 3, 20, 3) else {
             panic!("a single size cannot satisfy a goal of 3");
         };
 
-        assert_eq!(cap, 23, "cap = start_size + max_retries * retry_step");
-        assert!(log.contains("found 1 of 3 sizes"), "log:\n{log}");
+        assert_eq!(cap, 23, "cap = start_size + search_steps");
     }
 
     #[test]

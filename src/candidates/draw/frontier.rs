@@ -359,7 +359,7 @@ where
 
     /// Build a package ending at the `novel_size_goal`-th novel root size.
     ///
-    /// The exact scan stops at the cap `start_size + max_retries * retry_step`.
+    /// The exact scan stops at the cap `start_size + search_steps`.
     /// See `docs/counting/novel_size_search.md`.
     ///
     /// # Errors
@@ -369,15 +369,13 @@ where
     /// # Panics
     ///
     /// Panics if `novel_size_goal` is zero or writing to `log` fails.
-    pub fn build_through_novel_sizes<W: std::fmt::Write>(
+    pub fn build_through_novel_sizes(
         result: EqsatResult<L, N>,
         start_size: usize,
-        max_retries: usize,
-        retry_step: usize,
+        search_steps: usize,
         min_extractable: usize,
-        log: &mut W,
     ) -> Result<(usize, Self), usize> {
-        let cap = start_size + max_retries * retry_step;
+        let cap = start_size + search_steps;
 
         let prev = result.prev_index();
         let curr = result.curr();
@@ -387,40 +385,30 @@ where
 
         drop(prev);
 
-        let max_size =
-            match find_novel_root_sizes(curr, root, &matches, min_extractable, &cap_budgets) {
-                Ok(max_size) => max_size,
-                Err(term_count) => {
-                    writeln!(
-                        log,
-                        "found insufficient ({term_count}) extractable terms with cap={cap}",
-                    )
-                    .unwrap();
-                    return Err(cap);
-                }
-            };
+        let max_size = match find_novel_root_sizes(
+            curr,
+            root,
+            &matches,
+            min_extractable,
+            &cap_budgets,
+        ) {
+            Ok(max_size) => max_size,
+            Err(term_count) => {
+                eprintln!(
+                    "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
+                );
+                return Err(cap);
+            }
+        };
 
         let final_budgets = root_budgets(curr, root, max_size);
         prune_matches(curr, &mut matches, &final_budgets);
 
         let Some(package) = Self::from_rooted_matches(result, max_size, matches, &final_budgets)
         else {
-            writeln!(
-                log,
-                "package construction found no novel terms (max_size={max_size})"
-            )
-            .unwrap();
+            eprintln!("package construction found no novel terms (max_size={max_size})");
             return Err(cap);
         };
-        if package.root_histogram().len() < min_extractable {
-            writeln!(
-                log,
-                "package construction found fewer than {min_extractable} novel sizes \
-                 (max_size={max_size})"
-            )
-            .unwrap();
-            return Err(cap);
-        }
 
         Ok((max_size, package))
     }
@@ -510,13 +498,10 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let mut log = String::new();
-        let (used_max_size, package) = FrontierPackage::<BigUint, _, _>::build_through_novel_sizes(
-            result, 3, 10, 2, 3, &mut log,
-        )
-        .expect("build_through_novel_sizes should succeed");
+        let (_used_max_size, package) =
+            FrontierPackage::<BigUint, _, _>::build_through_novel_sizes(result, 3, 10, 3)
+                .expect("build_through_novel_sizes should succeed");
 
-        assert_eq!(used_max_size, 9, "log:\n{log}");
         assert_eq!(package.max_size, 9);
         assert_eq!(package.min_size, 5);
         let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();

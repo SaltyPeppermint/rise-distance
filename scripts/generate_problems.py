@@ -99,12 +99,8 @@ class Args(BaseSettings):
         default="count", description="Frontier draw policy used by `candidates`."
     )
 
-    retry_step: int = Field(
-        default=5, gt=0, description="How much to grow `max_size` on each exact-size-search retry."
-    )
-
-    max_retries: int = Field(
-        default=20, ge=0, description="How many exact-size-search increments to allow."
+    size_search_steps: int = Field(
+        default=100, ge=0, description="How many exact-size-search increments to allow."
     )
 
     # Eqsat limits, shared by all three stages
@@ -213,10 +209,8 @@ def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[
         str(args.seed),
         "--policy",
         args.policy,
-        "--retry-step",
-        str(args.retry_step),
-        "--max-retries",
-        str(args.max_retries),
+        "--size-search-steps",
+        str(args.size_search_steps),
         *flags,
     ]
     try:

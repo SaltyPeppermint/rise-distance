@@ -24,7 +24,7 @@ cap bounds the first rooted match enumeration; the result is tightened after
 the final size is selected:
 
 ```text
-cap = start_size + max_retries * retry_step
+cap = start_size + search_steps
 
 prev_lookup = reconstruct_previous_boundary()
 cap_budgets = root_budgets(curr, root, cap)
@@ -51,7 +51,7 @@ package = derive_novel_and_retain_package_data(plain, joint, matches)
 limit. It computes final budgets immediately, enumerates matches inside that
 domain, and builds the package without the cap scan.
 
-`start_size`, `max_retries`, and `retry_step` define only the scan cap. There
+`start_size` and `search_steps` define only the scan cap. There
 is no retry schedule. On success, both the returned size and the package limit
 are the `sizes`-th smallest novel root size.
 

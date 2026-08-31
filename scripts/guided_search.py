@@ -281,7 +281,7 @@ def build_candidate_shard(
         str(menu_size),
     ]
 
-    # print(f"CMD: {cmd}")
+    # print(f"CMD: {' '.join(cmd)}")
 
     measured = run_json_subprocess(cmd, what=f"candidates for start term {spec.start_term!r}")
     records = measured.payload
