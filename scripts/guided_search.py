@@ -49,8 +49,8 @@ Policy = Literal["count", "uniform"]
 # each. An unreached or panicked leg leaves most of them None, and an
 # unreached-heavy prefix would otherwise make polars infer Null and reject the
 # first real value. Pinning the dtypes makes the schema independent of row order
-# (and of runs that reach nothing). `verify_peak_rss_bytes` is Python-side
-# subprocess telemetry rather than a field in the Rust payload.
+# (and of runs that reach nothing). `verify_peak_rss_bytes` comes from the
+# `Measured` envelope around the payload rather than from the payload itself.
 LEG_RESULT_DTYPES = {
     "iters": pl.Int64,
     "nodes": pl.Int64,
@@ -192,10 +192,6 @@ class Args(BaseSettings):
         default=0, description="RNG seed used by both the Python and Rust components."
     )
 
-    size_goal: int = Field(
-        default=5, gt=0, description="Number of novel sizes the analysis must find."
-    )
-
     jobs: int | None = Field(
         default=None,
         gt=0,
@@ -322,8 +318,6 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         str(cfg["language"]),
         "--seed",
         str(args.seed),
-        "--size-goal",
-        str(args.size_goal),
         "--policy",
         str(args.policy),
     ]

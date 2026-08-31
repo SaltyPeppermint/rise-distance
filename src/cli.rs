@@ -1,11 +1,34 @@
-//! Shared wire types for the guide experiment's `candidates` and `verify`
-//! binaries.
+//! Shared wire types for the guide experiment's `start`, `candidates` and
+//! `verify` binaries.
 
 use clap::ValueEnum;
 use egg::RecExpr;
 use serde::{Deserialize, Serialize};
 
+use crate::utils::peak_rss_bytes;
 use crate::{MyLanguage, OriginLang};
+
+/// Envelope every JSON-emitting binary prints: the payload plus this process's
+/// lifetime peak RSS.
+#[derive(Serialize, Debug, Clone)]
+pub struct Measured<T> {
+    pub peak_rss_bytes: u64,
+    pub payload: T,
+}
+
+impl<T> Measured<T> {
+    /// Wrap `payload`, reading the peak RSS now.
+    ///
+    /// Call this once the run is over but before serializing, so the reading
+    /// covers the search rather than the JSON write that follows.
+    #[must_use]
+    pub fn now(payload: T) -> Self {
+        Self {
+            peak_rss_bytes: peak_rss_bytes(),
+            payload,
+        }
+    }
+}
 
 /// How `candidates` samples the novel frontier when drawing a guides.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, ValueEnum)]

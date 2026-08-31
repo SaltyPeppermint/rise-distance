@@ -6,6 +6,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use serde::Serialize;
 
+use rise_distance::cli::Measured;
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::generator::{Samplable, SizeUniformSampler};
 use rise_distance::langs::{AvailableLanguages, math, prop};
@@ -54,7 +55,7 @@ fn main() {
             run_one::<prop::Prop, prop::ConstantFold>(&args, &args.eqsat, &prop::rules())
         }
     };
-    serde_json::to_writer(std::io::stdout().lock(), &result).unwrap();
+    serde_json::to_writer(std::io::stdout().lock(), &Measured::now(result)).unwrap();
     println!();
 }
 

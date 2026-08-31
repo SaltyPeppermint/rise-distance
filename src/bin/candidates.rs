@@ -10,7 +10,7 @@ use num::BigUint;
 use time::OffsetDateTime;
 
 use rise_distance::candidates::{DrawerPackage, FrontierPackage};
-use rise_distance::cli::{Candidates, Policy};
+use rise_distance::cli::{Candidates, Measured, Policy};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage, OriginLang, lower};
@@ -56,10 +56,6 @@ struct Args {
     /// Number of exact-size-search increments.
     #[arg(long, default_value_t = 20)]
     max_retries: usize,
-
-    /// Number of novel sizes the exact analysis must find.
-    #[arg(long, default_value_t = 5)]
-    size_goal: usize,
 
     /// Policy used to draw candidates.
     #[arg(long, value_enum)]
@@ -108,7 +104,7 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, 
         OffsetDateTime::now_local().unwrap()
     );
 
-    serde_json::to_writer(std::io::stdout(), &out).expect("write candidates JSON");
+    serde_json::to_writer(std::io::stdout(), &Measured::now(out)).expect("write candidates JSON");
     println!();
 }
 
@@ -116,8 +112,6 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     rules: &[Rewrite<L, N>],
 ) -> Result<Candidates<L>, String> {
-    assert!(args.size_goal > 0, "--size-goal must be positive");
-
     let seed_expr = args
         .start_term
         .parse::<RecExpr<L>>()
@@ -172,7 +166,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
         start_size,
         args.max_retries,
         args.retry_step,
-        args.size_goal,
+        args.n_candidates * 10, // More than 10x the terms should be present so we can easily sample
         &mut root_log,
     )
     .map_err(|tried_max_size| {

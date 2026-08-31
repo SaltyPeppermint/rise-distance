@@ -3,8 +3,8 @@
 Three stages, each fanned out over isolated Rust processes:
 1. `start` samples one validated start term per size slot.
 2. `candidates` draws goal candidates from each start term's novel frontier.
-3. `verify` runs the unguided start->goal search; its peak RSS (`ru_maxrss`,
-   the only memory number to trust here) decides whether the pair is kept.
+3. `verify` runs the unguided start->goal search; its peak RSS (`VmHWM`, the
+   only memory number to trust here) decides whether the pair is kept.
 
 Writes `problems.json` (accepted pairs) and `problem_args.json` (config).
 
@@ -105,10 +105,6 @@ class Args(BaseSettings):
 
     max_retries: int = Field(
         default=20, ge=0, description="How many exact-size-search increments to allow."
-    )
-
-    size_goal: int = Field(
-        default=5, gt=0, description="How many novel root sizes exact construction must find."
     )
 
     # Eqsat limits, shared by all three stages
@@ -221,8 +217,6 @@ def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[
         str(args.retry_step),
         "--max-retries",
         str(args.max_retries),
-        "--size-goal",
-        str(args.size_goal),
         *flags,
     ]
     try:

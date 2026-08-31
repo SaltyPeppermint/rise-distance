@@ -349,14 +349,14 @@ fn joint_children_of<L: Language, N: Analysis<L>>(
 // Exact root-size scan.
 // ============================================================================
 
-/// Find the first `stop_after` novel root sizes within `rooted`.
+/// Find the first novel root sizes that ensures enough are extractable within `rooted`.
 pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     root: Id,
     matches: &NodeMatches,
-    stop_after: usize,
+    min_extractable: usize,
     rooted: &RootBudgets,
-) -> Vec<usize> {
+) -> Result<usize, BigUint> {
     let root = curr.find(root);
     let mut plain: LayeredDp<Id, BigUint> = plain_dp_rooted(curr, rooted);
 
@@ -378,7 +378,8 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
         .collect::<Vec<_>>();
     let mut joint: LayeredDp<(Id, Id), BigUint> = LayeredDp::new(children_of, budgets);
 
-    let mut sizes = Vec::new();
+    let mut max_size;
+    let mut term_count = BigUint::ZERO;
     for _ in 0..rooted.limit() {
         let size = plain.step();
         joint.step();
@@ -397,13 +398,15 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
         }
 
         if novel != BigUint::ZERO {
-            sizes.push(size);
-            if sizes.len() >= stop_after {
-                break;
+            max_size = size;
+            term_count += novel;
+            if term_count >= min_extractable.into() {
+                return Ok(max_size);
             }
         }
     }
-    sizes
+
+    Err(term_count)
 }
 
 // ============================================================================
@@ -523,78 +526,6 @@ mod tests {
         // (prev had no ln(b)). So novel = 1.
         let root_canon = curr.find(root);
         assert_eq!(novel.data()[&root_canon][&2], BigUint::from(1u32));
-    }
-
-    /// The incremental scan and final rooted package pass must agree for every
-    /// class taken as root.
-    fn assert_size_scan_agrees(curr: &EGraph<Math, ()>, prev: &EGraph<Math, ()>, max_size: usize) {
-        for class in curr.classes() {
-            let root = curr.find(class.id);
-            let budgets = root_budgets(curr, root, max_size);
-            let rooted_matches = enumerate_matches_rooted(curr, prev, &budgets);
-            let found = find_novel_root_sizes(curr, root, &rooted_matches, usize::MAX, &budgets);
-            let rooted_plain = count_terms_rooted::<BigUint, _, _>(curr, &budgets);
-            let rooted =
-                NovelTermCount::from_rooted_matches(curr, rooted_plain, rooted_matches, &budgets);
-            let mut expected = rooted
-                .data()
-                .get(&root)
-                .map(|hist| hist.keys().copied().collect::<Vec<_>>())
-                .unwrap_or_default();
-            expected.sort_unstable();
-            assert_eq!(
-                found, expected,
-                "scan/package novel sizes diverge for class {}",
-                class.id
-            );
-            for (&(c, _), histogram) in &rooted.joint {
-                let budget = budgets.budget(c).expect("joint current class is rooted");
-                assert!(histogram.keys().all(|&size| size <= budget));
-            }
-        }
-    }
-
-    #[test]
-    fn size_scan_agrees_with_novel_histogram() {
-        let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
-        let _root = curr.add(Math::Ln(a));
-        curr.rebuild();
-        let prev = curr.clone();
-
-        curr.union(a, b);
-        curr.rebuild();
-
-        assert_size_scan_agrees(&curr, &prev, 5);
-    }
-
-    #[test]
-    fn size_scan_agrees_when_nothing_is_novel() {
-        let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(sym("a"));
-        let b = graph.add(sym("b"));
-        graph.union(a, b);
-        graph.rebuild();
-
-        assert_size_scan_agrees(&graph, &graph, 5);
-    }
-
-    #[test]
-    fn size_scan_agrees_on_cyclic_graph() {
-        // Unioning the root of (+ a b) with `a` creates a cycle, so novel
-        // terms exist at unboundedly many sizes.
-        let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
-        let apb = curr.add(Math::Add([a, b]));
-        curr.rebuild();
-        let prev = curr.clone();
-
-        curr.union(a, apb);
-        curr.rebuild();
-
-        assert_size_scan_agrees(&curr, &prev, 11);
     }
 
     #[test]

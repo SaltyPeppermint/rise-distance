@@ -21,7 +21,7 @@
 
 uv run scripts/guided_search.py \
   --policy count \
-  --start-terms 100 \
+  --start-terms 10 \
   --attempts 10 \
   --seed 42 \
   --full-union \
@@ -31,7 +31,7 @@ or exit $status
 
 uv run scripts/guided_search.py \
   --policy count \
-  --start-terms 100 \
+  --start-terms 10 \
   --attempts 10 \
   --seed 42 \
   --full-union \

@@ -6,18 +6,20 @@
 //! goal via `--goal-term` and, with `--is-guide`, that leg's guide as a JSON
 //! array of [`OriginLang`] nodes via `--start-term`. Without `--is-guide` the
 //! same flag takes a plain s-expression and the run is the unguided baseline.
-//! Prints the run's `Result<ReachedRun, GuideError>` as a JSON object.
+//! Prints the run's `Result<ReachedRun, GuideError>` as the `payload` of a
+//! [`Measured`] envelope.
 //!
-//! One leg per process is deliberate: peak RSS (`ru_maxrss`) is a per-process
-//! lifetime high-water mark, so batching several legs into one invocation would
-//! report the max over all of them while the unguided baseline — a single eqsat
-//! run in its own process — reports just one. Keeping the work per process
-//! identical across both arms is what makes the two peaks comparable. The driver
-//! owns the attempt loop and its early stop.
+//! One leg per process is deliberate: the peak RSS reported in the [`Measured`]
+//! envelope is a per-process lifetime high-water mark, so batching several legs
+//! into one invocation would report the max over all of them while the unguided
+//! baseline — a single eqsat run in its own process — reports just one. Keeping
+//! the work per process identical across both arms is what makes the two peaks
+//! comparable. The driver owns the attempt loop and its early stop.
 
 use clap::Parser;
 use egg::{RecExpr, Rewrite};
 
+use rise_distance::cli::Measured;
 use rise_distance::eqsat::{EqsatConfig, Goal, guided_eqsat, unguided_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
 use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
@@ -100,5 +102,6 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
         unguided_eqsat(&start_term, &goal, rules, &args.eqsat)
     };
 
-    serde_json::to_writer(std::io::stdout(), &result).expect("write leg result JSON");
+    serde_json::to_writer(std::io::stdout(), &Measured::now(result))
+        .expect("write leg result JSON");
 }

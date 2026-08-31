@@ -374,11 +374,9 @@ where
         start_size: usize,
         max_retries: usize,
         retry_step: usize,
-        novel_size_goal: usize,
+        min_extractable: usize,
         log: &mut W,
     ) -> Result<(usize, Self), usize> {
-        assert!(novel_size_goal > 0, "novel_size_goal must be nonzero");
-
         let cap = start_size + max_retries * retry_step;
 
         let prev = result.prev_index();
@@ -389,18 +387,19 @@ where
 
         drop(prev);
 
-        let novel_sizes =
-            find_novel_root_sizes(curr, root, &matches, novel_size_goal, &cap_budgets);
-        if novel_sizes.len() < novel_size_goal {
-            writeln!(
-                log,
-                "found {found} of {novel_size_goal} novel sizes (max_size={cap})",
-                found = novel_sizes.len()
-            )
-            .unwrap();
-            return Err(cap);
-        }
-        let max_size = novel_sizes[novel_size_goal - 1];
+        let max_size =
+            match find_novel_root_sizes(curr, root, &matches, min_extractable, &cap_budgets) {
+                Ok(max_size) => max_size,
+                Err(term_count) => {
+                    writeln!(
+                        log,
+                        "found insufficient ({term_count}) extractable terms with cap={cap}",
+                    )
+                    .unwrap();
+                    return Err(cap);
+                }
+            };
+
         let final_budgets = root_budgets(curr, root, max_size);
         prune_matches(curr, &mut matches, &final_budgets);
 
@@ -413,10 +412,10 @@ where
             .unwrap();
             return Err(cap);
         };
-        if package.root_histogram().len() < novel_size_goal {
+        if package.root_histogram().len() < min_extractable {
             writeln!(
                 log,
-                "package construction found fewer than {novel_size_goal} novel sizes \
+                "package construction found fewer than {min_extractable} novel sizes \
                  (max_size={max_size})"
             )
             .unwrap();
