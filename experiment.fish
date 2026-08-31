@@ -20,9 +20,8 @@
 # or exit $status
 
 uv run scripts/guided_search.py \
-  --policy uniform \
+  --policy count \
   --start-terms 100 \
-  --goal-terms 5 \
   --attempts 10 \
   --seed 42 \
   --full-union \
@@ -33,10 +32,9 @@ or exit $status
 uv run scripts/guided_search.py \
   --policy count \
   --start-terms 100 \
-  --goal-terms 5 \
   --attempts 10 \
   --seed 42 \
   --full-union \
-  --stop-memory 250M \
+  --stop-memory 100M \
   data/problems/plenty-houses
 or exit $status

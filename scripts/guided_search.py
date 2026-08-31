@@ -2,8 +2,7 @@
 
 This driver reads the start/goal pairs in ``problems.json`` (written by
 ``generate_problems.py``), constructs a guide-candidate menu per start term, and
-verifies one attempt loop per pair. It owns the JSON/parquet I/O; the Rust
-``candidates`` and ``verify`` binaries communicate through argv and stdout.
+verifies one attempt loop per pair.
 
 Each leg is a separate ``verify`` process running one eqsat, so its peak RSS
 covers the same unit of work as an unguided baseline process.
