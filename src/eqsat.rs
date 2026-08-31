@@ -1,3 +1,4 @@
+use std::iter;
 use std::time::Duration;
 
 use egg::{
@@ -76,14 +77,13 @@ pub struct EqsatConfig {
 impl EqsatConfig {
     /// Build a [`Runner`] with these limits, memory tracking, and scheduler.
     #[must_use]
-    pub fn build_runner<L, N, D>(&self, expr: &RecExpr<L>) -> Runner<L, N, D>
+    pub fn build_runner<L, N, D>(&self) -> Runner<L, N, D>
     where
         L: MyLanguage,
         N: MyAnalysis<L>,
         D: IterationData<L, N>,
     {
         Runner::<L, N, D>::new_with_memory_tracker(N::default(), live_heap_bytes, self.max_memory)
-            .with_expr(expr)
             .with_iter_limit(self.max_iters)
             .with_node_limit(self.max_nodes)
             .with_time_limit(Duration::from_secs_f64(self.max_time))
@@ -225,22 +225,6 @@ impl<L: Language, N: Analysis<L>> IterationData<L, N> for Boundary {
     }
 }
 
-/// Latest two distinct topology boundaries, stored as history cursors.
-#[derive(Debug, Default)]
-struct FrontierHistory {
-    latest_distinct: Option<Boundary>,
-    previous_distinct: Option<Boundary>,
-}
-
-impl FrontierHistory {
-    fn observe(&mut self, boundary: Boundary) {
-        if self.latest_distinct != Some(boundary) {
-            self.previous_distinct = self.latest_distinct;
-            self.latest_distinct = Some(boundary);
-        }
-    }
-}
-
 /// Minimum iterations needed for a meaningful guide/goal split.
 const MIN_ITERS: usize = 3;
 
@@ -290,30 +274,22 @@ pub fn run_eqsat<'a, L, N, R>(
     config: &EqsatConfig,
 ) -> Option<EqsatResult<L, N>>
 where
-    L: MyLanguage + 'static,
-    N: MyAnalysis<L> + Default + 'static,
+    L: MyLanguage,
+    N: MyAnalysis<L>,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
     // Analysis hooks may union while the initial expression is inserted, so
     // recording must precede `with_expr`.
-    let mut runner = Runner::<L, N, Boundary>::new_with_memory_tracker(
-        N::default(),
-        live_heap_bytes,
-        config.max_memory,
-    )
-    .with_time_limit(Duration::try_from_secs_f64(config.max_time).unwrap_or(Duration::MAX))
-    .with_node_limit(config.max_nodes)
-    .with_iter_limit(config.max_iters)
-    .with_union_event_recording()
-    .with_expr(start)
-    .with_scheduler(BackoffScheduler::default());
+    let mut runner = config
+        .build_runner()
+        .with_union_event_recording()
+        .with_expr(start);
 
     // The pre-search state is never an iteration, so record it by hand. `run`
     // rebuilds before its first iteration; do it here so this boundary is
     // clean and its congruence unions are already in the log.
     runner.egraph.rebuild();
-    let mut history = FrontierHistory::default();
-    history.observe(Boundary::of(&runner.egraph));
+    let initial_boundary = Boundary::of(&runner.egraph);
 
     runner = runner.run(rules);
 
@@ -330,31 +306,24 @@ where
         return None;
     }
 
-    for iteration in &iter_data {
-        history.observe(iteration.data);
-    }
-
     // Every iteration rebuilds before recording its data, so the last logged
     // boundary already describes the final e-graph.
     debug_assert!(curr.clean, "a finished run leaves a clean e-graph");
-    let final_boundary = history
-        .latest_distinct
-        .expect("history was seeded with the initial boundary");
+    let final_boundary = Boundary::of(&curr);
     debug_assert_eq!(
-        final_boundary,
-        Boundary::of(&curr),
+        iter_data.last().map(|i| i.data),
+        Some(final_boundary),
         "last logged boundary must match the final e-graph"
     );
 
-    let Some(prev_boundary) = history.previous_distinct else {
+    let Some(prev_boundary) = iter::once(initial_boundary)
+        .chain(iter_data.iter().map(|i| i.data))
+        .rev()
+        .find(|b| *b != final_boundary)
+    else {
         eprintln!("Egraph never produced a distinct earlier state");
         return None;
     };
-
-    assert_ne!(
-        prev_boundary, final_boundary,
-        "previous and final boundary must be distinct"
-    );
     Some(EqsatResult {
         iter_data,
         prev_boundary,
@@ -432,12 +401,7 @@ where
 {
     assert!(!guides.is_empty(), "must have at least one guide");
 
-    let runner = Runner::new_with_memory_tracker(N::default(), live_heap_bytes, eqsat.max_memory)
-        .with_time_limit(Duration::try_from_secs_f64(eqsat.max_time).unwrap_or(Duration::MAX))
-        .with_node_limit(eqsat.max_nodes)
-        .with_iter_limit(eqsat.max_iters)
-        .with_scheduler(BackoffScheduler::default());
-
+    let runner = eqsat.build_runner();
     let mut runner = if full_union {
         add_with_full_union(runner, guides)
     } else {
@@ -461,7 +425,7 @@ where
     L: MyLanguage + 'static,
     N: MyAnalysis<L> + Default,
 {
-    let runner = eqsat.build_runner::<L, N, ()>(start);
+    let runner = eqsat.build_runner().with_expr(start);
     run_until_goal(runner, goal, rules, format_args!("start term: {start:?}"))
 }
 
@@ -737,7 +701,9 @@ mod tests {
             max_time: 60.0,
             max_memory: None,
         };
-        let runner = config.build_runner::<_, ConstantFold, ()>(&expr);
+        let runner = config
+            .build_runner::<_, ConstantFold, ()>()
+            .with_expr(&expr);
         std::hint::black_box(&runner);
 
         let reading = runner.sample_memory().unwrap();

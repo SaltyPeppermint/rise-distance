@@ -106,7 +106,7 @@ pub fn validity_check<L: MyLanguage, N: MyAnalysis<L> + Default>(
     config: &EqsatConfig,
     rules: &[Rewrite<L, N>],
 ) -> Option<Measurement> {
-    let runner = config.build_runner::<_, _, HeapData>(expr);
+    let runner = config.build_runner().with_expr(expr);
 
     let start = Instant::now();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules)))
