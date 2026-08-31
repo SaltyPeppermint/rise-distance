@@ -286,7 +286,7 @@ def build_candidate_shard(
         str(menu_size),
     ]
 
-    print(f"CMD: {cmd}")
+    # print(f"CMD: {cmd}")
 
     measured = run_json_subprocess(cmd, what=f"candidates for start term {spec.start_term!r}")
     records = measured.payload
@@ -304,9 +304,9 @@ def build_candidate_shard(
         record["goal_terms"] = spec.goal_terms
         record["candidate_status"] = "ok"
         record["candidate_peak_rss_bytes"] = measured.peak_rss_bytes
-        print(
-            f"!!! sampling_peak_rss_bytes = {measured.peak_rss_bytes} | Start = {spec.start_term}"
-        )
+        # print(
+        #     f"!!! sampling_peak_rss_bytes = {measured.peak_rss_bytes} | Start = {spec.start_term}"
+        # )
     return records
 
 
