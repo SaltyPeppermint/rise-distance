@@ -14,25 +14,15 @@ use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
-pub struct PlainDrawer<'a, 'b, C, L, N, W>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    W: Weigher<C>,
-{
+pub struct PlainDrawer<'a, 'b, C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>> {
     counts: &'a CountData<C>,
     graph: &'b EGraph<L, N>,
     root: Id,
     weigher: W,
 }
 
-impl<'a, 'b, C, L, N, W> PlainDrawer<'a, 'b, C, L, N, W>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    W: Weigher<C>,
+impl<'a, 'b, C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>>
+    PlainDrawer<'a, 'b, C, L, N, W>
 {
     #[must_use]
     pub const fn new(
@@ -50,12 +40,8 @@ where
     }
 }
 
-impl<C, L, N, W> Drawer<C, L, N> for PlainDrawer<'_, '_, C, L, N, W>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    W: Weigher<C>,
+impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>> Drawer<C, L, N>
+    for PlainDrawer<'_, '_, C, L, N, W>
 {
     fn root(&self) -> Id {
         self.root
@@ -136,12 +122,7 @@ where
 /// construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
-pub struct PlainPackage<C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
-{
+pub struct PlainPackage<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
     egraph: EGraph<L, N>,
     counts: CountData<C>,
     min_size: usize,
@@ -149,12 +130,7 @@ where
     root: Id,
 }
 
-impl<C, L, N> PlainPackage<C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
-{
+impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> PlainPackage<C, L, N> {
     /// Build counts through `max_size` over the whole e-graph.
     /// Returns `None` if the root has no terms within `max_size`.
     #[must_use]
@@ -247,12 +223,7 @@ where
     }
 }
 
-impl<C, L, N> DrawerPackage<C, L, N> for PlainPackage<C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
-{
+impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<C, L, N> for PlainPackage<C, L, N> {
     /// Root-term counts by size.
     ///
     /// # Panics

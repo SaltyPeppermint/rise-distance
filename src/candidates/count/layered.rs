@@ -56,15 +56,10 @@ impl<C: Counter> CountData<C> {
 }
 
 /// Count distinct terms within pre-established root budgets.
-pub(crate) fn count_terms_rooted<C, L, N>(
+pub(crate) fn count_terms_rooted<C: Counter, L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
-) -> CountData<C>
-where
-    C: Counter,
-    L: Language,
-    N: Analysis<L>,
-{
+) -> CountData<C> {
     let mut dp = plain_dp_rooted(egraph, rooted);
     for _ in 0..rooted.limit() {
         dp.step();
@@ -82,15 +77,10 @@ where
 ///
 /// The suffix tables are the DP's working state, so they are still built temporarily
 /// Callers that rederive child-size splits on the fly.
-pub(crate) fn count_histograms_rooted<C, L, N>(
+pub(crate) fn count_histograms_rooted<C: Counter, L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
-) -> HashMap<Id, HashMap<usize, C>>
-where
-    C: Counter,
-    L: Language,
-    N: Analysis<L>,
-{
+) -> HashMap<Id, HashMap<usize, C>> {
     let mut dp = plain_dp_rooted(egraph, rooted);
     for _ in 0..rooted.limit() {
         dp.step();
@@ -99,28 +89,19 @@ where
 }
 
 /// Create an unstepped plain DP for the root budgets.
-pub(crate) fn plain_dp_rooted<C, L, N>(
+pub(crate) fn plain_dp_rooted<C: Counter, L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
-) -> LayeredDp<Id, C>
-where
-    C: Counter,
-    L: Language,
-    N: Analysis<L>,
-{
+) -> LayeredDp<Id, C> {
     assert!(egraph.clean);
     let children_of = plain_children_of(egraph, rooted.budgets().keys().copied());
     LayeredDp::new(children_of, rooted.budgets().clone())
 }
 
-fn plain_children_of<L, N>(
+fn plain_children_of<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     ids: impl Iterator<Item = Id>,
-) -> HashMap<Id, Vec<Vec<Id>>>
-where
-    L: Language,
-    N: Analysis<L>,
-{
+) -> HashMap<Id, Vec<Vec<Id>>> {
     ids.map(|id| {
         let per_node = egraph[id]
             .nodes

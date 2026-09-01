@@ -16,12 +16,7 @@ pub use plain::{PlainDrawer, PlainPackage};
 pub use weigher::{CountWeigher, UniformWeigher, Weigher};
 
 /// Draws size-targeted candidates from an e-graph.
-pub trait Drawer<C, L, N>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
+pub trait Drawer<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
     fn root(&self) -> Id;
 
     /// Canonicalize `id` in the underlying e-graph.
@@ -154,12 +149,7 @@ where
     }
 }
 
-pub trait DrawerPackage<C, L, N>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-{
+pub trait DrawerPackage<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
     /// Log the stats about the root into `out`.
     ///
     /// # Panics

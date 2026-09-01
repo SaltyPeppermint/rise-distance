@@ -67,20 +67,13 @@ where
 impl<C: Counter> NovelTermCount<C> {
     /// Test convenience around the production rooted pipeline.
     #[cfg(test)]
-    pub(crate) fn rooted_for_tests<L, N, P>(
+    pub(crate) fn rooted_for_tests<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
         max_size: usize,
         curr: &EGraph<L, N>,
         prev: &P,
         root: Id,
-    ) -> Self
-    where
-        L: Language,
-        N: Analysis<L>,
-        P: PreviousLookup<L> + ?Sized,
-    {
-        use crate::candidates::count::budgets::root_budgets;
-
-        let budgets = root_budgets(curr, root, max_size);
+    ) -> Self {
+        let budgets = crate::candidates::count::budgets::root_budgets(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
         let plain = count_histograms_rooted(curr, &budgets);
         Self::from_rooted_matches(curr, &plain, matches, &budgets)
@@ -91,16 +84,12 @@ impl<C: Counter> NovelTermCount<C> {
     ///
     /// `plain` is consumed by the novel subtraction and then dropped.
     #[must_use]
-    pub(crate) fn from_rooted_matches<L, N>(
+    pub(crate) fn from_rooted_matches<L: Language, N: Analysis<L>>(
         curr: &EGraph<L, N>,
         plain: &HashMap<Id, HashMap<usize, C>>,
         matches: NodeMatches,
         budgets: &RootBudgets,
-    ) -> Self
-    where
-        L: Language,
-        N: Analysis<L>,
-    {
+    ) -> Self {
         let joint = compute_joint_rooted(curr, &matches, budgets);
         let cover = build_cover(&joint);
         let data = derive_novel(plain, &joint);
@@ -120,57 +109,45 @@ impl<C: Counter> NovelTermCount<C> {
     }
 
     /// Shared-term histogram for a current/previous class pair.
-    pub(crate) fn joint_histogram<L, N>(
+    pub(crate) fn joint_histogram<L: Language, N: Analysis<L>>(
         &self,
         curr: &EGraph<L, N>,
         curr_id: Id,
         prev_id: Id,
-    ) -> Option<&HashMap<usize, C>>
-    where
-        L: Language,
-        N: Analysis<L>,
-    {
+    ) -> Option<&HashMap<usize, C>> {
         let curr_canon = curr.find(curr_id);
         self.joint.get(&(curr_canon, prev_id))
     }
 
     /// Novel histogram for a current class.
-    pub(crate) fn novel_histogram<L, N>(
+    pub(crate) fn novel_histogram<L: Language, N: Analysis<L>>(
         &self,
         curr: &EGraph<L, N>,
         curr_id: Id,
-    ) -> Option<&HashMap<usize, C>>
-    where
-        L: Language,
-        N: Analysis<L>,
-    {
+    ) -> Option<&HashMap<usize, C>> {
         let canon = curr.find(curr_id);
         self.data.get(&canon)
     }
 
-    pub(crate) fn matches_of<L, N>(
+    pub(crate) fn matches_of<L: Language, N: Analysis<L>>(
         &self,
         curr: &EGraph<L, N>,
         curr_class: Id,
         node_idx: usize,
-    ) -> &[NodeMatch]
-    where
-        L: Language,
-        N: Analysis<L>,
-    {
+    ) -> &[NodeMatch] {
         let canon = curr.find(curr_class);
         self.matches
             .get(&(canon, node_idx))
             .map_or(&[][..], Vec::as_slice)
     }
 
-    /// Previous classes sharing an extraction with `curr_class`.
-    pub(crate) fn cover_of<L, N>(&self, curr: &EGraph<L, N>, curr_class: Id) -> &[Id]
-    where
-        L: Language,
-        N: Analysis<L>,
-    {
-        let canon = curr.find(curr_class);
+    /// Previous classes sharing an extraction with `curr_id`.
+    pub(crate) fn cover_of<L: Language, N: Analysis<L>>(
+        &self,
+        curr: &EGraph<L, N>,
+        curr_id: Id,
+    ) -> &[Id] {
+        let canon = curr.find(curr_id);
         self.cover.get(&canon).map_or(&[][..], Vec::as_slice)
     }
 }
@@ -199,16 +176,11 @@ fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
 
 /// Enumerate matches usable from the current root within its size limit.
 /// Previous classes are not root-filtered.
-pub(crate) fn enumerate_matches_rooted<L, N, P>(
+pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
     curr: &EGraph<L, N>,
     prev: &P,
     budgets: &RootBudgets,
-) -> NodeMatches
-where
-    L: Language,
-    N: Analysis<L>,
-    P: PreviousLookup<L> + ?Sized,
-{
+) -> NodeMatches {
     let mut cover = MatchCover::new();
     let mut matches = NodeMatches::new();
     let mut seen = MatchKeys::new();
@@ -256,20 +228,17 @@ where
 }
 
 /// Tighten cap-scoped matches to a smaller final root budget.
-pub(crate) fn prune_matches<L, N>(
-    curr: &EGraph<L, N>,
+pub(crate) fn prune_matches<L: Language, N: Analysis<L>>(
+    egraph: &EGraph<L, N>,
     matches: &mut NodeMatches,
     budgets: &RootBudgets,
-) where
-    L: Language,
-    N: Analysis<L>,
-{
+) {
     matches.retain(|&(c, idx), _| {
         budgets.budget(c).is_some()
-            && curr[c]
+            && egraph[c]
                 .nodes
                 .get(idx)
-                .is_some_and(|node| budgets.node_fits(curr, c, node))
+                .is_some_and(|node| budgets.node_fits(egraph, c, node))
     });
 }
 

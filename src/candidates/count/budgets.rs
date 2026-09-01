@@ -34,11 +34,12 @@ impl RootBudgets {
 
     /// Whether `node` fits its class budget at minimum child sizes.
     #[must_use]
-    pub(crate) fn node_fits<L, N>(&self, egraph: &EGraph<L, N>, class: Id, node: &L) -> bool
-    where
-        L: Language,
-        N: Analysis<L>,
-    {
+    pub(crate) fn node_fits<L: Language, N: Analysis<L>>(
+        &self,
+        egraph: &EGraph<L, N>,
+        class: Id,
+        node: &L,
+    ) -> bool {
         let Some(budget) = self.budget(class) else {
             return false;
         };
@@ -52,11 +53,11 @@ impl RootBudgets {
 }
 
 /// Compute canonical class budgets and minima for a root and size limit.
-pub(crate) fn root_budgets<L, N>(egraph: &EGraph<L, N>, root: Id, limit: usize) -> RootBudgets
-where
-    L: Language,
-    N: Analysis<L>,
-{
+pub(crate) fn root_budgets<L: Language, N: Analysis<L>>(
+    egraph: &EGraph<L, N>,
+    root: Id,
+    limit: usize,
+) -> RootBudgets {
     assert!(egraph.clean);
     let mut raw_min_sizes = HashMap::new();
     AstSize.one_shot_analysis(egraph, &mut raw_min_sizes);
@@ -77,16 +78,12 @@ where
 
 /// Largest subterm size usable by each class below `limit` from `root`.
 /// Unreachable classes are omitted.
-fn class_budgets<L, N>(
+fn class_budgets<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     root: Id,
     limit: usize,
     min_sizes: &HashMap<Id, usize>,
-) -> HashMap<Id, usize>
-where
-    L: Language,
-    N: Analysis<L>,
-{
+) -> HashMap<Id, usize> {
     let mut budgets = HashMap::from([(egraph.find(root), limit)]);
     let mut pending: UniqueQueue<Id> = budgets.keys().copied().collect();
 

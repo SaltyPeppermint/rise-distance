@@ -298,12 +298,7 @@ fn completes_some_match(profile: &[State], matches: &[NodeMatch]) -> bool {
 /// Final e-graph and complete count tables for frontier candidate construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
-pub struct FrontierPackage<C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
-{
+pub struct FrontierPackage<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
     egraph: EGraph<L, N>,
     counts: NovelTermCount<C>,
     min_size: usize,
@@ -311,12 +306,7 @@ where
     root: Id,
 }
 
-impl<C, L, N> FrontierPackage<C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
-{
+impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<C, L, N> {
     /// Build counts through `max_size` relative to the previous boundary.
     /// Returns `None` for an empty frontier.
     #[must_use]
@@ -415,11 +405,8 @@ where
     }
 }
 
-impl<C, L, N> DrawerPackage<C, L, N> for FrontierPackage<C, L, N>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
+impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<C, L, N>
+    for FrontierPackage<C, L, N>
 {
     /// Novel root-term counts by size.
     ///
