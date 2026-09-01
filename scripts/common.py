@@ -5,9 +5,13 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from tqdm import tqdm
 
 
 def parse_size(s: str) -> int:
@@ -198,8 +202,8 @@ def verify_summary(payload: Any) -> dict[str, Any]:
 
 
 def eqsat_limits(cfg: dict) -> dict:
-    """Extract the eqsat limits from a raw config dict (`problem_args.json`).
-    `max_memory` is an optional absolute process
+    """Extract the eqsat limits from a raw config dict (`problem_args.json`
+    or model.dump()). `max_memory` is an optional absolute process
     live-heap ceiling (jemalloc `stats.allocated`), accepted as a human size
     string (e.g. `"1G"`) or a raw byte count, normalized to bytes."""
     max_memory = cfg.get("max_memory")
@@ -229,6 +233,24 @@ def limit_flags(limits: dict) -> list[str]:
     return flags
 
 
+def fan_out(
+    jobs: int,
+    fn: Callable[[Any], Any],
+    items: list,
+    desc: str,
+    unit: str = "job",
+) -> list:
+    """Run `fn` over `items` concurrently, dropping the ones that returned None.
+
+    Results come back in `items` order rather than completion order, so a run's
+    output does not depend on how the pool happened to schedule it.
+    """
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = {pool.submit(fn, item): i for i, item in enumerate(items)}
+        results: dict[int, Any] = {}
+        for fut in tqdm(as_completed(futures), total=len(futures), desc=desc, unit=unit):
+            results[futures[fut]] = fut.result()
+    return [results[i] for i in range(len(items)) if results[i] is not None]
 
 
 def uniform_candidate_allocation(

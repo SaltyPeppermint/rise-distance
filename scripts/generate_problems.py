@@ -21,18 +21,19 @@ import json
 import os
 import secrets
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Literal
 
 from diceware.wordlist import WordList, get_wordlists_dir
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from tqdm import tqdm
 
 from common import (
     MemoryKilled,
+    eqsat_limits,
     exit_if_missing,
+    fan_out,
+    limit_flags,
     parse_size,
     run_json_subprocess,
     uniform_candidate_allocation,
@@ -169,31 +170,6 @@ def derive_seed(*fields: int) -> int:
     return int.from_bytes(h.digest(), "little")
 
 
-def eqsat_flags(args: Args) -> list[str]:
-    flags = [
-        "--max-iters",
-        str(args.max_iters),
-        "--max-nodes",
-        str(args.max_nodes),
-        "--max-time",
-        str(args.max_time),
-    ]
-    if args.max_memory is not None:
-        flags += ["--max-memory", str(parse_size(args.max_memory))]
-    return flags
-
-
-def fan_out(jobs: int, fn, items: list, desc: str) -> list:
-    """Run `fn` over `items` concurrently, dropping the ones that returned None."""
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = [pool.submit(fn, item) for item in items]
-        results = [
-            fut.result()
-            for fut in tqdm(as_completed(futures), total=len(futures), desc=desc, unit="job")
-        ]
-    return [r for r in results if r is not None]
-
-
 def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, Any] | None:
     """Sample one validated start term of the slot's size, under the RSS cap.
 
@@ -268,8 +244,6 @@ def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[
         *flags,
     ]
     measured = run_json_subprocess(cmd, what=f"candidates for start term {start['start_term']!r}")
-    if measured is None:
-        return None
     records = measured.payload
     if not records:
         print(
@@ -280,7 +254,7 @@ def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[
     return {**start, "goal_terms": records[0]["candidate_s_expr"]}
 
 
-def run_verify(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, Any] | None:
+def run_verify(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, Any]:
     """Measure what the unguided start->goal search actually costs."""
     cmd = [
         str(args.verify_bin),
@@ -293,8 +267,6 @@ def run_verify(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, 
         *flags,
     ]
     measured = run_json_subprocess(cmd, what=f"verify for goal {pair['goal_term']!r}")
-    if measured is None:
-        return None
     return {**pair, **verify_summary(measured.payload), "peak_rss_bytes": measured.peak_rss_bytes}
 
 
@@ -305,7 +277,8 @@ def main() -> int:
     out = args.path or generate_unique_dir(Path("data/problems"))
     out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
-    flags = eqsat_flags(args)
+    limits = eqsat_limits(args.model_dump())
+    flags = limit_flags(limits)
     min_rss = parse_size(args.min_rss)
 
     slots = [
@@ -349,10 +322,7 @@ def main() -> int:
         json.dumps(
             {
                 "language": args.language,
-                "max_iters": args.max_iters,
-                "max_nodes": args.max_nodes,
-                "max_time": args.max_time,
-                "max_memory": parse_size(args.max_memory) if args.max_memory else None,
+                **limits,
                 "driver_args": args.model_dump(),
             },
             indent=2,

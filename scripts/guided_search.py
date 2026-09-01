@@ -27,7 +27,6 @@ import os
 import random
 import sys
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -35,14 +34,15 @@ from typing import Literal
 import polars as pl
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
-from tqdm import tqdm
 
 from common import (
+    VERIFY_FIELDS,
     MeasuredJson,
     MemoryKilled,
     eqsat_finished,
     eqsat_limits,
     exit_if_missing,
+    fan_out,
     limit_flags,
     parse_size,
     run_json_subprocess,
@@ -52,17 +52,16 @@ from common import (
 # Runs one `candidates` command; `None` when it could not be kept under its cap.
 RunCandidates = Callable[[list[str], str], MeasuredJson | None]
 
-# TODO: the `smallest_novel`/`smallest_overall` policies are gone until the
-# matching `Policy` variants are uncommented in src/cli.rs.
+# TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
 Policy = Literal["count", "uniform"]
 
-# Leg fields derived from `verify`'s payload, with the polars dtype to pin for
-# each. An unreached or panicked leg leaves most of them None, and an
-# unreached-heavy prefix would otherwise make polars infer Null and reject the
-# first real value. Pinning the dtypes makes the schema independent of row order
-# (and of runs that reach nothing). `verify_peak_rss_bytes` comes from the
-# `Measured` envelope around the payload rather than from the payload itself.
-LEG_RESULT_DTYPES = {
+# An unreached or panicked leg leaves most of the fields None.
+# unreached-heavy prefix would otherwise make polars infer Null
+# and reject the first real value.
+VERIFY_DTYPES = {
+    "reached": pl.Boolean,
+    "panic": pl.Boolean,
+    "stop_reason": pl.String,
     "iters": pl.Int64,
     "nodes": pl.Int64,
     "classes": pl.Int64,
@@ -70,18 +69,20 @@ LEG_RESULT_DTYPES = {
     "total_time": pl.Float64,
     "memory": pl.Int64,
     "peak_live_heap": pl.Int64,
-    "verify_peak_rss_bytes": pl.Int64,
-    "stop_reason": pl.String,
 }
+
+# Keep the format stable
+assert set(VERIFY_DTYPES) == set(VERIFY_FIELDS)
+
+# `verify_peak_rss_bytes` comes from the `Measured` envelope around the payload
 ATTEMPT_SCHEMA = {
     "start_term": pl.String,
     "goal_term": pl.String,
     "policy": pl.String,
     "attempt": pl.Int64,
-    "reached": pl.Boolean,
     "gave_up": pl.Boolean,
-    "panic": pl.Boolean,
-    **LEG_RESULT_DTYPES,
+    **VERIFY_DTYPES,
+    "verify_peak_rss_bytes": pl.Int64,
     "guide_nodes": pl.Int64,
     "guide_classes": pl.Int64,
     "guide_time": pl.Float64,
@@ -157,8 +158,7 @@ class Args(BaseSettings):
         default=None,
         description=(
             "Guide-replay absolute process live-heap ceiling, expressed as a "
-            "jemalloc `stats.allocated` limit such as `4G`. The limit is enforced "
-            "directly against the process live heap with nothing subtracted out."
+            "jemalloc `stats.allocated` limit such as `4G`."
         ),
     )
 
@@ -435,29 +435,14 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         file=sys.stderr,
     )
 
-    shard_records: dict[int, list] = {}
-    with ThreadPoolExecutor(max_workers=jobs) as pool_exec:
-        futures = {
-            pool_exec.submit(
-                build_candidate_shard,
-                args,
-                candidate_flags,
-                limits,
-                args.attempts,
-                spec,
-                run,
-            ): i
-            for i, spec in enumerate(specs)
-        }
-        for fut in tqdm(
-            as_completed(futures),
-            total=len(futures),
-            desc="candidates",
-            unit="start term",
-        ):
-            shard_records[futures[fut]] = fut.result()
-
-    merged = [rec for i in range(len(specs)) for rec in shard_records[i]]
+    shards = fan_out(
+        jobs,
+        lambda spec: build_candidate_shard(args, candidate_flags, limits, args.attempts, spec, run),
+        specs,
+        "candidates",
+        unit="start term",
+    )
+    merged = [rec for shard in shards for rec in shard]
     merged_path = candidate_out / "candidates.json"
     merged_path.write_text(json.dumps(merged))
     return merged_path
@@ -578,7 +563,7 @@ def build_work_items(start_term_records: list) -> list[WorkItem]:
     return items
 
 
-def warn_pool_shortfall(items: list[WorkItem], policy: str, attempts: int) -> None:
+def warn_pool_shortfall(items: list[WorkItem], attempts: int) -> None:
     """Warn once per pool size when we must reuse guides.
 
     Deduped on pool size since the shortfall is identical across pairs.
@@ -597,12 +582,14 @@ def warn_pool_shortfall(items: list[WorkItem], policy: str, attempts: int) -> No
 def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> list[dict]:
     """Run every work item's attempt loop concurrently and collect result rows."""
     print(f"Running legs for {len(items)} (start, goal) item(s)", file=sys.stderr)
-    rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=args.jobs or os.cpu_count() or 1) as pool_exec:
-        futures = [pool_exec.submit(run_pair, args, base_flags, item) for item in items]
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="legs", unit="pair"):
-            rows.extend(fut.result())
-    return rows
+    per_item = fan_out(
+        args.jobs or os.cpu_count() or 1,
+        lambda item: run_pair(args, base_flags, item),
+        items,
+        "legs",
+        unit="pair",
+    )
+    return [row for rows in per_item for row in rows]
 
 
 def expected_pairs(start_records: list[dict]) -> list[dict]:
@@ -647,12 +634,13 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
 
 def run_all_unguided(args: Args, base_flags: list[str], pairs: list[dict]) -> list[dict]:
     print(f"Running {len(pairs)} pair-matched unguided baseline(s)", file=sys.stderr)
-    rows = []
-    with ThreadPoolExecutor(max_workers=args.jobs or os.cpu_count() or 1) as pool_exec:
-        futures = [pool_exec.submit(run_unguided_pair, args, base_flags, pair) for pair in pairs]
-        for future in tqdm(as_completed(futures), total=len(futures), desc="unguided", unit="pair"):
-            rows.append(future.result())
-    return rows
+    return fan_out(
+        args.jobs or os.cpu_count() or 1,
+        lambda pair: run_unguided_pair(args, base_flags, pair),
+        pairs,
+        "unguided",
+        unit="pair",
+    )
 
 
 def summarize_pairs(
@@ -785,7 +773,7 @@ def main() -> int:
     candidates_path = build_candidate_manifest(args, cfg, out / "candidate_run")
     start_records = json.loads(candidates_path.read_text())
     items = build_work_items(start_records)
-    warn_pool_shortfall(items, args.policy, args.attempts)
+    warn_pool_shortfall(items, args.attempts)
 
     rows = run_all_pairs(args, base_flags, items)
 
