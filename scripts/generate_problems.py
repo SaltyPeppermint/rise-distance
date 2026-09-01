@@ -11,7 +11,7 @@ Writes `problems.json` (accepted pairs) and `problem_args.json` (config).
 Example:
     cargo build --release --bin start --bin candidates --bin verify
     uv run scripts/generate_problems.py --starts 10 --min-size 10 --max-size 12 \
-      --language math --seed 42 --max-memory 4G --min-rss 3G
+      --language math --seed 42 --max-memory 4G --min-rss 3G --rss-max 8G
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from tqdm import tqdm
 
 from common import (
+    MemoryKilled,
     exit_if_missing,
     parse_size,
     run_json_subprocess,
@@ -124,6 +125,19 @@ class Args(BaseSettings):
         ),
     )
 
+    rss_max: str | None = Field(
+        default=None,
+        description=("Cap each `start` process at this cgroup RSS limit, as a human size"),
+    )
+
+    start_retries: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "How often a `start` slot killed at `--rss-max` is redrawn under a bumped seed"
+        ),
+    )
+
     jobs: int | None = Field(
         default=None, gt=0, description="Concurrent subprocesses. Defaults to `os.cpu_count()`."
     )
@@ -132,6 +146,19 @@ class Args(BaseSettings):
     def validate_sizes(self) -> Args:
         if self.min_size > self.max_size:
             raise ValueError(f"min_size ({self.min_size}) must be <= max_size ({self.max_size})")
+        return self
+
+    @model_validator(mode="after")
+    def validate_memory(self) -> Args:
+        if (
+            self.rss_max is not None
+            and self.max_memory is not None
+            and parse_size(self.rss_max) < parse_size(self.max_memory)
+        ):
+            raise ValueError(
+                f"rss_max ({self.rss_max}) is below max_memory ({self.max_memory}); "
+                "every run would be killed before its live-heap ceiling trips"
+            )
         return self
 
 
@@ -157,10 +184,6 @@ def eqsat_flags(args: Args) -> list[str]:
     return flags
 
 
-def warn(message: str) -> None:
-    print(f"WARNING: {message}", file=sys.stderr)
-
-
 def fan_out(jobs: int, fn, items: list, desc: str) -> list:
     """Run `fn` over `items` concurrently, dropping the ones that returned None."""
     with ThreadPoolExecutor(max_workers=jobs) as pool:
@@ -173,26 +196,58 @@ def fan_out(jobs: int, fn, items: list, desc: str) -> list:
 
 
 def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, Any] | None:
-    """Sample one validated start term of the slot's size."""
+    """Sample one validated start term of the slot's size, under the RSS cap.
+
+    A slot killed at the cap is redrawn under a bumped seed. `start` seeds its
+    RNG once per process and runs a validity eqsat per draw, so the same seed
+    would replay the same sequence into the same fatal draw; only a different
+    seed gives the slot a different term to spend its budget on.
+
+    The seed and reseed count are recorded on the returned row, since a
+    reseeded slot is no longer reproducible from `--seed` and the slot alone.
+    They are also what the caller counts the cap's cost from.
+    """
     size, index = slot
-    cmd = [
-        str(args.start_bin),
-        "--size",
-        str(size),
-        "--seed",
-        str(derive_seed(args.seed, size, index)),
-        "--language",
-        args.language,
-        "--retry-limit",
-        str(args.retry_limit),
-        *flags,
-    ]
-    try:
-        payload = run_json_subprocess(cmd, what=f"start for size {size} slot {index}").payload
-    except RuntimeError as e:
-        warn(str(e))
-        return None
-    return {"start_term": payload["term"], "start_size": size, "attempts": payload["attempt"]}
+    rss_max = parse_size(args.rss_max) if args.rss_max is not None else None
+    for retry in range(args.start_retries + 1):
+        fields = (args.seed, size, index) if retry == 0 else (args.seed, size, index, retry)
+        seed = derive_seed(*fields)
+        cmd = [
+            str(args.start_bin),
+            "--size",
+            str(size),
+            "--seed",
+            str(seed),
+            "--language",
+            args.language,
+            "--retry-limit",
+            str(args.retry_limit),
+            *flags,
+        ]
+        what = f"start for size {size} slot {index}"
+        if retry:
+            what += f" (reseed {retry})"
+        try:
+            measured = run_json_subprocess(cmd, what=what, rss_max_bytes=rss_max)
+        except MemoryKilled as killed:
+            print(f"WARNING: {killed!s}", file=sys.stderr)
+            continue
+        except RuntimeError as e:
+            print(f"WARNING: {e!s}", file=sys.stderr)
+            return None
+        return {
+            "start_term": measured.payload["term"],
+            "start_size": size,
+            "attempts": measured.payload["attempt"],
+            "start_seed": seed,
+            "start_retry": retry,
+        }
+
+    print(
+        f"WARNING: start for size {size} slot {index}: killed at the RSS cap, no reseeds left",
+        file=sys.stderr,
+    )
+    return None
 
 
 def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[str, Any] | None:
@@ -213,15 +268,15 @@ def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[
         str(args.size_search_steps),
         *flags,
     ]
-    try:
-        records = run_json_subprocess(
-            cmd, what=f"candidates for start term {start['start_term']!r}"
-        ).payload
-    except RuntimeError as e:
-        warn(str(e))
+    measured = run_json_subprocess(cmd, what=f"candidates for start term {start['start_term']!r}")
+    if measured is None:
         return None
+    records = measured.payload
     if not records:
-        warn(f"candidates found nothing for start term {start['start_term']!r}")
+        print(
+            f"WARNING: candidates found nothing for start term {start['start_term']!r}",
+            file=sys.stderr,
+        )
         return None
     return {**start, "goal_terms": records[0]["candidate_s_expr"]}
 
@@ -238,10 +293,8 @@ def run_verify(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, 
         pair["goal_term"],
         *flags,
     ]
-    try:
-        measured = run_json_subprocess(cmd, what=f"verify for goal {pair['goal_term']!r}")
-    except RuntimeError as e:
-        warn(str(e))
+    measured = run_json_subprocess(cmd, what=f"verify for goal {pair['goal_term']!r}")
+    if measured is None:
         return None
     return {**pair, **verify_summary(measured.payload), "peak_rss_bytes": measured.peak_rss_bytes}
 
@@ -265,6 +318,18 @@ def main() -> int:
     ]
     print(f"Generating {len(slots)} start term(s) -> {out} ({jobs} workers)", file=sys.stderr)
     starts = fan_out(jobs, lambda slot: run_start(args, flags, slot), slots, "starts")
+    # A kept slot's `start_retry` is how many kills it was redrawn past; the
+    # slots that came back with nothing were killed past their last reseed (or
+    # failed outright, which warns for itself above). Silent when the cap cost
+    # nothing.
+    reseeded = sum(1 for s in starts if s["start_retry"])
+    empty = len(slots) - len(starts)
+    if args.rss_max is not None and (reseeded or empty):
+        print(
+            f"\nRSS cap {args.rss_max}: {reseeded}/{len(starts)} kept slot(s) needed a "
+            f"reseed, {empty} slot(s) produced nothing",
+            file=sys.stderr,
+        )
 
     # Distinct terms only; two slots of one size can sample the same term.
     seen: set[str] = set()
