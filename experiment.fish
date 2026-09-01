@@ -19,7 +19,7 @@ memrun uv run scripts/generate_problems.py \
   --max-size 50 \
   --language math \
   --seed 123 \
-  --jobs 2 \
+  --jobs 8 \
   --max-iters 2000 \
   --max-nodes 1000000 \
   --max-time 300 \
@@ -46,6 +46,54 @@ memrun uv run scripts/guided_search.py \
   --policy count \
   --start-terms 100 \
   --attempts 10 \
+  --seed 42 \
+  --full-union \
+  --stop-memory 250M \
+  data/problems/squishy-potatoe
+or exit $status
+
+memrun uv run scripts/guided_search.py \
+  --sampling-rss-max 2000M \
+  --sampling-retries 5 \
+  --policy count \
+  --start-terms 100 \
+  --attempts 10 \
+  --seed 42 \
+  --full-union \
+  --stop-memory 250M \
+  data/problems/squishy-potatoe
+or exit $status
+
+memrun uv run scripts/guided_search.py \
+  --sampling-rss-max 1000M \
+  --sampling-retries 5 \
+  --policy count \
+  --start-terms 100 \
+  --attempts 20 \
+  --seed 42 \
+  --full-union \
+  --stop-memory 250M \
+  data/problems/squishy-potatoe
+or exit $status
+
+memrun uv run scripts/guided_search.py \
+  --sampling-rss-max 1000M \
+  --sampling-retries 5 \
+  --policy uniform \
+  --start-terms 100 \
+  --attempts 10 \
+  --seed 42 \
+  --full-union \
+  --stop-memory 250M \
+  data/problems/squishy-potatoe
+or exit $status
+
+memrun uv run scripts/guided_search.py \
+  --sampling-rss-max 1000M \
+  --sampling-retries 5 \
+  --policy uniform \
+  --start-terms 100 \
+  --attempts 20 \
   --seed 42 \
   --full-union \
   --stop-memory 250M \
