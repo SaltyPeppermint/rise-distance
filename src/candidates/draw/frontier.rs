@@ -13,7 +13,7 @@ use rand_chacha::ChaCha12Rng;
 use crate::Counter;
 use crate::candidates::count::{NodeMatch, NovelTermCount, RootBudgets};
 use crate::candidates::count::{
-    NodeMatches, count_terms_rooted, enumerate_matches_rooted, find_novel_root_sizes,
+    NodeMatches, count_histograms_rooted, enumerate_matches_rooted, find_novel_root_sizes,
     prune_matches, root_budgets,
 };
 use crate::candidates::draw::{CountWeigher, DrawerPackage, UniformWeigher};
@@ -341,8 +341,9 @@ where
         budgets: &RootBudgets,
     ) -> Option<FrontierPackage<C, L, N>> {
         let (egraph, root) = result.into_curr();
-        let plain = count_terms_rooted(&egraph, budgets);
-        let counts = NovelTermCount::from_rooted_matches(&egraph, plain, matches, budgets);
+        let plain = count_histograms_rooted(&egraph, budgets);
+        let counts = NovelTermCount::from_rooted_matches(&egraph, &plain, matches, budgets);
+        drop(plain);
 
         let root = egraph.find(root);
         let histogram = counts.data().get(&root)?;
@@ -451,14 +452,7 @@ where
             Policy::Count => {
                 FrontierDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
                     .draw_root_batch(&requests, seed)
-            } //   Policy::SmallestOverall => Some(vec![
-              //         PlainDrawer::new(self.counts.plain(), &self.egraph, self.root, NaiveWeigher)
-              //             .smallest(self.root),
-              //     ]),
-              //     Policy::SmallestNovel => Some(vec![
-              //         FrontierDrawer::new(&self.counts, &self.egraph, self.root, NaiveWeigher)
-              //             .smallest(self.root),
-              //     ]),
+            }
         }
     }
 

@@ -19,8 +19,40 @@ use crate::candidates::count::budgets::RootBudgets;
 pub struct CountData<C> {
     /// Distinct-term counts by size and canonical class.
     pub(crate) data: HashMap<Id, HashMap<usize, C>>,
-    /// Per-class, per-node suffix convolutions used to split child sizes.
-    pub(crate) suffix: HashMap<Id, Vec<Vec<HashMap<usize, C>>>>,
+    /// Per-class, per-node suffix convolutions, stored in the truncated shape
+    /// described on [`SuffixTables`]. Read them through
+    /// [`suffix_at`](Self::suffix_at) rather than indexing directly.
+    pub(crate) suffix: SuffixTables<Id, C>,
+    /// Handed out by [`suffix_at`](Self::suffix_at) for the empty product.
+    one: C,
+}
+
+impl<C: Counter> CountData<C> {
+    /// The number of ways to fill children `from..` of node `node_idx` in
+    /// `class` with exactly `total` size, or `None` when there is none.
+    ///
+    /// `children` must be the node's canonical child classes. This is the
+    /// reader for the truncated [`SuffixTables`] layout: the two implicit tail
+    /// positions are reconstructed here, so `from` may range over `0..=n`.
+    pub(crate) fn suffix_at(
+        &self,
+        class: Id,
+        node_idx: usize,
+        children: &[Id],
+        from: usize,
+        total: usize,
+    ) -> Option<&C> {
+        let n = children.len();
+        if from == n {
+            // The empty product: one filling, of size zero.
+            return (total == 0).then_some(&self.one);
+        }
+        if from + 1 == n {
+            // A lone trailing child takes the whole total itself.
+            return self.data.get(&children[from])?.get(&total);
+        }
+        self.suffix[&class][node_idx][from].get(&total)
+    }
 }
 
 /// Count distinct terms within pre-established root budgets.
@@ -39,7 +71,31 @@ where
     }
     let (data, mut suffix) = dp.into_parts();
     suffix.retain(|id, _| data.contains_key(id));
-    CountData { data, suffix }
+    CountData {
+        data,
+        suffix,
+        one: C::one(),
+    }
+}
+
+/// Count distinct terms within pre-established root budgets
+///
+/// The suffix tables are the DP's working state, so they are still built temporarily
+/// Callers that rederive child-size splits on the fly.
+pub(crate) fn count_histograms_rooted<C, L, N>(
+    egraph: &EGraph<L, N>,
+    rooted: &RootBudgets,
+) -> HashMap<Id, HashMap<usize, C>>
+where
+    C: Counter,
+    L: Language,
+    N: Analysis<L>,
+{
+    let mut dp = plain_dp_rooted(egraph, rooted);
+    for _ in 0..rooted.limit() {
+        dp.step();
+    }
+    dp.into_parts().0
 }
 
 /// Create an unstepped plain DP for the root budgets.
@@ -113,7 +169,19 @@ pub(crate) fn find_plain_root_sizes<L: Language, N: Analysis<L>>(
 type Histograms<K, C> = HashMap<K, HashMap<usize, C>>;
 
 /// Per key, per node: suffix convolution tables in the shape of
-/// [`suffix_convolutions`](super::suffix_convolutions).
+/// [`suffix_convolutions`](super::suffix_convolutions), truncated to the
+/// positions that carry information.
+///
+/// SPACE SAVING:
+///
+/// `suffix_convolutions` produces `n + 1` tables for an `n`-ary node, but the
+/// last two are never worth materializing: position `n` is the empty product
+/// `{0: 1}`, and position `n - 1` convolves the last child against that empty
+/// product, so it is a verbatim copy of that child's histogram. Only positions
+/// `0..n - 1` are stored. We have a lot of nodes for which this kicks in.
+///
+/// Both implicit positions are reconstructed on read. In an e-graph of mostly
+/// binary nodes this is the difference between three tables per node and one.
 type SuffixTables<K, C> = HashMap<K, Vec<Vec<HashMap<usize, C>>>>;
 
 /// Size-layered counting over e-class keys or current/previous class pairs.
@@ -140,11 +208,9 @@ impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
             .map(|&k| {
                 let tables = children_of[&k]
                     .iter()
-                    .map(|children| {
-                        let mut tables = vec![HashMap::new(); children.len() + 1];
-                        tables[children.len()].insert(0, C::one());
-                        tables
-                    })
+                    // The two trailing positions stay implicit, so an `n`-ary
+                    // node keeps `n - 1` tables and a leaf or unary node none.
+                    .map(|children| vec![HashMap::new(); children.len().saturating_sub(1)])
                     .collect();
                 (k, tables)
             })
@@ -179,19 +245,29 @@ impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
         // every part of `total` is <= size - 1: exactly the histogram
         // entries that already exist, and those are final. For the same
         // reason the `total` entry inserted into `tables[i + 1]` in this
-        // very loop can never feed into `tables[i]`.
-        for (&k, &budget) in budgets.iter() {
-            if size > budget {
-                continue;
-            }
+        // very loop can never feed into `tables[i]`, and `data` still holds
+        // nothing at `size` — this layer's histograms land below.
+        for (&k, _) in budgets.iter().filter(|&(_, &budget)| size <= budget) {
             let per_node = suffix.get_mut(&k).unwrap();
             for (children, tables) in children_of[&k].iter().zip(per_node.iter_mut()) {
-                for i in (0..children.len()).rev() {
+                // A leaf stores no tables and has no last child to stand in
+                // for the implicit position.
+                let Some(last) = children.last() else {
+                    continue;
+                };
+                for i in (0..tables.len()).rev() {
                     let Some(child_hist) = data.get(&children[i]) else {
                         continue;
                     };
                     let (head, tail) = tables.split_at_mut(i + 1);
-                    let count = convolve_entry(child_hist, &tail[0], total);
+                    // `tail` is empty exactly when position `i + 1` is the
+                    // implicit last-child one; read that child's histogram
+                    // directly. Truncating it at this key's budget would
+                    // change nothing: every part of `total` is <= `total`.
+                    let Some(rest) = tail.first().or_else(|| data.get(last)) else {
+                        continue;
+                    };
+                    let count = convolve_entry(child_hist, rest, total);
                     if count != C::zero() {
                         head[i].insert(total, count);
                     }
@@ -200,14 +276,20 @@ impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
         }
 
         // A key's count at `size` is the number of ways any of its nodes
-        // fills its children with `total`.
-        for (&k, &budget) in budgets.iter() {
-            if size > budget {
-                continue;
-            }
-            let count = suffix[&k]
+        // fills its children with `total`, i.e. the sum over its nodes of
+        // suffix position 0 implicit for arity below two.
+        let one = C::one();
+        for (&k, _) in budgets.iter().filter(|&(_, &budget)| size <= budget) {
+            let count = children_of[&k]
                 .iter()
-                .filter_map(|tables| tables[0].get(&total))
+                .zip(&suffix[&k])
+                .filter_map(|(children, tables)| match children.as_slice() {
+                    // A leaf is one term of size one, with nothing to fill.
+                    [] => (total == 0).then_some(&one),
+                    // A lone child takes the whole total itself.
+                    [only] => data.get(only)?.get(&total),
+                    _ => tables[0].get(&total),
+                })
                 .sum::<C>();
             if count != C::zero() {
                 data.entry(k).or_default().insert(size, count);
@@ -384,20 +466,35 @@ mod tests {
         let result = count_terms_rooted::<BigUint, _, _>(&egraph, &budgets);
 
         for (&id, per_node) in &result.suffix {
-            for (node, tables) in egraph[id].nodes.iter().zip(per_node) {
-                let histograms = node
+            for (node_idx, (node, tables)) in egraph[id].nodes.iter().zip(per_node).enumerate() {
+                let children = node
                     .children()
                     .iter()
-                    .map(|&c| {
-                        result
-                            .data
-                            .get(&egraph.find(c))
-                            .cloned()
-                            .unwrap_or_default()
-                    })
+                    .map(|&c| egraph.find(c))
                     .collect::<Vec<_>>();
-                let expected = suffix_convolutions(&histograms, budgets.budget(id).unwrap() - 1);
-                assert_eq!(tables, &expected);
+                let histograms = children
+                    .iter()
+                    .map(|c| result.data.get(c).cloned().unwrap_or_default())
+                    .collect::<Vec<_>>();
+                let budget = budgets.budget(id).unwrap() - 1;
+                let expected = suffix_convolutions(&histograms, budget);
+
+                // Only positions `0..n - 1` are stored; the last two are
+                // implicit.
+                assert_eq!(tables.len(), children.len().saturating_sub(1));
+                assert_eq!(tables.as_slice(), &expected[..tables.len()]);
+
+                // `suffix_at` still reproduces every position, implicit ones
+                // included.
+                for (from, want) in expected.iter().enumerate() {
+                    for total in 0..=budget {
+                        assert_eq!(
+                            result.suffix_at(id, node_idx, &children, from, total),
+                            want.get(&total),
+                            "suffix_at({id}, {node_idx}, {from}, {total})"
+                        );
+                    }
+                }
             }
         }
     }

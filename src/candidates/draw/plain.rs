@@ -3,6 +3,7 @@ use hashbrown::HashMap;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
+use smallvec::SmallVec;
 
 use crate::Counter;
 use crate::candidates::count::{CountData, RootBudgets};
@@ -72,20 +73,30 @@ where
         let canon_id = self.graph.find(id);
         let eclass = &self.graph[canon_id];
         let child_budget = size - 1;
-        let cached = &self.counts.suffix[&canon_id];
 
-        let weights = cached
+        // `suffix_at` reads the truncated suffix tables against a node's
+        // canonical children, so canonicalize once per node and reuse.
+        let canon_children = |node: &L| {
+            node.children()
+                .iter()
+                .map(|&c| self.graph.find(c))
+                .collect::<SmallVec<[Id; 2]>>()
+        };
+
+        let weights = eclass
+            .nodes
             .iter()
-            .map(|suffix| {
-                suffix[0]
-                    .get(&child_budget)
+            .enumerate()
+            .map(|(idx, node)| {
+                self.counts
+                    .suffix_at(canon_id, idx, &canon_children(node), 0, child_budget)
                     .map_or_else(C::zero, |count| self.weigher.node_weight(count))
             })
             .collect::<Vec<_>>();
         let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
 
         let pick = &eclass.nodes[pick_idx];
-        let suffix = &cached[pick_idx];
+        let pick_children = canon_children(pick);
 
         let mut remaining = child_budget;
         let children = pick
@@ -98,10 +109,15 @@ where
                     .into_iter()
                     .flatten()
                     .filter_map(|(&s, count)| {
-                        remaining
-                            .checked_sub(s)
-                            .and_then(|r| suffix[i + 1].get(&r))
-                            .map(|rest_count| (s, self.weigher.child_weight(count, rest_count)))
+                        let rest = remaining.checked_sub(s)?;
+                        let rest_count = self.counts.suffix_at(
+                            canon_id,
+                            pick_idx,
+                            &pick_children,
+                            i + 1,
+                            rest,
+                        )?;
+                        Some((s, self.weigher.child_weight(count, rest_count)))
                     })
                     .collect::<Vec<_>>();
 

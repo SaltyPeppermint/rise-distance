@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::iter::Sum;
 
-use num::traits::{FromPrimitive, NumAssignRef, NumRef, ToPrimitive};
+use num::traits::{ConstOne, FromPrimitive, NumAssignRef, NumRef, ToPrimitive};
 use rand::distributions::uniform::SampleUniform;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -15,6 +15,7 @@ pub trait Counter:
     + Display
     + SampleUniform
     + PartialOrd
+    + ConstOne
     + for<'a> Sum<&'a Self>
     + ToPrimitive
     + FromPrimitive
@@ -32,7 +33,8 @@ impl<
         + Display
         + SampleUniform
         + PartialOrd
-        + for<'a> Sum<&'a Self>
+        + ConstOne
+    + for<'a> Sum<&'a Self>
         + ToPrimitive
         + FromPrimitive
         + Serialize

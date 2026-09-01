@@ -12,8 +12,8 @@ use smallvec::SmallVec;
 use crate::Counter;
 use crate::candidates::count::budgets::RootBudgets;
 #[cfg(test)]
-use crate::candidates::count::count_terms_rooted;
-use crate::candidates::count::{CountData, LayeredDp, plain_dp_rooted};
+use crate::candidates::count::count_histograms_rooted;
+use crate::candidates::count::{LayeredDp, plain_dp_rooted};
 use crate::previous::PreviousLookup;
 
 /// Child class ids, inline for the usual arity of at most two.
@@ -39,14 +39,17 @@ type MatchKeys = HashSet<(Id, usize, Id, ChildIds)>;
 /// Shared extraction counts by class pair and size.
 type JointTable<C> = HashMap<(Id, Id), HashMap<usize, C>>;
 
-/// Plain, joint, and novel counts plus previous-node matches.
+/// Joint and novel counts plus previous-node matches.
+///
+/// The plain counts are an input to [`derive_novel`] only, never a field: the
+/// frontier drawer reads `data` and `joint` and re-derives child-size splits
+/// per draw, so retaining the plain histograms and their suffix tables would
+/// cost more than everything kept here put together.
 #[derive(Debug)]
 pub struct NovelTermCount<C>
 where
     C: Counter,
 {
-    plain: CountData<C>,
-
     /// Shared extraction counts by class pair and size.
     joint: JointTable<C>,
 
@@ -79,16 +82,18 @@ impl<C: Counter> NovelTermCount<C> {
 
         let budgets = root_budgets(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
-        let plain = count_terms_rooted(curr, &budgets);
-        Self::from_rooted_matches(curr, plain, matches, &budgets)
+        let plain = count_histograms_rooted(curr, &budgets);
+        Self::from_rooted_matches(curr, &plain, matches, &budgets)
     }
 
     /// Run root-restricted joint counting using the same current-class
     /// budgets that produced `plain` and `matches`.
+    ///
+    /// `plain` is consumed by the novel subtraction and then dropped.
     #[must_use]
     pub(crate) fn from_rooted_matches<L, N>(
         curr: &EGraph<L, N>,
-        plain: CountData<C>,
+        plain: &HashMap<Id, HashMap<usize, C>>,
         matches: NodeMatches,
         budgets: &RootBudgets,
     ) -> Self
@@ -98,10 +103,9 @@ impl<C: Counter> NovelTermCount<C> {
     {
         let joint = compute_joint_rooted(curr, &matches, budgets);
         let cover = build_cover(&joint);
-        let data = derive_novel(&plain.data, &joint);
+        let data = derive_novel(plain, &joint);
 
         Self {
-            plain,
             joint,
             cover,
             matches,
@@ -113,11 +117,6 @@ impl<C: Counter> NovelTermCount<C> {
     #[must_use]
     pub const fn data(&self) -> &HashMap<Id, HashMap<usize, C>> {
         &self.data
-    }
-
-    #[must_use]
-    pub const fn plain(&self) -> &CountData<C> {
-        &self.plain
     }
 
     /// Shared-term histogram for a current/previous class pair.
@@ -382,6 +381,10 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     let mut term_count = BigUint::ZERO;
     for _ in 0..rooted.limit() {
         let size = plain.step();
+        eprintln!(
+            "DEBUG: PEAK RSS IN NOVEL ROOT DP AFTER STEP {size}: {}",
+            crate::utils::peak_rss_bytes()
+        );
         joint.step();
 
         // Final as of this layer. Zero-count entries are absent and read as 0.
@@ -480,8 +483,8 @@ mod tests {
     ) -> NovelTermCount<BigUint> {
         let budgets = root_budgets(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
-        let plain = count_terms_rooted(curr, &budgets);
-        NovelTermCount::from_rooted_matches(curr, plain, matches, &budgets)
+        let plain = count_histograms_rooted(curr, &budgets);
+        NovelTermCount::from_rooted_matches(curr, &plain, matches, &budgets)
     }
 
     #[test]
