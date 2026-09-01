@@ -17,10 +17,14 @@ PALETTE = [
     "#7f6d5f",
     "#5e9ed6",
 ]
+# Peak RSS is the only memory metric reported; it names every memory axis.
+MEMORY_LABEL = "peak RSS"
 OUTCOME_ORDER = ["both", "guided only", "unguided only", "neither"]
 OUTCOME_COLORS = ["#4c9f70", "#2a78d6", "#eb6834", "#b8b8b4"]
 WIN_ORDER = ["below brute force", "at or above"]
 WIN_COLORS = ["#4c9f70", "#eb6834"]
+BRUTE_COST_ORDER = ["guided failed", "guided proved, at or above", "guided proved, cheaper"]
+BRUTE_COST_COLORS = ["#eb6834", "#eda100", "#4c9f70"]
 
 THEME = {
     "config": {
@@ -56,14 +60,6 @@ def _guided_peak_scope(comparison: pl.DataFrame) -> str:
         return "guided workflow"
     scopes = comparison["guided_peak_scope"].drop_nulls().unique().to_list()
     return str(scopes[0]) if len(scopes) == 1 else "guided"
-
-
-def _memory_metric(frame: pl.DataFrame) -> str:
-    """Metric label carried by the `*_vs_brute` builders, for axis titles."""
-    if "memory_metric" not in frame.columns:
-        return "peak memory"
-    labels = frame["memory_metric"].drop_nulls().unique().to_list()
-    return str(labels[0]) if len(labels) == 1 else "peak memory"
 
 
 def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
@@ -116,7 +112,6 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
 def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     """One explicitly scoped guided peak versus the brute-force proof cost."""
     guided_scope = _guided_peak_scope(comparison)
-    metric = _memory_metric(comparison)
     title = f"{guided_scope.title()} vs brute-force proof"
     points = (
         alt.Chart(comparison)
@@ -124,12 +119,12 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(
             x=alt.X(
                 "brute_peak_mib:Q",
-                title=f"brute-force proof {metric} (MiB, log)",
+                title=f"brute-force proof {MEMORY_LABEL} (MiB, log)",
                 scale=alt.Scale(type="log"),
             ),
             y=alt.Y(
                 "guided_peak_mib:Q",
-                title=f"{guided_scope} {metric} (MiB, log)",
+                title=f"{guided_scope} {MEMORY_LABEL} (MiB, log)",
                 scale=alt.Scale(type="log"),
             ),
             color=_mode_color(meta["modes"]),
@@ -167,9 +162,57 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     )
 
 
+def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Brute-force proof cost of every planned pair, grouped by guided outcome.
+
+    One panel: each log-spaced bucket carries a bar per outcome, side by side
+    from a shared baseline, so the pairs the guide could not prove, the ones it
+    proved no cheaper than brute force, and the ones it proved cheaper are read
+    against each other within the bucket. The bars sit in the slot edges the
+    binner precomputed, an offset scale not applying to a continuous log axis.
+    """
+    return (
+        alt.Chart(binned)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "slot_start_mib:Q",
+                title=f"brute-force proof {MEMORY_LABEL} (MiB, log)",
+                scale=alt.Scale(type="log", nice=False),
+            ),
+            x2="slot_end_mib:Q",
+            y=alt.Y("count:Q", title="pairs"),
+            # A bar given both x and x2 spans a range rather than resting on the
+            # axis, so the baseline has to be named.
+            y2=alt.datum(0),
+            color=alt.Color(
+                "outcome:N",
+                sort=BRUTE_COST_ORDER,
+                scale=alt.Scale(domain=BRUTE_COST_ORDER, range=BRUTE_COST_COLORS),
+                legend=alt.Legend(title=None, columns=1),
+            ),
+            column=alt.Column("mode:N", title=None, sort=list(meta["modes"])),
+            tooltip=[
+                "mode:N",
+                "outcome:N",
+                "count:Q",
+                alt.Tooltip("share:Q", format=".1%", title="share of outcome"),
+                alt.Tooltip("bucket_share:Q", format=".1%", title="share of bucket"),
+                alt.Tooltip("bucket_n:Q", title="pairs in bucket"),
+                alt.Tooltip("bin_start_mib:Q", format=".0f", title="bucket from (MiB)"),
+                alt.Tooltip("bin_end_mib:Q", format=".0f", title="bucket to (MiB)"),
+            ],
+        )
+        .properties(
+            title=_title(f"Brute-force proof {MEMORY_LABEL} by guided outcome", meta),
+            width=560,
+            height=300,
+        )
+    )
+
+
 def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
     """Guided successes below versus at or above the brute-force proof peak."""
-    metric = _memory_metric(counts)
     data = counts.unpivot(
         index=["mode", "guided_peak_scope"],
         on=["n_below", "n_at_or_above"],
@@ -202,7 +245,7 @@ def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
             tooltip=["mode:N", "guided_peak_scope:N", "side:N", "count:Q"],
         )
         .properties(
-            title=_title(f"Guided {metric} versus brute-force proof", meta),
+            title=_title(f"Guided {MEMORY_LABEL} versus brute-force proof", meta),
             width=420,
             height=alt.Step(26),
         )
@@ -212,7 +255,6 @@ def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
 def peak_ratio_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     """ECDF of one explicitly scoped guided peak over the brute-force proof cost."""
     guided_scope = _guided_peak_scope(comparison)
-    metric = _memory_metric(comparison)
     data = comparison.with_columns(
         (pl.col("peak_ratio").rank("max").over("mode") / pl.len().over("mode")).alias("cdf")
     ).sort("mode", "peak_ratio")
@@ -222,7 +264,7 @@ def peak_ratio_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(
             x=alt.X(
                 "peak_ratio:Q",
-                title=f"{guided_scope} / brute-force proof {metric} (log)",
+                title=f"{guided_scope} / brute-force proof {MEMORY_LABEL} (log)",
                 scale=alt.Scale(type="log"),
             ),
             y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
@@ -241,14 +283,13 @@ def peak_ratio_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(x=alt.X("ratio:Q", scale=alt.Scale(type="log")))
     )
     return (curves + parity).properties(
-        title=_title(f"{guided_scope.title()} {metric} ratio", meta), width=460
+        title=_title(f"{guided_scope.title()} {MEMORY_LABEL} ratio", meta), width=460
     )
 
 
 def absolute_peak_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     """Absolute guided and brute-force peaks on a shared axis."""
     guided_scope = _guided_peak_scope(comparison)
-    metric = _memory_metric(comparison)
     data = pl.concat(
         [
             comparison.select(
@@ -271,7 +312,7 @@ def absolute_peak_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
         alt.Chart(data)
         .mark_line(interpolate="step-after", strokeWidth=2)
         .encode(
-            x=alt.X("peak_mib:Q", title=f"{metric} (MiB, log)", scale=alt.Scale(type="log")),
+            x=alt.X("peak_mib:Q", title=f"{MEMORY_LABEL} (MiB, log)", scale=alt.Scale(type="log")),
             y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
             color=alt.Color(
                 "method:N",
@@ -290,7 +331,7 @@ def absolute_peak_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
         .properties(
-            title=_title(f"{guided_scope.title()} vs brute-force proof {metric}", meta),
+            title=_title(f"{guided_scope.title()} vs brute-force proof {MEMORY_LABEL}", meta),
             width=300,
             height=240,
         )

@@ -16,92 +16,31 @@ REQUIRED_COMPARISON_COLUMNS = {
     "candidate_peak_rss_bytes",
     "verify_peak_rss_bytes",
     "guided_peak_rss_bytes",
-    "guided_peak_live_heap_bytes",
     "attempts_run",
     "success_attempt",
     "setup_status",
 }
 
-# The brute-force baseline: what proving the pair cost the unguided run that
-# admitted it to the problem set, under that run's own generous limits. The
-# `unguided_*` columns of a comparison file are a different quantity -- an
-# unguided run re-capped at the guided budget, which by construction fails on
-# every pair here -- so they carry no usable peak and stay out of the memory
-# statistics.
-BRUTE_COLUMNS = {
-    "peak_rss_bytes": "brute_peak_rss_bytes",
-    "peak_live_heap": "brute_peak_live_heap_bytes",
-}
+BRUTE_COLUMNS = {"peak_rss_bytes": "brute_peak_rss_bytes"}
 
-MEMORY_METRICS = {
-    "live_heap": {
-        "label": "peak live heap",
-        "guided_workflow": "guided_peak_live_heap_bytes",
-        "guided_verification": "guided_peak_live_heap_bytes",
-        "brute": "brute_peak_live_heap_bytes",
-        "components": (
-            ("guided workflow", "guided_peak_live_heap_bytes"),
-            ("brute-force proof", "brute_peak_live_heap_bytes"),
-        ),
-    },
-    "rss": {
-        "label": "peak RSS",
-        "guided_workflow": "guided_peak_rss_bytes",
-        # The decisive leg (the one that reached, else the last tried).
-        "guided_verification": "verify_peak_rss_bytes",
-        "brute": "brute_peak_rss_bytes",
-        "components": (
-            ("candidate construction", "candidate_peak_rss_bytes"),
-            ("guided verification (decisive leg)", "verify_peak_rss_bytes"),
-            ("guided verification (max leg)", "verify_peak_rss_bytes_max"),
-            ("guided workflow", "guided_peak_rss_bytes"),
-            ("brute-force proof", "brute_peak_rss_bytes"),
-        ),
-    },
-}
-DEFAULT_MEMORY_METRIC = "rss"
+GUIDED_WORKFLOW_COLUMN = "guided_peak_rss_bytes"
+GUIDED_VERIFICATION_COLUMN = "verify_peak_rss_bytes"
+BRUTE_COLUMN = "brute_peak_rss_bytes"
 
-
-def _metric(metric: str) -> dict:
-    try:
-        return MEMORY_METRICS[metric]
-    except KeyError:
-        raise ValueError(
-            f"unknown memory metric {metric!r}; expected one of {sorted(MEMORY_METRICS)}"
-        ) from None
-
-
-MEMORY_SUMMARY_SCHEMA = {
-    "mode": pl.String,
-    "guided_peak_scope": pl.String,
-    "memory_metric": pl.String,
-    "n_guided_successes": pl.Int64,
-    "guided_median_peak_mib": pl.Float64,
-    "brute_median_peak_mib": pl.Float64,
-    "guided_p90_peak_mib": pl.Float64,
-    "brute_p90_peak_mib": pl.Float64,
-    "median_peak_ratio": pl.Float64,
-    "median_memory_saved_pct": pl.Float64,
-    "guided_lower_peak_share": pl.Float64,
-}
 PEAK_WIN_SCHEMA = {
     "mode": pl.String,
     "guided_peak_scope": pl.String,
-    "memory_metric": pl.String,
     "n_guided_successes": pl.Int64,
     "n_below": pl.UInt32,
     "n_at_or_above": pl.UInt32,
     "share_below": pl.Float64,
     "median_peak_ratio": pl.Float64,
 }
-MEMORY_COMPONENT_SUMMARY_SCHEMA = {
-    "mode": pl.String,
-    "component": pl.String,
-    "n": pl.Int64,
-    "median_peak_mib": pl.Float64,
-    "p90_peak_mib": pl.Float64,
-    "memory_metric": pl.String,
-}
+
+# Share of a bin's width left empty, so grouped bars separate into buckets.
+BRUTE_COST_BIN_PAD = 0.14
+# Ordered: the drawing slot of a grouped bar is the position in this tuple.
+BRUTE_COST_OUTCOMES = ("guided failed", "guided proved, at or above", "guided proved, cheaper")
 
 
 @dataclass(frozen=True)
@@ -381,11 +320,7 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def _guided_vs_brute(
-    frame: pl.DataFrame,
-    guided_peak_column: str,
-    guided_peak_scope: str,
-    brute_peak_column: str,
-    metric_label: str,
+    frame: pl.DataFrame, guided_peak_column: str, guided_peak_scope: str
 ) -> pl.DataFrame:
     """Compare one explicitly named guided peak with the brute-force proof cost.
 
@@ -395,44 +330,29 @@ def _guided_vs_brute(
     """
     return (
         frame.filter(pl.col("guided_success"))
-        .drop_nulls([guided_peak_column, brute_peak_column])
-        .filter((pl.col(guided_peak_column) > 0) & (pl.col(brute_peak_column) > 0))
+        .drop_nulls([guided_peak_column, BRUTE_COLUMN])
+        .filter((pl.col(guided_peak_column) > 0) & (pl.col(BRUTE_COLUMN) > 0))
         .with_columns(
             pl.lit(guided_peak_scope).alias("guided_peak_scope"),
-            pl.lit(metric_label).alias("memory_metric"),
             (pl.col(guided_peak_column) / 2**20).alias("guided_peak_mib"),
-            (pl.col(brute_peak_column) / 2**20).alias("brute_peak_mib"),
-            (pl.col(guided_peak_column) / pl.col(brute_peak_column)).alias("peak_ratio"),
+            (pl.col(BRUTE_COLUMN) / 2**20).alias("brute_peak_mib"),
+            (pl.col(guided_peak_column) / pl.col(BRUTE_COLUMN)).alias("peak_ratio"),
         )
         .with_columns(((1 - pl.col("peak_ratio")) * 100).alias("memory_saved_pct"))
     )
 
 
-def verification_vs_brute(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
+def verification_vs_brute(frame: pl.DataFrame) -> pl.DataFrame:
     """Guided verification versus the brute-force proof cost for the same pair."""
-    spec = _metric(metric)
-    scope = (
-        "guided verification"
-        if spec["guided_verification"] != spec["guided_workflow"]
-        else "guided workflow"
-    )
-    return _guided_vs_brute(frame, spec["guided_verification"], scope, spec["brute"], spec["label"])
+    return _guided_vs_brute(frame, GUIDED_VERIFICATION_COLUMN, "guided verification")
 
 
-def workflow_vs_brute(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
+def workflow_vs_brute(frame: pl.DataFrame) -> pl.DataFrame:
     """The complete guided workflow versus the brute-force proof cost for the same pair."""
-    spec = _metric(metric)
-    return _guided_vs_brute(
-        frame, spec["guided_workflow"], "guided workflow", spec["brute"], spec["label"]
-    )
+    return _guided_vs_brute(frame, GUIDED_WORKFLOW_COLUMN, "guided workflow")
 
 
-def guided_vs_brute(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
-    """Complete-workflow comparison for grid analyses."""
-    return workflow_vs_brute(frame, metric)
-
-
-def peak_win_counts(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) -> pl.DataFrame:
+def peak_win_counts(frame: pl.DataFrame) -> pl.DataFrame:
     """How many guided successes peak below the brute-force proof, per guided scope.
 
     A ratio of exactly 1 is counted as `n_at_or_above`, so the two counts
@@ -440,13 +360,11 @@ def peak_win_counts(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) ->
     """
     counts = []
     for builder in (verification_vs_brute, workflow_vs_brute):
-        comparison = builder(frame, metric)
+        comparison = builder(frame)
         if comparison.is_empty():
             continue
         counts.append(
-            comparison.group_by(
-                "mode", "guided_peak_scope", "memory_metric", maintain_order=True
-            ).agg(
+            comparison.group_by("mode", "guided_peak_scope", maintain_order=True).agg(
                 pl.len().alias("n_guided_successes"),
                 (pl.col("peak_ratio") < 1).sum().alias("n_below"),
                 (pl.col("peak_ratio") >= 1).sum().alias("n_at_or_above"),
@@ -457,14 +375,87 @@ def peak_win_counts(frame: pl.DataFrame, metric: str = DEFAULT_MEMORY_METRIC) ->
         return pl.DataFrame(schema=PEAK_WIN_SCHEMA)
     return (
         pl.concat(counts)
-        # On a metric where verification and workflow read the same column the
-        # two builders describe one scope, not two.
-        .unique(subset=["mode", "guided_peak_scope"], keep="first", maintain_order=True)
         .with_columns(
             (pl.col("n_below") / pl.col("n_guided_successes")).round(3).alias("share_below"),
             pl.col("median_peak_ratio").round(3),
         )
         .sort("mode", "guided_peak_scope")
+    )
+
+
+def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
+    """Brute-force proof cost of every planned pair, binned and split by guided outcome.
+
+    Brute force is the brute force measurement taken from `problems.json`, with
+    no memory limit at all.
+
+    The three outcome exist for each bucket:
+    - Not proven
+    - Proven but more expensive
+    - Proven and cheaper
+    A success whose workflow peak was not recorded counts as at or above.
+    """
+    guided = pl.col(GUIDED_WORKFLOW_COLUMN)
+    cheaper = (guided > 0) & (guided < pl.col(BRUTE_COLUMN))
+    data = (
+        frame.drop_nulls(BRUTE_COLUMN)
+        .filter(pl.col(BRUTE_COLUMN) > 0)
+        .select(
+            "mode",
+            pl.when(~pl.col("guided_success").fill_null(False))
+            .then(pl.lit(BRUTE_COST_OUTCOMES[0]))
+            .when(cheaper)
+            .then(pl.lit(BRUTE_COST_OUTCOMES[2]))
+            .otherwise(pl.lit(BRUTE_COST_OUTCOMES[1]))
+            .alias("outcome"),
+            (pl.col(BRUTE_COLUMN) / 2**20).alias("brute_peak_mib"),
+        )
+    )
+    if data.is_empty():
+        raise ValueError(f"no pair carries a positive {BRUTE_COLUMN}")
+
+    span = data.select(
+        pl.col("brute_peak_mib").log10().min().alias("low"),
+        pl.col("brute_peak_mib").log10().max().alias("high"),
+    ).row(0, named=True)
+    low, high = span["low"], span["high"]
+    # A single distinct cost leaves no range to divide; give it one unit bin.
+    width = (high - low) / bins if high > low else 1.0
+    # Bars run to the bin edge without it, so neighbouring buckets touch and
+    # read as one group; this reserves a gap at each bucket's trailing edge.
+    usable = 1 - BRUTE_COST_BIN_PAD
+    slots = len(BRUTE_COST_OUTCOMES)
+    # The slot is the fixed position in BRUTE_COST_OUTCOMES rather than a rank
+    # among the outcomes present, so bars stay aligned across bins where one
+    # outcome is empty.
+    slot = pl.col("outcome").replace_strict({name: i for i, name in enumerate(BRUTE_COST_OUTCOMES)})
+    groups = data.group_by("mode", "outcome").agg(
+        pl.len().alias("group_n"),
+        pl.col("brute_peak_mib").median().alias("group_median_mib"),
+    )
+    return (
+        data.with_columns(
+            ((pl.col("brute_peak_mib").log10() - low) / width)
+            .floor()
+            .clip(0, bins - 1)
+            .cast(pl.Int32)
+            .alias("bin")
+        )
+        .group_by("mode", "outcome", "bin")
+        .agg(pl.len().alias("count"))
+        .join(groups, on=["mode", "outcome"], how="left")
+        .with_columns(
+            (10 ** (low + pl.col("bin") * width)).alias("bin_start_mib"),
+            (10 ** (low + (pl.col("bin") + 1) * width)).alias("bin_end_mib"),
+            (10 ** (low + (pl.col("bin") + usable * slot / slots) * width)).alias("slot_start_mib"),
+            (10 ** (low + (pl.col("bin") + usable * (slot + 1) / slots) * width)).alias(
+                "slot_end_mib"
+            ),
+            (pl.col("count") / pl.col("group_n")).alias("share"),
+            pl.col("count").sum().over("mode", "bin").alias("bucket_n"),
+        )
+        .with_columns((pl.col("count") / pl.col("bucket_n")).alias("bucket_share"))
+        .sort("mode", "bin", "outcome")
     )
 
 
