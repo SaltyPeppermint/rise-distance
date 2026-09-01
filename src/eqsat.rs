@@ -85,12 +85,9 @@ pub struct EqsatConfig {
 impl EqsatConfig {
     /// Build a [`Runner`] with these limits, memory tracking, and scheduler.
     #[must_use]
-    pub fn build_runner<L, N, D>(&self) -> Runner<L, N, D>
-    where
-        L: MyLanguage,
-        N: MyAnalysis<L>,
-        D: IterationData<L, N>,
-    {
+    pub fn build_runner<L: MyLanguage, N: MyAnalysis<L>, D: IterationData<L, N>>(
+        &self,
+    ) -> Runner<L, N, D> {
         let mut runner = Runner::<L, N, D>::new_with_memory_tracker(
             N::default(),
             live_heap_bytes,
@@ -114,11 +111,7 @@ impl EqsatConfig {
 
 /// An eqsat run's final e-graph, previous-boundary marker, and metadata.
 /// The stored root may become noncanonical after unions.
-pub struct EqsatResult<L, N>
-where
-    L: Language,
-    N: Analysis<L>,
-{
+pub struct EqsatResult<L: Language, N: Analysis<L>> {
     iter_data: Vec<Iteration<Boundary>>,
     prev_boundary: Boundary,
     curr: EGraph<L, N>,
@@ -128,11 +121,7 @@ where
     peak_allocated: u64,
 }
 
-impl<L, N> EqsatResult<L, N>
-where
-    L: Language,
-    N: Analysis<L>,
-{
+impl<L: Language, N: Analysis<L>> EqsatResult<L, N> {
     /// Construct a test result with a known previous-boundary marker.
     #[cfg(test)]
     pub(crate) fn new_for_tests(
@@ -378,17 +367,13 @@ pub struct ReachedRun<L: MyLanguage> {
 /// # Panics
 ///
 /// Panics if `guides` is empty.
-pub fn guided_eqsat<L, N>(
+pub fn guided_eqsat<L: MyLanguage, N: MyAnalysis<L>>(
     guides: &[RecExpr<OriginLang<L>>],
     goal: &Goal<L>,
     rules: &[Rewrite<L, N>],
     eqsat: &EqsatConfig,
     full_union: bool,
-) -> Result<ReachedRun<L>, GuideError>
-where
-    L: MyLanguage + 'static,
-    N: MyAnalysis<L> + Default,
-{
+) -> Result<ReachedRun<L>, GuideError> {
     assert!(!guides.is_empty(), "must have at least one guide");
 
     let runner = eqsat.build_runner();
@@ -405,32 +390,24 @@ where
 
 /// Run single-seed eqsat until `goal` is reached or a limit stops the run.
 #[expect(clippy::missing_errors_doc)]
-pub fn unguided_eqsat<L, N>(
+pub fn unguided_eqsat<L: MyLanguage, N: MyAnalysis<L>>(
     start: &RecExpr<L>,
     goal: &Goal<L>,
     rules: &[Rewrite<L, N>],
     eqsat: &EqsatConfig,
-) -> Result<ReachedRun<L>, GuideError>
-where
-    L: MyLanguage + 'static,
-    N: MyAnalysis<L> + Default,
-{
+) -> Result<ReachedRun<L>, GuideError> {
     let runner = eqsat.build_runner().with_expr(start);
     run_until_goal(runner, goal, rules, format_args!("start term: {start:?}"))
 }
 
 /// Run `rules` on a prepared `runner` until `goal` is reached or a limit stops
 /// the run, then report the final e-graph.
-fn run_until_goal<L, N>(
+fn run_until_goal<L: MyLanguage, N: MyAnalysis<L>>(
     mut runner: Runner<L, N, ()>,
     goal: &Goal<L>,
     rules: &[Rewrite<L, N>],
     context: std::fmt::Arguments,
-) -> Result<ReachedRun<L>, GuideError>
-where
-    L: MyLanguage + 'static,
-    N: MyAnalysis<L>,
-{
+) -> Result<ReachedRun<L>, GuideError> {
     let goal_clone = goal.clone();
     runner.hooks.insert(
         0,
@@ -474,7 +451,7 @@ where
 
 fn add_with_root_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>
 where
-    L: MyLanguage + 'a,
+    L: MyLanguage,
     N: MyAnalysis<L>,
     D: IterationData<L, N>,
     I: IntoIterator<Item = &'a RecExpr<OriginLang<L>>>,

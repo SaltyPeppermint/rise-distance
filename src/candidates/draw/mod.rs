@@ -4,10 +4,10 @@ mod weigher;
 
 use egg::{Id, RecExpr};
 use hashbrown::{HashMap, HashSet};
+use num::{BigUint, ToPrimitive};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 
-use crate::Counter;
 use crate::cli::Policy;
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
@@ -16,7 +16,7 @@ pub use plain::{PlainDrawer, PlainPackage};
 pub use weigher::{CountWeigher, UniformWeigher, Weigher};
 
 /// Draws size-targeted candidates from an e-graph.
-pub trait Drawer<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
+pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
     fn root(&self) -> Id;
 
     /// Canonicalize `id` in the underlying e-graph.
@@ -24,17 +24,19 @@ pub trait Drawer<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
 
     /// Histogram of extractable term sizes for the canonical class of `id`,
     /// or `None` if the class has no entries under this drawer's constraints.
-    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, C>>;
+    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, BigUint>>;
 
     /// True iff at least `requested_count + 1` distinct terms of `size` are reachable
     /// from `id` under this drawer's constraints.
     #[cfg(test)]
     fn possible_size(&self, id: Id, size: usize, requested_count: u64) -> bool {
+        use num::FromPrimitive;
+
         let canon_id = self.find(id);
         let Some(count) = self.size_histogram(canon_id).and_then(|h| h.get(&size)) else {
             return false;
         };
-        C::from_u64(requested_count).is_some_and(|s| count > &s)
+        BigUint::from_u64(requested_count).is_some_and(|s| count > &s)
     }
 
     /// Precondition: `possible_size(id, size, 0)`.
@@ -149,7 +151,7 @@ pub trait Drawer<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
     }
 }
 
-pub trait DrawerPackage<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
+pub trait DrawerPackage<L: MyLanguage, N: MyAnalysis<L>> {
     /// Log the stats about the root into `out`.
     ///
     /// # Panics
@@ -175,7 +177,7 @@ pub trait DrawerPackage<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>>;
 
-    fn root_histogram(&self) -> &HashMap<usize, C>;
+    fn root_histogram(&self) -> &HashMap<usize, BigUint>;
 
     #[must_use]
     fn root(&self) -> Id;

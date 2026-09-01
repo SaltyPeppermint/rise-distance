@@ -12,10 +12,7 @@ impl CostFunction<VecLang> for VecCostFn<'_> {
     type Cost = f64;
     // you're passed in an enode whose children are costs instead of eclass ids
     #[expect(clippy::cast_precision_loss)]
-    fn cost<C>(&mut self, enode: &VecLang, mut costs: C) -> Self::Cost
-    where
-        C: FnMut(Id) -> Self::Cost,
-    {
+    fn cost<C: FnMut(Id) -> Self::Cost>(&mut self, enode: &VecLang, mut costs: C) -> Self::Cost {
         const LITERAL: f64 = 0.001;
         const STRUCTURE: f64 = 0.1;
         const VEC_OP: f64 = 1.;

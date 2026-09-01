@@ -6,7 +6,6 @@
 
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
-use num::BigUint;
 use rise_distance::utils::peak_rss_bytes;
 use time::OffsetDateTime;
 
@@ -163,7 +162,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     policy: Policy,
     start_size: usize,
 ) -> Result<Vec<RecExpr<OriginLang<L>>>, String> {
-    let (max_size, package) = FrontierPackage::<BigUint, _, _>::build_through_novel_sizes(
+    let (max_size, package) = FrontierPackage::build_through_novel_sizes(
         result,
         start_size,
         args.size_search_steps,
@@ -186,7 +185,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
 fn draw_candiates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     policy: Policy,
-    package: &FrontierPackage<BigUint, L, N>,
+    package: &FrontierPackage<L, N>,
 ) -> Vec<RecExpr<OriginLang<L>>> {
     package
         .draw_candidates(args.n_candidates, policy, [args.seed, policy.rng_salt()])

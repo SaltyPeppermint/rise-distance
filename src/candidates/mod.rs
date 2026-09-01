@@ -4,6 +4,7 @@ pub mod count;
 pub mod draw;
 
 pub use draw::{DrawerPackage, FrontierPackage, PlainPackage};
+use num::BigUint;
 
 use std::borrow::Borrow;
 
@@ -39,7 +40,7 @@ pub fn convolve<C: Counter, H: Borrow<HashMap<usize, C>>>(
     acc
 }
 
-fn convolve_at<C: Counter>(histograms: &[&HashMap<usize, C>], budget: usize) -> Option<C> {
+fn convolve_at(histograms: &[&HashMap<usize, BigUint>], budget: usize) -> Option<BigUint> {
     if histograms.iter().any(|h| h.is_empty()) {
         return None;
     }

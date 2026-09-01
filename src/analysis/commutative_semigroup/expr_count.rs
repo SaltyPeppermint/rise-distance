@@ -18,12 +18,7 @@ impl ExprCount {
     }
 }
 
-impl<C, L, N> CommutativeSemigroupAnalysis<L, N, C> for ExprCount
-where
-    L: Language,
-    N: Analysis<L>,
-    C: Counter,
-{
+impl<C: Counter, L: Language, N: Analysis<L>> CommutativeSemigroupAnalysis<L, N, C> for ExprCount {
     // Size and number of programs of that size
     type Data = HashMap<usize, C>;
 

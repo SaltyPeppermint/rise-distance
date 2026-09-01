@@ -83,10 +83,7 @@ impl<T: Eq + Hash + Clone> UniqueQueue<T> {
         }
     }
 
-    pub fn extend<I>(&mut self, iter: I)
-    where
-        I: IntoIterator<Item = T>,
-    {
+    pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for t in iter {
             self.insert(t);
         }

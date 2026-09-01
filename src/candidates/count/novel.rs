@@ -6,10 +6,9 @@
 
 use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::{HashMap, HashSet};
-use num::BigUint;
+use num::{BigUint, Zero};
 use smallvec::SmallVec;
 
-use crate::Counter;
 use crate::candidates::count::budgets::RootBudgets;
 #[cfg(test)]
 use crate::candidates::count::count_histograms_rooted;
@@ -37,7 +36,7 @@ type MatchCover = HashMap<Id, HashSet<Id>>;
 type MatchKeys = HashSet<(Id, usize, Id, ChildIds)>;
 
 /// Shared extraction counts by class pair and size.
-type JointTable<C> = HashMap<(Id, Id), HashMap<usize, C>>;
+type JointTable = HashMap<(Id, Id), HashMap<usize, BigUint>>;
 
 /// Joint and novel counts plus previous-node matches.
 ///
@@ -46,12 +45,9 @@ type JointTable<C> = HashMap<(Id, Id), HashMap<usize, C>>;
 /// per draw, so retaining the plain histograms and their suffix tables would
 /// cost more than everything kept here put together.
 #[derive(Debug)]
-pub struct NovelTermCount<C>
-where
-    C: Counter,
-{
+pub struct NovelTermCount {
     /// Shared extraction counts by class pair and size.
-    joint: JointTable<C>,
+    joint: JointTable,
 
     /// Previous classes sharing an extraction with each current class.
     cover: HashMap<Id, Vec<Id>>,
@@ -61,10 +57,10 @@ where
 
     /// Novel extraction counts by current class and size.
     /// `data[c][s] = plain[c][s] - sum_pc joint[(c, pc)][s]`.
-    data: HashMap<Id, HashMap<usize, C>>,
+    data: HashMap<Id, HashMap<usize, BigUint>>,
 }
 
-impl<C: Counter> NovelTermCount<C> {
+impl NovelTermCount {
     /// Test convenience around the production rooted pipeline.
     #[cfg(test)]
     pub(crate) fn rooted_for_tests<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
@@ -86,7 +82,7 @@ impl<C: Counter> NovelTermCount<C> {
     #[must_use]
     pub(crate) fn from_rooted_matches<L: Language, N: Analysis<L>>(
         curr: &EGraph<L, N>,
-        plain: &HashMap<Id, HashMap<usize, C>>,
+        plain: &HashMap<Id, HashMap<usize, BigUint>>,
         matches: NodeMatches,
         budgets: &RootBudgets,
     ) -> Self {
@@ -104,7 +100,7 @@ impl<C: Counter> NovelTermCount<C> {
 
     /// Novel histograms keyed by canonical current ids.
     #[must_use]
-    pub const fn data(&self) -> &HashMap<Id, HashMap<usize, C>> {
+    pub const fn data(&self) -> &HashMap<Id, HashMap<usize, BigUint>> {
         &self.data
     }
 
@@ -114,7 +110,7 @@ impl<C: Counter> NovelTermCount<C> {
         curr: &EGraph<L, N>,
         curr_id: Id,
         prev_id: Id,
-    ) -> Option<&HashMap<usize, C>> {
+    ) -> Option<&HashMap<usize, BigUint>> {
         let curr_canon = curr.find(curr_id);
         self.joint.get(&(curr_canon, prev_id))
     }
@@ -124,7 +120,7 @@ impl<C: Counter> NovelTermCount<C> {
         &self,
         curr: &EGraph<L, N>,
         curr_id: Id,
-    ) -> Option<&HashMap<usize, C>> {
+    ) -> Option<&HashMap<usize, BigUint>> {
         let canon = curr.find(curr_id);
         self.data.get(&canon)
     }
@@ -159,7 +155,7 @@ impl<C: Counter> NovelTermCount<C> {
 // missing `pc` had joint count 0 anyway, so neither slot enumeration nor
 // `completes_some_match`
 // can be fooled by its absence.
-fn build_cover<C: Counter>(joint: &JointTable<C>) -> HashMap<Id, Vec<Id>> {
+fn build_cover(joint: &JointTable) -> HashMap<Id, Vec<Id>> {
     let mut out: HashMap<Id, Vec<Id>> = HashMap::new();
     for (c, pc) in joint.keys() {
         let entry = out.entry(*c).or_default();
@@ -273,11 +269,11 @@ fn child_combinations(children: &[Id], cover: &MatchCover) -> Vec<ChildIds> {
 
 /// Compute rooted `joint[(c, pc)]` counts with each pair capped by the budget
 /// of its current class.
-fn compute_joint_rooted<C: Counter, L: Language, N: Analysis<L>>(
+fn compute_joint_rooted<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     matches: &NodeMatches,
     rooted: &RootBudgets,
-) -> JointTable<C> {
+) -> JointTable {
     let children_of = joint_children_of(curr, matches);
     let budgets = children_of
         .keys()
@@ -326,7 +322,7 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     rooted: &RootBudgets,
 ) -> Result<usize, BigUint> {
     let root = curr.find(root);
-    let mut plain: LayeredDp<Id, BigUint> = plain_dp_rooted(curr, rooted);
+    let mut plain: LayeredDp<Id> = plain_dp_rooted(curr, rooted);
 
     // Each pair inherits its curr class's rooted budget: joint terms are
     // plain terms of that class, and the budget recurrence relaxes with
@@ -344,7 +340,7 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
         .copied()
         .filter(|&(c, _)| c == root)
         .collect::<Vec<_>>();
-    let mut joint: LayeredDp<(Id, Id), BigUint> = LayeredDp::new(children_of, budgets);
+    let mut joint: LayeredDp<(Id, Id)> = LayeredDp::new(children_of, budgets);
 
     let mut max_size;
     let mut term_count = BigUint::ZERO;
@@ -369,7 +365,7 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
             }
         }
 
-        if novel != BigUint::ZERO {
+        if !novel.is_zero() {
             max_size = size;
             term_count += novel;
             if term_count >= min_extractable.into() {
@@ -385,16 +381,16 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
 // Phase 3: derive novel histograms.
 // ============================================================================
 
-fn derive_novel<C: Counter>(
-    plain: &HashMap<Id, HashMap<usize, C>>,
-    joint: &JointTable<C>,
-) -> HashMap<Id, HashMap<usize, C>> {
+fn derive_novel(
+    plain: &HashMap<Id, HashMap<usize, BigUint>>,
+    joint: &JointTable,
+) -> HashMap<Id, HashMap<usize, BigUint>> {
     // Aggregate sum_pc joint[(c, pc)] per curr class. No double-counting:
     // `prev.lookup(t)` is unique once prev is rebuilt, so each non-novel term
     // contributes to exactly one `(c, pc)` pair. Hence
     // `non_novel[c][s] <= plain[c][s]` always (every non-novel term is also
     // a plain term).
-    let mut non_novel: HashMap<Id, HashMap<usize, C>> = HashMap::new();
+    let mut non_novel: HashMap<Id, HashMap<usize, BigUint>> = HashMap::new();
     for ((c, _pc), hist) in joint {
         let entry = non_novel.entry(*c).or_default();
         for (size, count) in hist {
@@ -419,7 +415,7 @@ fn derive_novel<C: Counter>(
                 }
                 None => total.clone(),
             };
-            if novel != C::zero() {
+            if !novel.is_zero() {
                 hist.insert(size, novel);
             }
         }
@@ -449,7 +445,7 @@ mod tests {
         prev: &EGraph<Math, ()>,
         root: Id,
         max_size: usize,
-    ) -> NovelTermCount<BigUint> {
+    ) -> NovelTermCount {
         let budgets = root_budgets(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
         let plain = count_histograms_rooted(curr, &budgets);

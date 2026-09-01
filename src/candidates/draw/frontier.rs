@@ -6,11 +6,11 @@
 
 use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
+use num::{BigUint, Zero};
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-use crate::Counter;
 use crate::candidates::count::{NodeMatch, NovelTermCount, RootBudgets};
 use crate::candidates::count::{
     NodeMatches, count_histograms_rooted, enumerate_matches_rooted, find_novel_root_sizes,
@@ -30,29 +30,17 @@ use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 /// `CountWeigher` draws proportionally to the number of complete terms below
 /// each derivation choice. `NaiveWeigher` gives every feasible local choice
 /// equal weight. Neither policy coordinates choices across a batch.
-pub struct FrontierDrawer<'a, 'g, C, L, N, W>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    W: Weigher<C>,
-{
-    counts: &'a NovelTermCount<C>,
+pub struct FrontierDrawer<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
+    counts: &'a NovelTermCount,
     graph: &'g EGraph<L, N>,
     root: Id,
     weigher: W,
 }
 
-impl<'a, 'g, C, L, N, W> FrontierDrawer<'a, 'g, C, L, N, W>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    W: Weigher<C>,
-{
+impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g, L, N, W> {
     #[must_use]
     pub const fn new(
-        counts: &'a NovelTermCount<C>,
+        counts: &'a NovelTermCount,
         graph: &'g EGraph<L, N>,
         root: Id,
         weigher: W,
@@ -65,7 +53,7 @@ where
         }
     }
 
-    fn pick_branch(&self, choices: &[Branch<'_, C>], rng: &mut ChaCha12Rng) -> usize {
+    fn pick_branch(&self, choices: &[Branch], rng: &mut ChaCha12Rng) -> usize {
         WeightedIndex::new(
             choices
                 .iter()
@@ -75,7 +63,7 @@ where
         .sample(rng)
     }
 
-    fn histogram(&self, child: Id, state: State) -> Option<&HashMap<usize, C>> {
+    fn histogram(&self, child: Id, state: State) -> Option<&HashMap<usize, BigUint>> {
         match state {
             State::Novel => self.counts.novel_histogram(self.graph, child),
             State::SharedWith(prev) => self.counts.joint_histogram(self.graph, child, prev),
@@ -88,7 +76,7 @@ where
         node_idx: usize,
         child_states: Vec<State>,
         child_budget: usize,
-    ) -> Option<Branch<'_, C>> {
+    ) -> Option<Branch<'_>> {
         let child_hists = self.graph[curr].nodes[node_idx]
             .children()
             .iter()
@@ -96,7 +84,7 @@ where
             .zip(child_states.iter().copied())
             .map(|(child, state)| self.histogram(child, state))
             .collect::<Option<Vec<_>>>()?;
-        let count = convolve_at::<C>(&child_hists, child_budget)?;
+        let count = convolve_at(&child_hists, child_budget)?;
         Some(Branch {
             node_idx,
             child_states,
@@ -135,7 +123,7 @@ where
                 .filter_map(|(&child_size, child_count)| {
                     let rest_size = remaining.checked_sub(child_size)?;
                     let rest_count = suffix[child_index + 1].get(&rest_size)?;
-                    (*rest_count != C::zero()).then(|| {
+                    (!rest_count.is_zero()).then(|| {
                         (
                             child_size,
                             self.weigher.child_weight(child_count, rest_count),
@@ -160,14 +148,14 @@ where
         stack_children(&children, OriginLang::new(node.clone(), curr))
     }
 
-    fn branches(&self, curr: Id, size: usize, state: State) -> Vec<Branch<'_, C>> {
+    fn branches(&self, curr: Id, size: usize, state: State) -> Vec<Branch<'_>> {
         match state {
             State::Novel => self.novel_branches(curr, size),
             State::SharedWith(prev) => self.shared_branches(curr, size, prev),
         }
     }
 
-    fn shared_branches(&self, curr: Id, size: usize, prev: Id) -> Vec<Branch<'_, C>> {
+    fn shared_branches(&self, curr: Id, size: usize, prev: Id) -> Vec<Branch<'_>> {
         let eclass = &self.graph[curr];
         let child_budget = size - 1;
 
@@ -193,7 +181,7 @@ where
             .collect()
     }
 
-    fn novel_branches(&self, curr: Id, size: usize) -> Vec<Branch<'_, C>> {
+    fn novel_branches(&self, curr: Id, size: usize) -> Vec<Branch<'_>> {
         let eclass = &self.graph[curr];
         let child_budget = size - 1;
 
@@ -230,13 +218,7 @@ where
     }
 }
 
-impl<C, L, N, W> Drawer<C, L, N> for FrontierDrawer<'_, '_, C, L, N, W>
-where
-    C: Counter,
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    W: Weigher<C>,
-{
+impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for FrontierDrawer<'_, '_, L, N, W> {
     fn root(&self) -> Id {
         self.root
     }
@@ -245,7 +227,7 @@ where
         self.graph.find(id)
     }
 
-    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, C>> {
+    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, BigUint>> {
         self.counts.data().get(&self.find(id))
     }
 
@@ -262,11 +244,11 @@ enum State {
 }
 
 /// One feasible root-production/profile choice at a `(class, size, state)`.
-struct Branch<'a, C> {
+struct Branch<'a> {
     node_idx: usize,
     child_states: Vec<State>,
-    count: C,
-    child_hists: Vec<&'a HashMap<usize, C>>,
+    count: BigUint,
+    child_hists: Vec<&'a HashMap<usize, BigUint>>,
 }
 
 fn enumerate_profiles<T: Clone>(slot_options: &[Vec<T>]) -> Vec<Vec<T>> {
@@ -298,19 +280,19 @@ fn completes_some_match(profile: &[State], matches: &[NodeMatch]) -> bool {
 /// Final e-graph and complete count tables for frontier candidate construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
-pub struct FrontierPackage<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
+pub struct FrontierPackage<L: MyLanguage, N: MyAnalysis<L>> {
     egraph: EGraph<L, N>,
-    counts: NovelTermCount<C>,
+    counts: NovelTermCount,
     min_size: usize,
     max_size: usize,
     root: Id,
 }
 
-impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<C, L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
     /// Build counts through `max_size` relative to the previous boundary.
     /// Returns `None` for an empty frontier.
     #[must_use]
-    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<FrontierPackage<C, L, N>> {
+    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<FrontierPackage<L, N>> {
         let curr = result.curr();
         let root = curr.find(result.root());
         let budgets = root_budgets(curr, root, max_size);
@@ -329,7 +311,7 @@ impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<C, L, N> {
         max_size: usize,
         matches: NodeMatches,
         budgets: &RootBudgets,
-    ) -> Option<FrontierPackage<C, L, N>> {
+    ) -> Option<FrontierPackage<L, N>> {
         let (egraph, root) = result.into_curr();
         let plain = count_histograms_rooted(&egraph, budgets);
         let counts = NovelTermCount::from_rooted_matches(&egraph, &plain, matches, budgets);
@@ -405,15 +387,13 @@ impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<C, L, N> {
     }
 }
 
-impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<C, L, N>
-    for FrontierPackage<C, L, N>
-{
+impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for FrontierPackage<L, N> {
     /// Novel root-term counts by size.
     ///
     /// # Panics
     ///
     /// Panics if package construction violated its root-histogram invariant.
-    fn root_histogram(&self) -> &HashMap<usize, C> {
+    fn root_histogram(&self) -> &HashMap<usize, BigUint> {
         self.counts
             .data()
             .get(&self.root)
@@ -480,7 +460,7 @@ mod tests {
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
         let (_used_max_size, package) =
-            FrontierPackage::<BigUint, _, _>::build_through_novel_sizes(result, 3, 10, 3)
+            FrontierPackage::build_through_novel_sizes(result, 3, 10, 3)
                 .expect("build_through_novel_sizes should succeed");
 
         assert_eq!(package.max_size, 9);
@@ -512,7 +492,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
+        let novel = NovelTermCount::rooted_for_tests(5, &curr, &prev, root);
         let drawer = FrontierDrawer::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..50_u64 {
@@ -537,7 +517,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &curr, &prev, root);
+        let novel = NovelTermCount::rooted_for_tests(5, &curr, &prev, root);
         let drawer = FrontierDrawer::new(&novel, &curr, root, CountWeigher);
 
         for seed in 0..100_u64 {
@@ -557,7 +537,7 @@ mod tests {
         let a = graph.add(sym("a"));
         graph.rebuild();
 
-        let novel = NovelTermCount::<BigUint>::rooted_for_tests(5, &graph, &graph, a);
+        let novel = NovelTermCount::rooted_for_tests(5, &graph, &graph, a);
         let drawer = FrontierDrawer::new(&novel, &graph, a, CountWeigher);
 
         assert!(!drawer.possible_size(a, 1, 0));

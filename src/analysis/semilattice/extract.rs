@@ -56,21 +56,13 @@ where
 }
 
 #[derive(Debug)]
-pub struct ExtractContainsAnalysis<'a, L, CF>
-where
-    L: Language,
-    CF: CostFunction<L>,
-{
+pub struct ExtractContainsAnalysis<'a, L: Language, CF: CostFunction<L>> {
     exprs: &'a mut ExprHashCons<L>,
     cost_fn: &'a mut CF,
     precomputed_any: &'a HashMap<Id, (CF::Cost, usize)>,
 }
 
-impl<'a, L, CF> ExtractContainsAnalysis<'a, L, CF>
-where
-    L: Language,
-    CF: CostFunction<L>,
-{
+impl<'a, L: Language, CF: CostFunction<L>> ExtractContainsAnalysis<'a, L, CF> {
     pub const fn new(
         exprs: &'a mut ExprHashCons<L>,
         cost_fn: &'a mut CF,
@@ -229,10 +221,10 @@ where
     }
 }
 
-fn merge_best_option<Cost>(a: &mut Option<(Cost, usize)>, b: Option<(Cost, usize)>) -> DidMerge
-where
-    Cost: 'static + Ord,
-{
+fn merge_best_option<Cost: Ord>(
+    a: &mut Option<(Cost, usize)>,
+    b: Option<(Cost, usize)>,
+) -> DidMerge {
     let ord = match (&a, &b) {
         (None, None) => Ordering::Equal,
         (Some(_), None) => Ordering::Less,

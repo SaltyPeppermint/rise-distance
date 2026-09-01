@@ -13,7 +13,6 @@ use std::fmt::Display;
 
 use egg::{Language, RecExpr, Rewrite};
 
-use crate::Counter;
 use crate::candidates::{DrawerPackage, FrontierPackage};
 use crate::cli::Policy;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
@@ -92,42 +91,30 @@ pub struct ReachResult<L: Language> {
 /// `C` is the [`Counter`] used to enumerate the frontier histogram in the cut
 /// strategy (e.g. `num::BigUint`); it is unused by the brute strategy.
 #[must_use]
-pub fn reach_sketches<L, N, C>(
+pub fn reach_sketches<L: MyLanguage, N: MyAnalysis<L>>(
     search_name: &str,
     start: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     sketch_goals: Sketch<L>,
     mode: SearchMode,
-) -> ReachResult<L>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
-{
+) -> ReachResult<L> {
     println!("Start:         {start}");
     println!("(Sketch) Goal: {sketch_goals}\n");
     match mode {
-        SearchMode::Cut(args) => {
-            reach_cut::<L, N, C>(search_name, start, rules, sketch_goals, args)
-        }
+        SearchMode::Cut(args) => reach_cut::<L, N>(search_name, start, rules, sketch_goals, args),
         SearchMode::Brute(args) => reach_brute(search_name, start, rules, sketch_goals, args),
     }
 }
 
 /// Cut-and-restart strategy: grow to `cut_iters`, construct novel candidates,
 /// then continue eqsat from them and verify the sketches.
-fn reach_cut<L, N, C>(
+fn reach_cut<L: MyLanguage, N: MyAnalysis<L>>(
     search_name: &str,
     start: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     sketch_goals: Sketch<L>,
     args: CutArgs,
-) -> ReachResult<L>
-where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
-    C: Counter,
-{
+) -> ReachResult<L> {
     println!("Doing search '{search_name}' via cut\n");
     let eqsat_config = EqsatConfig {
         max_iters: args.cut_iters,
@@ -153,7 +140,7 @@ where
     let cut_meta = EqsatMetadata::from_iterations(result.data());
     let cut_iters = result.iters();
 
-    let Some(package) = FrontierPackage::<C, _, _>::build(result, args.max_size) else {
+    let Some(package) = FrontierPackage::build(result, args.max_size) else {
         println!("{search_name}: exact candidate package found an empty frontier");
         return ReachResult {
             reached: None,

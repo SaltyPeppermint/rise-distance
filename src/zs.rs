@@ -8,16 +8,11 @@ use crate::{MyLanguage, OriginLang, id0};
 ///
 /// Applies size-difference and Euler-string lower-bound pruning before computing
 /// the full edit distance.
-pub fn find_min_zs<L, CF, I>(
+pub fn find_min_zs<L: MyLanguage, CF: EditCosts<L>, I: Iterator<Item = RecExpr<L>>>(
     candidates: I,
     reference: &RecExpr<L>,
     costs: &CF,
-) -> (Option<(RecExpr<L>, usize)>, ZSStats)
-where
-    L: MyLanguage,
-    CF: EditCosts<L>,
-    I: Iterator<Item = RecExpr<L>>,
-{
+) -> (Option<(RecExpr<L>, usize)>, ZSStats) {
     let ref_flat: FlatTree<L> = reference.into();
 
     let ref_size = ref_flat.size();

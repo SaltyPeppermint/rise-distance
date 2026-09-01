@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use egg::{Extractor, RecExpr};
 
-use num::BigUint;
 use rise_distance::candidates::{DrawerPackage, FrontierPackage};
 use rise_distance::cli::Policy;
 use rise_distance::eqsat::{EqsatConfig, EqsatMetadata, EqsatResult};
@@ -243,8 +242,7 @@ fn run_cut(
     let cut_meta = EqsatMetadata::from_iterations(cut_result.data());
     let cut_iters = cut_result.iters();
 
-    let Some(package) = FrontierPackage::<BigUint, VecLang, ()>::build(cut_result, args.max_size)
-    else {
+    let Some(package) = FrontierPackage::<VecLang, ()>::build(cut_result, args.max_size) else {
         warn("Exact candidate package found an empty frontier");
         return None;
     };

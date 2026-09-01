@@ -1,11 +1,11 @@
 use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
+use num::BigUint;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 
-use crate::Counter;
 use crate::candidates::count::{CountData, RootBudgets};
 use crate::candidates::count::{count_terms_rooted, find_plain_root_sizes, root_budgets};
 use crate::candidates::draw::{CountWeigher, Drawer, DrawerPackage, UniformWeigher, Weigher};
@@ -14,23 +14,16 @@ use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
-pub struct PlainDrawer<'a, 'b, C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>> {
-    counts: &'a CountData<C>,
+pub struct PlainDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
+    counts: &'a CountData,
     graph: &'b EGraph<L, N>,
     root: Id,
     weigher: W,
 }
 
-impl<'a, 'b, C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>>
-    PlainDrawer<'a, 'b, C, L, N, W>
-{
+impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> PlainDrawer<'a, 'b, L, N, W> {
     #[must_use]
-    pub const fn new(
-        counts: &'a CountData<C>,
-        graph: &'b EGraph<L, N>,
-        root: Id,
-        weigher: W,
-    ) -> Self {
+    pub const fn new(counts: &'a CountData, graph: &'b EGraph<L, N>, root: Id, weigher: W) -> Self {
         Self {
             counts,
             graph,
@@ -40,9 +33,7 @@ impl<'a, 'b, C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>>
     }
 }
 
-impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>> Drawer<C, L, N>
-    for PlainDrawer<'_, '_, C, L, N, W>
-{
+impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for PlainDrawer<'_, '_, L, N, W> {
     fn root(&self) -> Id {
         self.root
     }
@@ -51,7 +42,7 @@ impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>> Drawer<C, L, N>
         self.graph.find(id)
     }
 
-    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, C>> {
+    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, BigUint>> {
         self.counts.data.get(&id)
     }
 
@@ -76,7 +67,7 @@ impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>> Drawer<C, L, N>
             .map(|(idx, node)| {
                 self.counts
                     .suffix_at(canon_id, idx, &canon_children(node), 0, child_budget)
-                    .map_or_else(C::zero, |count| self.weigher.node_weight(count))
+                    .map_or_else(|| BigUint::ZERO, |count| self.weigher.node_weight(count))
             })
             .collect::<Vec<_>>();
         let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
@@ -122,19 +113,19 @@ impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>, W: Weigher<C>> Drawer<C, L, N>
 /// construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
-pub struct PlainPackage<C: Counter, L: MyLanguage, N: MyAnalysis<L>> {
+pub struct PlainPackage<L: MyLanguage, N: MyAnalysis<L>> {
     egraph: EGraph<L, N>,
-    counts: CountData<C>,
+    counts: CountData,
     min_size: usize,
     max_size: usize,
     root: Id,
 }
 
-impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> PlainPackage<C, L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
     /// Build counts through `max_size` over the whole e-graph.
     /// Returns `None` if the root has no terms within `max_size`.
     #[must_use]
-    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<PlainPackage<C, L, N>> {
+    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<PlainPackage<L, N>> {
         let curr = result.curr();
         let root = curr.find(result.root());
         let budgets = root_budgets(curr, root, max_size);
@@ -146,7 +137,7 @@ impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> PlainPackage<C, L, N> {
         result: EqsatResult<L, N>,
         max_size: usize,
         budgets: &RootBudgets,
-    ) -> Option<PlainPackage<C, L, N>> {
+    ) -> Option<PlainPackage<L, N>> {
         let (egraph, root) = result.into_curr();
         let counts = count_terms_rooted(&egraph, budgets);
 
@@ -223,13 +214,13 @@ impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> PlainPackage<C, L, N> {
     }
 }
 
-impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<C, L, N> for PlainPackage<C, L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for PlainPackage<L, N> {
     /// Root-term counts by size.
     ///
     /// # Panics
     ///
     /// Panics if package construction violated its root-histogram invariant.
-    fn root_histogram(&self) -> &HashMap<usize, C> {
+    fn root_histogram(&self) -> &HashMap<usize, BigUint> {
         self.counts
             .data
             .get(&self.root)
@@ -265,7 +256,6 @@ impl<C: Counter, L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<C, L, N> for Pla
 #[cfg(test)]
 mod tests {
     use egg::EGraph;
-    use num::BigUint;
 
     use super::*;
     use crate::candidates::count::{CountData, count_terms_rooted, root_budgets};
@@ -275,7 +265,7 @@ mod tests {
     use crate::utils::combined_rng;
     use crate::utils::sym;
 
-    fn rooted_counts(max_size: usize, graph: &EGraph<Math, ()>, root: Id) -> CountData<BigUint> {
+    fn rooted_counts(max_size: usize, graph: &EGraph<Math, ()>, root: Id) -> CountData {
         let budgets = root_budgets(graph, root, max_size);
         count_terms_rooted(graph, &budgets)
     }
@@ -300,9 +290,8 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let (used_max_size, package) =
-            PlainPackage::<BigUint, _, _>::build_through_sizes(result, 30, 2, 3)
-                .expect("build_through_sizes should succeed");
+        let (used_max_size, package) = PlainPackage::build_through_sizes(result, 30, 2, 3)
+            .expect("build_through_sizes should succeed");
 
         assert_eq!(used_max_size, 5);
         assert_eq!(package.max_size, 5);
@@ -325,7 +314,7 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(graph, root, prev_raw_node_count, prev_union_event_count);
-        let Err(cap) = PlainPackage::<BigUint, _, _>::build_through_sizes(result, 3, 20, 3) else {
+        let Err(cap) = PlainPackage::build_through_sizes(result, 3, 20, 3) else {
             panic!("a single size cannot satisfy a goal of 3");
         };
 

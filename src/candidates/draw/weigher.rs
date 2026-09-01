@@ -1,29 +1,29 @@
-use crate::Counter;
+use num::BigUint;
 
-pub trait Weigher<C: Counter> {
-    fn node_weight(&self, count: &C) -> C;
-    fn child_weight(&self, child_count: &C, rest_count: &C) -> C;
+pub trait Weigher {
+    fn node_weight(&self, count: &BigUint) -> BigUint;
+    fn child_weight(&self, child_count: &BigUint, rest_count: &BigUint) -> BigUint;
 }
 
 pub struct UniformWeigher;
 
-impl<C: Counter> Weigher<C> for UniformWeigher {
-    fn node_weight(&self, _count: &C) -> C {
-        C::one()
+impl Weigher for UniformWeigher {
+    fn node_weight(&self, _count: &BigUint) -> BigUint {
+        BigUint::ONE
     }
 
-    fn child_weight(&self, _child_count: &C, _rest_count: &C) -> C {
-        C::one()
+    fn child_weight(&self, _child_count: &BigUint, _rest_count: &BigUint) -> BigUint {
+        BigUint::ONE
     }
 }
 pub struct CountWeigher;
 
-impl<C: Counter> Weigher<C> for CountWeigher {
-    fn node_weight(&self, count: &C) -> C {
+impl Weigher for CountWeigher {
+    fn node_weight(&self, count: &BigUint) -> BigUint {
         count.clone()
     }
 
-    fn child_weight(&self, child_count: &C, rest_count: &C) -> C {
+    fn child_weight(&self, child_count: &BigUint, rest_count: &BigUint) -> BigUint {
         child_count.to_owned() * rest_count
     }
 }

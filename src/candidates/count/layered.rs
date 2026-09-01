@@ -9,25 +9,22 @@ use std::hash::Hash;
 
 use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::HashMap;
-use num::BigUint;
+use num::{BigUint, Zero};
 
-use crate::Counter;
 use crate::candidates::count::budgets::RootBudgets;
 
 /// Histograms and per-node suffix convolutions from one counting run.
 #[derive(Debug)]
-pub struct CountData<C> {
+pub struct CountData {
     /// Distinct-term counts by size and canonical class.
-    pub(crate) data: HashMap<Id, HashMap<usize, C>>,
+    pub(crate) data: HashMap<Id, HashMap<usize, BigUint>>,
     /// Per-class, per-node suffix convolutions, stored in the truncated shape
     /// described on [`SuffixTables`]. Read them through
     /// [`suffix_at`](Self::suffix_at) rather than indexing directly.
-    pub(crate) suffix: SuffixTables<Id, C>,
-    /// Handed out by [`suffix_at`](Self::suffix_at) for the empty product.
-    one: C,
+    pub(crate) suffix: SuffixTables<Id>,
 }
 
-impl<C: Counter> CountData<C> {
+impl CountData {
     /// The number of ways to fill children `from..` of node `node_idx` in
     /// `class` with exactly `total` size, or `None` when there is none.
     ///
@@ -41,11 +38,11 @@ impl<C: Counter> CountData<C> {
         children: &[Id],
         from: usize,
         total: usize,
-    ) -> Option<&C> {
+    ) -> Option<&BigUint> {
         let n = children.len();
         if from == n {
             // The empty product: one filling, of size zero.
-            return (total == 0).then_some(&self.one);
+            return (total == 0).then_some(&BigUint::ONE);
         }
         if from + 1 == n {
             // A lone trailing child takes the whole total itself.
@@ -56,31 +53,27 @@ impl<C: Counter> CountData<C> {
 }
 
 /// Count distinct terms within pre-established root budgets.
-pub(crate) fn count_terms_rooted<C: Counter, L: Language, N: Analysis<L>>(
+pub(crate) fn count_terms_rooted<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
-) -> CountData<C> {
+) -> CountData {
     let mut dp = plain_dp_rooted(egraph, rooted);
     for _ in 0..rooted.limit() {
         dp.step();
     }
     let (data, mut suffix) = dp.into_parts();
     suffix.retain(|id, _| data.contains_key(id));
-    CountData {
-        data,
-        suffix,
-        one: C::one(),
-    }
+    CountData { data, suffix }
 }
 
 /// Count distinct terms within pre-established root budgets
 ///
 /// The suffix tables are the DP's working state, so they are still built temporarily
 /// Callers that rederive child-size splits on the fly.
-pub(crate) fn count_histograms_rooted<C: Counter, L: Language, N: Analysis<L>>(
+pub(crate) fn count_histograms_rooted<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
-) -> HashMap<Id, HashMap<usize, C>> {
+) -> HashMap<Id, HashMap<usize, BigUint>> {
     let mut dp = plain_dp_rooted(egraph, rooted);
     for _ in 0..rooted.limit() {
         dp.step();
@@ -89,10 +82,10 @@ pub(crate) fn count_histograms_rooted<C: Counter, L: Language, N: Analysis<L>>(
 }
 
 /// Create an unstepped plain DP for the root budgets.
-pub(crate) fn plain_dp_rooted<C: Counter, L: Language, N: Analysis<L>>(
+pub(crate) fn plain_dp_rooted<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
-) -> LayeredDp<Id, C> {
+) -> LayeredDp<Id> {
     assert!(egraph.clean);
     let children_of = plain_children_of(egraph, rooted.budgets().keys().copied());
     LayeredDp::new(children_of, rooted.budgets().clone())
@@ -128,7 +121,7 @@ pub(crate) fn find_plain_root_sizes<L: Language, N: Analysis<L>>(
     rooted: &RootBudgets,
 ) -> Vec<usize> {
     let root = egraph.find(root);
-    let mut plain: LayeredDp<Id, BigUint> = plain_dp_rooted(egraph, rooted);
+    let mut plain: LayeredDp<Id> = plain_dp_rooted(egraph, rooted);
 
     let mut sizes = Vec::new();
     for _ in 0..rooted.limit() {
@@ -163,24 +156,24 @@ type Histograms<K, C> = HashMap<K, HashMap<usize, C>>;
 ///
 /// Both implicit positions are reconstructed on read. In an e-graph of mostly
 /// binary nodes this is the difference between three tables per node and one.
-type SuffixTables<K, C> = HashMap<K, Vec<Vec<HashMap<usize, C>>>>;
+type SuffixTables<K> = HashMap<K, Vec<Vec<HashMap<usize, BigUint>>>>;
 
 /// Size-layered counting over e-class keys or current/previous class pairs.
 /// Each key contains nodes represented by their child keys.
-pub struct LayeredDp<K, C> {
+pub struct LayeredDp<K> {
     /// Per key, per node: canonical child keys, aligned with node order.
     children_of: HashMap<K, Vec<Vec<K>>>,
     /// Largest size computed per key; unbudgeted keys are skipped.
     budgets: HashMap<K, usize>,
     /// Per-key, per-node suffix tables, extended one total per layer.
-    suffix: SuffixTables<K, C>,
+    suffix: SuffixTables<K>,
     /// Per key: size -> count histogram. Zero counts are never stored.
-    data: Histograms<K, C>,
+    data: Histograms<K, BigUint>,
     /// The last completed layer.
     size: usize,
 }
 
-impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
+impl<K: Copy + Eq + Hash> LayeredDp<K> {
     /// Every budgeted key must occur in `children_of`; unbudgeted children
     /// have no terms.
     pub fn new(children_of: HashMap<K, Vec<Vec<K>>>, budgets: HashMap<K, usize>) -> Self {
@@ -249,7 +242,7 @@ impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
                         continue;
                     };
                     let count = convolve_entry(child_hist, rest, total);
-                    if count != C::zero() {
+                    if count != BigUint::ZERO {
                         head[i].insert(total, count);
                     }
                 }
@@ -259,20 +252,19 @@ impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
         // A key's count at `size` is the number of ways any of its nodes
         // fills its children with `total`, i.e. the sum over its nodes of
         // suffix position 0 implicit for arity below two.
-        let one = C::one();
         for (&k, _) in budgets.iter().filter(|&(_, &budget)| size <= budget) {
             let count = children_of[&k]
                 .iter()
                 .zip(&suffix[&k])
                 .filter_map(|(children, tables)| match children.as_slice() {
                     // A leaf is one term of size one, with nothing to fill.
-                    [] => (total == 0).then_some(&one),
+                    [] => (total == 0).then_some(&BigUint::ONE),
                     // A lone child takes the whole total itself.
                     [only] => data.get(only)?.get(&total),
                     _ => tables[0].get(&total),
                 })
-                .sum::<C>();
-            if count != C::zero() {
+                .sum::<BigUint>();
+            if !count.is_zero() {
                 data.entry(k).or_default().insert(size, count);
             }
         }
@@ -281,7 +273,7 @@ impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
     }
 
     #[must_use]
-    pub const fn data(&self) -> &Histograms<K, C> {
+    pub const fn data(&self) -> &Histograms<K, BigUint> {
         &self.data
     }
 
@@ -291,18 +283,18 @@ impl<K: Copy + Eq + Hash, C: Counter> LayeredDp<K, C> {
     }
 
     /// Consume the DP, returning the histograms and suffix tables.
-    pub fn into_parts(self) -> (Histograms<K, C>, SuffixTables<K, C>) {
+    pub fn into_parts(self) -> (Histograms<K, BigUint>, SuffixTables<K>) {
         (self.data, self.suffix)
     }
 }
 
 /// The convolution of two histograms evaluated at exactly `total`:
 /// `sum over a + b = total of hist(a) * rest(b)`, iterating the smaller map.
-fn convolve_entry<C: Counter>(
-    hist: &HashMap<usize, C>,
-    rest: &HashMap<usize, C>,
+fn convolve_entry(
+    hist: &HashMap<usize, BigUint>,
+    rest: &HashMap<usize, BigUint>,
     total: usize,
-) -> C {
+) -> BigUint {
     let (outer, inner) = if hist.len() <= rest.len() {
         (hist, rest)
     } else {
@@ -314,24 +306,19 @@ fn convolve_entry<C: Counter>(
             let count_b = total.checked_sub(a).and_then(|b| inner.get(&b))?;
             Some(count_a.to_owned() * count_b)
         })
-        .fold(C::zero(), |acc, c| acc + c)
+        .fold(BigUint::ZERO, |acc, c| acc + c)
 }
 
 #[cfg(test)]
 mod tests {
     use egg::{EGraph, SymbolLang};
-    use num::BigUint;
 
     use crate::candidates::count::budgets::root_budgets;
 
     use super::super::super::suffix_convolutions;
     use super::*;
 
-    fn rooted_counts(
-        egraph: &EGraph<SymbolLang, ()>,
-        root: Id,
-        limit: usize,
-    ) -> CountData<BigUint> {
+    fn rooted_counts(egraph: &EGraph<SymbolLang, ()>, root: Id, limit: usize) -> CountData {
         let budgets = root_budgets(egraph, root, limit);
         count_terms_rooted(egraph, &budgets)
     }
@@ -444,7 +431,7 @@ mod tests {
 
         let limit = 9;
         let budgets = root_budgets(&egraph, gab, limit);
-        let result = count_terms_rooted::<BigUint, _, _>(&egraph, &budgets);
+        let result = count_terms_rooted(&egraph, &budgets);
 
         for (&id, per_node) in &result.suffix {
             for (node_idx, (node, tables)) in egraph[id].nodes.iter().zip(per_node).enumerate() {
