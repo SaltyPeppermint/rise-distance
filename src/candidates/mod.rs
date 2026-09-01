@@ -4,20 +4,18 @@ pub mod count;
 pub mod draw;
 
 pub use draw::{DrawerPackage, FrontierPackage, PlainPackage};
-use num::BigUint;
 
 use std::borrow::Borrow;
 
 use hashbrown::HashMap;
-
-use crate::Counter;
+use num::{BigUint, ToPrimitive};
 
 /// Convolve all child histograms into a single result (left-to-right).
-pub fn convolve<C: Counter, H: Borrow<HashMap<usize, C>>>(
+pub fn convolve<H: Borrow<HashMap<usize, BigUint>>>(
     histograms: &[H],
     budget: usize,
-) -> HashMap<usize, C> {
-    let mut acc = HashMap::from([(0, C::one())]);
+) -> HashMap<usize, BigUint> {
+    let mut acc = HashMap::from([(0, BigUint::ONE)]);
     let mut prev = HashMap::new();
 
     for h in histograms {
@@ -49,13 +47,13 @@ fn convolve_at(histograms: &[&HashMap<usize, BigUint>], budget: usize) -> Option
 
 /// Convolve child histograms right-to-left, returning suffix intermediates.
 /// `suffix[i]` = convolution of children `i..n`, mapping budget -> count.
-pub fn suffix_convolutions<C: Counter, H: Borrow<HashMap<usize, C>>>(
+pub fn suffix_convolutions<H: Borrow<HashMap<usize, BigUint>>>(
     histograms: &[H],
     budget: usize,
-) -> Vec<HashMap<usize, C>> {
+) -> Vec<HashMap<usize, BigUint>> {
     let n = histograms.len();
     let mut suffix = vec![HashMap::new(); n + 1];
-    suffix[n] = HashMap::from([(0, C::one())]);
+    suffix[n] = HashMap::from([(0, BigUint::ONE)]);
 
     for i in (0..n).rev() {
         let (left, right) = suffix.split_at_mut(i + 1);
@@ -68,7 +66,7 @@ pub fn suffix_convolutions<C: Counter, H: Borrow<HashMap<usize, C>>>(
                 let product = c_i.to_owned() * c_rest;
                 left[i]
                     .entry(total)
-                    .and_modify(|c: &mut C| *c += &product)
+                    .and_modify(|c| *c += &product)
                     .or_insert(product);
             }
         }
@@ -103,11 +101,11 @@ pub fn uniform_candidate_allocation(sizes: &[usize], total_candidates: usize) ->
 
 #[must_use]
 #[expect(clippy::missing_panics_doc)]
-pub fn greedy_distribute_alloc<C: Counter>(
+pub fn greedy_distribute_alloc(
     min_size: usize,
     max_size: usize,
     count: usize,
-    histogram: &HashMap<usize, C>,
+    histogram: &HashMap<usize, BigUint>,
 ) -> Vec<(usize, u64)> {
     (min_size..=max_size)
         .scan(u64::try_from(count).unwrap(), |remaining, size| {

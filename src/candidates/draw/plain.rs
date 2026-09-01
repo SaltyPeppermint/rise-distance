@@ -6,8 +6,9 @@ use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 
-use crate::candidates::count::{CountData, RootBudgets};
-use crate::candidates::count::{count_terms_rooted, find_plain_root_sizes, root_budgets};
+use crate::candidates::count::{
+    CountData, RootBudgets, count_terms_rooted, find_plain_root_sizes, root_budgets,
+};
 use crate::candidates::draw::{CountWeigher, Drawer, DrawerPackage, UniformWeigher, Weigher};
 use crate::candidates::greedy_distribute_alloc;
 use crate::cli::Policy;

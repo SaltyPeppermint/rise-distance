@@ -322,7 +322,7 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     rooted: &RootBudgets,
 ) -> Result<usize, BigUint> {
     let root = curr.find(root);
-    let mut plain: LayeredDp<Id> = plain_dp_rooted(curr, rooted);
+    let mut plain = plain_dp_rooted(curr, rooted);
 
     // Each pair inherits its curr class's rooted budget: joint terms are
     // plain terms of that class, and the budget recurrence relaxes with
@@ -331,16 +331,16 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     // unreachable within `max_size` can never be depended on and are
     // skipped entirely.
     let children_of = joint_children_of(curr, matches);
-    let budgets: HashMap<(Id, Id), usize> = children_of
+    let budgets = children_of
         .keys()
         .filter_map(|&(c, pc)| plain.budgets().get(&c).map(|&b| ((c, pc), b)))
-        .collect();
+        .collect::<HashMap<_, _>>();
     let root_pairs = budgets
         .keys()
         .copied()
         .filter(|&(c, _)| c == root)
         .collect::<Vec<_>>();
-    let mut joint: LayeredDp<(Id, Id)> = LayeredDp::new(children_of, budgets);
+    let mut joint = LayeredDp::new(children_of, budgets);
 
     let mut max_size;
     let mut term_count = BigUint::ZERO;

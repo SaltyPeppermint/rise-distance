@@ -6,13 +6,13 @@
 
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
-use rise_distance::utils::peak_rss_bytes;
 use time::OffsetDateTime;
 
 use rise_distance::candidates::{DrawerPackage, FrontierPackage};
 use rise_distance::cli::{Candidates, Measured, Policy};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
+use rise_distance::utils::peak_rss_bytes;
 use rise_distance::{MyAnalysis, MyLanguage, OriginLang, lower};
 
 #[derive(Parser)]

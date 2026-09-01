@@ -1,7 +1,8 @@
 use egg::{Analysis, AstSize, EGraph, Id, Language};
 use hashbrown::HashMap;
 
-use crate::{analysis::semilattice::SemiLatticeAnalysis, utils::UniqueQueue};
+use crate::analysis::semilattice::SemiLatticeAnalysis;
+use crate::utils::UniqueQueue;
 
 /// Per-class size bounds and minima for extractions from one root.
 #[derive(Debug, Clone)]
@@ -85,7 +86,7 @@ fn class_budgets<L: Language, N: Analysis<L>>(
     min_sizes: &HashMap<Id, usize>,
 ) -> HashMap<Id, usize> {
     let mut budgets = HashMap::from([(egraph.find(root), limit)]);
-    let mut pending: UniqueQueue<Id> = budgets.keys().copied().collect();
+    let mut pending = budgets.keys().copied().collect::<UniqueQueue<_>>();
 
     while let Some(id) = pending.pop() {
         let Some(children_total) = budgets[&id].checked_sub(1) else {

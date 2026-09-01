@@ -11,15 +11,12 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-use crate::candidates::count::{NodeMatch, NovelTermCount, RootBudgets};
 use crate::candidates::count::{
-    NodeMatches, count_histograms_rooted, enumerate_matches_rooted, find_novel_root_sizes,
-    prune_matches, root_budgets,
+    NodeMatch, NodeMatches, NovelTermCount, RootBudgets, count_histograms_rooted,
+    enumerate_matches_rooted, find_novel_root_sizes, prune_matches, root_budgets,
 };
-use crate::candidates::draw::{CountWeigher, DrawerPackage, UniformWeigher};
-use crate::candidates::draw::{Drawer, Weigher};
-use crate::candidates::greedy_distribute_alloc;
-use crate::candidates::{convolve_at, suffix_convolutions};
+use crate::candidates::draw::{CountWeigher, Drawer, DrawerPackage, UniformWeigher, Weigher};
+use crate::candidates::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};

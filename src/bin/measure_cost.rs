@@ -3,14 +3,14 @@ use core::panic;
 use clap::Parser;
 use egg::{AstDepth, AstSize, Iteration, IterationData, RecExpr, Rewrite, Runner};
 use hashbrown::HashMap;
-use rise_distance::eqsat::EqsatConfig;
-use rise_distance::langs::AvailableLanguages;
-use rise_distance::langs::diospyros;
+
 use serde::Serialize;
 
 use rise_distance::cheapest;
+use rise_distance::eqsat::EqsatConfig;
 use rise_distance::langs::math::{self, AddCheap, AddExpensive, Math, SillyCheap, TinyConstant};
 use rise_distance::langs::prop::{self, Prop};
+use rise_distance::langs::{AvailableLanguages, diospyros};
 use rise_distance::{MyAnalysis, MyLanguage};
 
 #[derive(Parser)]

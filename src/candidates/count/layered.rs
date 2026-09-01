@@ -121,7 +121,7 @@ pub(crate) fn find_plain_root_sizes<L: Language, N: Analysis<L>>(
     rooted: &RootBudgets,
 ) -> Vec<usize> {
     let root = egraph.find(root);
-    let mut plain: LayeredDp<Id> = plain_dp_rooted(egraph, rooted);
+    let mut plain = plain_dp_rooted(egraph, rooted);
 
     let mut sizes = Vec::new();
     for _ in 0..rooted.limit() {
