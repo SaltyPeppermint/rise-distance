@@ -7,6 +7,7 @@
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use num::BigUint;
+use rise_distance::utils::peak_rss_bytes;
 use time::OffsetDateTime;
 
 use rise_distance::candidates::{DrawerPackage, FrontierPackage};
@@ -120,6 +121,8 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     // Replay the guide phase under the effective limits the driver computed;
     // the replay ends at whichever limit trips first.
     let result = run_eqsat(&seed_expr, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
+
+    eprintln!("DEBUG: PEAK RSS AFTER EQSAT: {}", peak_rss_bytes());
     let stop_reason = format!("{:?}", result.stop_reason());
     eprintln!("Guide replay stop reason: {stop_reason}");
 
@@ -138,7 +141,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     let start_size = AstSize.cost_rec(&seed_expr);
 
     let candidates = build_full_analysis_candidates(args, result, args.policy, start_size)?;
-
+    eprintln!("DEBUG: PEAK RSS AFTER SAMPLING: {}", peak_rss_bytes());
     Ok(Candidates {
         start_term: args.start_term.clone(),
         policy: args.policy.to_string(),
@@ -173,6 +176,7 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
             args.size_search_steps, tried_max_size
         )
     })?;
+    eprintln!("DEBUG: PEAK RSS AFTER ANALYSIS: {}", peak_rss_bytes());
     eprintln!("Candidate package succeeded with max_size {max_size}!");
     package.log_root_counts();
     Ok(draw_candiates(args, policy, &package))

@@ -201,8 +201,7 @@ def eqsat_limits(cfg: dict) -> dict:
     """Extract the eqsat limits from a raw config dict (`problem_args.json`).
     `max_memory` is an optional absolute process
     live-heap ceiling (jemalloc `stats.allocated`), accepted as a human size
-    string (e.g. `"1G"`) or a raw byte count, normalized to bytes. Rust compares
-    it directly against the process live heap, with nothing subtracted out."""
+    string (e.g. `"1G"`) or a raw byte count, normalized to bytes."""
     max_memory = cfg.get("max_memory")
     if isinstance(max_memory, str):
         max_memory = parse_size(max_memory)
@@ -230,11 +229,6 @@ def limit_flags(limits: dict) -> list[str]:
     return flags
 
 
-def with_max_iters(cmd: list[str], max_iters: int) -> list[str]:
-    """Copy `cmd` with its `--max-iters` value replaced."""
-    out = list(cmd)
-    out[out.index("--max-iters") + 1] = str(max_iters)
-    return out
 
 
 def uniform_candidate_allocation(

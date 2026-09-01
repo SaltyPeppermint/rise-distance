@@ -18,7 +18,8 @@ Example:
         --policy count --full-union
 
 Pass ``--sampling-rss-max`` to hold each ``candidates`` process to a cgroup RSS
-cap, retrying a killed replay at the last iteration that completed.
+cap, retrying a killed replay at the last iteration that completed and remove
+one more iter off each further attempt (``--sampling-retries``).
 """
 
 import json
@@ -46,7 +47,6 @@ from common import (
     parse_size,
     run_json_subprocess,
     verify_summary,
-    with_max_iters,
 )
 
 # Runs one `candidates` command; `None` when it could not be kept under its cap.
@@ -181,6 +181,17 @@ class Args(BaseSettings):
             "size such as `4G`. A process killed during guide replay is retried, "
             "still capped, with `--max-iters` cut to the iterations that "
             "completed. Uncapped if omitted."
+        ),
+    )
+
+    sampling_retries: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "How often a `candidates` process killed at `--sampling-rss-max` is "
+            "retried. The first retry runs at the iterations that completed, and "
+            "each further run reduces `--max-iters` by one more. `0` disables "
+            "retrying. Ignored without `--sampling-rss-max`."
         ),
     )
 
@@ -338,6 +349,13 @@ def build_candidate_shard(
     return records
 
 
+def with_max_iters(cmd: list[str], max_iters: int) -> list[str]:
+    """Copy `cmd` with its `--max-iters` value replaced."""
+    out = list(cmd)
+    out[out.index("--max-iters") + 1] = str(max_iters)
+    return out
+
+
 def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path:
     """Construct guide menus in parallel, one `candidates` subprocess per start term.
 
@@ -370,25 +388,42 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         return run_json_subprocess(cmd, what=what)
 
     def run_capped(cmd: list[str], what: str) -> MeasuredJson | None:
-        """Run under the RSS cap, retrying a replay-phase kill once with the
-        replay cut to the iterations that survived."""
+        """Run under the RSS cap, retrying a replay-phase kill up to
+        `--sampling-retries` times: the first retry replays the iterations that
+        survived, each further one gives up another iteration."""
         cmd = [*cmd, "--print-success-iters"]
-        try:
-            return run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
-        except MemoryKilled as killed:
-            iters = killed.last_iter
-            if eqsat_finished(killed.stderr):
-                print(f"{what}: killed at RSS cap after replay, no retry", file=sys.stderr)
-                return None
-            if not iters:
-                print(f"{what}: killed at RSS cap before any iteration", file=sys.stderr)
-                return None
-            print(f"{what}: killed at RSS cap, retrying at --max-iters {iters}", file=sys.stderr)
+        attempt = cmd
+        iters: int | None = None
+        for retries_left in range(args.sampling_retries, -1, -1):
             try:
-                return run_json_subprocess(with_max_iters(cmd, iters), what=what, rss_max_bytes=cap)
-            except MemoryKilled:
-                print(f"{what}: killed again at --max-iters {iters}", file=sys.stderr)
-                return None
+                # print(f"CMD: {' '.join(attempt)}")
+                return run_json_subprocess(attempt, what=what, rss_max_bytes=cap)
+            except MemoryKilled as killed:
+                if eqsat_finished(killed.stderr):
+                    print(f"CMD: {' '.join(attempt)}")
+                    print(f"{what}: killed at RSS cap after replay, no retry", file=sys.stderr)
+                    return None
+                if not retries_left:
+                    at = "" if iters is None else f" at --max-iters {iters}"
+                    print(f"{what}: killed at RSS cap{at}, no retries left", file=sys.stderr)
+                    return None
+                if iters is None:
+                    iters = killed.last_iter
+                    if not iters:
+                        print(f"{what}: killed at RSS cap before any iteration", file=sys.stderr)
+                        return None
+                else:
+                    iters -= 1
+                    if iters < 1:
+                        print(
+                            f"{what}: killed at RSS cap, no iterations left to cut", file=sys.stderr
+                        )
+                        return None
+                print(
+                    f"{what}: killed at RSS cap, retrying at --max-iters {iters}", file=sys.stderr
+                )
+                attempt = with_max_iters(cmd, iters)
+        return None
 
     run = run_plain if cap is None else run_capped
 
