@@ -112,8 +112,7 @@ class Args(BaseSettings):
     max_time: float = Field(default=1.0, gt=0, description="Maximum eqsat wall-clock seconds.")
 
     max_memory: str | None = Field(
-        default=None,
-        description="Absolute live-heap ceiling (e.g. `4G`), unlimited if omitted.",
+        default=None, description="Absolute live-heap ceiling (e.g. `4G`), unlimited if omitted."
     )
 
     # Acceptance
@@ -131,7 +130,7 @@ class Args(BaseSettings):
     )
 
     start_retries: int = Field(
-        default=2,
+        default=10,
         ge=0,
         description=(
             "How often a `start` slot killed at `--rss-max` is redrawn under a bumped seed"
