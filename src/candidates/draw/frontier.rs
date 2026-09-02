@@ -417,6 +417,10 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for FrontierPackage<L,
                 FrontierDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
                     .draw_root_batch(&requests, seed)
             }
+            Policy::Smallest => Some(vec![
+                FrontierDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
+                    .smallest_root(),
+            ]),
         }
     }
 

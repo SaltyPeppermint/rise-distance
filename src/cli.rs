@@ -38,6 +38,8 @@ pub enum Policy {
     Count,
     #[value(name = "uniform")]
     Uniform,
+    #[value(name = "smallest")]
+    Smallest,
     // #[value(name = "smallest_overall")]
     // SmallestOverall,
     // #[value(name = "smallest_novel")]
@@ -49,21 +51,7 @@ impl std::fmt::Display for Policy {
         match self {
             Self::Count => write!(f, "count"),
             Self::Uniform => write!(f, "uniform"),
-            // Self::SmallestOverall => write!(f, "smallest_overall"),
-            // Self::SmallestNovel => write!(f, "smallest_novel"),
-        }
-    }
-}
-
-impl Policy {
-    /// Deterministic per-pool RNG salt so construction policies do not share a
-    /// random stream within one seed record.
-    #[must_use]
-    pub const fn rng_salt(self) -> u64 {
-        match self {
-            Self::Count => 2,
-            Self::Uniform => 3,
-            // Self::SmallestOverall | Self::SmallestNovel => 0,
+            Self::Smallest => write!(f, "smallest"),
         }
     }
 }

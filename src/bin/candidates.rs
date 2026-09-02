@@ -60,6 +60,10 @@ struct Args {
     /// Policy used to draw candidates.
     #[arg(long, value_enum)]
     policy: Policy,
+
+    /// Take from the frontier or anywhere
+    #[arg(long, default_value_t = true)]
+    frontier: bool,
 }
 
 fn main() {
@@ -137,9 +141,11 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
          {guide_memory} live-heap bytes"
     );
 
-    let start_size = AstSize.cost_rec(&seed_expr);
-
-    let candidates = build_full_analysis_candidates(args, result, args.policy, start_size)?;
+    let candidates = if args.frontier {
+        build_frontier_candidates(args, result, args.policy, &seed_expr)?
+    } else {
+        build_plain_candidates(args, result, args.policy, &seed_expr)?
+    };
     eprintln!("DEBUG: PEAK RSS AFTER SAMPLING: {}", peak_rss_bytes());
     Ok(Candidates {
         start_term: args.start_term.clone(),
@@ -156,12 +162,13 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     })
 }
 
-fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
+fn build_frontier_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     result: EqsatResult<L, N>,
     policy: Policy,
-    start_size: usize,
+    seed_expr: &RecExpr<L>,
 ) -> Result<Vec<RecExpr<OriginLang<L>>>, String> {
+    let start_size = AstSize.cost_rec(seed_expr);
     let (max_size, package) = FrontierPackage::build_through_novel_sizes(
         result,
         start_size,
@@ -178,22 +185,49 @@ fn build_full_analysis_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     eprintln!("DEBUG: PEAK RSS AFTER ANALYSIS: {}", peak_rss_bytes());
     eprintln!("Candidate package succeeded with max_size {max_size}!");
     package.log_root_counts();
-    Ok(draw_candiates(args, policy, &package))
-}
-
-/// Draw one candidate pool; smallest-term pools contain one term.
-fn draw_candiates<L: MyLanguage, N: MyAnalysis<L>>(
-    args: &Args,
-    policy: Policy,
-    package: &FrontierPackage<L, N>,
-) -> Vec<RecExpr<OriginLang<L>>> {
-    package
-        .draw_candidates(args.n_candidates, policy, [args.seed, policy.rng_salt()])
+    let candidates = package
+        .draw_candidates(args.n_candidates, policy, [args.seed, 0])
         .unwrap_or_else(|| {
             eprintln!(
                 "WARNING: policy {policy} drew 0 candidates (empty novel frontier); \
                      driver legs for this policy will have no guides to pick from"
             );
             Vec::new()
-        })
+        });
+    Ok(candidates)
+}
+
+fn build_plain_candidates<L: MyLanguage, N: MyAnalysis<L>>(
+    args: &Args,
+    result: EqsatResult<L, N>,
+    policy: Policy,
+    seed_expr: &RecExpr<L>,
+) -> Result<Vec<RecExpr<OriginLang<L>>>, String> {
+    let start_size = AstSize.cost_rec(seed_expr);
+    let (max_size, package) = FrontierPackage::build_through_novel_sizes(
+        result,
+        start_size,
+        args.size_search_steps,
+        args.n_candidates * 10, // More than 10x the terms should be present so we can easily sample
+    )
+    .map_err(|tried_max_size| {
+        format!(
+            "candidate construction found too few term sizes after {} retries \
+                 (max_size={})",
+            args.size_search_steps, tried_max_size
+        )
+    })?;
+    eprintln!("DEBUG: PEAK RSS AFTER ANALYSIS: {}", peak_rss_bytes());
+    eprintln!("Candidate package succeeded with max_size {max_size}!");
+    package.log_root_counts();
+    let candidates = package
+        .draw_candidates(args.n_candidates, policy, [args.seed, 0])
+        .unwrap_or_else(|| {
+            eprintln!(
+                "WARNING: policy {policy} drew 0 candidates (empty egraph????); \
+                     driver legs for this policy will have no guides to pick from"
+            );
+            Vec::new()
+        });
+    Ok(candidates)
 }

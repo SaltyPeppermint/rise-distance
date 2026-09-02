@@ -246,6 +246,10 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for PlainPackage<L, N>
             }
             Policy::Count => PlainDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
                 .draw_root_batch(&requests, seed),
+            Policy::Smallest => Some(vec![
+                PlainDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
+                    .smallest_root(),
+            ]),
         }
     }
 

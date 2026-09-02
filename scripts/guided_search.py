@@ -197,10 +197,11 @@ class Args(BaseSettings):
 
     policy: Policy = Field(default="count", description="Candidate-pool sampling starteg.")
 
-    full_union: bool = Field(
-        default=True,
-        description="Use the experimental full-union add for the leg egraph.",
+    frontier: bool = Field(
+        default=True, description="Sample from the frontier of terms, not the whole egraph"
     )
+
+    full_union: bool = Field(default=True, description="Use the full-union add for the leg egraph.")
 
     start_terms: int | None = Field(
         default=None,
@@ -237,16 +238,16 @@ class Args(BaseSettings):
 
     @model_validator(mode="after")
     def validate_args(self) -> Args:
-        if (
-            self.stop_iters is None
-            and self.stop_nodes is None
-            and self.stop_time is None
-            and self.stop_memory is None
-        ):
-            raise ValueError(
-                "at least one of stop_iters, stop_nodes, stop_time, or "
-                "stop_memory must be specified"
-            )
+        # if (
+        #     self.stop_iters is None
+        #     and self.stop_nodes is None
+        #     and self.stop_time is None
+        #     and self.stop_memory is None
+        # ):
+        #     raise ValueError(
+        #         "at least one of stop_iters, stop_nodes, stop_time, or "
+        #         "stop_memory must be specified"
+        #     )
 
         if (
             self.sampling_rss_max is not None
@@ -372,6 +373,9 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         "--policy",
         str(args.policy),
     ]
+    if args.frontier:
+        candidate_flags.append("--frontier")
+
     limits = replay_limits(args, cfg)
     cap = parse_size(args.sampling_rss_max) if args.sampling_rss_max is not None else None
     # The ceiling can also come from `problem_args.json`, which the arg
@@ -394,34 +398,44 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         cmd = [*cmd, "--print-success-iters"]
         attempt = cmd
         iters: int | None = None
+        attempts = 1
+        post_eqsat_kill = 0
+        after = ""
         for retries_left in range(args.sampling_retries, -1, -1):
             try:
                 # print(f"CMD: {' '.join(attempt)}")
-                return run_json_subprocess(attempt, what=what, rss_max_bytes=cap)
+                measured = run_json_subprocess(attempt, what=what, rss_max_bytes=cap)
+                print(
+                    f"{what}:\nsucceeded in attempt {attempts} ({post_eqsat_kill} post eqsat kills)",
+                    file=sys.stderr,
+                )
+                return measured
             except MemoryKilled as killed:
                 if eqsat_finished(killed.stderr):
-                    print(f"CMD: {' '.join(attempt)}")
-                    print(f"{what}: killed at RSS cap after replay, no retry", file=sys.stderr)
-                    return None
+                    after = " after replay"
+                    post_eqsat_kill += 1
+                else:
+                    after = ""
+
                 if not retries_left:
                     at = "" if iters is None else f" at --max-iters {iters}"
-                    print(f"{what}: killed at RSS cap{at}, no retries left", file=sys.stderr)
+                    print(
+                        f"{what}:\nkilled at RSS cap{at}{after} in attempt {attempts}, no retries left",
+                        file=sys.stderr,
+                    )
                     return None
+
                 if iters is None:
                     iters = killed.last_iter
-                    if not iters:
-                        print(f"{what}: killed at RSS cap before any iteration", file=sys.stderr)
-                        return None
-                else:
-                    iters -= 1
-                    if iters < 1:
-                        print(
-                            f"{what}: killed at RSS cap, no iterations left to cut", file=sys.stderr
-                        )
-                        return None
-                print(
-                    f"{what}: killed at RSS cap, retrying at --max-iters {iters}", file=sys.stderr
-                )
+                    assert iters is not None, "How can it be killed with 0 iters"
+
+                iters -= 1
+                attempts += 1
+
+                # print(
+                #     f"{what}: killed at RSS cap{after}, retrying at --max-iters {iters}",
+                #     file=sys.stderr,
+                # )
                 attempt = with_max_iters(cmd, iters)
         return None
 
@@ -756,13 +770,6 @@ def report_results(
 def main() -> int:
     args = Args()
 
-    if all(v is None for v in (args.stop_iters, args.stop_nodes, args.stop_time, args.stop_memory)):
-        print(
-            "No guide-replay budget given; pass at least one of "
-            "--stop-iters/--stop-nodes/--stop-time/--stop-memory.",
-            file=sys.stderr,
-        )
-        return 2
     exit_if_missing(args.candidates_binary, args.verify_binary)
 
     cfg = json.loads((args.path / "problem_args.json").read_text())
