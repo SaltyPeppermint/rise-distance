@@ -44,6 +44,7 @@ from common import (
     fan_out,
     limit_flags,
     parse_size,
+    rss_killed_summary,
     run_json_subprocess,
     verify_summary,
 )
@@ -89,6 +90,18 @@ ATTEMPT_SCHEMA = {
     "guide_peak_live_heap": pl.Int64,
     "candidate_peak_rss_bytes": pl.Int64,
     "guide_stop_reason": pl.String,
+}
+
+# An rss_killed baseline leaves all measurement fields None.
+UNGUIDED_SCHEMA = {
+    "start_term": pl.String,
+    "goal_term": pl.String,
+    "unguided_success": pl.Boolean,
+    "unguided_stop_reason": pl.String,
+    "unguided_panic": pl.Boolean,
+    "unguided_final_live_heap_bytes": pl.Int64,
+    "unguided_peak_live_heap_bytes": pl.Int64,
+    "unguided_peak_rss_bytes": pl.Int64,
 }
 
 
@@ -315,7 +328,13 @@ def build_candidate_shard(
 def with_max_iters(cmd: list[str], max_iters: int) -> list[str]:
     """Copy `cmd` with its `--max-iters` value replaced."""
     out = list(cmd)
-    out[out.index("--max-iters") + 1] = str(max_iters)
+
+    try:
+        index = out.index("--max-iters")
+        out[index + 1] = str(max_iters)
+    except ValueError:
+        out.extend(["--max-iters", str(max_iters)])
+
     return out
 
 
@@ -346,32 +365,32 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         `--sampling-retries` times: the first retry replays the iterations that
         survived, each further one gives up another iteration."""
         cmd = [*cmd, "--print-success-iters"]
-        attempt = cmd
         iters: int | None = None
         attempts = 1
         post_eqsat_kill = 0
         for retries_left in range(args.sampling_retries, -1, -1):
             try:
                 # print(f"CMD: {' '.join(attempt)}")
-                measured = run_json_subprocess(attempt, what=what, rss_max_bytes=cap)
-                print(
-                    f"{what}:\nsucceeded in attempt {attempts} ({post_eqsat_kill} post eqsat kills)",
-                    file=sys.stderr,
-                )
+                measured = run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
+                # print(
+                #     f"{what}:\nsucceeded in attempt {attempts - 1} ({post_eqsat_kill} post eqsat kills)",
+                #     file=sys.stderr,
+                # )
                 return measured
             except MemoryKilled as killed:
                 if eqsat_finished(killed.stderr):
-                    after = " after replay"
+                    # after = " after eqsat"
                     post_eqsat_kill += 1
                 else:
-                    after = ""
+                    # after = ""
+                    pass
 
                 if not retries_left:
-                    at = "" if iters is None else f" at --max-iters {iters}"
-                    print(
-                        f"{what}:\nkilled at RSS cap{at}{after} in attempt {attempts}, no retries left",
-                        file=sys.stderr,
-                    )
+                    # at = "" if iters is None else f" at --max-iters {iters}"
+                    # print(
+                    #     f"{what}:\nkilled at RSS cap{at}{after} in attempt {attempts}, no retries left",
+                    #     file=sys.stderr,
+                    # )
                     return None
 
                 if iters is None:
@@ -379,13 +398,13 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
                     assert iters is not None, "How can it be killed with 0 iters"
 
                 iters -= 1
-                attempts += 1
-
                 # print(
-                #     f"{what}: killed at RSS cap{after}, retrying at --max-iters {iters}",
+                #     f"{what}: killed at RSS cap{after} for the {attempts}nth time, retrying at --max-iters {iters}",
                 #     file=sys.stderr,
                 # )
-                attempt = with_max_iters(cmd, iters)
+                attempts += 1
+
+                cmd = with_max_iters(cmd, iters)
         return None
 
     # Menu size = exactly what the attempt loop consumes: one guide per attempt.
@@ -442,6 +461,7 @@ def run_leg(
     ]
     if args.full_union:
         cmd.append("--full-union")
+
     measured = run_json_subprocess(
         cmd, what=f"verify for goal {goal!r}", rss_max_bytes=parse_size(args.max_rss)
     )
@@ -455,8 +475,9 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     that leg's own peak rather than a high-water mark shared across the pair.
     The loop stops on the first reach.
 
-    The final row is marked ``gave_up`` everything failed.
-    An empty pool is an error.
+    A leg killed at the RSS cap counts as a failed attempt with
+    ``stop_reason="rss_killed"``. The final row is marked ``gave_up`` when
+    everything failed. An empty pool is an error.
     """
     rng = random.Random(f"{args.seed}:{item.start_term}:{item.goal_term}")
     guides = build_attempt_guides(item.pool, args.attempts, rng)
@@ -467,9 +488,17 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
         )
 
     rows: list[dict] = []
-    ran_every_attempt = True
     for attempt, guide in enumerate(guides):
-        summary, leg_peak_rss_bytes = run_leg(args, base_flags, item.goal_term, guide)
+        try:
+            summary, leg_peak_rss_bytes = run_leg(args, base_flags, item.goal_term, guide)
+        except MemoryKilled:
+            # print(
+            #     f"verify leg {item.start_term!r} -> {item.goal_term!r} "
+            #     f"(attempt {attempt + 1}): killed at RSS cap",
+            #     file=sys.stderr,
+            # )
+            summary, leg_peak_rss_bytes = rss_killed_summary(), None
+
         rows.append(
             {
                 "start_term": item.start_term,
@@ -482,11 +511,11 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
                 **item.guide_meta,
             }
         )
+
         if summary["reached"]:
-            ran_every_attempt = False
             break
 
-    if rows and ran_every_attempt and not rows[-1]["reached"]:
+    if not rows[-1]["reached"]:
         rows[-1]["gave_up"] = True
     return rows
 
@@ -574,7 +603,10 @@ def expected_pairs(start_records: list[dict]) -> list[dict]:
 
 
 def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
-    """Run the pair-matched single-start baseline with predictive stopping."""
+    """Run the pair-matched single-start baseline.
+
+    A baseline killed at the RSS cap becomes an ``rss_killed`` failure row.
+    """
     cmd = [
         str(args.verify_binary),
         *base_flags,
@@ -583,12 +615,14 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
         "--goal-term",
         pair["goal_term"],
     ]
-    measured = run_json_subprocess(
-        cmd,
-        what=f"unguided verify for goal term {pair['goal_term']!r}",
-        rss_max_bytes=parse_size(args.max_rss),
-    )
-    summary = verify_summary(measured.payload)
+    what = f"unguided verify for goal term {pair['goal_term']!r}"
+    try:
+        measured = run_json_subprocess(cmd, what=what, rss_max_bytes=parse_size(args.max_rss))
+        summary = verify_summary(measured.payload)
+        peak_rss_bytes = measured.peak_rss_bytes
+    except MemoryKilled:
+        # print(f"{what}: killed at RSS cap", file=sys.stderr)
+        summary, peak_rss_bytes = rss_killed_summary(), None
     return {
         "start_term": pair["start_term"],
         "goal_term": pair["goal_term"],
@@ -597,7 +631,7 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
         "unguided_panic": summary["panic"],
         "unguided_final_live_heap_bytes": summary["memory"],
         "unguided_peak_live_heap_bytes": summary["peak_live_heap"],
-        "unguided_peak_rss_bytes": measured.peak_rss_bytes,
+        "unguided_peak_rss_bytes": peak_rss_bytes,
     }
 
 
@@ -700,7 +734,7 @@ def report_results(
         rows,
     )
     pairs = pl.DataFrame(pair_rows)
-    unguided = pl.DataFrame(unguided_rows)
+    unguided = pl.DataFrame(unguided_rows, schema=UNGUIDED_SCHEMA)
     comparison = pairs.join(unguided, on=["start_term", "goal_term"], how="left", validate="1:1")
     pairs.write_parquet(out / "pair_results.parquet")
     unguided.write_parquet(out / "unguided_results.parquet")

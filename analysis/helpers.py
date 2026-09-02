@@ -262,6 +262,8 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
         .then(pl.lit("iteration limit"))
         .when(reason.str.starts_with('Other("predicted upcoming-iteration'))
         .then(pl.lit("predictive memory stop"))
+        .when(reason == "rss_killed")
+        .then(pl.lit("rss cap kill"))
         .when(reason == "Saturated")
         .then(pl.lit("saturated without goal"))
         .otherwise(pl.lit("other"))

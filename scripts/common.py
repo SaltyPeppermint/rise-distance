@@ -201,6 +201,16 @@ def verify_summary(payload: Any) -> dict[str, Any]:
     return {**empty, "reached": False, "panic": True, "stop_reason": "panic"}
 
 
+def rss_killed_summary() -> dict[str, Any]:
+    """A `verify_summary`-shaped row for a child SIGKILLed at its cgroup RSS cap.
+
+    A killed child never printed its payload, so everything but the outcome
+    markers stays `None`.
+    """
+    empty: dict[str, Any] = dict.fromkeys(VERIFY_FIELDS)
+    return {**empty, "reached": False, "panic": False, "stop_reason": "rss_killed"}
+
+
 def limit_flags(limits: dict) -> list[str]:
     """Convert limit settings into CLI `--max-*` arguments."""
     flags = []
