@@ -7,6 +7,7 @@ use hashbrown::{HashMap, HashSet};
 use num::{BigUint, ToPrimitive};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
+use thiserror::Error;
 
 use crate::cli::Policy;
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
@@ -43,19 +44,26 @@ pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
     fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>>;
 
     /// Draw up to the requested number of distinct terms at each size.
-    /// Returns `None` only when every requested size is empty.
+    ///
+    /// # Errors
+    ///
+    /// Errors if the drawing fails and not enough terms could be sampled
     fn draw_batch(
         &self,
         id: Id,
         requests: &[(usize, u64)],
         seed: [u64; 2],
-    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError> {
         let terms = requests
             .iter()
             .filter_map(|&(size, requested_count)| self.draw_size(id, size, requested_count, seed))
             .flatten()
             .collect::<Vec<_>>();
-        (!terms.is_empty()).then_some(terms)
+        if terms.len() as u64 == requests.iter().map(|(_, rq)| rq).sum::<u64>() {
+            Ok(terms)
+        } else {
+            Err(DrawingError::InsufficientTerms)
+        }
     }
 
     /// Draw up to `requested_count` distinct terms of exactly `size`, capped by the
@@ -106,11 +114,15 @@ pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
     }
 
     /// Draw up to the requested number of terms at each size from the root.
+    ///
+    /// # Errors
+    ///
+    /// Errors if the drawing fails and not enough terms could be sampled
     fn draw_root_batch(
         &self,
         requests: &[(usize, u64)],
         seed: [u64; 2],
-    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError> {
         self.draw_batch(self.root(), requests, seed)
     }
 
@@ -151,6 +163,14 @@ pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
     }
 }
 
+#[derive(Error, Debug)]
+pub enum DrawingError {
+    #[error("Histogram empty")]
+    HistogramEmpty,
+    #[error("Insufficient terms")]
+    InsufficientTerms,
+}
+
 pub trait DrawerPackage<L: MyLanguage, N: MyAnalysis<L>> {
     /// Log the stats about the root into `out`.
     ///
@@ -170,12 +190,17 @@ pub trait DrawerPackage<L: MyLanguage, N: MyAnalysis<L>> {
         }
     }
 
+    /// Draw `count` candidates for specific size under a specific policy with a specific seed
+    ///
+    /// # Errors
+    ///
+    /// Errors if the drawing fails and not enough terms could be sampled
     fn draw_candidates(
         &self,
         count: usize,
         policy: Policy,
         seed: [u64; 2],
-    ) -> Option<Vec<RecExpr<OriginLang<L>>>>;
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError>;
 
     fn root_histogram(&self) -> &HashMap<usize, BigUint>;
 

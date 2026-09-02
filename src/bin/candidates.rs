@@ -187,9 +187,9 @@ fn build_frontier_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     package.log_root_counts();
     let candidates = package
         .draw_candidates(args.n_candidates, policy, [args.seed, 0])
-        .unwrap_or_else(|| {
+        .unwrap_or_else(|e| {
             eprintln!(
-                "WARNING: policy {policy} drew 0 candidates (empty novel frontier); \
+                "WARNING: policy {policy} drew 0 candidates ({e}) \
                      driver legs for this policy will have no guides to pick from"
             );
             Vec::new()
@@ -222,9 +222,9 @@ fn build_plain_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     package.log_root_counts();
     let candidates = package
         .draw_candidates(args.n_candidates, policy, [args.seed, 0])
-        .unwrap_or_else(|| {
+        .unwrap_or_else(|e| {
             eprintln!(
-                "WARNING: policy {policy} drew 0 candidates (empty egraph????); \
+                "WARNING: policy {policy} drew 0 candidates ({e}); \
                      driver legs for this policy will have no guides to pick from"
             );
             Vec::new()

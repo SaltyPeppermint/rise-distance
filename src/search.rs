@@ -150,17 +150,20 @@ fn reach_cut<L: MyLanguage, N: MyAnalysis<L>>(
     };
     // log_root_counts(package.root_histogram(), &mut log);
 
-    let Some(candidates) = package.draw_candidates(
+    let candidates = match package.draw_candidates(
         args.candidate_count,
         Policy::Count,
         [args.cut_iters as u64, 0],
-    ) else {
-        println!("{search_name}: candidate drawing failed");
-        return ReachResult {
-            reached: None,
-            candidates: Vec::new(),
-            eqsat_meta: vec![cut_meta],
-        };
+    ) {
+        Ok(candidates) => candidates,
+        Err(e) => {
+            println!("{search_name}: candidate drawing failed: {e}");
+            return ReachResult {
+                reached: None,
+                candidates: Vec::new(),
+                eqsat_meta: vec![cut_meta],
+            };
+        }
     };
 
     println!(

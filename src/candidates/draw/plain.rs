@@ -9,7 +9,9 @@ use smallvec::SmallVec;
 use crate::candidates::count::{
     CountData, RootBudgets, count_terms_rooted, find_plain_root_sizes, root_budgets,
 };
-use crate::candidates::draw::{CountWeigher, Drawer, DrawerPackage, UniformWeigher, Weigher};
+use crate::candidates::draw::{
+    CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
+};
 use crate::candidates::greedy_distribute_alloc;
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
@@ -234,7 +236,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for PlainPackage<L, N>
         count: usize,
         policy: Policy,
         seed: [u64; 2],
-    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError> {
         let histogram = self.root_histogram();
 
         let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
@@ -246,7 +248,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for PlainPackage<L, N>
             }
             Policy::Count => PlainDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
                 .draw_root_batch(&requests, seed),
-            Policy::Smallest => Some(vec![
+            Policy::Smallest => Ok(vec![
                 PlainDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
                     .smallest_root(),
             ]),
@@ -498,8 +500,8 @@ mod tests {
         assert_eq!(mixed.len(), 1);
 
         assert!(
-            drawer.draw_root_batch(&[(5, 5)], [1, 2]).is_none(),
-            "a wholly empty frontier still returns None"
+            drawer.draw_root_batch(&[(5, 5)], [1, 2]).is_err(),
+            "a wholly empty frontier returns an Error"
         );
     }
 }

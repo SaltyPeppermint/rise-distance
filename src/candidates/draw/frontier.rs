@@ -15,7 +15,9 @@ use crate::candidates::count::{
     NodeMatch, NodeMatches, NovelTermCount, RootBudgets, count_histograms_rooted,
     enumerate_matches_rooted, find_novel_root_sizes, prune_matches, root_budgets,
 };
-use crate::candidates::draw::{CountWeigher, Drawer, DrawerPackage, UniformWeigher, Weigher};
+use crate::candidates::draw::{
+    CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
+};
 use crate::candidates::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
@@ -403,8 +405,12 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for FrontierPackage<L,
         count: usize,
         policy: Policy,
         seed: [u64; 2],
-    ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
-        let histogram = self.counts.data().get(&self.root)?;
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError> {
+        let histogram = self
+            .counts
+            .data()
+            .get(&self.root)
+            .ok_or(DrawingError::HistogramEmpty)?;
 
         let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
 
@@ -417,7 +423,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for FrontierPackage<L,
                 FrontierDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
                     .draw_root_batch(&requests, seed)
             }
-            Policy::Smallest => Some(vec![
+            Policy::Smallest => Ok(vec![
                 FrontierDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
                     .smallest_root(),
             ]),

@@ -150,7 +150,7 @@ fn run_benchmark(path: &Path, mode: &Mode, no_ac: bool, no_vec: bool) {
     };
 
     let Some(result) = result else {
-        warn(&format!("SKIPPING {}. Search failed", path.display()));
+        eprintln!("SKIPPING {}. Search failed", path.display());
         return;
     };
 
@@ -165,13 +165,6 @@ fn run_benchmark(path: &Path, mode: &Mode, no_ac: bool, no_vec: bool) {
 }
 
 // ---------------------------------------------------------------------------
-
-/// Print an impossible-to-miss banner to stderr.
-fn warn(msg: &str) {
-    eprintln!("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-    eprintln!("!! {msg}");
-    eprintln!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-}
 
 const fn config(max_iters: usize, max_nodes: usize, timeout: f64) -> EqsatConfig {
     EqsatConfig {
@@ -204,7 +197,7 @@ fn run_brute(
 
     let cfg = config(args.max_iters, args.max_nodes, args.timeout);
     let Some(result) = eqsat::run_eqsat::<VecLang, (), _>(prog, rule_set.iter(), &cfg) else {
-        warn("run_eqsat returned None. Not enough distinct iterations");
+        eprintln!("run_eqsat returned None. Not enough distinct iterations");
         return None;
     };
     println!("Stopped with stop reason: {:?}", result.stop_reason());
@@ -232,7 +225,7 @@ fn run_cut(
     let cut_cfg = config(args.cut_iters, args.max_nodes, args.timeout);
     let Some(cut_result) = eqsat::run_eqsat::<VecLang, (), _>(prog, rule_set.iter(), &cut_cfg)
     else {
-        warn("Cut phase 1 returned None");
+        eprintln!("Cut phase 1 returned None");
         return None;
     };
     println!(
@@ -243,17 +236,20 @@ fn run_cut(
     let cut_iters = cut_result.iters();
 
     let Some(package) = FrontierPackage::<VecLang, ()>::build(cut_result, args.max_size) else {
-        warn("Exact candidate package found an empty frontier");
+        eprintln!("Exact candidate package found an empty frontier");
         return None;
     };
 
-    let Some(candidates) = package.draw_candidates(
+    let candidates = match package.draw_candidates(
         args.candidate_count,
         Policy::Count,
         [args.cut_iters as u64, 0],
-    ) else {
-        warn("Candidate drawing failed");
-        return None;
+    ) {
+        Ok(candidates) => candidates,
+        Err(e) => {
+            eprintln!("Candidate drawing failed {e}");
+            return None;
+        }
     };
 
     println!(
@@ -268,7 +264,7 @@ fn run_cut(
         let start = lower(candidate.clone());
         eqsat::run_eqsat::<VecLang, (), _>(&start, &rule_set, &verify_cfg)
             .or_else(|| {
-                warn(&format!("Candidate {i}: run_eqsat returned None, skipping"));
+                eprintln!("Candidate {i}: run_eqsat returned None, skipping");
                 None
             })
             .map(|result| {
@@ -290,7 +286,7 @@ fn run_cut(
     }
 
     let Some((cost, best)) = best else {
-        warn("Cut: every candidate restart failed");
+        eprintln!("Cut: every candidate restart failed");
         return None;
     };
     Some(RunResult { cost, best, meta })
