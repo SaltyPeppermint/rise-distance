@@ -61,15 +61,15 @@ impl EqsatMetadata {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, clap::Args)]
 pub struct EqsatConfig {
     /// Maximum eqsat iterations.
-    #[arg(long)]
+    #[arg(long, default_value_t = 10_000)]
     pub max_iters: usize,
 
     /// Maximum eqsat egraph nodes.
-    #[arg(long)]
+    #[arg(long, default_value_t = 10_000_000)]
     pub max_nodes: usize,
 
     /// Maximum eqsat wall-clock seconds.
-    #[arg(long)]
+    #[arg(long, default_value_t = 300.0)]
     pub max_time: f64,
 
     /// Process live-heap ceiling in bytes, or unbounded when unset.

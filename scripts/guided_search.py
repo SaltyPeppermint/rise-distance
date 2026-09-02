@@ -40,7 +40,6 @@ from common import (
     MeasuredJson,
     MemoryKilled,
     eqsat_finished,
-    eqsat_limits,
     exit_if_missing,
     fan_out,
     limit_flags,
@@ -239,7 +238,7 @@ class WorkItem:
 
 def replay_limits(args: Args, cfg: dict) -> dict:
     """Build the guide-replay limits for `candidates`"""
-    limits = eqsat_limits(cfg)
+    limits = {}
     if args.stop_iters is not None:
         limits["max_iters"] = args.stop_iters
     if args.stop_nodes is not None:

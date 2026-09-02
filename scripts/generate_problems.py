@@ -30,7 +30,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from common import (
     MemoryKilled,
-    eqsat_limits,
     exit_if_missing,
     fan_out,
     limit_flags,
@@ -168,6 +167,19 @@ def derive_seed(*fields: int) -> int:
     for value in fields:
         h.update(int(value).to_bytes(16, "little", signed=True))
     return int.from_bytes(h.digest(), "little")
+
+
+def eqsat_limits(cfg: dict) -> dict:
+    """Extract the eqsat limits from a raw model.dump())."""
+    max_memory = cfg.get("max_memory")
+    if isinstance(max_memory, str):
+        max_memory = parse_size(max_memory)
+    return {
+        "max_iters": cfg["max_iters"],
+        "max_nodes": cfg["max_nodes"],
+        "max_time": cfg["max_time"],
+        "max_memory": max_memory,
+    }
 
 
 def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, Any] | None:

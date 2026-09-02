@@ -201,35 +201,14 @@ def verify_summary(payload: Any) -> dict[str, Any]:
     return {**empty, "reached": False, "panic": True, "stop_reason": "panic"}
 
 
-def eqsat_limits(cfg: dict) -> dict:
-    """Extract the eqsat limits from a raw config dict (`problem_args.json`
-    or model.dump()). `max_memory` is an optional absolute process
-    live-heap ceiling (jemalloc `stats.allocated`), accepted as a human size
-    string (e.g. `"1G"`) or a raw byte count, normalized to bytes."""
-    max_memory = cfg.get("max_memory")
-    if isinstance(max_memory, str):
-        max_memory = parse_size(max_memory)
-    return {
-        "max_iters": cfg["max_iters"],
-        "max_nodes": cfg["max_nodes"],
-        "max_time": cfg["max_time"],
-        "max_memory": max_memory,
-    }
-
-
 def limit_flags(limits: dict) -> list[str]:
-    """Turn an eqsat-limit dict into the `--max-*` CLI flags the Rust binaries
-    take. Optional memory flags are added only when set."""
-    flags = [
-        "--max-iters",
-        str(limits["max_iters"]),
-        "--max-nodes",
-        str(limits["max_nodes"]),
-        "--max-time",
-        str(limits["max_time"]),
-    ]
-    if limits.get("max_memory") is not None:
-        flags += ["--max-memory", str(limits["max_memory"])]
+    """Convert limit settings into CLI `--max-*` arguments."""
+    flags = []
+
+    for key in ("max_memory", "max_iters", "max_nodes", "max_time"):
+        if (value := limits.get(key)) is not None:
+            flags.extend((f"--{key.replace('_', '-')}", str(value)))
+
     return flags
 
 
