@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Literal
 
 import polars as pl
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
 from common import (
@@ -154,14 +154,6 @@ class Args(BaseSettings):
         ),
     )
 
-    stop_memory: str | None = Field(
-        default=None,
-        description=(
-            "Guide-replay absolute process live-heap ceiling, expressed as a "
-            "jemalloc `stats.allocated` limit such as `4G`."
-        ),
-    )
-
     # Search policy
     attempts: int = Field(
         default=5,
@@ -174,8 +166,8 @@ class Args(BaseSettings):
         ),
     )
 
-    sampling_rss_max: str | None = Field(
-        default=None,
+    max_rss: str = Field(
+        default="4G",
         description=(
             "Cap each `candidates` process at this cgroup RSS limit, as a human "
             "size such as `4G`. A process killed during guide replay is retried, "
@@ -221,9 +213,7 @@ class Args(BaseSettings):
         ),
     )
 
-    seed: int = Field(
-        default=0, description="RNG seed used by both the Python and Rust components."
-    )
+    seed: int = Field(default=0, description="RNG seed used in Python and Rust.")
 
     jobs: int | None = Field(
         default=None,
@@ -235,31 +225,6 @@ class Args(BaseSettings):
             "this if large leg egraphs exhaust available RAM."
         ),
     )
-
-    @model_validator(mode="after")
-    def validate_args(self) -> Args:
-        # if (
-        #     self.stop_iters is None
-        #     and self.stop_nodes is None
-        #     and self.stop_time is None
-        #     and self.stop_memory is None
-        # ):
-        #     raise ValueError(
-        #         "at least one of stop_iters, stop_nodes, stop_time, or "
-        #         "stop_memory must be specified"
-        #     )
-
-        if (
-            self.sampling_rss_max is not None
-            and self.stop_memory is not None
-            and parse_size(self.sampling_rss_max) < parse_size(self.stop_memory)
-        ):
-            raise ValueError(
-                f"sampling_rss_max ({self.sampling_rss_max}) is below "
-                f"stop_memory ({self.stop_memory})"
-            )
-
-        return self
 
 
 @dataclass
@@ -281,8 +246,6 @@ def replay_limits(args: Args, cfg: dict) -> dict:
         limits["max_nodes"] = args.stop_nodes
     if args.stop_time is not None:
         limits["max_time"] = args.stop_time
-    if args.stop_memory is not None:
-        limits["max_memory"] = parse_size(args.stop_memory)
     return limits
 
 
@@ -377,19 +340,7 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         candidate_flags.append("--frontier")
 
     limits = replay_limits(args, cfg)
-    cap = parse_size(args.sampling_rss_max) if args.sampling_rss_max is not None else None
-    # The ceiling can also come from `problem_args.json`, which the arg
-    # validator cannot see.
-    heap_ceiling = limits.get("max_memory")
-    if cap is not None and heap_ceiling is not None and cap < heap_ceiling:
-        print(
-            f"WARNING: sampling RSS cap {cap} is below the effective live-heap "
-            f"ceiling {heap_ceiling}; replays get killed before it trips.",
-            file=sys.stderr,
-        )
-
-    def run_plain(cmd: list[str], what: str) -> MeasuredJson | None:
-        return run_json_subprocess(cmd, what=what)
+    cap = parse_size(args.max_rss)
 
     def run_capped(cmd: list[str], what: str) -> MeasuredJson | None:
         """Run under the RSS cap, retrying a replay-phase kill up to
@@ -400,7 +351,6 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         iters: int | None = None
         attempts = 1
         post_eqsat_kill = 0
-        after = ""
         for retries_left in range(args.sampling_retries, -1, -1):
             try:
                 # print(f"CMD: {' '.join(attempt)}")
@@ -439,8 +389,6 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
                 attempt = with_max_iters(cmd, iters)
         return None
 
-    run = run_plain if cap is None else run_capped
-
     # Menu size = exactly what the attempt loop consumes: one guide per attempt.
     print(
         f"Constructing guide-candidate menu ({args.attempts}/policy, policy={args.policy}) "
@@ -451,7 +399,9 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
 
     shards = fan_out(
         jobs,
-        lambda spec: build_candidate_shard(args, candidate_flags, limits, args.attempts, spec, run),
+        lambda spec: build_candidate_shard(
+            args, candidate_flags, limits, args.attempts, spec, run_capped
+        ),
         specs,
         "candidates",
         unit="start term",
@@ -493,7 +443,9 @@ def run_leg(
     ]
     if args.full_union:
         cmd.append("--full-union")
-    measured = run_json_subprocess(cmd, what=f"verify for goal {goal!r}")
+    measured = run_json_subprocess(
+        cmd, what=f"verify for goal {goal!r}", rss_max_bytes=parse_size(args.max_rss)
+    )
     return verify_summary(measured.payload), measured.peak_rss_bytes
 
 
@@ -632,7 +584,11 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
         "--goal-term",
         pair["goal_term"],
     ]
-    measured = run_json_subprocess(cmd, what=f"unguided verify for goal term {pair['goal_term']!r}")
+    measured = run_json_subprocess(
+        cmd,
+        what=f"unguided verify for goal term {pair['goal_term']!r}",
+        rss_max_bytes=parse_size(args.max_rss),
+    )
     summary = verify_summary(measured.payload)
     return {
         "start_term": pair["start_term"],
