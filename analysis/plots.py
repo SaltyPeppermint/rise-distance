@@ -19,6 +19,8 @@ PALETTE = [
 ]
 # Peak RSS is the only memory metric reported; it names every memory axis.
 MEMORY_LABEL = "peak RSS"
+METHOD_ORDER = ["guided", "unguided"]
+METHOD_COLORS = [PALETTE[0], PALETTE[1]]
 OUTCOME_ORDER = ["both", "guided only", "unguided only", "neither"]
 OUTCOME_COLORS = ["#4c9f70", "#2a78d6", "#eb6834", "#b8b8b4"]
 WIN_ORDER = ["below brute force", "at or above"]
@@ -55,6 +57,15 @@ def _mode_color(modes: Sequence[str]) -> alt.Color:
     )
 
 
+def _method_color() -> alt.Color:
+    return alt.Color(
+        "method:N",
+        sort=METHOD_ORDER,
+        scale=alt.Scale(domain=METHOD_ORDER, range=METHOD_COLORS),
+        legend=alt.Legend(title=None),
+    )
+
+
 def _guided_peak_scope(comparison: pl.DataFrame) -> str:
     if "guided_peak_scope" not in comparison.columns:
         return "guided workflow"
@@ -67,14 +78,10 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
     points = (
         alt.Chart(rates)
         .mark_point(filled=True, size=75)
-        .encode(
+        .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_rate:Q", title="success rate", axis=alt.Axis(format="%")),
             y=alt.Y("mode:N", title=None, sort=list(meta["modes"])),
-            color=alt.Color(
-                "method:N",
-                scale=alt.Scale(domain=["guided", "unguided"], range=[PALETTE[0], PALETTE[1]]),
-                legend=alt.Legend(title=None),
-            ),
+            color=_method_color(),
             tooltip=[
                 "mode:N",
                 "method:N",
@@ -93,7 +100,7 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
     return (
         alt.Chart(outcomes)
         .mark_bar()
-        .encode(
+        .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
             y=alt.Y("mode:N", title=None, sort=list(meta["modes"])),
             color=alt.Color(
@@ -109,6 +116,42 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
     )
 
 
+def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Pair-level failure causes, guided against unguided."""
+    # A cause absent from a method carries no row
+    causes = (
+        breakdown.group_by("failure")
+        .agg(pl.col("count").sum().alias("total"))
+        .sort("total", "failure", descending=[True, False])["failure"]
+        .to_list()
+    )
+    return (
+        alt.Chart(breakdown)
+        .mark_bar()
+        .encode(  # ty: ignore[unresolved-attribute]
+            x=alt.X("count:Q", title="failed pairs"),
+            y=alt.Y("failure:N", title=None, sort=causes),
+            yOffset=alt.YOffset("method:N", sort=METHOD_ORDER),
+            color=_method_color(),
+            row=alt.Row(
+                "mode:N",
+                title=None,
+                sort=list(meta["modes"]),
+                header=alt.Header(labelAngle=0, labelAlign="left", labelFontSize=11),
+            ),
+            tooltip=[
+                "mode:N",
+                "method:N",
+                "failure:N",
+                "count:Q",
+                alt.Tooltip("share_of_failures:Q", format=".1%", title="share of failures"),
+                alt.Tooltip("share_of_planned:Q", format=".1%", title="share of planned pairs"),
+            ],
+        )
+        .properties(title=_title("Failure causes", meta), width=420, height=alt.Step(34))
+    )
+
+
 def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     """One explicitly scoped guided peak versus the brute-force proof cost."""
     guided_scope = _guided_peak_scope(comparison)
@@ -116,7 +159,7 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     points = (
         alt.Chart(comparison)
         .mark_circle(size=45, opacity=0.58)
-        .encode(
+        .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X(
                 "brute_peak_mib:Q",
                 title=f"brute-force proof {MEMORY_LABEL} (MiB, log)",
@@ -151,7 +194,7 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     diagonal = (
         alt.Chart(pl.DataFrame({"x": [bounds["lo"], bounds["hi"]]}))
         .mark_line(strokeDash=[5, 4], color="#777")
-        .encode(
+        .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("x:Q", scale=alt.Scale(type="log")), y=alt.Y("x:Q", scale=alt.Scale(type="log"))
         )
     )
@@ -174,7 +217,7 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
     return (
         alt.Chart(binned)
         .mark_bar()
-        .encode(
+        .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X(
                 "slot_start_mib:Q",
                 title=f"brute-force proof {MEMORY_LABEL} (MiB, log)",
@@ -226,7 +269,7 @@ def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
     return (
         alt.Chart(data)
         .mark_bar()
-        .encode(
+        .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("count:Q", title="guided successes"),
             y=alt.Y("guided_peak_scope:N", title=None),
             color=alt.Color(
@@ -261,7 +304,7 @@ def peak_ratio_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     curves = (
         alt.Chart(data)
         .mark_line(interpolate="step-after", strokeWidth=2)
-        .encode(
+        .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X(
                 "peak_ratio:Q",
                 title=f"{guided_scope} / brute-force proof {MEMORY_LABEL} (log)",
@@ -280,7 +323,7 @@ def peak_ratio_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     parity = (
         alt.Chart(pl.DataFrame({"ratio": [1.0]}))
         .mark_rule(strokeDash=[5, 4], color="#777")
-        .encode(x=alt.X("ratio:Q", scale=alt.Scale(type="log")))
+        .encode(x=alt.X("ratio:Q", scale=alt.Scale(type="log")))  # ty: ignore[unresolved-attribute]
     )
     return (curves + parity).properties(
         title=_title(f"{guided_scope.title()} {MEMORY_LABEL} ratio", meta), width=460
@@ -311,7 +354,7 @@ def absolute_peak_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     return (
         alt.Chart(data)
         .mark_line(interpolate="step-after", strokeWidth=2)
-        .encode(
+        .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("peak_mib:Q", title=f"{MEMORY_LABEL} (MiB, log)", scale=alt.Scale(type="log")),
             y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
             color=alt.Color(
@@ -344,7 +387,7 @@ def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:
     return (
         alt.Chart(data)
         .mark_bar(opacity=0.75)
-        .encode(
+        .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_attempt:O", title="attempt of first success"),
             y=alt.Y("count():Q", title="successful pairs"),
             color=_mode_color(meta["modes"]),

@@ -253,6 +253,7 @@ def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[
         args.policy,
         "--size-search-steps",
         str(args.size_search_steps),
+        "--frontier",
         *flags,
     ]
     measured = run_json_subprocess(cmd, what=f"candidates for start term {start['start_term']!r}")

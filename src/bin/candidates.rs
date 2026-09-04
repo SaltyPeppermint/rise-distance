@@ -61,8 +61,8 @@ struct Args {
     #[arg(long, value_enum)]
     policy: Policy,
 
-    /// Take from the frontier or anywhere
-    #[arg(long, default_value_t = true)]
+    /// Take from the frontier
+    #[arg(long, default_value_t = false)]
     frontier: bool,
 }
 

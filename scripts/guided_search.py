@@ -202,7 +202,7 @@ class Args(BaseSettings):
     policy: Policy = Field(default="count", description="Candidate-pool sampling starteg.")
 
     frontier: bool = Field(
-        default=True, description="Sample from the frontier of terms, not the whole egraph"
+        default=False, description="Sample from the frontier of terms, not the whole egraph"
     )
 
     full_union: bool = Field(default=True, description="Use the full-union add for the leg egraph.")
@@ -309,7 +309,7 @@ def build_candidate_shard(
                 "start_term": spec.start_term,
                 "goal_terms": spec.goal_terms,
                 "candidates": {},
-                "candidate_status": "failed",
+                "candidate_status": "rss_killed" if measured is None else "no_novel_terms",
                 # A capped-out child never printed its `Measured` envelope.
                 "candidate_peak_rss_bytes": None if measured is None else measured.peak_rss_bytes,
             }

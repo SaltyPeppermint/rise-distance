@@ -270,29 +270,35 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
     )
 
 
-def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
-    """Pair-level, mutually exclusive failure categories for both methods.
+def _setup_category(status: pl.Expr, candidate_peak: pl.Expr) -> pl.Expr:
+    """Name why a pair never got a guide menu, from its non-ok ``setup_status``.
 
-    Guided setup failures take precedence over any panic observed in the
-    attempt workflow; panic then takes precedence over the terminal stop
-    reason. Unguided runs have no guide-candidate construction stage.
+    ``guide menu: out of memory``
+        Every attempt died at the RSS cap.
+    ``guide menu: no novel terms``
+        The child survived the cap and still printed an empty payload: No
+        novel root terms below the size cap, so there was nothing to draw.s
 
-    A "setup failure" is a non-ok ``setup_status``: the guide-candidate menu
-    could not be built, so the pair never ran a `verify` leg. Since candidate
-    construction runs once per start term, one failed start term marks all of
-    its goal pairs, and the count is inflated relative to distinct events.
-
-    The status is kept in the label (``setup failure: failed`` when the
-    `candidates` subprocess returned an empty payload, ``setup failure:
-    empty_pool`` when a menu was built but no attempt ran) rather than
-    collapsed, so a new status shows up as its own row instead of silently
-    joining an existing bucket.
+    An unrecognized status simply gets passed through.
     """
+    return (
+        pl.when(status == "rss_killed")
+        .then(pl.lit("guide menu: out of memory"))
+        .when((status == "no_novel_terms") | (status == "failed"))
+        .then(pl.lit("guide menu: no novel terms"))
+        .when(status == "empty_pool")
+        .then(pl.lit("guide menu: empty pool"))
+        .otherwise(pl.lit("guide menu: ") + status)
+    )
+
+
+def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
+    """Pair-level, mutually exclusive failure categories for both methods."""
     guided = frame.filter(~pl.col("guided_success").fill_null(False)).select(
         "mode",
         pl.lit("guided").alias("method"),
         pl.when(pl.col("setup_status") != "ok")
-        .then(pl.lit("setup failure: ") + pl.col("setup_status"))
+        .then(_setup_category(pl.col("setup_status"), pl.col("candidate_peak_rss_bytes")))
         .when(pl.col("guided_panic").fill_null(False))
         .then(pl.lit("panic"))
         .otherwise(_stop_category(pl.col("guided_stop_reason")))
@@ -327,8 +333,7 @@ def _guided_vs_brute(
     """Compare one explicitly named guided peak with the brute-force proof cost.
 
     Conditioned on guided success only: a guided failure has no peak to
-    compare, just the budget it exhausted. The brute-force baseline exists for
-    every pair, so nothing is dropped on its account.
+    compare, just the budget it exhausted.
     """
     return (
         frame.filter(pl.col("guided_success"))
