@@ -409,7 +409,7 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
 
     # Menu size = exactly what the attempt loop consumes: one guide per attempt.
     print(
-        f"Constructing guide-candidate menu ({args.attempts}/policy, policy={args.policy}) "
+        f"Constructing guide-candidate menu ({args.attempts}/policy, policy={args.policy}, frontier={args.frontier}) "
         f"for {len(specs)} start terms(s) "
         f"-> {candidate_out} ({jobs} workers)",
         file=sys.stderr,

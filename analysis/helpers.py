@@ -74,12 +74,10 @@ def _format_memory_limit(value: int | None) -> str:
 
 
 def _run_label(directory: Path, config: dict) -> str:
-    limits = config.get("effective_limits", {})
-    memory = _format_memory_limit(limits.get("max_memory"))
     # Absent in runs predating `--sampling-rss-max`.
-    cap = config.get("sampling_rss_max")
-    capped = f" · sampling cap={cap}" if cap else ""
-    return f"{config['policy']} · memory={memory}{capped} · {directory.name}"
+    cap = config["max_rss"]
+    frontier = config["frontier"]
+    return f"{config['policy']} · frontier={frontier} · cap={cap} · {directory.name}"
 
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
