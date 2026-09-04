@@ -7,18 +7,18 @@ use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 
 use crate::candidates::count::{
-    CountData, RootBudgets, count_terms_rooted, find_plain_root_sizes, root_budgets,
+    Histograms, RootBudgets, count_histograms_rooted, find_plain_root_sizes, root_budgets,
 };
 use crate::candidates::draw::{
     CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
 };
-use crate::candidates::greedy_distribute_alloc;
+use crate::candidates::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 pub struct PlainDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
-    counts: &'a CountData,
+    counts: &'a Histograms<Id, BigUint>,
     graph: &'b EGraph<L, N>,
     root: Id,
     weigher: W,
@@ -26,13 +26,27 @@ pub struct PlainDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
 
 impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> PlainDrawer<'a, 'b, L, N, W> {
     #[must_use]
-    pub const fn new(counts: &'a CountData, graph: &'b EGraph<L, N>, root: Id, weigher: W) -> Self {
+    pub const fn new(
+        counts: &'a Histograms<Id, BigUint>,
+        graph: &'b EGraph<L, N>,
+        root: Id,
+        weigher: W,
+    ) -> Self {
         Self {
             counts,
             graph,
             root,
             weigher,
         }
+    }
+
+    /// The counted histograms of a nodes children or `None` if any
+    /// child were not counted => 0
+    fn child_hists(&self, node: &L) -> Option<SmallVec<[&HashMap<usize, BigUint>; 2]>> {
+        node.children()
+            .iter()
+            .map(|&c| self.counts.get(&self.graph.find(c)))
+            .collect()
     }
 }
 
@@ -46,7 +60,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for PlainDrawer<'
     }
 
     fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, BigUint>> {
-        self.counts.data.get(&id)
+        self.counts.get(&id)
     }
 
     fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
@@ -54,29 +68,23 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for PlainDrawer<'
         let eclass = &self.graph[canon_id];
         let child_budget = size - 1;
 
-        // `suffix_at` reads the truncated suffix tables against a node's
-        // canonical children, so canonicalize once per node and reuse.
-        let canon_children = |node: &L| {
-            node.children()
-                .iter()
-                .map(|&c| self.graph.find(c))
-                .collect::<SmallVec<[Id; 2]>>()
-        };
-
         let weights = eclass
             .nodes
             .iter()
-            .enumerate()
-            .map(|(idx, node)| {
-                self.counts
-                    .suffix_at(canon_id, idx, &canon_children(node), 0, child_budget)
-                    .map_or_else(|| BigUint::ZERO, |count| self.weigher.node_weight(count))
+            .map(|node| {
+                self.child_hists(node)
+                    .and_then(|hists| convolve_at(&hists, child_budget))
+                    .map_or_else(|| BigUint::ZERO, |count| self.weigher.node_weight(&count))
             })
             .collect::<Vec<_>>();
         let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
 
         let pick = &eclass.nodes[pick_idx];
-        let pick_children = canon_children(pick);
+        // The pick has positive weight, so `convolve_at` saw every child.
+        let hists = self
+            .child_hists(pick)
+            .expect("a weighted node has counted children");
+        let suffix = suffix_convolutions(&hists, child_budget);
 
         let mut remaining = child_budget;
         let children = pick
@@ -84,19 +92,11 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for PlainDrawer<'
             .iter()
             .enumerate()
             .map(|(i, &c_id)| {
-                let histogram = self.counts.data.get(&self.graph.find(c_id));
-                let candidates = histogram
-                    .into_iter()
-                    .flatten()
+                let candidates = hists[i]
+                    .iter()
                     .filter_map(|(&s, count)| {
                         let rest = remaining.checked_sub(s)?;
-                        let rest_count = self.counts.suffix_at(
-                            canon_id,
-                            pick_idx,
-                            &pick_children,
-                            i + 1,
-                            rest,
-                        )?;
+                        let rest_count = suffix[i + 1].get(&rest)?;
                         Some((s, self.weigher.child_weight(count, rest_count)))
                     })
                     .collect::<Vec<_>>();
@@ -118,7 +118,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for PlainDrawer<'
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
 pub struct PlainPackage<L: MyLanguage, N: MyAnalysis<L>> {
     egraph: EGraph<L, N>,
-    counts: CountData,
+    counts: Histograms<Id, BigUint>,
     min_size: usize,
     max_size: usize,
     root: Id,
@@ -142,10 +142,10 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
         budgets: &RootBudgets,
     ) -> Option<PlainPackage<L, N>> {
         let (egraph, root) = result.into_curr();
-        let counts = count_terms_rooted(&egraph, budgets);
+        let counts = count_histograms_rooted(&egraph, budgets);
 
         let root = egraph.find(root);
-        let histogram = counts.data.get(&root)?;
+        let histogram = counts.get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
         Some(PlainPackage {
@@ -225,7 +225,6 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for PlainPackage<L, N>
     /// Panics if package construction violated its root-histogram invariant.
     fn root_histogram(&self) -> &HashMap<usize, BigUint> {
         self.counts
-            .data
             .get(&self.root)
             .expect("root histogram present iff build returned Some")
     }
@@ -265,16 +264,20 @@ mod tests {
     use egg::EGraph;
 
     use super::*;
-    use crate::candidates::count::{CountData, count_terms_rooted, root_budgets};
+    use crate::candidates::count::{count_histograms_rooted, root_budgets};
     use crate::candidates::draw::{CountWeigher, UniformWeigher};
     use crate::langs::math::Math;
     use crate::lower;
     use crate::utils::combined_rng;
     use crate::utils::sym;
 
-    fn rooted_counts(max_size: usize, graph: &EGraph<Math, ()>, root: Id) -> CountData {
+    fn rooted_counts(
+        max_size: usize,
+        graph: &EGraph<Math, ()>,
+        root: Id,
+    ) -> Histograms<Id, BigUint> {
         let budgets = root_budgets(graph, root, max_size);
-        count_terms_rooted(graph, &budgets)
+        count_histograms_rooted(graph, &budgets)
     }
 
     #[test]

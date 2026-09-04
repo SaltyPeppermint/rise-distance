@@ -323,8 +323,8 @@ function draw_children(children_ids, child_hists, states, child_budget, rng):
 
 The suffix convolution is built once per call from the chosen `child_hists`,
 so each child's size is drawn with awareness of the remaining children's
-joint feasibility. Plain drawing consumes the corresponding rooted suffix
-tables retained directly in `CountData`.
+joint feasibility. Plain drawing does the same from the rooted histograms:
+counting keeps no suffix tables of its own.
 
 ---
 

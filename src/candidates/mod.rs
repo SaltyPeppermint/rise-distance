@@ -8,7 +8,7 @@ pub use draw::{DrawerPackage, FrontierPackage, PlainPackage};
 use std::borrow::Borrow;
 
 use hashbrown::HashMap;
-use num::{BigUint, ToPrimitive};
+use num::{BigUint, ToPrimitive, Zero};
 
 /// Convolve all child histograms into a single result (left-to-right).
 pub fn convolve<H: Borrow<HashMap<usize, BigUint>>>(
@@ -38,11 +38,47 @@ pub fn convolve<H: Borrow<HashMap<usize, BigUint>>>(
     acc
 }
 
-fn convolve_at(histograms: &[&HashMap<usize, BigUint>], budget: usize) -> Option<BigUint> {
-    if histograms.iter().any(|h| h.is_empty()) {
+/// The convolution of two histograms evaluated at exactly `total`:
+/// `sum over a + b = total of hist(a) * rest(b)`, iterating the smaller map.
+pub(crate) fn convolve_entry(
+    hist: &HashMap<usize, BigUint>,
+    rest: &HashMap<usize, BigUint>,
+    total: usize,
+) -> BigUint {
+    let (outer, inner) = if hist.len() <= rest.len() {
+        (hist, rest)
+    } else {
+        (rest, hist)
+    };
+    outer
+        .iter()
+        .filter_map(|(&a, count_a)| {
+            let count_b = total.checked_sub(a).and_then(|b| inner.get(&b))?;
+            Some(count_a.to_owned() * count_b)
+        })
+        .fold(BigUint::ZERO, |acc, c| acc + c)
+}
+
+/// The convolution of all `histograms` at exactly `budget`, or `None` when it
+/// is zero.
+///
+/// Only children `1..` are convolved into a table
+pub(crate) fn convolve_at<H: Borrow<HashMap<usize, BigUint>>>(
+    histograms: &[H],
+    budget: usize,
+) -> Option<BigUint> {
+    if histograms.iter().any(|h| h.borrow().is_empty()) {
         return None;
     }
-    convolve(histograms, budget).get(&budget).cloned()
+    let Some((first, rest)) = histograms.split_first() else {
+        // The empty product: one filling, of size zero.
+        return (budget == 0).then_some(BigUint::ONE);
+    };
+    // `convolve` of nothing is the empty product, so a unary node reads its
+    // lone child's histogram straight off.
+    let tail = convolve(rest, budget);
+    let count = convolve_entry(first.borrow(), &tail, budget);
+    (!count.is_zero()).then_some(count)
 }
 
 /// Convolve child histograms right-to-left, returning suffix intermediates.

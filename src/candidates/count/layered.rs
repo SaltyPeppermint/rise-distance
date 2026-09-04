@@ -11,74 +11,23 @@ use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::HashMap;
 use num::{BigUint, Zero};
 
+use crate::candidates::convolve_entry;
 use crate::candidates::count::budgets::RootBudgets;
 
-/// Histograms and per-node suffix convolutions from one counting run.
-#[derive(Debug)]
-pub struct CountData {
-    /// Distinct-term counts by size and canonical class.
-    pub(crate) data: HashMap<Id, HashMap<usize, BigUint>>,
-    /// Per-class, per-node suffix convolutions, stored in the truncated shape
-    /// described on [`SuffixTables`]. Read them through
-    /// [`suffix_at`](Self::suffix_at) rather than indexing directly.
-    pub(crate) suffix: SuffixTables<Id>,
-}
-
-impl CountData {
-    /// The number of ways to fill children `from..` of node `node_idx` in
-    /// `class` with exactly `total` size, or `None` when there is none.
-    ///
-    /// `children` must be the node's canonical child classes. This is the
-    /// reader for the truncated [`SuffixTables`] layout: the two implicit tail
-    /// positions are reconstructed here, so `from` may range over `0..=n`.
-    pub(crate) fn suffix_at(
-        &self,
-        class: Id,
-        node_idx: usize,
-        children: &[Id],
-        from: usize,
-        total: usize,
-    ) -> Option<&BigUint> {
-        let n = children.len();
-        if from == n {
-            // The empty product: one filling, of size zero.
-            return (total == 0).then_some(&BigUint::ONE);
-        }
-        if from + 1 == n {
-            // A lone trailing child takes the whole total itself.
-            return self.data.get(&children[from])?.get(&total);
-        }
-        self.suffix[&class][node_idx][from].get(&total)
-    }
-}
-
 /// Count distinct terms within pre-established root budgets.
-pub(crate) fn count_terms_rooted<L: Language, N: Analysis<L>>(
-    egraph: &EGraph<L, N>,
-    rooted: &RootBudgets,
-) -> CountData {
-    let mut dp = plain_dp_rooted(egraph, rooted);
-    for _ in 0..rooted.limit() {
-        dp.step();
-    }
-    let (data, mut suffix) = dp.into_parts();
-    suffix.retain(|id, _| data.contains_key(id));
-    CountData { data, suffix }
-}
-
-/// Count distinct terms within pre-established root budgets
 ///
-/// The suffix tables are the DP's working state, so they are still built temporarily
-/// Callers that rederive child-size splits on the fly.
+/// The suffix tables are the DP's working state and die with it: they dwarf
+/// the histograms, and drawers rederive the child-size splits they need on the
+/// fly from these histograms instead.
 pub(crate) fn count_histograms_rooted<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
-) -> HashMap<Id, HashMap<usize, BigUint>> {
+) -> Histograms<Id, BigUint> {
     let mut dp = plain_dp_rooted(egraph, rooted);
     for _ in 0..rooted.limit() {
         dp.step();
     }
-    dp.into_parts().0
+    dp.into_data()
 }
 
 /// Create an unstepped plain DP for the root budgets.
@@ -140,10 +89,10 @@ pub(crate) fn find_plain_root_sizes<L: Language, N: Analysis<L>>(
 }
 
 /// Per key: size -> count histogram.
-type Histograms<K, C> = HashMap<K, HashMap<usize, C>>;
+pub type Histograms<K, C> = HashMap<K, HashMap<usize, C>>;
 
 /// Per key, per node: suffix convolution tables in the shape of
-/// [`suffix_convolutions`](super::suffix_convolutions), truncated to the
+/// [`suffix_convolutions`](super::super::suffix_convolutions), truncated to the
 /// positions that carry information.
 ///
 /// SPACE SAVING:
@@ -282,31 +231,17 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
         &self.budgets
     }
 
-    /// Consume the DP, returning the histograms and suffix tables.
-    pub fn into_parts(self) -> (Histograms<K, BigUint>, SuffixTables<K>) {
-        (self.data, self.suffix)
+    /// The DP's working tables, in the truncated [`SuffixTables`] layout.
+    #[cfg(test)]
+    pub const fn suffix(&self) -> &SuffixTables<K> {
+        &self.suffix
     }
-}
 
-/// The convolution of two histograms evaluated at exactly `total`:
-/// `sum over a + b = total of hist(a) * rest(b)`, iterating the smaller map.
-fn convolve_entry(
-    hist: &HashMap<usize, BigUint>,
-    rest: &HashMap<usize, BigUint>,
-    total: usize,
-) -> BigUint {
-    let (outer, inner) = if hist.len() <= rest.len() {
-        (hist, rest)
-    } else {
-        (rest, hist)
-    };
-    outer
-        .iter()
-        .filter_map(|(&a, count_a)| {
-            let count_b = total.checked_sub(a).and_then(|b| inner.get(&b))?;
-            Some(count_a.to_owned() * count_b)
-        })
-        .fold(BigUint::ZERO, |acc, c| acc + c)
+    /// Consume the DP, returning the histograms and dropping the suffix
+    /// tables.
+    pub fn into_data(self) -> Histograms<K, BigUint> {
+        self.data
+    }
 }
 
 #[cfg(test)]
@@ -318,9 +253,13 @@ mod tests {
     use super::super::super::suffix_convolutions;
     use super::*;
 
-    fn rooted_counts(egraph: &EGraph<SymbolLang, ()>, root: Id, limit: usize) -> CountData {
+    fn rooted_counts(
+        egraph: &EGraph<SymbolLang, ()>,
+        root: Id,
+        limit: usize,
+    ) -> Histograms<Id, BigUint> {
         let budgets = root_budgets(egraph, root, limit);
-        count_terms_rooted(egraph, &budgets)
+        count_histograms_rooted(egraph, &budgets)
     }
 
     #[test]
@@ -333,7 +272,7 @@ mod tests {
         egraph.union(a, apb);
         egraph.rebuild();
 
-        let data = rooted_counts(&egraph, apb, 10).data;
+        let data = rooted_counts(&egraph, apb, 10);
         let root_data = &data[&egraph.find(apb)];
 
         assert_eq!(root_data[&5], 1usize.into());
@@ -351,7 +290,7 @@ mod tests {
         egraph.union(b, apb);
         egraph.rebuild();
 
-        let data = rooted_counts(&egraph, apb, 10).data;
+        let data = rooted_counts(&egraph, apb, 10);
 
         let root_data = &data[&egraph.find(apb)];
         assert_eq!(root_data[&5], 16usize.into());
@@ -373,17 +312,17 @@ mod tests {
         let rooted = rooted_counts(&egraph, root, limit);
 
         // x can spend at most limit - 1 through g; one term per size.
-        let x_hist = &rooted.data[&egraph.find(a)];
+        let x_hist = &rooted[&egraph.find(a)];
         let mut x_sizes = x_hist.keys().copied().collect::<Vec<_>>();
         x_sizes.sort_unstable();
         assert_eq!(x_sizes, (1..limit).collect::<Vec<_>>());
 
-        let root_hist = &rooted.data[&egraph.find(root)];
+        let root_hist = &rooted[&egraph.find(root)];
         let mut root_sizes = root_hist.keys().copied().collect::<Vec<_>>();
         root_sizes.sort_unstable();
         assert_eq!(root_sizes, (2..=limit).collect::<Vec<_>>());
 
-        assert!(!rooted.data.contains_key(&egraph.find(z)));
+        assert!(!rooted.contains_key(&egraph.find(z)));
     }
 
     #[test]
@@ -403,14 +342,11 @@ mod tests {
 
         let rooted = rooted_counts(&egraph, root, 10);
 
-        let mut x_sizes = rooted.data[&egraph.find(a)]
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
+        let mut x_sizes = rooted[&egraph.find(a)].keys().copied().collect::<Vec<_>>();
         x_sizes.sort_unstable();
         assert_eq!(x_sizes, (1..=6).collect::<Vec<_>>());
 
-        let mut root_sizes = rooted.data[&egraph.find(root)]
+        let mut root_sizes = rooted[&egraph.find(root)]
             .keys()
             .copied()
             .collect::<Vec<_>>();
@@ -431,10 +367,13 @@ mod tests {
 
         let limit = 9;
         let budgets = root_budgets(&egraph, gab, limit);
-        let result = count_terms_rooted(&egraph, &budgets);
+        let mut dp = plain_dp_rooted(&egraph, &budgets);
+        for _ in 0..budgets.limit() {
+            dp.step();
+        }
 
-        for (&id, per_node) in &result.suffix {
-            for (node_idx, (node, tables)) in egraph[id].nodes.iter().zip(per_node).enumerate() {
+        for (&id, per_node) in dp.suffix() {
+            for (node, tables) in egraph[id].nodes.iter().zip(per_node) {
                 let children = node
                     .children()
                     .iter()
@@ -442,27 +381,16 @@ mod tests {
                     .collect::<Vec<_>>();
                 let histograms = children
                     .iter()
-                    .map(|c| result.data.get(c).cloned().unwrap_or_default())
+                    .map(|c| dp.data().get(c).cloned().unwrap_or_default())
                     .collect::<Vec<_>>();
                 let budget = budgets.budget(id).unwrap() - 1;
                 let expected = suffix_convolutions(&histograms, budget);
 
                 // Only positions `0..n - 1` are stored; the last two are
-                // implicit.
+                // implicit, and drawers rebuild them with
+                // `suffix_convolutions` over the same histograms.
                 assert_eq!(tables.len(), children.len().saturating_sub(1));
                 assert_eq!(tables.as_slice(), &expected[..tables.len()]);
-
-                // `suffix_at` still reproduces every position, implicit ones
-                // included.
-                for (from, want) in expected.iter().enumerate() {
-                    for total in 0..=budget {
-                        assert_eq!(
-                            result.suffix_at(id, node_idx, &children, from, total),
-                            want.get(&total),
-                            "suffix_at({id}, {node_idx}, {from}, {total})"
-                        );
-                    }
-                }
             }
         }
     }

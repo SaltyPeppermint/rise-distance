@@ -283,7 +283,7 @@ fn compute_joint_rooted<L: Language, N: Analysis<L>>(
     for _ in 0..rooted.limit() {
         dp.step();
     }
-    dp.into_parts().0
+    dp.into_data()
 }
 
 /// Joint-DP nodes grouped by current/previous class pair.
