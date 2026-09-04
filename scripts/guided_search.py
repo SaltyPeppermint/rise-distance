@@ -199,6 +199,10 @@ class Args(BaseSettings):
         ),
     )
 
+    size_search_steps: int = Field(
+        default=200, ge=0, description="How many exact-size-search increments to allow."
+    )
+
     policy: Policy = Field(default="count", description="Candidate-pool sampling starteg.")
 
     frontier: bool = Field(
@@ -353,6 +357,8 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         str(args.seed),
         "--policy",
         str(args.policy),
+        "--size-search-steps",
+        str(args.size_search_steps),
     ]
     if args.frontier:
         candidate_flags.append("--frontier")
@@ -381,9 +387,8 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
                 if eqsat_finished(killed.stderr):
                     # after = " after eqsat"
                     post_eqsat_kill += 1
-                else:
-                    # after = ""
-                    pass
+                # else:
+                #     after = ""
 
                 if not retries_left:
                     # at = "" if iters is None else f" at --max-iters {iters}"

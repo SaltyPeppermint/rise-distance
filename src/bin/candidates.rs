@@ -54,7 +54,7 @@ struct Args {
     size_search_step: usize,
 
     /// Number of exact-size-search increments.
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 200)]
     size_search_steps: usize,
 
     /// Policy used to draw candidates.
