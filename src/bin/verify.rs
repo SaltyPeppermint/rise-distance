@@ -69,9 +69,9 @@ fn main() {
     let args = Args::parse();
 
     match args.language {
-        AvailableLanguages::Diospyros => run::<_, ()>(&args, &diospyros::rules(false, false)),
-        AvailableLanguages::Math => run::<_, math::ConstantFold>(&args, &math::rules()),
-        AvailableLanguages::Prop => run::<_, prop::ConstantFold>(&args, &prop::rules()),
+        AvailableLanguages::Diospyros => run(&args, &diospyros::rules(false, false)),
+        AvailableLanguages::Math => run(&args, &math::rules()),
+        AvailableLanguages::Prop => run(&args, &prop::rules()),
     }
     println!();
 }

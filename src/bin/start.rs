@@ -48,22 +48,18 @@ fn main() {
     let args = Args::parse();
     let result = match args.language {
         AvailableLanguages::Diospyros => unimplemented!("Dios has no sampler"),
-        AvailableLanguages::Math => {
-            run_one::<math::Math, math::ConstantFold>(&args, &args.eqsat, &math::rules())
-        }
-        AvailableLanguages::Prop => {
-            run_one::<prop::Prop, prop::ConstantFold>(&args, &args.eqsat, &prop::rules())
-        }
+        AvailableLanguages::Math => run_one(&args, &args.eqsat, &math::rules()),
+        AvailableLanguages::Prop => run_one(&args, &args.eqsat, &prop::rules()),
     };
     serde_json::to_writer(std::io::stdout().lock(), &Measured::now(result)).unwrap();
     println!();
 }
 
-fn run_one<L, N>(args: &Args, validity_config: &EqsatConfig, rules: &[Rewrite<L, N>]) -> GoalTerm
-where
-    L: Samplable,
-    N: MyAnalysis<L> + Default,
-{
+fn run_one<L: Samplable, N: MyAnalysis<L>>(
+    args: &Args,
+    validity_config: &EqsatConfig,
+    rules: &[Rewrite<L, N>],
+) -> GoalTerm {
     let sampler = SizeUniformSampler::<L>::new(args.size, None);
     let mut rng = ChaCha12Rng::seed_from_u64(args.seed);
     for attempts in 1..=args.retry_limit {

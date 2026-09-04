@@ -75,13 +75,13 @@ fn main() {
 
     match args.language {
         AvailableLanguages::Diospyros => {
-            main_inner::<_, ()>(&args, &diospyros::rules(false, false));
+            main_inner(&args, &diospyros::rules(false, false));
         }
         AvailableLanguages::Math => {
-            main_inner::<_, math::ConstantFold>(&args, &math::rules());
+            main_inner(&args, &math::rules());
         }
         AvailableLanguages::Prop => {
-            main_inner::<_, prop::ConstantFold>(&args, &prop::rules());
+            main_inner(&args, &prop::rules());
         }
     }
 
