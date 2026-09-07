@@ -198,11 +198,6 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
 
         Ok((max_size, package))
     }
-
-    #[must_use]
-    pub const fn root(&self) -> Id {
-        self.root
-    }
 }
 
 impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for PlainPackage<L, N> {
