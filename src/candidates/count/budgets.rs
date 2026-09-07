@@ -51,29 +51,29 @@ impl RootBudgets {
             })
             .is_some_and(|minimum| minimum <= budget)
     }
-}
 
-/// Compute canonical class budgets and minima for a root and size limit.
-pub(crate) fn root_budgets<L: Language, N: Analysis<L>>(
-    egraph: &EGraph<L, N>,
-    root: Id,
-    limit: usize,
-) -> RootBudgets {
-    assert!(egraph.clean);
-    let mut raw_min_sizes = HashMap::new();
-    AstSize.one_shot_analysis(egraph, &mut raw_min_sizes);
-    let min_sizes = egraph
-        .classes()
-        .map(|class| {
-            let id = egraph.find(class.id);
-            (id, raw_min_sizes[&id])
-        })
-        .collect();
-    let budgets = class_budgets(egraph, egraph.find(root), limit, &min_sizes);
-    RootBudgets {
-        budgets,
-        min_sizes,
-        limit,
+    /// Compute canonical class budgets and minima for a root and size limit.
+    pub fn of_root<L: Language, N: Analysis<L>>(
+        egraph: &EGraph<L, N>,
+        root: Id,
+        limit: usize,
+    ) -> Self {
+        assert!(egraph.clean);
+        let mut raw_min_sizes = HashMap::new();
+        AstSize.one_shot_analysis(egraph, &mut raw_min_sizes);
+        let min_sizes = egraph
+            .classes()
+            .map(|class| {
+                let id = egraph.find(class.id);
+                (id, raw_min_sizes[&id])
+            })
+            .collect();
+        let budgets = class_budgets(egraph, egraph.find(root), limit, &min_sizes);
+        Self {
+            budgets,
+            min_sizes,
+            limit,
+        }
     }
 }
 

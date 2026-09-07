@@ -8,9 +8,10 @@ use num::{BigUint, Zero};
 use smallvec::SmallVec;
 
 use crate::candidates::count::budgets::RootBudgets;
-use crate::candidates::count::{LayeredDp, plain_dp_rooted};
+use crate::candidates::count::layered::LayeredDp;
 #[cfg(test)]
-use crate::candidates::count::{count_histograms_rooted, root_budgets};
+use crate::candidates::count::plain::count_histograms_rooted;
+use crate::candidates::count::plain::plain_dp_rooted;
 use crate::previous::PreviousLookup;
 
 /// A current e-node's match in the previous e-graph.
@@ -52,7 +53,7 @@ impl NovelTermCount {
         prev: &P,
         root: Id,
     ) -> Self {
-        let budgets = root_budgets(curr, root, max_size);
+        let budgets = RootBudgets::of_root(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
         let plain = count_histograms_rooted(curr, &budgets);
         Self::from_rooted_matches(curr, &plain, matches, &budgets)
@@ -407,7 +408,6 @@ mod tests {
     use num::BigUint;
 
     use super::*;
-    use crate::candidates::count::budgets::root_budgets;
     use crate::langs::math::Math;
     use crate::utils::sym;
 
@@ -417,7 +417,7 @@ mod tests {
         root: Id,
         max_size: usize,
     ) -> NovelTermCount {
-        let budgets = root_budgets(curr, root, max_size);
+        let budgets = RootBudgets::of_root(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
         let plain = count_histograms_rooted(curr, &budgets);
         NovelTermCount::from_rooted_matches(curr, &plain, matches, &budgets)
@@ -500,7 +500,7 @@ mod tests {
         curr.rebuild();
         let prev = curr.clone();
 
-        let budgets = root_budgets(&curr, root, 3);
+        let budgets = RootBudgets::of_root(&curr, root, 3);
         let matches = enumerate_matches_rooted(&curr, &prev, &budgets);
         let root = curr.find(root);
         assert!(matches.keys().any(|(c, _)| *c == root));
@@ -516,7 +516,7 @@ mod tests {
         curr.rebuild();
         let prev = curr.clone();
 
-        let budgets = root_budgets(&curr, root, 2);
+        let budgets = RootBudgets::of_root(&curr, root, 2);
         let matches = enumerate_matches_rooted(&curr, &prev, &budgets);
 
         assert!(!matches.keys().any(|(c, _)| *c == curr.find(unreachable)));
@@ -535,10 +535,10 @@ mod tests {
         curr.rebuild();
         let root = curr.find(a);
 
-        let cap_budgets = root_budgets(&curr, root, 3);
+        let cap_budgets = RootBudgets::of_root(&curr, root, 3);
         let mut matches = enumerate_matches_rooted(&curr, &prev, &cap_budgets);
         let before = matches.values().map(Vec::len).sum::<usize>();
-        let final_budgets = root_budgets(&curr, root, 1);
+        let final_budgets = RootBudgets::of_root(&curr, root, 1);
         prune_matches(&curr, &mut matches, &final_budgets);
         let after = matches.values().map(Vec::len).sum::<usize>();
 
@@ -561,7 +561,7 @@ mod tests {
         curr.rebuild();
         let root = curr.find(a);
 
-        let budgets = root_budgets(&curr, root, 1);
+        let budgets = RootBudgets::of_root(&curr, root, 1);
         let matches = enumerate_matches_rooted(&curr, &prev, &budgets);
         let previous_classes = matches
             .iter()

@@ -6,9 +6,8 @@ use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 
-use crate::candidates::count::{
-    Histograms, RootBudgets, count_histograms_rooted, find_plain_root_size, root_budgets,
-};
+use crate::candidates::count::budgets::RootBudgets;
+use crate::candidates::count::plain::{count_histograms_rooted, find_plain_root_size};
 use crate::candidates::draw::{
     CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
 };
@@ -18,7 +17,8 @@ use crate::eqsat::EqsatResult;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 pub struct PlainDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
-    counts: &'a Histograms<Id, BigUint>,
+    /// Histogram of the counts for each class, indexed by `node_idx`
+    counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
     graph: &'b EGraph<L, N>,
     root: Id,
     weigher: W,
@@ -27,7 +27,7 @@ pub struct PlainDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
 impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> PlainDrawer<'a, 'b, L, N, W> {
     #[must_use]
     pub const fn new(
-        counts: &'a Histograms<Id, BigUint>,
+        counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
         graph: &'b EGraph<L, N>,
         root: Id,
         weigher: W,
@@ -118,7 +118,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for PlainDrawer<'
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
 pub struct PlainPackage<L: MyLanguage, N: MyAnalysis<L>> {
     egraph: EGraph<L, N>,
-    counts: Histograms<Id, BigUint>,
+    counts: HashMap<Id, HashMap<usize, BigUint>>,
     min_size: usize,
     max_size: usize,
     root: Id,
@@ -131,7 +131,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
     pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<PlainPackage<L, N>> {
         let curr = result.curr();
         let root = curr.find(result.root());
-        let budgets = root_budgets(curr, root, max_size);
+        let budgets = RootBudgets::of_root(curr, root, max_size);
 
         Self::from_root_budget(result, max_size, &budgets)
     }
@@ -163,7 +163,6 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
     /// The exact scan stops at the cap `start_size + search_steps`.
     /// Unlike the frontier package there is no previous boundary to subtract,
     /// so every term the root can extract counts toward the threshold.
-    /// See `docs/counting/novel_size_search.md`.
     ///
     /// # Errors
     ///
@@ -178,7 +177,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
 
         let curr = result.curr();
         let root = curr.find(result.root());
-        let cap_budgets = root_budgets(curr, root, cap);
+        let cap_budgets = RootBudgets::of_root(curr, root, cap);
 
         let max_size = match find_plain_root_size(curr, root, min_extractable, &cap_budgets) {
             Ok(max_size) => max_size,
@@ -190,7 +189,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
             }
         };
 
-        let final_budgets = root_budgets(curr, root, max_size);
+        let final_budgets = RootBudgets::of_root(curr, root, max_size);
 
         let Some(package) = Self::from_root_budget(result, max_size, &final_budgets) else {
             eprintln!("package construction found no terms (max_size={max_size})");
@@ -253,7 +252,6 @@ mod tests {
     use egg::EGraph;
 
     use super::*;
-    use crate::candidates::count::{count_histograms_rooted, root_budgets};
     use crate::candidates::draw::{CountWeigher, UniformWeigher};
     use crate::langs::math::Math;
     use crate::lower;
@@ -264,8 +262,8 @@ mod tests {
         max_size: usize,
         graph: &EGraph<Math, ()>,
         root: Id,
-    ) -> Histograms<Id, BigUint> {
-        let budgets = root_budgets(graph, root, max_size);
+    ) -> HashMap<Id, HashMap<usize, BigUint>> {
+        let budgets = RootBudgets::of_root(graph, root, max_size);
         count_histograms_rooted(graph, &budgets)
     }
 

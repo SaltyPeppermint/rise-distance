@@ -5,10 +5,12 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-use crate::candidates::count::{
-    NodeMatch, NodeMatches, NovelTermCount, RootBudgets, count_histograms_rooted,
-    enumerate_matches_rooted, find_novel_root_sizes, prune_matches, root_budgets,
+use crate::candidates::count::budgets::RootBudgets;
+use crate::candidates::count::novel::{
+    NodeMatch, NodeMatches, NovelTermCount, enumerate_matches_rooted, find_novel_root_sizes,
+    prune_matches,
 };
+use crate::candidates::count::plain::count_histograms_rooted;
 use crate::candidates::draw::{
     CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
 };
@@ -278,7 +280,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
     pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<FrontierPackage<L, N>> {
         let curr = result.curr();
         let root = curr.find(result.root());
-        let budgets = root_budgets(curr, root, max_size);
+        let budgets = RootBudgets::of_root(curr, root, max_size);
 
         let prev = result.prev_index();
         let mut matches = enumerate_matches_rooted(curr, &prev, &budgets);
@@ -336,7 +338,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         let prev = result.prev_index();
         let curr = result.curr();
         let root = curr.find(result.root());
-        let cap_budgets = root_budgets(curr, root, cap);
+        let cap_budgets = RootBudgets::of_root(curr, root, cap);
         let mut matches = enumerate_matches_rooted(curr, &prev, &cap_budgets);
 
         drop(prev);
@@ -357,7 +359,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
             }
         };
 
-        let final_budgets = root_budgets(curr, root, max_size);
+        let final_budgets = RootBudgets::of_root(curr, root, max_size);
         prune_matches(curr, &mut matches, &final_budgets);
 
         let Some(package) = Self::from_rooted_matches(result, max_size, matches, &final_budgets)
