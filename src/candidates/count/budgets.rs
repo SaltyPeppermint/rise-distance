@@ -78,7 +78,8 @@ pub(crate) fn root_budgets<L: Language, N: Analysis<L>>(
 }
 
 /// Largest subterm size usable by each class below `limit` from `root`.
-/// Unreachable classes are omitted.
+/// Unreachable classes are ignored and not included in the result.
+/// Basically a fixpoint
 fn class_budgets<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     root: Id,

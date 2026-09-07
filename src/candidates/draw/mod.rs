@@ -80,23 +80,14 @@ pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
         seed: [u64; 2],
     ) -> Option<Vec<RecExpr<OriginLang<L>>>> {
         let requested = usize::try_from(requested_count).unwrap();
-        // Never chase more distinct terms than the size actually has: the
-        // histogram count is exact, so cap the target at `min(requested,
-        // available)`. Without this, a size with fewer distinct terms than
-        // `requested` would exhaust the whole retry budget and still
-        // fail. A count that overflows `u64`/`usize` far exceeds any
-        // `requested`, so saturate to `requested` there rather than capping low.
+        // Check if we can actually draw that many
         let count = self.size_histogram(self.find(id))?.get(&size)?;
         let target = requested.min(count.to_usize().unwrap_or(requested));
         if target == 0 {
             return None;
         }
 
-        // Deterministic draw stream: `size` and `seed` seed a single RNG, so
-        // for a fixed seed the result set is reproducible (and distinct sizes
-        // never share a stream). Draw with replacement into a set until either
-        // `target` distinct terms are seen or the retry budget runs out;
-        // return whatever was collected rather than failing on a short draw.
+        // Deterministic rng
         let mut rng = utils::combined_rng([size as u64, seed[0], seed[1]]);
         let mut drawn = HashSet::new();
         let mut budget = requested_count * MAX_DRAW_ATTEMPTS_PER_CANDIDATE;

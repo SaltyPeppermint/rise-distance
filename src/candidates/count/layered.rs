@@ -15,10 +15,6 @@ use crate::candidates::convolve_entry;
 use crate::candidates::count::budgets::RootBudgets;
 
 /// Count distinct terms within pre-established root budgets.
-///
-/// The suffix tables are the DP's working state and die with it: they dwarf
-/// the histograms, and drawers rederive the child-size splits they need on the
-/// fly from these histograms instead.
 pub(crate) fn count_histograms_rooted<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
@@ -36,23 +32,19 @@ pub(crate) fn plain_dp_rooted<L: Language, N: Analysis<L>>(
     rooted: &RootBudgets,
 ) -> LayeredDp<Id> {
     assert!(egraph.clean);
-    let children_of = plain_children_of(egraph, rooted.budgets().keys().copied());
+    let children_of = rooted
+        .budgets()
+        .keys()
+        .map(|id| {
+            let per_node = egraph[*id]
+                .nodes
+                .iter()
+                .map(|node| node.children().iter().map(|&c| egraph.find(c)).collect())
+                .collect();
+            (*id, per_node)
+        })
+        .collect();
     LayeredDp::new(children_of, rooted.budgets().clone())
-}
-
-fn plain_children_of<L: Language, N: Analysis<L>>(
-    egraph: &EGraph<L, N>,
-    ids: impl Iterator<Item = Id>,
-) -> HashMap<Id, Vec<Vec<Id>>> {
-    ids.map(|id| {
-        let per_node = egraph[id]
-            .nodes
-            .iter()
-            .map(|node| node.children().iter().map(|&c| egraph.find(c)).collect())
-            .collect();
-        (id, per_node)
-    })
-    .collect()
 }
 
 // ============================================================================

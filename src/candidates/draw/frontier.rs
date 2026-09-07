@@ -1,9 +1,3 @@
-//! Weighted frontier-candidate drawing.
-//!
-//! Every requested term is drawn independently, and a [`Weigher`] controls
-//! whether feasible derivation choices are uniform locally or weighted by their
-//! term counts.
-
 use egg::{EGraph, Id, RecExpr};
 use hashbrown::HashMap;
 use num::{BigUint, Zero};
@@ -155,10 +149,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
     }
 
     fn shared_branches(&self, curr: Id, size: usize, prev: Id) -> Vec<Branch<'_>> {
-        let eclass = &self.graph[curr];
-        let child_budget = size - 1;
-
-        eclass
+        self.graph[curr]
             .nodes
             .iter()
             .enumerate()
@@ -174,43 +165,36 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
                             .copied()
                             .map(State::SharedWith)
                             .collect();
-                        self.make_branch(curr, node_idx, child_states, child_budget)
+                        self.make_branch(curr, node_idx, child_states, size - 1)
                     })
             })
             .collect()
     }
 
     fn novel_branches(&self, curr: Id, size: usize) -> Vec<Branch<'_>> {
-        let eclass = &self.graph[curr];
-        let child_budget = size - 1;
-
-        eclass
+        self.graph[curr]
             .nodes
             .iter()
             .enumerate()
             .flat_map(|(node_idx, node)| {
                 let matches = self.counts.matches_of(self.graph, curr, node_idx);
-                let children = node.children();
-                let slot_options = children
-                    .iter()
-                    .map(|child| {
-                        let mut options = vec![State::Novel];
-                        options.extend(
+                let slot_options = node.children().iter().map(|child| {
+                    std::iter::once(State::Novel)
+                        .chain(
                             self.counts
                                 .cover_of(self.graph, *child)
                                 .iter()
                                 .copied()
                                 .map(State::SharedWith),
-                        );
-                        options
-                    })
-                    .collect::<Vec<_>>();
+                        )
+                        .collect::<Vec<_>>()
+                });
 
-                enumerate_profiles(&slot_options)
+                enumerate_profiles(slot_options)
                     .into_iter()
                     .filter(|profile| !completes_some_match(profile, matches))
                     .filter_map(move |child_states| {
-                        self.make_branch(curr, node_idx, child_states, child_budget)
+                        self.make_branch(curr, node_idx, child_states, size - 1)
                     })
             })
             .collect()
@@ -250,12 +234,12 @@ struct Branch<'a> {
     child_hists: Vec<&'a HashMap<usize, BigUint>>,
 }
 
-fn enumerate_profiles<T: Clone>(slot_options: &[Vec<T>]) -> Vec<Vec<T>> {
+fn enumerate_profiles<T: Clone>(slot_options: impl Iterator<Item = Vec<T>>) -> Vec<Vec<T>> {
     let mut profiles = vec![Vec::new()];
     for slot in slot_options {
         let mut next = Vec::with_capacity(profiles.len() * slot.len());
         for prefix in &profiles {
-            for option in slot {
+            for option in &slot {
                 let mut profile = prefix.clone();
                 profile.push(option.clone());
                 next.push(profile);

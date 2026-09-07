@@ -1,8 +1,6 @@
 //! Novel-reachable term counts.
 //!
-//! A current term is novel when no previous e-class can extract it. This
-//! module enumerates previous matches, counts shared terms, and subtracts them
-//! from plain counts. See `docs/candidates/novel_candidates.md`.
+//! A current term is novel when no previous e-class can extract it.
 
 use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::{HashMap, HashSet};
@@ -10,9 +8,9 @@ use num::{BigUint, Zero};
 use smallvec::SmallVec;
 
 use crate::candidates::count::budgets::RootBudgets;
-#[cfg(test)]
-use crate::candidates::count::count_histograms_rooted;
 use crate::candidates::count::{LayeredDp, plain_dp_rooted};
+#[cfg(test)]
+use crate::candidates::count::{count_histograms_rooted, root_budgets};
 use crate::previous::PreviousLookup;
 
 /// A current e-node's match in the previous e-graph.
@@ -29,11 +27,6 @@ pub type NodeMatches = HashMap<(Id, usize), Vec<NodeMatch>>;
 type JointTable = HashMap<(Id, Id), HashMap<usize, BigUint>>;
 
 /// Joint and novel counts plus previous-node matches.
-///
-/// The plain counts are an input to [`derive_novel`] only, never a field: the
-/// frontier drawer reads `data` and `joint` and re-derives child-size splits
-/// per draw, so retaining the plain histograms and their suffix tables would
-/// cost more than everything kept here put together.
 #[derive(Debug)]
 pub struct NovelTermCount {
     /// Shared extraction counts by class pair and size.
@@ -59,7 +52,7 @@ impl NovelTermCount {
         prev: &P,
         root: Id,
     ) -> Self {
-        let budgets = crate::candidates::count::budgets::root_budgets(curr, root, max_size);
+        let budgets = root_budgets(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
         let plain = count_histograms_rooted(curr, &budgets);
         Self::from_rooted_matches(curr, &plain, matches, &budgets)
@@ -77,7 +70,13 @@ impl NovelTermCount {
         budgets: &RootBudgets,
     ) -> Self {
         let joint = compute_joint_rooted(curr, &matches, budgets);
-        let cover = build_cover(&joint);
+        // Calculate cover
+        let cover = joint
+            .keys()
+            .fold(HashMap::new(), |mut out: HashMap<Id, Vec<Id>>, &(c, pc)| {
+                out.entry(c).or_default().push(pc);
+                out
+            });
         let data = derive_novel(plain, &joint);
 
         Self {
@@ -136,24 +135,6 @@ impl NovelTermCount {
         let canon = curr.find(curr_id);
         self.cover.get(&canon).map_or(&[][..], Vec::as_slice)
     }
-}
-
-// The exposed `cover` is built from the *joint* keys, not from match
-// enumeration's internal `cover`. The two can differ: a `(c, pc)` pair whose
-// matches all involve some child with empty `joint` within its root budget
-// ends up dropped by rooted joint counting. That's fine for exact candidate construction: a
-// missing `pc` had joint count 0 anyway, so neither slot enumeration nor
-// `completes_some_match`
-// can be fooled by its absence.
-fn build_cover(joint: &JointTable) -> HashMap<Id, Vec<Id>> {
-    let mut out: HashMap<Id, Vec<Id>> = HashMap::new();
-    for (c, pc) in joint.keys() {
-        let entry = out.entry(*c).or_default();
-        if !entry.contains(pc) {
-            entry.push(*pc);
-        }
-    }
-    out
 }
 
 // ============================================================================
@@ -419,10 +400,6 @@ fn derive_novel(
     }
     out
 }
-
-// ============================================================================
-// Tests.
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
