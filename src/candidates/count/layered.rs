@@ -59,33 +59,38 @@ fn plain_children_of<L: Language, N: Analysis<L>>(
 // Exact root-size scan.
 // ============================================================================
 
-/// Find the first `stop_after` root sizes with terms within `rooted`.
+/// Find the smallest root size that makes at least `min_extractable` terms
+/// available within `rooted`.
 ///
 /// The plain analogue of `find_novel_root_sizes`: with no previous boundary to
-/// subtract, every size the root can extract at counts.
-pub(crate) fn find_plain_root_sizes<L: Language, N: Analysis<L>>(
+/// subtract, every term the root can extract counts toward the threshold.
+///
+/// # Errors
+///
+/// Returns the terms found when `rooted` is exhausted below `min_extractable`.
+pub(crate) fn find_plain_root_size<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     root: Id,
-    stop_after: usize,
+    min_extractable: usize,
     rooted: &RootBudgets,
-) -> Vec<usize> {
+) -> Result<usize, BigUint> {
     let root = egraph.find(root);
     let mut plain = plain_dp_rooted(egraph, rooted);
 
-    let mut sizes = Vec::new();
+    let mut term_count = BigUint::ZERO;
     for _ in 0..rooted.limit() {
         let size = plain.step();
 
         // Final as of this layer. Zero-count entries are absent and read as 0.
         let count = plain.data().get(&root).and_then(|hist| hist.get(&size));
-        if count.is_some_and(|count| *count != BigUint::ZERO) {
-            sizes.push(size);
-            if sizes.len() >= stop_after {
-                break;
+        if let Some(count) = count.filter(|count| !count.is_zero()) {
+            term_count += count;
+            if term_count >= min_extractable.into() {
+                return Ok(size);
             }
         }
     }
-    sizes
+    Err(term_count)
 }
 
 /// Per key: size -> count histogram.

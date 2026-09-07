@@ -184,7 +184,7 @@ pub trait DrawerPackage<L: MyLanguage, N: MyAnalysis<L>> {
             .map(|(a, b)| (*a, b.to_owned()))
             .collect::<Vec<_>>();
         sorted_hist.sort_unstable_by_key(|(size, _)| *size);
-        eprintln!("Terms in frontier:");
+        eprintln!("Terms in package:");
         for (k, v) in &sorted_hist {
             eprintln!("{v} terms of size {k}");
         }

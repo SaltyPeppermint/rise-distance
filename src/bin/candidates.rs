@@ -8,7 +8,7 @@ use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
 use time::OffsetDateTime;
 
-use rise_distance::candidates::{DrawerPackage, FrontierPackage};
+use rise_distance::candidates::{DrawerPackage, FrontierPackage, PlainPackage};
 use rise_distance::cli::{Candidates, Measured, Policy};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
@@ -204,7 +204,7 @@ fn build_plain_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     seed_expr: &RecExpr<L>,
 ) -> Result<Vec<RecExpr<OriginLang<L>>>, String> {
     let start_size = AstSize.cost_rec(seed_expr);
-    let (max_size, package) = FrontierPackage::build_through_novel_sizes(
+    let (max_size, package) = PlainPackage::build_through_sizes(
         result,
         start_size,
         args.size_search_steps,
@@ -212,7 +212,7 @@ fn build_plain_candidates<L: MyLanguage, N: MyAnalysis<L>>(
     )
     .map_err(|tried_max_size| {
         format!(
-            "candidate construction found too few term sizes after {} retries \
+            "candidate construction found too few terms after {} retries \
                  (max_size={})",
             args.size_search_steps, tried_max_size
         )

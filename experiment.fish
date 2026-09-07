@@ -41,17 +41,17 @@ memrun uv run scripts/guided_search.py \
   data/problems/squishy-potatoe
 or exit $status
 
-memrun uv run scripts/guided_search.py \
-  --max-rss 450M \
-  --sampling-retries 5 \
-  --policy uniform \
-  --start-terms 100 \
-  --attempts 10 \
-  --seed 42 \
-  --full-union \
-  --frontier \
-  data/problems/squishy-potatoe
-or exit $status
+# memrun uv run scripts/guided_search.py \
+#   --max-rss 450M \
+#   --sampling-retries 10 \
+#   --policy uniform \
+#   --start-terms 100 \
+#   --attempts 10 \
+#   --seed 42 \
+#   --full-union \
+#   --frontier \
+#   data/problems/squishy-potatoe
+# or exit $status
 
 # memrun uv run scripts/guided_search.py \
 #   --max-rss 450M \

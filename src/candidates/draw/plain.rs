@@ -7,7 +7,7 @@ use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 
 use crate::candidates::count::{
-    Histograms, RootBudgets, count_histograms_rooted, find_plain_root_sizes, root_budgets,
+    Histograms, RootBudgets, count_histograms_rooted, find_plain_root_size, root_budgets,
 };
 use crate::candidates::draw::{
     CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
@@ -157,56 +157,45 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
         })
     }
 
-    /// Build a package ending at the `size_goal`-th root size with terms.
+    /// Build a package ending at the smallest root size that makes at least
+    /// `min_extractable` terms available.
     ///
     /// The exact scan stops at the cap `start_size + search_steps`.
     /// Unlike the frontier package there is no previous boundary to subtract,
-    /// so every size the root can extract at counts toward the goal.
+    /// so every term the root can extract counts toward the threshold.
     /// See `docs/counting/novel_size_search.md`.
     ///
     /// # Errors
     ///
-    /// Returns the cap if the scan or package finds too few sizes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `size_goal` is zero or writing to `log` fails.
+    /// Returns the cap if the scan or package finds too few terms.
     pub fn build_through_sizes(
         result: EqsatResult<L, N>,
         start_size: usize,
         search_steps: usize,
-        size_goal: usize,
+        min_extractable: usize,
     ) -> Result<(usize, Self), usize> {
-        assert!(size_goal > 0, "size_goal must be nonzero");
-
         let cap = start_size + search_steps;
 
         let curr = result.curr();
         let root = curr.find(result.root());
         let cap_budgets = root_budgets(curr, root, cap);
 
-        let sizes = find_plain_root_sizes(curr, root, size_goal, &cap_budgets);
-        if sizes.len() < size_goal {
-            eprintln!(
-                "found {found} of {size_goal} sizes (max_size={cap})",
-                found = sizes.len()
-            );
-            return Err(cap);
-        }
-        let max_size = sizes[size_goal - 1];
+        let max_size = match find_plain_root_size(curr, root, min_extractable, &cap_budgets) {
+            Ok(max_size) => max_size,
+            Err(term_count) => {
+                eprintln!(
+                    "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
+                );
+                return Err(cap);
+            }
+        };
+
         let final_budgets = root_budgets(curr, root, max_size);
 
         let Some(package) = Self::from_root_budget(result, max_size, &final_budgets) else {
             eprintln!("package construction found no terms (max_size={max_size})");
             return Err(cap);
         };
-        if package.root_histogram().len() < size_goal {
-            eprintln!(
-                "package construction found fewer than {size_goal} sizes \
-                 (max_size={max_size})"
-            );
-            return Err(cap);
-        }
 
         Ok((max_size, package))
     }
@@ -281,11 +270,12 @@ mod tests {
     }
 
     #[test]
-    fn build_through_sizes_stops_at_kth_nonempty_size() {
+    fn build_through_sizes_stops_at_min_extractable() {
         // Unioning `a` with the root of (+ a b) creates a cycle: the root
-        // class extracts a, (+ a b), (+ (+ a b) b), ... (sizes 1, 3, 5, ...).
-        // The naive package ignores prev entirely, so asking for 3 sizes
-        // must yield max_size = 5 (where the frontier would yield 9).
+        // class extracts a, (+ a b), (+ (+ a b) b), ... — one term each at
+        // sizes 1, 3, 5, ... The naive package ignores prev entirely, so a
+        // threshold of 3 terms must yield max_size = 5 (where the frontier
+        // would yield 9).
         let mut curr = EGraph::<Math, ()>::new(());
         curr.enable_union_event_recording();
         let a = curr.add(sym("a"));
@@ -313,8 +303,8 @@ mod tests {
 
     #[test]
     fn build_through_sizes_reports_cap_when_short() {
-        // A single leaf has exactly one extractable size, so a goal of 3
-        // can never be met and the scan must report the cap.
+        // A single leaf has exactly one extractable term, so a threshold of
+        // 3 can never be met and the scan must report the cap.
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
         let root = graph.add(sym("a"));
@@ -325,7 +315,7 @@ mod tests {
         let result =
             EqsatResult::new_for_tests(graph, root, prev_raw_node_count, prev_union_event_count);
         let Err(cap) = PlainPackage::build_through_sizes(result, 3, 20, 3) else {
-            panic!("a single size cannot satisfy a goal of 3");
+            panic!("a single term cannot satisfy a threshold of 3");
         };
 
         assert_eq!(cap, 23, "cap = start_size + search_steps");
@@ -455,10 +445,10 @@ mod tests {
     }
 
     #[test]
-    fn draw_batch_returns_partial_when_size_undersupplied() {
+    fn draw_batch_errors_when_size_undersupplied() {
         // Root Add([a-class, b-class]) has 2 * 3 = 6 distinct terms of size 3.
-        // Asking for far more than that must return the 6 that exist rather
-        // than collapsing the whole batch to None (the empty-pool bug).
+        // A batch is all-or-nothing: exactly 6 is satisfiable, and asking for
+        // more than the size holds fails instead of returning a short draw.
         let mut graph = EGraph::<Math, ()>::new(());
         let a1 = graph.add(sym("a1"));
         let a2 = graph.add(sym("a2"));
@@ -474,21 +464,25 @@ mod tests {
         let counts = rooted_counts(10, &graph, root);
         let drawer = PlainDrawer::new(&counts, &graph, root, CountWeigher);
 
-        let result = drawer
-            .draw_root_batch(&[(3, 1000)], [1, 2])
-            .expect("undersupplied size should still yield its available terms");
-        assert_eq!(
-            result.len(),
-            6,
-            "should return exactly the 6 distinct terms"
+        let exact = drawer
+            .draw_root_batch(&[(3, 6)], [1, 2])
+            .expect("the size holds exactly the requested 6 terms");
+        assert_eq!(exact.len(), 6, "should return exactly the 6 distinct terms");
+
+        assert!(
+            matches!(
+                drawer.draw_root_batch(&[(3, 1000)], [1, 2]),
+                Err(DrawingError::InsufficientTerms)
+            ),
+            "a size that cannot supply the request fails the batch"
         );
     }
 
     #[test]
-    fn draw_batch_none_only_when_all_sizes_empty() {
+    fn draw_batch_errors_when_any_size_is_short() {
         // Root Ln(a) has exactly one term of size 2 and nothing at size 5.
-        // A batch mixing a satisfiable size with an empty one keeps the
-        // satisfiable one; a batch of only empty sizes returns None.
+        // The satisfiable size alone succeeds, but pairing it with an empty
+        // size fails the whole batch rather than silently dropping it.
         let mut graph = EGraph::<Math, ()>::new(());
         let a = graph.add(sym("a"));
         let root = graph.add(Math::Ln(a));
@@ -497,14 +491,25 @@ mod tests {
         let counts = rooted_counts(10, &graph, root);
         let drawer = PlainDrawer::new(&counts, &graph, root, UniformWeigher);
 
-        let mixed = drawer
-            .draw_root_batch(&[(2, 5), (5, 5)], [1, 2])
-            .expect("a non-empty size keeps the batch alive");
-        assert_eq!(mixed.len(), 1);
+        let satisfiable = drawer
+            .draw_root_batch(&[(2, 1)], [1, 2])
+            .expect("the lone size-2 term satisfies a request for one");
+        assert_eq!(satisfiable.len(), 1);
 
         assert!(
-            drawer.draw_root_batch(&[(5, 5)], [1, 2]).is_err(),
-            "a wholly empty frontier returns an Error"
+            matches!(
+                drawer.draw_root_batch(&[(2, 1), (5, 5)], [1, 2]),
+                Err(DrawingError::InsufficientTerms)
+            ),
+            "an empty size poisons an otherwise satisfiable batch"
+        );
+
+        assert!(
+            matches!(
+                drawer.draw_root_batch(&[(5, 5)], [1, 2]),
+                Err(DrawingError::InsufficientTerms)
+            ),
+            "a wholly empty request returns an Error"
         );
     }
 }

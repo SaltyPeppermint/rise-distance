@@ -34,7 +34,7 @@ impl<
         + SampleUniform
         + PartialOrd
         + ConstOne
-    + for<'a> Sum<&'a Self>
+        + for<'a> Sum<&'a Self>
         + ToPrimitive
         + FromPrimitive
         + Serialize
