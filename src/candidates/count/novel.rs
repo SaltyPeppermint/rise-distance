@@ -15,25 +15,15 @@ use crate::candidates::count::count_histograms_rooted;
 use crate::candidates::count::{LayeredDp, plain_dp_rooted};
 use crate::previous::PreviousLookup;
 
-/// Child class ids, inline for the usual arity of at most two.
-pub type ChildIds = SmallVec<[Id; 2]>;
-
 /// A current e-node's match in the previous e-graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeMatch {
     pub prev_class: Id,
-    pub prev_children: ChildIds,
+    pub prev_children: SmallVec<[Id; 2]>,
 }
 
 /// Per `(curr_class, node_idx)`: every match of that e-node in prev.
 pub type NodeMatches = HashMap<(Id, usize), Vec<NodeMatch>>;
-
-/// Previous classes sharing an extraction with each current class.
-type MatchCover = HashMap<Id, HashSet<Id>>;
-
-/// Dedup key for match enumeration: `(curr_class, node_idx, prev_class,
-/// prev_children)`.
-type MatchKeys = HashSet<(Id, usize, Id, ChildIds)>;
 
 /// Shared extraction counts by class pair and size.
 type JointTable = HashMap<(Id, Id), HashMap<usize, BigUint>>;
@@ -177,12 +167,13 @@ pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousL
     prev: &P,
     budgets: &RootBudgets,
 ) -> NodeMatches {
-    let mut cover = MatchCover::new();
+    // Previous classes sharing an extraction with each current class.
+    let mut cover = HashMap::new();
     let mut matches = NodeMatches::new();
-    let mut seen = MatchKeys::new();
 
     loop {
-        let before = seen.len();
+        // Deduplication goes through the kept matches
+        let mut discovered = 0usize;
         for &c in budgets.budgets().keys() {
             for (idx, node) in curr[c].nodes.iter().enumerate() {
                 if !budgets.node_fits(curr, c, node) {
@@ -192,7 +183,7 @@ pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousL
                     .children()
                     .iter()
                     .map(|&child| curr.find(child))
-                    .collect::<ChildIds>();
+                    .collect::<SmallVec<[Id; 2]>>();
                 let combos = child_combinations(&child_canons, &cover);
                 for combo in combos {
                     let mut translated = node.clone();
@@ -202,20 +193,22 @@ pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousL
                             *child = pc;
                         }
                     });
-                    if let Some(pc_class) = prev.lookup(translated)
-                        && seen.insert((c, idx, pc_class, combo.clone()))
-                    {
-                        matches.entry((c, idx)).or_default().push(NodeMatch {
+                    if let Some(pc_class) = prev.lookup(translated) {
+                        let witness = NodeMatch {
                             prev_class: pc_class,
                             prev_children: combo,
-                        });
-                        cover.entry(c).or_default().insert(pc_class);
+                        };
+                        let entry = matches.entry((c, idx)).or_default();
+                        if !entry.contains(&witness) {
+                            entry.push(witness);
+                            cover.entry(c).or_default().insert(pc_class);
+                            discovered += 1;
+                        }
                     }
                 }
             }
         }
 
-        let discovered = seen.len() - before;
         if discovered == 0 {
             break;
         }
@@ -236,12 +229,13 @@ pub(crate) fn prune_matches<L: Language, N: Analysis<L>>(
                 .get(idx)
                 .is_some_and(|node| budgets.node_fits(egraph, c, node))
     });
+    matches.shrink_to_fit();
 }
 
 /// Cartesian product of `cover[child_i]` over `i`. For zero-arity nodes,
 /// returns `[[]]` (a single empty combination).
-fn child_combinations(children: &[Id], cover: &MatchCover) -> Vec<ChildIds> {
-    let mut combos = vec![ChildIds::new()];
+fn child_combinations(children: &[Id], cover: &HashMap<Id, HashSet<Id>>) -> Vec<SmallVec<[Id; 2]>> {
+    let mut combos = vec![SmallVec::new()];
     for child in children {
         let Some(opts) = cover.get(child) else {
             return Vec::new();
