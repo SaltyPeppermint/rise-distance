@@ -76,8 +76,10 @@ def _format_memory_limit(value: int | None) -> str:
 def _run_label(directory: Path, config: dict) -> str:
     # Absent in runs predating `--sampling-rss-max`.
     cap = config["max_rss"]
-    frontier = config["frontier"]
-    return f"{config['policy']} · frontier={frontier} · cap={cap} · {directory.name}"
+    frontier = "frontier" if config["frontier"] else "naive"
+    sampling_retries = config["sampling_retries"]
+    size_search_steps = config["size_search_steps"]
+    return f"{config['policy']} · {frontier} · cap={cap} · size_steps={size_search_steps} · sampling_retries={sampling_retries} · {directory.name}"
 
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
@@ -390,14 +392,14 @@ def peak_win_counts(frame: pl.DataFrame) -> pl.DataFrame:
 
 def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     """Brute-force proof cost of every planned pair, binned and split by guided outcome.
-
     Brute force is the brute force measurement taken from `problems.json`, with
     no memory limit at all.
-
-    The three outcome exist for each bucket:
+    Up to three outcomes exist for each bucket:
     - Not proven
     - Proven but more expensive
     - Proven and cheaper
+    An outcome no pair reaches is left out entirely rather than carrying an
+    empty slot in every bucket.
     A success whose workflow peak was not recorded counts as at or above.
     """
     guided = pl.col(GUIDED_WORKFLOW_COLUMN)
@@ -418,7 +420,6 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     )
     if data.is_empty():
         raise ValueError(f"no pair carries a positive {BRUTE_COLUMN}")
-
     span = data.select(
         pl.col("brute_peak_mib").log10().min().alias("low"),
         pl.col("brute_peak_mib").log10().max().alias("high"),
@@ -429,11 +430,17 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     # Bars run to the bin edge without it, so neighbouring buckets touch and
     # read as one group; this reserves a gap at each bucket's trailing edge.
     usable = 1 - BRUTE_COST_BIN_PAD
-    slots = len(BRUTE_COST_OUTCOMES)
-    # The slot is the fixed position in BRUTE_COST_OUTCOMES rather than a rank
-    # among the outcomes present, so bars stay aligned across bins where one
-    # outcome is empty.
-    slot = pl.col("outcome").replace_strict({name: i for i, name in enumerate(BRUTE_COST_OUTCOMES)})
+    # An outcome with no pair anywhere in the frame gives up its slot, so the
+    # remaining bars widen to fill the bucket instead of leaving a gap.
+    # Presence is measured over the whole frame, not per mode, to keep the slot
+    # widths the same in every row of the facet.
+    present = set(data["outcome"].unique().to_list())
+    ordered = [name for name in BRUTE_COST_OUTCOMES if name in present]
+    slots = len(ordered)
+    # The slot is the fixed position in `ordered` rather than a rank among the
+    # outcomes present in the bucket, so bars stay aligned across bins where
+    # one outcome is empty.
+    slot = pl.col("outcome").replace_strict({name: i for i, name in enumerate(ordered)})
     groups = data.group_by("mode", "outcome").agg(
         pl.len().alias("group_n"),
         pl.col("brute_peak_mib").median().alias("group_median_mib"),

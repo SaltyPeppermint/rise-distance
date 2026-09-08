@@ -1,6 +1,7 @@
 """Altair plots for guided success and guided-vs-brute-force peak-memory comparisons."""
 
 from collections.abc import Sequence
+from typing import Literal
 
 import altair as alt
 import polars as pl
@@ -48,12 +49,16 @@ def _title(text: str, meta: dict) -> alt.TitleParams:
     return alt.TitleParams(text, subtitle=meta.get("subtitle", []), subtitleColor="#777")
 
 
-def _mode_color(modes: Sequence[str]) -> alt.Color:
+def _mode_color(
+    modes: Sequence[str],
+    direction: Literal["horizontal", "vertical"] = "horizontal",
+    columns: int = 2,
+) -> alt.Color:
     return alt.Color(
         "mode:N",
         sort=list(modes),
         scale=alt.Scale(domain=list(modes), range=PALETTE[: len(modes)]),
-        legend=alt.Legend(title=None),
+        legend=alt.Legend(title=None, direction=direction, columns=columns, labelLimit=0),
     )
 
 
@@ -80,7 +85,7 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_point(filled=True, size=75)
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_rate:Q", title="success rate", axis=alt.Axis(format="%")),
-            y=alt.Y("mode:N", title=None, sort=list(meta["modes"])),
+            y=alt.Y("mode:N", title=None, sort=list(meta["modes"]), axis=alt.Axis(labelLimit=0)),
             color=_method_color(),
             tooltip=[
                 "mode:N",
@@ -102,12 +107,12 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
-            y=alt.Y("mode:N", title=None, sort=list(meta["modes"])),
+            y=alt.Y("mode:N", title=None, sort=list(meta["modes"]), axis=alt.Axis(labelLimit=0)),
             color=alt.Color(
                 "outcome:N",
                 sort=OUTCOME_ORDER,
                 scale=alt.Scale(domain=OUTCOME_ORDER, range=OUTCOME_COLORS),
-                legend=alt.Legend(title=None),
+                legend=alt.Legend(title=None, labelLimit=0),
             ),
             order=alt.Order("outcome:N", sort="ascending"),
             tooltip=["mode:N", "outcome:N", "count:Q", alt.Tooltip("share:Q", format=".1%")],
@@ -137,7 +142,9 @@ def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
                 "mode:N",
                 title=None,
                 sort=list(meta["modes"]),
-                header=alt.Header(labelAngle=0, labelAlign="left", labelFontSize=11),
+                header=alt.Header(
+                    orient="top", labelAnchor="middle", labelFontSize=11, labelPadding=0
+                ),
             ),
             tooltip=[
                 "mode:N",
@@ -148,7 +155,7 @@ def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
                 alt.Tooltip("share_of_planned:Q", format=".1%", title="share of planned pairs"),
             ],
         )
-        .properties(title=_title("Failure causes", meta), width=420, height=alt.Step(34))
+        .properties(title=_title("Failure causes", meta))  # .  width=420, height=alt.Step(34))
     )
 
 
@@ -170,7 +177,7 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
                 title=f"{guided_scope} {MEMORY_LABEL} (MiB, log)",
                 scale=alt.Scale(type="log"),
             ),
-            color=_mode_color(meta["modes"]),
+            color=_mode_color(meta["modes"], direction="vertical", columns=1),
             tooltip=[
                 "mode:N",
                 "start_term:N",
@@ -182,11 +189,7 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
         )
     )
     if comparison.is_empty():
-        return points.properties(
-            title=_title(title, meta),
-            width=420,
-            height=380,
-        )
+        return points.properties(title=_title(title, meta))
     bounds = comparison.select(
         pl.min_horizontal("guided_peak_mib", "brute_peak_mib").min().alias("lo"),
         pl.max_horizontal("guided_peak_mib", "brute_peak_mib").max().alias("hi"),
@@ -198,22 +201,22 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
             x=alt.X("x:Q", scale=alt.Scale(type="log")), y=alt.Y("x:Q", scale=alt.Scale(type="log"))
         )
     )
-    return (diagonal + points).properties(
-        title=_title(title, meta),
-        width=420,
-        height=380,
-    )
+    return (diagonal + points).properties(title=_title(title, meta))
 
 
 def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
     """Brute-force proof cost of every planned pair, grouped by guided outcome.
-
     One panel: each log-spaced bucket carries a bar per outcome, side by side
     from a shared baseline, so the pairs the guide could not prove, the ones it
     proved no cheaper than brute force, and the ones it proved cheaper are read
     against each other within the bucket. The bars sit in the slot edges the
     binner precomputed, an offset scale not applying to a continuous log axis.
+    An outcome the binner dropped for want of pairs is dropped from the scale
+    too, so no legend entry stands for bars that are not there.
     """
+    present = set(binned["outcome"].unique().to_list())
+    order = [name for name in BRUTE_COST_ORDER if name in present]
+    colors = [BRUTE_COST_COLORS[BRUTE_COST_ORDER.index(name)] for name in order]
     return (
         alt.Chart(binned)
         .mark_bar()
@@ -228,13 +231,18 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
             # A bar given both x and x2 spans a range rather than resting on the
             # axis, so the baseline has to be named.
             y2=alt.datum(0),
+            row=alt.Row(
+                "mode:N",
+                title=None,
+                sort=list(meta["modes"]),
+                header=alt.Header(orient="top", labelAnchor="start", labelFontSize=11),
+            ),
             color=alt.Color(
                 "outcome:N",
-                sort=BRUTE_COST_ORDER,
-                scale=alt.Scale(domain=BRUTE_COST_ORDER, range=BRUTE_COST_COLORS),
+                sort=order,
+                scale=alt.Scale(domain=order, range=colors),
                 legend=alt.Legend(title=None, columns=1),
             ),
-            column=alt.Column("mode:N", title=None, sort=list(meta["modes"])),
             tooltip=[
                 "mode:N",
                 "outcome:N",
@@ -246,11 +254,7 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
                 alt.Tooltip("bin_end_mib:Q", format=".0f", title="bucket to (MiB)"),
             ],
         )
-        .properties(
-            title=_title(f"Brute-force proof {MEMORY_LABEL} by guided outcome", meta),
-            width=560,
-            height=300,
-        )
+        .properties(title=_title(f"Brute-force proof {MEMORY_LABEL} by guided outcome", meta))
     )
 
 
@@ -271,7 +275,7 @@ def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("count:Q", title="guided successes"),
-            y=alt.Y("guided_peak_scope:N", title=None),
+            y=alt.Y("guided_peak_scope:N", title=None, axis=alt.Axis(labelLimit=0)),
             color=alt.Color(
                 "side:N",
                 sort=WIN_ORDER,
@@ -287,11 +291,7 @@ def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
             ),
             tooltip=["mode:N", "guided_peak_scope:N", "side:N", "count:Q"],
         )
-        .properties(
-            title=_title(f"Guided {MEMORY_LABEL} versus brute-force proof", meta),
-            width=420,
-            height=alt.Step(26),
-        )
+        .properties(title=_title(f"Guided {MEMORY_LABEL} versus brute-force proof", meta))
     )
 
 
@@ -374,9 +374,7 @@ def absolute_peak_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
         .properties(
-            title=_title(f"{guided_scope.title()} vs brute-force proof {MEMORY_LABEL}", meta),
-            width=300,
-            height=240,
+            title=_title(f"{guided_scope.title()} vs brute-force proof {MEMORY_LABEL}", meta)
         )
     )
 
@@ -390,9 +388,25 @@ def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_attempt:O", title="attempt of first success"),
             y=alt.Y("count():Q", title="successful pairs"),
-            color=_mode_color(meta["modes"]),
-            column=alt.Column("mode:N", title=None, sort=list(meta["modes"])),
+            color=alt.Color(
+                "mode:N",
+                sort=list(meta["modes"]),
+                scale=alt.Scale(domain=list(meta["modes"]), range=PALETTE[: len(meta["modes"])]),
+                legend=None,
+            ),
+            # row=alt.Row(
+            #     "mode:N",
+            #     title=None,
+            #     sort=list(meta["modes"]),
+            #     header=alt.Header(orient="top", labelAnchor="start", labelFontSize=11),
+            # ),
+            column=alt.Column(
+                "mode:N",
+                title=None,
+                sort=list(meta["modes"]),
+                header=alt.Header(orient="top", labelAnchor="middle", labelFontSize=11),
+            ),
             tooltip=["mode:N", "success_attempt:O", "count():Q"],
         )
-        .properties(title=_title("Attempts to success", meta), width=180, height=180)
+        .properties(title=_title("Attempts to success", meta))
     )
