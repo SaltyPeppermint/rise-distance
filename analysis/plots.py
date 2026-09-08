@@ -75,7 +75,7 @@ def _mode_axis(modes: Sequence[str]) -> alt.Y:
         "mode:N",
         title=None,
         sort=list(modes),
-        axis=alt.Axis(labelLimit=0, labelExpr=MODE_LABEL_SPLIT),
+        axis=alt.Axis(labelLimit=0, labelExpr=MODE_LABEL_SPLIT),  # , labelBaseline="bottom"
     )
 
 
@@ -180,7 +180,7 @@ def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
 
 
 def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
-    """One explicitly scoped guided peak versus the brute-force proof cost."""
+    """Guided peaks vs. brute-force memory cost."""
     guided_scope = _guided_peak_scope(comparison)
     title = f"{guided_scope.title()} vs brute-force proof"
     points = (
@@ -225,15 +225,7 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
 
 
 def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Brute-force proof cost of every planned pair, grouped by guided outcome.
-    One panel: each log-spaced bucket carries a bar per outcome, side by side
-    from a shared baseline, so the pairs the guide could not prove, the ones it
-    proved no cheaper than brute force, and the ones it proved cheaper are read
-    against each other within the bucket. The bars sit in the slot edges the
-    binner precomputed, an offset scale not applying to a continuous log axis.
-    An outcome the binner dropped for want of pairs is dropped from the scale
-    too, so no legend entry stands for bars that are not there.
-    """
+    """Success comparison for every pair, bucketed by brute force memory cost"""
     present = set(binned["outcome"].unique().to_list())
     order = [name for name in BRUTE_COST_ORDER if name in present]
     colors = [BRUTE_COST_COLORS[BRUTE_COST_ORDER.index(name)] for name in order]
@@ -251,7 +243,7 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
             # A bar given both x and x2 spans a range rather than resting on the
             # axis, so the baseline has to be named.
             y2=alt.datum(0),
-            row=alt.Row(
+            column=alt.Column(
                 "mode:N",
                 title=None,
                 sort=list(meta["modes"]),
@@ -261,7 +253,7 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
                 "outcome:N",
                 sort=order,
                 scale=alt.Scale(domain=order, range=colors),
-                legend=alt.Legend(title=None),
+                legend=alt.Legend(title=None, columns=1),
             ),
             tooltip=[
                 "mode:N",
@@ -312,92 +304,6 @@ def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
             tooltip=["mode:N", "guided_peak_scope:N", "side:N", "count:Q"],
         )
         .properties(title=_title(f"Guided {MEMORY_LABEL} versus brute-force proof", meta))
-    )
-
-
-def peak_ratio_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
-    """ECDF of one explicitly scoped guided peak over the brute-force proof cost."""
-    guided_scope = _guided_peak_scope(comparison)
-    data = comparison.with_columns(
-        (pl.col("peak_ratio").rank("max").over("mode") / pl.len().over("mode")).alias("cdf")
-    ).sort("mode", "peak_ratio")
-    curves = (
-        alt.Chart(data)
-        .mark_line(interpolate="step-after", strokeWidth=2)
-        .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X(
-                "peak_ratio:Q",
-                title=f"{guided_scope} / brute-force proof {MEMORY_LABEL} (log)",
-                scale=alt.Scale(type="log"),
-            ),
-            y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
-            color=_mode_color(meta["modes"]),
-            order="peak_ratio:Q",
-            tooltip=[
-                "mode:N",
-                alt.Tooltip("peak_ratio:Q", format=".3f"),
-                alt.Tooltip("cdf:Q", format=".1%"),
-            ],
-        )
-    )
-    parity = (
-        alt.Chart(pl.DataFrame({"ratio": [1.0]}))
-        .mark_rule(strokeDash=[5, 4], color="#777")
-        .encode(x=alt.X("ratio:Q", scale=alt.Scale(type="log")))  # ty: ignore[unresolved-attribute]
-    )
-    return (curves + parity).properties(
-        title=_title(f"{guided_scope.title()} {MEMORY_LABEL} ratio", meta), width=460
-    )
-
-
-def absolute_peak_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Absolute guided and brute-force peaks on a shared axis."""
-    guided_scope = _guided_peak_scope(comparison)
-    data = pl.concat(
-        [
-            comparison.select(
-                "mode",
-                (pl.col("guided_peak_mib")).alias("peak_mib"),
-                pl.lit(guided_scope).alias("method"),
-            ),
-            comparison.select(
-                "mode",
-                (pl.col("brute_peak_mib")).alias("peak_mib"),
-                pl.lit("brute-force proof").alias("method"),
-            ),
-        ]
-    ).with_columns(
-        (
-            pl.col("peak_mib").rank("max").over("mode", "method") / pl.len().over("mode", "method")
-        ).alias("cdf")
-    )
-    return (
-        alt.Chart(data)
-        .mark_line(interpolate="step-after", strokeWidth=2)
-        .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X("peak_mib:Q", title=f"{MEMORY_LABEL} (MiB, log)", scale=alt.Scale(type="log")),
-            y=alt.Y("cdf:Q", title="cumulative share", axis=alt.Axis(format="%")),
-            color=alt.Color(
-                "method:N",
-                scale=alt.Scale(
-                    domain=[guided_scope, "brute-force proof"], range=[PALETTE[0], PALETTE[1]]
-                ),
-                legend=alt.Legend(title=None),
-            ),
-            column=alt.Column(
-                "mode:N", title=None, sort=list(meta["modes"]), header=_mode_header()
-            ),
-            order="peak_mib:Q",
-            tooltip=[
-                "mode:N",
-                "method:N",
-                alt.Tooltip("peak_mib:Q", format=".1f"),
-                alt.Tooltip("cdf:Q", format=".1%"),
-            ],
-        )
-        .properties(
-            title=_title(f"{guided_scope.title()} vs brute-force proof {MEMORY_LABEL}", meta)
-        )
     )
 
 

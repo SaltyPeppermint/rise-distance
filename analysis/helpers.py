@@ -80,8 +80,10 @@ def _run_label(directory: Path, config: dict) -> str:
     frontier = "frontier" if config["frontier"] else "naive"
     sampling_retries = config["sampling_retries"]
     size_search_steps = config["size_search_steps"]
+    attempts = config["attempts"]
     return (
-        f"{directory.name} ·{config['policy']} · {frontier} · cap={cap}\n"
+        f"{directory.name} · {config['policy']} · {frontier}\n"
+        f"cap={cap} · attempts={attempts}\n"
         f"size_steps={size_search_steps} · sampling_retries={sampling_retries}"
     )
 
