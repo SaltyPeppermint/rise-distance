@@ -1,7 +1,6 @@
 """Altair plots for guided success and guided-vs-brute-force peak-memory comparisons."""
 
 from collections.abc import Sequence
-from typing import Literal
 
 import altair as alt
 import polars as pl
@@ -29,6 +28,11 @@ WIN_COLORS = ["#4c9f70", "#eb6834"]
 BRUTE_COST_ORDER = ["guided failed", "guided proved, at or above", "guided proved, cheaper"]
 BRUTE_COST_COLORS = ["#eb6834", "#eda100", "#4c9f70"]
 
+# `helpers` breaks a run label over two lines. Vega stacks a text array into
+# lines but never splits a string itself, so every encoding that draws a mode
+# label has to ask for the split.
+MODE_LABEL_SPLIT = "split(datum.label, '\\n')"
+
 THEME = {
     "config": {
         "view": {"continuousWidth": 360, "continuousHeight": 260, "strokeOpacity": 0},
@@ -49,17 +53,34 @@ def _title(text: str, meta: dict) -> alt.TitleParams:
     return alt.TitleParams(text, subtitle=meta.get("subtitle", []), subtitleColor="#777")
 
 
-def _mode_color(
-    modes: Sequence[str],
-    direction: Literal["horizontal", "vertical"] = "horizontal",
-    columns: int = 2,
-) -> alt.Color:
+def _mode_color(modes: Sequence[str], stacked: bool = False) -> alt.Color:
+    direction = "vertical" if stacked else "horizontal"
+    columns = 1 if stacked else 2
     return alt.Color(
         "mode:N",
         sort=list(modes),
         scale=alt.Scale(domain=list(modes), range=PALETTE[: len(modes)]),
-        legend=alt.Legend(title=None, direction=direction, columns=columns, labelLimit=0),
+        legend=alt.Legend(
+            title=None,
+            direction=direction,
+            columns=columns,
+            labelLimit=0,
+            labelExpr=MODE_LABEL_SPLIT,
+        ),
     )
+
+
+def _mode_axis(modes: Sequence[str]) -> alt.Y:
+    return alt.Y(
+        "mode:N",
+        title=None,
+        sort=list(modes),
+        axis=alt.Axis(labelLimit=0, labelExpr=MODE_LABEL_SPLIT),
+    )
+
+
+def _mode_header(**kwargs) -> alt.Header:
+    return alt.Header(labelFontSize=11, labelExpr=MODE_LABEL_SPLIT, **kwargs)
 
 
 def _method_color() -> alt.Color:
@@ -85,7 +106,7 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_point(filled=True, size=75)
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_rate:Q", title="success rate", axis=alt.Axis(format="%")),
-            y=alt.Y("mode:N", title=None, sort=list(meta["modes"]), axis=alt.Axis(labelLimit=0)),
+            y=_mode_axis(meta["modes"]),
             color=_method_color(),
             tooltip=[
                 "mode:N",
@@ -97,7 +118,8 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
         )
     )
     intervals = points.mark_rule().encode(x="ci_low:Q", x2="ci_high:Q")
-    return (intervals + points).properties(title=_title("Success rate", meta), height=alt.Step(32))
+    # A two-line label needs the taller step, or Vega drops labels to fit.
+    return (intervals + points).properties(title=_title("Success rate", meta), height=alt.Step(44))
 
 
 def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
@@ -107,7 +129,7 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
-            y=alt.Y("mode:N", title=None, sort=list(meta["modes"]), axis=alt.Axis(labelLimit=0)),
+            y=_mode_axis(meta["modes"]),
             color=alt.Color(
                 "outcome:N",
                 sort=OUTCOME_ORDER,
@@ -117,7 +139,7 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
             order=alt.Order("outcome:N", sort="ascending"),
             tooltip=["mode:N", "outcome:N", "count:Q", alt.Tooltip("share:Q", format=".1%")],
         )
-        .properties(title=_title("Paired outcomes", meta), height=alt.Step(30))
+        .properties(title=_title("Paired outcomes", meta), height=alt.Step(42))
     )
 
 
@@ -142,9 +164,7 @@ def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
                 "mode:N",
                 title=None,
                 sort=list(meta["modes"]),
-                header=alt.Header(
-                    orient="top", labelAnchor="middle", labelFontSize=11, labelPadding=0
-                ),
+                header=_mode_header(orient="top", labelAnchor="middle", labelPadding=0),
             ),
             tooltip=[
                 "mode:N",
@@ -177,7 +197,7 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
                 title=f"{guided_scope} {MEMORY_LABEL} (MiB, log)",
                 scale=alt.Scale(type="log"),
             ),
-            color=_mode_color(meta["modes"], direction="vertical", columns=1),
+            color=_mode_color(meta["modes"], stacked=True),
             tooltip=[
                 "mode:N",
                 "start_term:N",
@@ -235,13 +255,13 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
                 "mode:N",
                 title=None,
                 sort=list(meta["modes"]),
-                header=alt.Header(orient="top", labelAnchor="start", labelFontSize=11),
+                header=_mode_header(orient="top", labelAnchor="middle"),
             ),
             color=alt.Color(
                 "outcome:N",
                 sort=order,
                 scale=alt.Scale(domain=order, range=colors),
-                legend=alt.Legend(title=None, columns=1),
+                legend=alt.Legend(title=None),
             ),
             tooltip=[
                 "mode:N",
@@ -287,7 +307,7 @@ def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
                 "mode:N",
                 title=None,
                 sort=list(meta["modes"]),
-                header=alt.Header(labelAngle=0, labelAlign="left", labelFontSize=11),
+                header=_mode_header(labelAngle=0, labelAlign="left"),
             ),
             tooltip=["mode:N", "guided_peak_scope:N", "side:N", "count:Q"],
         )
@@ -364,7 +384,9 @@ def absolute_peak_ecdf(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
                 ),
                 legend=alt.Legend(title=None),
             ),
-            column=alt.Column("mode:N", title=None, sort=list(meta["modes"])),
+            column=alt.Column(
+                "mode:N", title=None, sort=list(meta["modes"]), header=_mode_header()
+            ),
             order="peak_mib:Q",
             tooltip=[
                 "mode:N",
@@ -404,7 +426,7 @@ def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:
                 "mode:N",
                 title=None,
                 sort=list(meta["modes"]),
-                header=alt.Header(orient="top", labelAnchor="middle", labelFontSize=11),
+                header=_mode_header(orient="top", labelAnchor="middle"),
             ),
             tooltip=["mode:N", "success_attempt:O", "count():Q"],
         )

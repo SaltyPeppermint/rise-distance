@@ -74,12 +74,16 @@ def _format_memory_limit(value: int | None) -> str:
 
 
 def _run_label(directory: Path, config: dict) -> str:
+    """Two lines: what the run is, then how hard it was allowed to look."""
     # Absent in runs predating `--sampling-rss-max`.
     cap = config["max_rss"]
     frontier = "frontier" if config["frontier"] else "naive"
     sampling_retries = config["sampling_retries"]
     size_search_steps = config["size_search_steps"]
-    return f"{config['policy']} · {frontier} · cap={cap} · size_steps={size_search_steps} · sampling_retries={sampling_retries} · {directory.name}"
+    return (
+        f"{directory.name} ·{config['policy']} · {frontier} · cap={cap}\n"
+        f"size_steps={size_search_steps} · sampling_retries={sampling_retries}"
+    )
 
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
