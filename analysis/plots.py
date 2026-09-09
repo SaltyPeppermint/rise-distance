@@ -307,6 +307,50 @@ def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
     )
 
 
+def solved_diff_matrix(diff: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Problems the row mode solves that the column mode does not."""
+    modes = list(meta["modes"])
+    axis = {"labelLimit": 0, "labelExpr": MODE_LABEL_SPLIT, "labelFontSize": 10}
+    base = alt.Chart(diff).encode(
+        x=alt.X("col_mode:N", title="not solved by", sort=modes, axis=alt.Axis(**axis)),  # ty: ignore[invalid-argument-type]
+        y=alt.Y("row_mode:N", title="solved by", sort=modes, axis=alt.Axis(**axis)),  # ty: ignore[invalid-argument-type]
+        tooltip=[
+            alt.Tooltip("row_mode:N", title="row"),
+            alt.Tooltip("col_mode:N", title="column"),
+            alt.Tooltip("only_row:Q", title="row only"),
+            alt.Tooltip("only_col:Q", title="column only"),
+            "both:Q",
+            "neither:Q",
+            alt.Tooltip("net:Q", title="row − column"),
+            alt.Tooltip("n_shared:Q", title="shared pairs"),
+            alt.Tooltip("share_only_row:Q", format=".1%", title="share of shared pairs"),
+        ],
+    )
+    # Half the range keeps the light end of the scheme readable under dark text.
+    cutoff = diff["only_row"].max() / 2 if not diff.is_empty() else 0  # ty: ignore[unsupported-operator]
+    cells = base.mark_rect().encode(  # ty: ignore[unresolved-attribute]
+        color=alt.Color(
+            "only_row:Q",
+            title="pairs won",
+            scale=alt.Scale(scheme="blues"),
+            legend=alt.Legend(gradientLength=140),
+        ),
+    )
+    labels = base.mark_text(fontSize=11).encode(  # ty: ignore[unresolved-attribute]
+        text="only_row:Q",
+        color=alt.condition(alt.datum.only_row > cutoff, alt.value("white"), alt.value("#333")),
+    )
+    return (
+        (cells + labels)
+        .properties(
+            title=_title("Pairwise solved differences", meta),
+            width=alt.Step(58),
+            height=alt.Step(58),
+        )
+        .configure_axis(grid=False)
+    )
+
+
 def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:
     """Distribution of the successful guided attempt."""
     data = frame.filter(pl.col("guided_success")).drop_nulls("success_attempt")

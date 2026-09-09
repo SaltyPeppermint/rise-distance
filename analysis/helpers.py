@@ -27,15 +27,6 @@ GUIDED_WORKFLOW_COLUMN = "guided_peak_rss_bytes"
 GUIDED_VERIFICATION_COLUMN = "verify_peak_rss_bytes"
 BRUTE_COLUMN = "brute_peak_rss_bytes"
 
-PEAK_WIN_SCHEMA = {
-    "mode": pl.String,
-    "guided_peak_scope": pl.String,
-    "n_guided_successes": pl.Int64,
-    "n_below": pl.UInt32,
-    "n_at_or_above": pl.UInt32,
-    "share_below": pl.Float64,
-    "median_peak_ratio": pl.Float64,
-}
 
 # Share of a bin's width left empty, so grouped bars separate into buckets.
 BRUTE_COST_BIN_PAD = 0.14
@@ -384,8 +375,6 @@ def peak_win_counts(frame: pl.DataFrame) -> pl.DataFrame:
                 pl.col("peak_ratio").median().alias("median_peak_ratio"),
             )
         )
-    if not counts:
-        return pl.DataFrame(schema=PEAK_WIN_SCHEMA)
     return (
         pl.concat(counts)
         .with_columns(
@@ -474,6 +463,39 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
         )
         .with_columns((pl.col("count") / pl.col("bucket_n")).alias("bucket_share"))
         .sort("mode", "bin", "outcome")
+    )
+
+
+def pairwise_solved_diff(frame: pl.DataFrame, column: str = "guided_success") -> pl.DataFrame:
+    """Per ordered mode pair, how many shared problems the row solves and the column does not.
+
+    Restricted to the problems both modes planned, so the two directions of a
+    cell share one denominator. The diagonal is dropped.
+    """
+    wide = frame.select("pair", "mode", pl.col(column).fill_null(False).alias("solved")).pivot(
+        on="mode", index="pair", values="solved"
+    )
+    modes = frame["mode"].unique(maintain_order=True).to_list()
+    rows = []
+    for a in modes:
+        for b in modes:
+            if a == b:
+                continue
+            shared = wide.drop_nulls([a, b])
+            rows.append(
+                {
+                    "row_mode": a,
+                    "col_mode": b,
+                    "n_shared": shared.height,
+                    "only_row": int((shared[a] & ~shared[b]).sum()),
+                    "only_col": int((~shared[a] & shared[b]).sum()),
+                    "both": int((shared[a] & shared[b]).sum()),
+                    "neither": int((~shared[a] & ~shared[b]).sum()),
+                }
+            )
+    return pl.DataFrame(rows).with_columns(
+        (pl.col("only_row") - pl.col("only_col")).alias("net"),
+        (pl.col("only_row") / pl.col("n_shared")).alias("share_only_row"),
     )
 
 

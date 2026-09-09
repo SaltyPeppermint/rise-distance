@@ -30,14 +30,36 @@ or exit $status
 #   --path data/problems/squishy-potatoe
 # or exit $status
 
+# memrun uv run scripts/guided_search.py \
+#   --max-rss 450M \
+#   --sampling-retries 5 \
+#   --policy uniform \
+#   --start-terms 100 \
+#   --attempts 10 \
+#   --seed 42 \
+#   --full-union \
+#   data/problems/squishy-potatoe
+# or exit $status
+
+# memrun uv run scripts/guided_search.py \
+#   --max-rss 450M \
+#   --sampling-retries 10 \
+#   --policy count \
+#   --start-terms 100 \
+#   --attempts 10 \
+#   --seed 42 \
+#   --full-union \
+#   data/problems/squishy-potatoe
+# or exit $status
+
+
 memrun uv run scripts/guided_search.py \
   --max-rss 450M \
-  --sampling-retries 5 \
-  --policy uniform \
+  --sampling-retries 10 \
+  --policy count \
   --start-terms 100 \
   --attempts 10 \
   --seed 42 \
-  --full-union \
   data/problems/squishy-potatoe
 or exit $status
 
@@ -49,7 +71,7 @@ or exit $status
 #   --attempts 10 \
 #   --seed 42 \
 #   --full-union \
-#   --frontier \
+#   --size-search-steps 100 \
 #   data/problems/squishy-potatoe
 # or exit $status
 
