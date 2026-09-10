@@ -69,12 +69,14 @@ def _run_label(directory: Path, config: dict) -> str:
     # Absent in runs predating `--sampling-rss-max`.
     cap = config["max_rss"]
     frontier = "frontier" if config["frontier"] else "naive"
+    full_union = "full_union" if config["full_union"] else "simple_union"
     sampling_retries = config["sampling_retries"]
     size_search_steps = config["size_search_steps"]
     attempts = config["attempts"]
+    seed = config["seed"]
     return (
-        f"{directory.name} · {config['policy']} · {frontier}\n"
-        f"cap={cap} · attempts={attempts}\n"
+        f"{directory.name} · {config['policy']} · {frontier} · {full_union}\n"
+        f"cap={cap} · attempts={attempts} · seed={seed}\n"
         f"size_steps={size_search_steps} · sampling_retries={sampling_retries}"
     )
 
