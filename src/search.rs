@@ -9,6 +9,8 @@
 //! - [`SearchMode::Brute`]: grow one continuous e-graph and check the sketches
 //!   directly, with no candidate restart.
 
+// TODO MOVE WHOLE FILE INTO DISOPEROOUS NOT USED ANYWHERE ELSE
+
 use std::fmt::Display;
 
 use egg::{Language, RecExpr, Rewrite};

@@ -158,6 +158,7 @@ impl<L: Language> ExprHashCons<L> {
     }
 }
 
+// TODO REMOVE ME
 pub fn cheapest<CF, L, N, I>(runner: &Runner<L, N, I>, cf: CF) -> usize
 where
     CF: CostFunction<L, Cost = usize>,
@@ -167,6 +168,7 @@ where
     Extractor::new(&runner.egraph, cf).find_best_cost(runner.roots[0])
 }
 
+// TODO REMOVE ME
 pub fn cheapest_ilp<CF, L, N, I>(runner: &Runner<L, N, I>, cf: CF) -> RecExpr<L>
 where
     CF: LpCostFunction<L, N>,
@@ -208,6 +210,7 @@ pub fn id0() -> Id {
 /// cannot be read (both indicate jemalloc is not the active allocator).
 #[must_use]
 pub fn live_heap_bytes() -> u64 {
+    // TODO: REPLACE ME WITH RSS QUERY, NO TIKZ MALLOC DEPENDENCY ANYMORE, DO IT ALSO IN THE VENDORED EGG FORK
     // Stats are cached per epoch; advance it so the read reflects current state.
     tikv_jemalloc_ctl::epoch::advance().expect("failed to advance jemalloc epoch");
     tikv_jemalloc_ctl::stats::allocated::read().expect("failed to read jemalloc allocated stat")

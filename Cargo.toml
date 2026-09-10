@@ -69,6 +69,8 @@ shadow_unrelated = "warn"
 
 [profile.release]
 debug = 1
+# TODO CONSIDER THIS FOR MEMORY CONSUMPTION
+# panic = "immediate-abort"
 
 
 # [[bin]]

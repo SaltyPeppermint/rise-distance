@@ -16,6 +16,8 @@ pub use frontier::{FrontierDrawer, FrontierPackage};
 pub use plain::{PlainDrawer, PlainPackage};
 pub use weigher::{CountWeigher, UniformWeigher, Weigher};
 
+// TODO SEPARATE CODE PATHS FOR UNIFORM VS COUNT (DP but with bools)
+
 /// Draws size-targeted candidates from an e-graph.
 pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
     fn root(&self) -> Id;

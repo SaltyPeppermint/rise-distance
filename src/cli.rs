@@ -56,6 +56,8 @@ impl std::fmt::Display for Policy {
     }
 }
 
+// TODO: MOVE TO CANDIDATE.RS
+
 /// For Serialization purposes we have to go via Vec instead of using `RecExpr`
 #[derive(Serialize, Debug, Clone)]
 pub struct Candidates<L: MyLanguage> {

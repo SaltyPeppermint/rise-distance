@@ -6,6 +6,7 @@ use rand::distributions::uniform::SampleUniform;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+// TODO DELETE ME
 pub trait Counter:
     Clone
     + NumRef

@@ -4,6 +4,8 @@ use egg::{Id, Language, RecExpr};
 
 use crate::{MyLanguage, OriginLang, id0};
 
+// TODO: COMPARE DISTANCE OF SAMPLED GUIDES BUT THAT'S A WHOLE BIG THING
+
 /// Core Zhang-Shasha minimum distance search over an iterator of candidate trees.
 ///
 /// Applies size-difference and Euler-string lower-bound pruning before computing

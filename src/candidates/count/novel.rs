@@ -160,7 +160,7 @@ pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousL
             for (idx, node) in curr[c].nodes.iter().enumerate() {
                 if !budgets.node_fits(curr, c, node) {
                     continue;
-                }
+                } // TODO: Turn me into a filter
                 let child_canons = node
                     .children()
                     .iter()
@@ -172,6 +172,7 @@ pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousL
                     let mut iter = combo.iter().copied();
                     translated.for_each_mut(|child| {
                         if let Some(pc) = iter.next() {
+                            // Zip maybe for clarity? why did i write it so ugly
                             *child = pc;
                         }
                     });
@@ -180,7 +181,7 @@ pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousL
                             prev_class: pc_class,
                             prev_children: combo,
                         };
-                        let entry = matches.entry((c, idx)).or_default();
+                        let entry = matches.entry((c, idx)).or_default(); // Fold pls
                         if !entry.contains(&witness) {
                             entry.push(witness);
                             cover.entry(c).or_default().insert(pc_class);
@@ -191,6 +192,7 @@ pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousL
             }
         }
 
+        // Turn me into a bool
         if discovered == 0 {
             break;
         }
@@ -198,6 +200,7 @@ pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousL
     matches
 }
 
+// Todo check if this even affects memory consumption
 /// Tighten cap-scoped matches to a smaller final root budget.
 pub(crate) fn prune_matches<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
