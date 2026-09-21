@@ -1,5 +1,6 @@
 """Shared helpers for the driver scripts: size parsing, subprocess-JSON
-plumbing, binary checks, and eqsat CLI flag building."""
+plumbing, binary checks, the `attempt` payload schema, and eqsat CLI flag
+building."""
 
 import json
 import re
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from tqdm import tqdm
+
+from schemes import ATTEMPT_DTYPES
 
 
 def parse_size(s: str) -> int:
@@ -151,26 +154,12 @@ def stop_reason_name(raw: Any) -> str:
     return f"{variant}({json.dumps(payload)})"
 
 
-VERIFY_FIELDS = (
-    "reached",
-    "panic",
-    "stop_reason",
-    "iters",
-    "nodes",
-    "classes",
-    "total_applied",
-    "total_time",
-    "memory",
-    "peak_live_heap",
-)
-
-
-def verify_summary(payload: Any) -> dict[str, Any]:
-    """Flatten `verify`'s `Result<ReachedRun, GuideError>` stdout payload.
+def attempt_summary(payload: Any) -> dict[str, Any]:
+    """Flatten `attempt`'s `Result<ReachedRun, GuideError>` stdout payload.
 
     Unreached and panicked runs leave the egraph-shape fields at `None`.
     """
-    empty: dict[str, Any] = dict.fromkeys(VERIFY_FIELDS)
+    empty: dict[str, Any] = dict.fromkeys(ATTEMPT_DTYPES)
     if "Ok" in payload:
         run = payload["Ok"]
         iterations = run["iterations"]
@@ -202,12 +191,12 @@ def verify_summary(payload: Any) -> dict[str, Any]:
 
 
 def rss_killed_summary() -> dict[str, Any]:
-    """A `verify_summary`-shaped row for a child SIGKILLed at its cgroup RSS cap.
+    """An `attempt_summary`-shaped row for a child SIGKILLed at its cgroup RSS cap.
 
     A killed child never printed its payload, so everything but the outcome
     markers stays `None`.
     """
-    empty: dict[str, Any] = dict.fromkeys(VERIFY_FIELDS)
+    empty: dict[str, Any] = dict.fromkeys(ATTEMPT_DTYPES)
     return {**empty, "reached": False, "panic": False, "stop_reason": "rss_killed"}
 
 

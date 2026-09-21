@@ -1,33 +1,30 @@
 """Drive the guide search from Python.
 
 This driver reads the start/goal pairs in ``problems.json`` (written by
-``generate_problems.py``), constructs a guide-candidate menu per start term, and
-verifies one attempt loop per pair.
-
-Each leg is a separate ``verify`` process running one eqsat, so its peak RSS
-covers the same unit of work as an unguided baseline process.
-The loop early-stops on the first reach.
-
-Guide replay and leg search share the required ``--stop-*`` budget. Dimensions
-without an override retain their search-phase limits from ``problem_args.json``.
+``generate_problems.py``) and runs one guide *search* per pair: a tree of guide
+chains explored through a work queue.
 
 Example:
-    cargo build --release --bin candidates --bin verify
+    cargo build --release --bin candidates --bin attempt
     uv run scripts/guided_search.py data/problems/dusky-cramp \\
-        --stop-memory 4G --attempts 5 \\
+        --stop-memory 4G --n-guides 5 --max-depth 3 --max-attempts 20 \\
+        --max-total-time 300 --exploration-policy width \\
         --policy count --full-union
 
-Pass ``--sampling-rss-max`` to hold each ``candidates`` process to a cgroup RSS
-cap, retrying a killed replay at the last iteration that completed and remove
-one more iter off each further attempt (``--sampling-retries``).
+Pass ``--max-rss`` to hold each ``candidates`` process to a cgroup RSS cap,
+retrying a killed replay at the last iteration that completed and removing one
+more iter off each further retry (``--sampling-backoff``).
 """
 
+import itertools
 import json
 import os
-import random
 import sys
+import threading
+import time
+from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -36,9 +33,9 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
 from common import (
-    VERIFY_FIELDS,
     MeasuredJson,
     MemoryKilled,
+    attempt_summary,
     eqsat_finished,
     exit_if_missing,
     fan_out,
@@ -46,66 +43,16 @@ from common import (
     parse_size,
     rss_killed_summary,
     run_json_subprocess,
-    verify_summary,
 )
-
-# Runs one `candidates` command; `None` when it could not be kept under its cap.
-type RunCandidates = Callable[[list[str], str], MeasuredJson | None]
+from schemes import ATTEMPT_SCHEMA, EMPTY_GUIDE_META, EXPANSION_SCHEMA, PAIR_SCHEMA, UNGUIDED_SCHEMA
 
 # TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
 type SamplePolicy = Literal["count", "uniform"]
 
-type ExplorationPolicy = Literal["depth", "width"]
+type SearchPolicy = Literal["depth", "width"]
 
-
-# An unreached or panicked leg leaves most of the fields None.
-# unreached-heavy prefix would otherwise make polars infer Null
-# and reject the first real value.
-VERIFY_DTYPES = {
-    "reached": pl.Boolean,
-    "panic": pl.Boolean,
-    "stop_reason": pl.String,
-    "iters": pl.Int64,
-    "nodes": pl.Int64,
-    "classes": pl.Int64,
-    "total_applied": pl.Int64,
-    "total_time": pl.Float64,
-    "memory": pl.Int64,
-    "peak_live_heap": pl.Int64,
-}
-
-# Keep the format stable
-assert set(VERIFY_DTYPES) == set(VERIFY_FIELDS)
-
-# `verify_peak_rss_bytes` comes from the `Measured` envelope around the payload
-ATTEMPT_SCHEMA = {
-    "start_term": pl.String,
-    "goal_term": pl.String,
-    "policy": pl.String,
-    "attempt": pl.Int64,
-    "gave_up": pl.Boolean,
-    **VERIFY_DTYPES,
-    "verify_peak_rss_bytes": pl.Int64,
-    "guide_nodes": pl.Int64,
-    "guide_classes": pl.Int64,
-    "guide_time": pl.Float64,
-    "guide_memory": pl.Int64,
-    "guide_peak_live_heap": pl.Int64,
-    "candidate_peak_rss_bytes": pl.Int64,
-    "guide_stop_reason": pl.String,
-}
-
-# An rss_killed baseline leaves all measurement fields None.
-UNGUIDED_SCHEMA = {
-    "start_term": pl.String,
-    "goal_term": pl.String,
-    "unguided_success": pl.Boolean,
-    "unguided_stop_reason": pl.String,
-    "unguided_panic": pl.Boolean,
-    "unguided_final_live_heap_bytes": pl.Int64,
-    "unguided_peak_live_heap_bytes": pl.Int64,
-    "unguided_peak_rss_bytes": pl.Int64,
-}
+# How egg's `StopReason::Saturated` renders through `{:?}`
+SATURATED = "Saturated"
 
 
 class Args(BaseSettings):
@@ -134,8 +81,8 @@ class Args(BaseSettings):
         description="Path to the candidate-construction binary.",
     )
 
-    verify_binary: Path = Field(
-        default=Path("target/release/verify"), description="Path to the verification binary."
+    attempt_binary: Path = Field(
+        default=Path("target/release/attempt"), description="Path to the attempt binary."
     )
 
     # Guide-replay budget
@@ -154,19 +101,31 @@ class Args(BaseSettings):
         default=None, gt=0, description=("Guide-replay wall-clock budget in seconds.")
     )
 
+    # Search budget
     max_total_time: float | None = Field(
-        default=None, gt=0, description=("Max time for each problem pair, with multiple restarts")
+        default=None, gt=0, description=("Wall-clock budget for one pair's whole search")
     )
 
-    max_depth: int = Field(default=1, gt=0, description=("Max number of guides"))
+    max_depth: int = Field(default=1, gt=0, description=("Longest guide chain to explore"))
 
-    exploration_policy: ExplorationPolicy = Field(
-        default="depth", description="Exploration for repeated restarts."
+    max_attempts: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Cap on `attempt` processes per pair. With `--n-guides g` and "
+            "`--max-depth d` the tree grows exponential in size so cap it!"
+        ),
+    )
+
+    search_policy: SearchPolicy = Field(
+        default="depth", description=("breadth first vs depth search of the space")
     )
 
     # Search policy
     n_guides: int = Field(
-        default=5, gt=0, description=("Number of guides to try per (start, goal) pair")
+        default=5,
+        gt=0,
+        description=("Guides drawn each time a node is expanded. -> Branching"),
     )
 
     max_rss: str = Field(
@@ -183,10 +142,10 @@ class Args(BaseSettings):
         default=1,
         ge=0,
         description=(
-            "How often a `candidates` process killed at `--sampling-rss-max` is "
+            "How often a `candidates` process killed at `--max-rss` is "
             "retried. The first retry runs at the iterations that completed, and "
             "each further run reduces `--max-iters` by one more. `0` disables "
-            "retrying. Ignored without `--sampling-rss-max`."
+            "retrying."
         ),
     )
 
@@ -202,7 +161,9 @@ class Args(BaseSettings):
         default=False, description="Sample from the frontier of terms, not the whole egraph"
     )
 
-    full_union: bool = Field(default=True, description="Use the full-union add for the leg egraph.")
+    full_union: bool = Field(
+        default=True, description="Use the full-union add for the attempt egraph."
+    )
 
     start_terms: int | None = Field(
         default=None,
@@ -228,37 +189,123 @@ class Args(BaseSettings):
         default=None,
         gt=0,
         description=(
-            "Maximum number of concurrent `verify` legs, with one start/goal "
-            "pair per worker. Each pair's attempt loop remains sequential, so "
-            "parallelism is across pairs. Defaults to `os.cpu_count()`. Lower "
-            "this if large leg egraphs exhaust available RAM."
+            "Maximum number of concurrent pair searches. Each pair's own "
+            "sampling/attempt loop stays sequential, so parallelism is "
+            "across pairs. Defaults to `os.cpu_count()`. Lower this if large "
+            "attempt egraphs exhaust available RAM."
         ),
     )
 
 
-@dataclass
-class WorkItem:
-    """One start/goal unit, its guide pool, and start-level guide metadata."""
+@dataclass(frozen=True)
+class Pair:
+    """One start/goal problem."""
 
     start_term: str
     goal_term: str
-    pool: list
-    guide_meta: dict
 
 
-def replay_limits(args: Args, cfg: dict) -> dict:
-    """Build the guide-replay limits for `candidates`"""
-    limits = {}
-    if args.stop_iters is not None:
-        limits["max_iters"] = args.stop_iters
-    if args.stop_nodes is not None:
-        limits["max_nodes"] = args.stop_nodes
-    if args.stop_time is not None:
-        limits["max_time"] = args.stop_time
-    return limits
+@dataclass(frozen=True)
+class GuideNode:
+    """One guide chain, identified by its tip.
+
+    `guide` is the node array `attempt --is-guide` unions; `s_expr` is the same
+    term lowered, which is what `candidates --start-term` samples from next.
+    The root carries the start term and no guide, since it is the unguided
+    baseline rather than an attempt.
+
+    `terminal` marks a node drawn from a saturated egraph
+    """
+
+    node_id: int
+    parent_id: int | None
+    depth: int
+    guide: list | None
+    s_expr: str
+    terminal: bool = False
+
+
+@dataclass(frozen=True)
+class Expansion:
+    """The outcome of one `candidates` process: the pool drawn and its cost."""
+
+    children: list[tuple[list, str]]
+    status: Literal["ok", "empty_pool", "no_novel_terms", "rss_killed"]
+    meta: dict
+    wall_time: float
+
+    @property
+    def saturated(self) -> bool:
+        return self.meta.get("guide_stop_reason") == SATURATED
 
 
 @dataclass
+class SearchQueue:
+    """The work queue, ordered by the exploration policy.
+
+    `depth` pops the most recently pushed node, so the search follows one chain
+    down before trying its siblings; `width` pops the oldest, exhausting a depth
+    before descending.
+    """
+
+    policy: SearchPolicy
+    _items: deque[GuideNode] = field(default_factory=deque)
+
+    def push(self, nodes: list[GuideNode]) -> None:
+        self._items.extend(nodes)
+
+    def pop(self) -> GuideNode | None:
+        if not self._items:
+            return None
+        return self._items.pop() if self.policy == "depth" else self._items.popleft()
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
+@dataclass(frozen=True)
+class Budget:
+    """A pair's stop conditions, all charged lazily as the search runs."""
+
+    started: float
+    deadline: float | None
+    max_depth: int
+    max_attempts: int | None
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def expired(self) -> bool:
+        return self.deadline is not None and time.monotonic() >= self.deadline
+
+    def attempts_left(self, attempts_run: int) -> bool:
+        return self.max_attempts is None or attempts_run < self.max_attempts
+
+
+@dataclass
+class PairTrace:
+    """Everything one pair's search did, flattened into rows at report time."""
+
+    pair: Pair
+    attempts: list[dict] = field(default_factory=list)
+    expansions: list[dict] = field(default_factory=list)
+    stop_reason: str = "unstarted"
+    wall_time: float = 0.0
+
+    @property
+    def setup_status(self) -> str:
+        """The root expansion's status: whether the pair got a pool at all."""
+        return self.expansions[0]["status"] if self.expansions else "unstarted"
+
+
+@dataclass(frozen=True)
+class AttemptResult:
+    summary: dict
+    peak_rss_bytes: int | None
+    wall_time: float
+
+
+@dataclass(frozen=True)
 class StartSpec:
     start_term: str
     goal_terms: list[str]
@@ -278,117 +325,9 @@ def flatten_problems(args: Args) -> list[StartSpec]:
     return specs[: args.start_terms]
 
 
-def build_candidate_shard(
-    args: Args,
-    base_flags: list[str],
-    limits: dict,
-    menu_size: int,
-    spec: StartSpec,
-    run: RunCandidates,
-) -> list[dict]:
-    """Run ``candidates`` for one start term and attach its goals to the result."""
-    cmd = [
-        str(args.candidates_binary),
-        *base_flags,
-        *limit_flags(limits),
-        "--start-term",
-        spec.start_term,
-        "--n-candidates",
-        str(menu_size),
-    ]
-
-    # print(f"CMD: {' '.join(cmd)}")
-
-    measured = run(cmd, f"candidates for start term {spec.start_term!r}")
-    if measured is None or not measured.payload:
-        return [
-            {
-                "start_term": spec.start_term,
-                "goal_terms": spec.goal_terms,
-                "candidates": {},
-                "candidate_status": "rss_killed" if measured is None else "no_novel_terms",
-                # A capped-out child never printed its `Measured` envelope.
-                "candidate_peak_rss_bytes": None if measured is None else measured.peak_rss_bytes,
-            }
-        ]
-    records = measured.payload
-    for record in records:
-        record["goal_terms"] = spec.goal_terms
-        record["candidate_status"] = "ok"
-        record["candidate_peak_rss_bytes"] = measured.peak_rss_bytes
-        # print(
-        #     f"!!! sampling_peak_rss_bytes = {measured.peak_rss_bytes} | Start = {spec.start_term}"
-        # )
-    return records
-
-
-def with_max_iters(cmd: list[str], max_iters: int) -> list[str]:
-    """Copy `cmd` with its `--max-iters` value replaced."""
-    out = list(cmd)
-
-    try:
-        index = out.index("--max-iters")
-        out[index + 1] = str(max_iters)
-    except ValueError:
-        out.extend(["--max-iters", str(max_iters)])
-
-    return out
-
-
-def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path:
-    """Construct guide menus in parallel, one `candidates` subprocess per start term.
-
-    Merge results in start terms order and write ``candidates.json``.
-    """
-    specs = flatten_problems(args)
-    candidate_out.mkdir(parents=True, exist_ok=True)
-    jobs = args.jobs or os.cpu_count() or 1
-    candidate_flags = [
-        "--language",
-        str(cfg["language"]),
-        "--seed",
-        str(args.seed),
-        "--policy",
-        str(args.sample_policy),
-        "--size-search-steps",
-        str(args.size_search_steps),
-    ]
-    if args.frontier:
-        candidate_flags.append("--frontier")
-
-    limits = replay_limits(args, cfg)
-
-    # Menu size = exactly what the attempt loop consumes: one guide per attempt.
-    print(
-        f"Constructing guide-candidate menu ({args.n_guides}/policy, policy={args.sample_policy}, frontier={args.frontier}) "
-        f"for {len(specs)} start terms(s) "
-        f"-> {candidate_out} ({jobs} workers)",
-        file=sys.stderr,
-    )
-
-    shards = fan_out(
-        jobs,
-        lambda spec: build_candidate_shard(
-            args,
-            candidate_flags,
-            limits,
-            args.n_guides,
-            spec,
-            lambda cmd, what: run_capped(args, cmd, what),
-        ),
-        specs,
-        "candidates",
-        unit="start term",
-    )
-    merged = [rec for shard in shards for rec in shard]
-    merged_path = candidate_out / "candidates.json"
-    merged_path.write_text(json.dumps(merged))
-    return merged_path
-
-
 def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
     """Run under the RSS cap, retrying a replay-phase kill up to
-    `--sampling-retries` times: the first retry replays the iterations that
+    `--sampling-backoff` times: the first retry replays the iterations that
     survived, each further one gives up another iteration."""
     cmd = [*cmd, "--print-success-iters"]
     iters: int | None = None
@@ -398,7 +337,7 @@ def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
 
     for retries_left in range(args.sampling_backoff, -1, -1):
         try:
-            # print(f"CMD: {' '.join(attempt)}")
+            # print(f"CMD: {' '.join(cmd)}")
             measured = run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
             return measured
         except MemoryKilled as killed:
@@ -415,32 +354,90 @@ def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
             iters -= 1
             attempts += 1
 
-            cmd = with_max_iters(cmd, iters)
+            # Copy `cmd` with its `--max-iters` value replaced.
+            try:
+                index = cmd.index("--max-iters")
+                cmd[index + 1] = str(iters)
+            except ValueError:
+                cmd.extend(["--max-iters", str(iters)])
+
     return None
 
 
-def build_attempt_guides(pool: list, attempts: int, rng: random.Random) -> list:
-    """Pick each attempt's guide for one start/goal pair; `verify` unions one."""
-    if not pool:
-        return []
-
-    sequence: list = []
-    while len(sequence) < attempts:
-        pass_pool = pool[:]
-        rng.shuffle(pass_pool)
-        sequence.extend(pass_pool)
-    return sequence[:attempts]
-
-
-def run_leg(
-    args: Args,
-    base_flags: list[str],
-    goal: str,
-    guide: list,
-) -> tuple[dict, int]:
-    """Verify one leg in its own process and return its summary and peak RSS."""
+def draw_expansion(args: Args, candidate_flags: list[str], limits: dict, s_expr: str) -> Expansion:
+    """Run one `candidates` process from `s_expr`. This is called recursively at every depth"""
     cmd = [
-        str(args.verify_binary),
+        str(args.candidates_binary),
+        *candidate_flags,
+        *limit_flags(limits),
+        "--start-term",
+        s_expr,
+        "--n-candidates",
+        str(args.n_guides),
+    ]
+
+    started = time.monotonic()
+    measured = run_capped(args, cmd, f"candidates for term {s_expr!r}")
+    wall_time = time.monotonic() - started
+
+    # A capped-out child never printed its `Measured` envelope.
+    if measured is None:
+        return Expansion([], "rss_killed", dict(EMPTY_GUIDE_META), wall_time)
+
+    # An empty payload is `candidates` reporting that construction failed.
+    if not measured.payload:
+        meta = {**EMPTY_GUIDE_META, "candidate_peak_rss_bytes": measured.peak_rss_bytes}
+        return Expansion([], "no_novel_terms", meta, wall_time)
+
+    record = measured.payload[0]
+    children = list(zip(record["candidates"], record["candidate_s_expr"], strict=True))
+    meta = {
+        "guide_nodes": record["guide_nodes"],
+        "guide_classes": record["guide_classes"],
+        "guide_time": record["guide_time"],
+        "guide_memory": record["guide_memory"],
+        "guide_peak_live_heap": record["guide_peak_live_heap"],
+        "guide_stop_reason": record["stop_reason"],
+        "candidate_peak_rss_bytes": measured.peak_rss_bytes,
+    }
+    return Expansion(children, "ok" if children else "empty_pool", meta, wall_time)
+
+
+class ExpansionCache:
+    """Memoize `candidates` runs by the s-expression they sample from"""
+
+    def __init__(self, draw: Callable[[str], Expansion]) -> None:
+        self._draw = draw
+        self._guard = threading.Lock()
+        self._locks: dict[str, threading.Lock] = {}
+        self._done: dict[str, Expansion] = {}
+
+    def get(self, s_expr: str) -> tuple[Expansion, bool]:
+        """Return the pool for `s_expr` and whether it came from the cache."""
+        with self._guard:
+            lock = self._locks.setdefault(s_expr, threading.Lock())
+        with lock:
+            hit = self._done.get(s_expr)
+            if hit is not None:
+                return hit, True
+            expansion = self._draw(s_expr)
+            self._done[s_expr] = expansion
+            return expansion, False
+
+    def snapshot(self) -> dict[str, Expansion]:
+        with self._guard:
+            return dict(self._done)
+
+
+def run_attempt(args: Args, base_flags: list[str], goal: str, guide: list) -> AttemptResult:
+    """Run one attempt in its own process.
+
+    An attempt killed at the RSS cap comes back as a failed attempt with
+    ``stop_reason="rss_killed"`` rather than an exception, since the search
+    simply moves on to the next node.
+    """
+    cmd = [
+        str(args.attempt_binary),
         *base_flags,
         "--goal-term",
         goal,
@@ -451,62 +448,188 @@ def run_leg(
     if args.full_union:
         cmd.append("--full-union")
 
-    measured = run_json_subprocess(
-        cmd, what=f"verify for goal {goal!r}", rss_max_bytes=parse_size(args.max_rss)
-    )
-    return verify_summary(measured.payload), measured.peak_rss_bytes
-
-
-def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
-    """Run one start/goal pair's attempt loop and return its result rows.
-
-    Each attempt is a separate `verify` process, so `verify_peak_rss_bytes` is
-    that leg's own peak rather than a high-water mark shared across the pair.
-    The loop stops on the first reach.
-
-    A leg killed at the RSS cap counts as a failed attempt with
-    ``stop_reason="rss_killed"``. The final row is marked ``gave_up`` when
-    everything failed. An empty pool is an error.
-    """
-    rng = random.Random(f"{args.seed}:{item.start_term}:{item.goal_term}")
-    guides = build_attempt_guides(item.pool, args.n_guides, rng)
-    if not guides:
-        raise RuntimeError(
-            f"empty candidate pool for start term {item.start_term!r} goal {item.goal_term!r}: "
-            f"policy {args.sample_policy!r} drew no guides"
+    started = time.monotonic()
+    try:
+        measured = run_json_subprocess(
+            cmd, what=f"attempt for goal {goal!r}", rss_max_bytes=parse_size(args.max_rss)
         )
+        summary, peak_rss_bytes = attempt_summary(measured.payload), measured.peak_rss_bytes
+    except MemoryKilled:
+        summary, peak_rss_bytes = rss_killed_summary(), None
+    return AttemptResult(summary, peak_rss_bytes, time.monotonic() - started)
 
-    rows: list[dict] = []
-    for attempt, guide in enumerate(guides):
-        try:
-            summary, leg_peak_rss_bytes = run_leg(args, base_flags, item.goal_term, guide)
-        except MemoryKilled:
-            # print(
-            #     f"verify leg {item.start_term!r} -> {item.goal_term!r} "
-            #     f"(attempt {attempt + 1}): killed at RSS cap",
-            #     file=sys.stderr,
-            # )
-            summary, leg_peak_rss_bytes = rss_killed_summary(), None
 
-        rows.append(
+@dataclass
+class SearchContext:
+    """Everything a pair search needs that is shared across pairs."""
+
+    args: Args
+    base_flags: list[str]
+    cache: ExpansionCache
+
+
+def expand_node(
+    ctx: SearchContext,
+    trace: PairTrace,
+    budget: Budget,
+    frontier: SearchQueue,
+    node: GuideNode,
+    ids: itertools.count,
+    seen: set[str],
+) -> None:
+    """Draw `node`'s pool, record what it cost, and queue the unseen children.
+
+    Guides already tried on this pair are dropped: the cache makes the search
+    tree a DAG, and skips guides already attempted on this pair.
+
+    A saturated replay marks its children terminal, so the search attempts them
+    but never samples past them.
+    """
+    started_at = budget.elapsed()
+    expansion, cached = ctx.cache.get(node.s_expr)
+
+    children = []
+    for guide, s_expr in expansion.children:
+        key = json.dumps(guide)
+        if key in seen:
+            continue
+        seen.add(key)
+        children.append(
+            GuideNode(
+                next(ids), node.node_id, node.depth + 1, guide, s_expr, terminal=expansion.saturated
+            )
+        )
+    frontier.push(children)
+
+    trace.expansions.append(
+        {
+            "start_term": trace.pair.start_term,
+            "goal_term": trace.pair.goal_term,
+            "node_id": node.node_id,
+            "depth": node.depth,
+            "status": expansion.status,
+            "cached": cached,
+            "saturated": expansion.saturated,
+            "drawn": len(expansion.children),
+            "pushed": len(children),
+            "started_at": started_at,
+            # A cached pool cost this pair nothing but the lookup.
+            "wall_time": 0.0 if cached else expansion.wall_time,
+            **expansion.meta,
+        }
+    )
+
+
+def search_pair(ctx: SearchContext, pair: Pair) -> PairTrace:
+    """Run one pair's sampling/attempt search and return its trace.
+
+    The loop is: pop a node, attempt it, and on failure expand it back onto the
+    frontier. Each attempt is a separate `attempt` process, so its
+    `attempt_peak_rss_bytes` is that attempt's own peak rather than a high-water mark
+    shared across the pair.
+    """
+    args = ctx.args
+    started = time.monotonic()
+    budget = Budget(
+        started=started,
+        deadline=None if args.max_total_time is None else started + args.max_total_time,
+        max_depth=args.max_depth,
+        max_attempts=args.max_attempts,
+    )
+    trace = PairTrace(pair)
+    frontier = SearchQueue(args.search_policy)
+    ids = itertools.count(1)
+    seen: set[str] = set()
+
+    root = GuideNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=pair.start_term)
+    expand_node(ctx, trace, budget, frontier, root, ids, seen)
+
+    while True:
+        if budget.expired():
+            trace.stop_reason = "time_exhausted"
+            break
+        if not budget.attempts_left(len(trace.attempts)):
+            trace.stop_reason = "attempt_budget_exhausted"
+            break
+        node = frontier.pop()
+        if node is None:
+            # Every node bottomed out at `--max-depth`, hit a saturated egraph,
+            # or the pools ran dry; `setup_status` and the expansion rows'
+            # `saturated` flag tell those apart.
+            trace.stop_reason = "frontier_exhausted"
+            break
+
+        assert node.guide is not None, "the root is a baseline, not an attempt"
+        started_at = budget.elapsed()
+        attempt = run_attempt(args, ctx.base_flags, pair.goal_term, node.guide)
+        trace.attempts.append(
             {
-                "start_term": item.start_term,
-                "goal_term": item.goal_term,
+                "start_term": pair.start_term,
+                "goal_term": pair.goal_term,
                 "policy": args.sample_policy,
-                "attempt": attempt,
-                "gave_up": False,
-                "verify_peak_rss_bytes": leg_peak_rss_bytes,
-                **summary,
-                **item.guide_meta,
+                "attempt": len(trace.attempts),
+                "node_id": node.node_id,
+                "parent_id": node.parent_id,
+                "depth": node.depth,
+                "guide_s_expr": node.s_expr,
+                "terminal": node.terminal,
+                "started_at": started_at,
+                "wall_time": attempt.wall_time,
+                "attempt_peak_rss_bytes": attempt.peak_rss_bytes,
+                **attempt.summary,
             }
         )
 
-        if summary["reached"]:
+        if attempt.summary["reached"]:
+            trace.stop_reason = "reached"
             break
 
-    if not rows[-1]["reached"]:
-        rows[-1]["gave_up"] = True
-    return rows
+        # A terminal node came out of a saturated egraph, so sampling from it
+        # would rebuild that same egraph and redraw that same pool. Leaving it
+        # unexpanded sends the search back up to whatever the frontier holds.
+        if not node.terminal and node.depth < budget.max_depth and not budget.expired():
+            expand_node(ctx, trace, budget, frontier, node, ids, seen)
+
+    trace.wall_time = budget.elapsed()
+    return trace
+
+
+def run_unguided_pair(args: Args, base_flags: list[str], pair: Pair) -> dict:
+    """Run the pair-matched single-start baseline.
+
+    A baseline killed at the RSS cap becomes an ``rss_killed`` failure row.
+    """
+    cmd = [
+        str(args.attempt_binary),
+        *base_flags,
+        "--start-term",
+        pair.start_term,
+        "--goal-term",
+        pair.goal_term,
+    ]
+    what = f"unguided attempt for goal term {pair.goal_term!r}"
+    try:
+        measured = run_json_subprocess(cmd, what=what, rss_max_bytes=parse_size(args.max_rss))
+        summary = attempt_summary(measured.payload)
+        peak_rss_bytes = measured.peak_rss_bytes
+    except MemoryKilled:
+        # print(f"{what}: killed at RSS cap", file=sys.stderr)
+        summary, peak_rss_bytes = rss_killed_summary(), None
+    return {
+        "start_term": pair.start_term,
+        "goal_term": pair.goal_term,
+        "unguided_success": summary["reached"],
+        "unguided_stop_reason": summary["stop_reason"],
+        "unguided_panic": summary["panic"],
+        "unguided_final_live_heap_bytes": summary["memory"],
+        "unguided_peak_live_heap_bytes": summary["peak_live_heap"],
+        "unguided_peak_rss_bytes": peak_rss_bytes,
+    }
+
+
+# -----------
+# Reporting
+# -----------
 
 
 def resolve_output_dir(args: Args) -> Path:
@@ -521,213 +644,134 @@ def resolve_output_dir(args: Args) -> Path:
     return out
 
 
-def build_work_items(start_term_records: list) -> list[WorkItem]:
-    """Flatten `candidates`'s start term records into count (start, goal) items.
+def summarize_pair(args: Args, trace: PairTrace) -> dict:
+    """Collapse one search into a single guided-workflow row."""
+    attempts = trace.attempts
+    successes = [attempt for attempt in attempts if attempt["reached"]]
 
-    Each start/goal pair stops early if it reaches the goal with a guide, the pairs
-    run in parallel
-    """
-    items: list[WorkItem] = []
-    for record in start_term_records:
-        if record.get("candidate_status") != "ok":
-            continue
-        pool = record["candidates"]
-        guide_meta = {
-            "guide_nodes": record["guide_nodes"],
-            "guide_classes": record["guide_classes"],
-            "guide_time": record["guide_time"],
-            "guide_memory": record["guide_memory"],
-            "guide_peak_live_heap": record["guide_peak_live_heap"],
-            "candidate_peak_rss_bytes": record["candidate_peak_rss_bytes"],
-            "guide_stop_reason": record["stop_reason"],
-        }
-        for goal in record["goal_terms"]:
-            items.append(WorkItem(record["start_term"], goal, pool, guide_meta))
-    return items
+    # Each attempt is its own process, so pick which one's peak to report rather
+    # than inheriting a shared high-water mark.
+    #
+    # `attempt_peak_rss_bytes` is the *decisive* attempt: the one that reached, or
+    # the last one tried if none did.
+    # `attempt_peak_rss_bytes_max` is the max across every attempt run, which is what
+    # the pair cost end to end.
+    decisive = successes[0] if successes else (attempts[-1] if attempts else None)
+    attempt_peak = decisive["attempt_peak_rss_bytes"] if decisive else None
 
+    attempt_peaks = [
+        attempt["attempt_peak_rss_bytes"]
+        for attempt in attempts
+        if attempt.get("attempt_peak_rss_bytes") is not None
+    ]
+    attempt_peak_max = max(attempt_peaks) if attempt_peaks else None
 
-def warn_pool_shortfall(items: list[WorkItem], attempts: int) -> None:
-    """Warn once per pool size when we must reuse guides.
+    expansion_peaks = [
+        exp["candidate_peak_rss_bytes"]
+        for exp in trace.expansions
+        if exp.get("candidate_peak_rss_bytes") is not None
+    ]
+    candidate_peak = max(expansion_peaks) if expansion_peaks else None
 
-    Deduped on pool size since the shortfall is identical across pairs.
-    """
-
-    for pool_size in sorted({len(item.pool) for item in items}):
-        if attempts > pool_size:
-            print(
-                f"WARNING: attempts={attempts} needs that many guides but pool has "
-                f"{pool_size}; reshuffling and reusing candidates across attempts "
-                f"(excess {attempts - pool_size}).",
-                file=sys.stderr,
-            )
-
-
-def run_all_pairs(args: Args, base_flags: list[str], items: list[WorkItem]) -> list[dict]:
-    """Run every work item's attempt loop concurrently and collect result rows."""
-    print(f"Running legs for {len(items)} (start, goal) item(s)", file=sys.stderr)
-    per_item = fan_out(
-        args.jobs or os.cpu_count() or 1,
-        lambda item: run_pair(args, base_flags, item),
-        items,
-        "legs",
-        unit="pair",
-    )
-    return [row for rows in per_item for row in rows]
-
-
-def expected_pairs(start_records: list[dict]) -> list[dict]:
-    """Return every planned pair, including start terms whose construction failed."""
-    return [
-        {
-            "start_term": record["start_term"],
-            "goal_term": goal_term,
-            "candidate_status": record["candidate_status"],
-            "candidate_peak_rss_bytes": record["candidate_peak_rss_bytes"],
-            "guide_peak_live_heap": record.get("guide_peak_live_heap"),
-            "guide_stop_reason": record.get("stop_reason"),
-        }
-        for record in start_records
-        for goal_term in record["goal_terms"]
+    rss_peaks = [peak for peak in (candidate_peak, attempt_peak_max) if peak is not None]
+    live_peaks = [
+        peak
+        for peak in (
+            *(exp.get("guide_peak_live_heap") for exp in trace.expansions),
+            *(attempt.get("peak_live_heap") for attempt in attempts),
+        )
+        if peak is not None
     ]
 
+    # A pool that drew nothing usable is a setup failure; a pool that queued
+    # nodes the search never got to is not — that is `search_stop_reason`'s job.
+    setup_status = trace.setup_status
+    if setup_status == "ok" and not trace.expansions[0]["pushed"]:
+        setup_status = "empty_pool"
 
-def run_unguided_pair(args: Args, base_flags: list[str], pair: dict) -> dict:
-    """Run the pair-matched single-start baseline.
-
-    A baseline killed at the RSS cap becomes an ``rss_killed`` failure row.
-    """
-    cmd = [
-        str(args.verify_binary),
-        *base_flags,
-        "--start-term",
-        pair["start_term"],
-        "--goal-term",
-        pair["goal_term"],
-    ]
-    what = f"unguided verify for goal term {pair['goal_term']!r}"
-    try:
-        measured = run_json_subprocess(cmd, what=what, rss_max_bytes=parse_size(args.max_rss))
-        summary = verify_summary(measured.payload)
-        peak_rss_bytes = measured.peak_rss_bytes
-    except MemoryKilled:
-        # print(f"{what}: killed at RSS cap", file=sys.stderr)
-        summary, peak_rss_bytes = rss_killed_summary(), None
     return {
-        "start_term": pair["start_term"],
-        "goal_term": pair["goal_term"],
-        "unguided_success": summary["reached"],
-        "unguided_stop_reason": summary["stop_reason"],
-        "unguided_panic": summary["panic"],
-        "unguided_final_live_heap_bytes": summary["memory"],
-        "unguided_peak_live_heap_bytes": summary["peak_live_heap"],
-        "unguided_peak_rss_bytes": peak_rss_bytes,
+        "start_term": trace.pair.start_term,
+        "goal_term": trace.pair.goal_term,
+        "policy": args.sample_policy,
+        "exploration_policy": args.search_policy,
+        "max_depth": args.max_depth,
+        "branching": args.n_guides,
+        "attempt_budget": args.max_attempts,
+        "time_budget": args.max_total_time,
+        "guided_success": bool(successes),
+        "search_stop_reason": trace.stop_reason,
+        "success_attempt": successes[0]["attempt"] + 1 if successes else None,
+        "success_depth": successes[0]["depth"] if successes else None,
+        "attempts_run": len(attempts),
+        "expansions_run": len(trace.expansions),
+        "expansions_paid": sum(1 for exp in trace.expansions if not exp["cached"]),
+        "saturated_expansions": sum(1 for exp in trace.expansions if exp["saturated"]),
+        # It does not make sense to draw guides from a saturated egraph.
+        "root_saturated": bool(trace.expansions and trace.expansions[0]["saturated"]),
+        "deepest_attempt": max((attempt["depth"] for attempt in attempts), default=None),
+        "pair_wall_time": trace.wall_time,
+        # The last attempt's reason when one ran, otherwise why none did.
+        "guided_stop_reason": None
+        if successes
+        else (
+            attempts[-1].get("stop_reason")
+            if attempts
+            else (setup_status if setup_status != "ok" else trace.stop_reason)
+        ),
+        "guided_panic": any(attempt["panic"] for attempt in attempts),
+        "setup_status": setup_status,
+        "candidate_status": trace.setup_status,
+        "attempt_peak_rss_bytes": attempt_peak,
+        "attempt_peak_rss_bytes_max": attempt_peak_max,
+        "candidate_peak_rss_bytes": candidate_peak,
+        "guided_peak_rss_bytes": max(rss_peaks) if rss_peaks else None,
+        "guided_peak_live_heap_bytes": max(live_peaks) if live_peaks else None,
     }
 
 
-def run_all_unguided(args: Args, base_flags: list[str], pairs: list[dict]) -> list[dict]:
-    print(f"Running {len(pairs)} pair-matched unguided baseline(s)", file=sys.stderr)
-    return fan_out(
-        args.jobs or os.cpu_count() or 1,
-        lambda pair: run_unguided_pair(args, base_flags, pair),
-        pairs,
-        "unguided",
-        unit="pair",
-    )
-
-
-def summarize_pairs(
-    args: Args,
-    start_records: list[dict],
-    rows: list[dict],
-) -> list[dict]:
-    """Collapse attempt rows to one guided workflow row per planned pair."""
-    attempts_by_pair: dict[tuple[str, str], list[dict]] = {}
-    for row in rows:
-        attempts_by_pair.setdefault((row["start_term"], row["goal_term"]), []).append(row)
-
-    summary = []
-    for pair in expected_pairs(start_records):
-        attempts = sorted(
-            attempts_by_pair.get((pair["start_term"], pair["goal_term"]), []),
-            key=lambda row: row["attempt"],
-        )
-        successes = [row for row in attempts if row["reached"]]
-        candidate_peak = pair["candidate_peak_rss_bytes"]
-
-        # Each attempt is now its own process, so pick which leg's peak to
-        # report rather than inheriting a shared high-water mark.
-        #
-        # `verify_peak_rss_bytes` is the *decisive* leg: the one that reached, or
-        # the last one tried if none did.
-        # `verify_peak_rss_bytes_max` is the max across every leg run, which is
-        # what the pair cost end to end.
-        decisive = successes[0] if successes else (attempts[-1] if attempts else None)
-        verify_peak = decisive["verify_peak_rss_bytes"] if decisive else None
-        leg_peaks = [
-            row["verify_peak_rss_bytes"]
-            for row in attempts
-            if row.get("verify_peak_rss_bytes") is not None
-        ]
-        verify_peak_max = max(leg_peaks) if leg_peaks else None
-
-        rss_peaks = [peak for peak in (candidate_peak, verify_peak_max) if peak is not None]
-        live_peaks = [
-            peak
-            for peak in (
-                pair["guide_peak_live_heap"],
-                *(row.get("peak_live_heap") for row in attempts),
-            )
-            if peak is not None
-        ]
-        setup_status = pair["candidate_status"]
-        if setup_status == "ok" and not attempts:
-            setup_status = "empty_pool"
-        summary.append(
-            {
-                **pair,
-                "policy": args.sample_policy,
-                "attempt_budget": args.n_guides,
-                "guided_success": bool(successes),
-                "success_attempt": successes[0]["attempt"] + 1 if successes else None,
-                "attempts_run": len(attempts),
-                "guided_stop_reason": None
-                if successes
-                else (attempts[-1].get("stop_reason") if attempts else setup_status),
-                "guided_panic": any(row["panic"] for row in attempts),
-                "setup_status": setup_status,
-                "verify_peak_rss_bytes": verify_peak,
-                "verify_peak_rss_bytes_max": verify_peak_max,
-                "guided_peak_rss_bytes": max(rss_peaks) if rss_peaks else None,
-                "guided_peak_live_heap_bytes": max(live_peaks) if live_peaks else None,
-            }
-        )
-    return summary
+def write_candidate_pools(cache: ExpansionCache, out: Path) -> None:
+    """Dump every pool the run drew, keyed by the term it was sampled from."""
+    out.mkdir(parents=True, exist_ok=True)
+    pools = {
+        s_expr: {
+            "status": expansion.status,
+            "candidates": [guide for guide, _ in expansion.children],
+            "candidate_s_expr": [child for _, child in expansion.children],
+            **expansion.meta,
+        }
+        for s_expr, expansion in cache.snapshot().items()
+    }
+    (out / "candidates.json").write_text(json.dumps(pools))
 
 
 def report_results(
     args: Args,
     out: Path,
-    start_records: list[dict],
-    rows: list[dict],
+    traces: list[PairTrace],
     unguided_rows: list[dict],
+    cache: ExpansionCache,
     limits: dict,
 ) -> None:
-    """Write attempt, pair, baseline, and joined comparison results."""
-    df = pl.DataFrame(rows, schema=ATTEMPT_SCHEMA)
-    df.write_parquet(out / "results.parquet")
-    (out / "results.json").write_text(json.dumps(rows, indent=2))
+    """Write attempt, expansion, pair, baseline, and joined comparison results."""
+    attempt_rows = [row for trace in traces for row in trace.attempts]
+    expansion_rows = [row for trace in traces for row in trace.expansions]
 
-    pair_rows = summarize_pairs(
-        args,
-        start_records,
-        rows,
-    )
-    pairs = pl.DataFrame(pair_rows)
+    attempts = pl.DataFrame(attempt_rows, schema=ATTEMPT_SCHEMA)
+    attempts.write_parquet(out / "results.parquet")
+    (out / "results.json").write_text(json.dumps(attempt_rows, indent=2))
+
+    expansions = pl.DataFrame(expansion_rows, schema=EXPANSION_SCHEMA)
+    expansions.write_parquet(out / "expansions.parquet")
+
+    pairs = pl.DataFrame([summarize_pair(args, trace) for trace in traces], schema=PAIR_SCHEMA)
     unguided = pl.DataFrame(unguided_rows, schema=UNGUIDED_SCHEMA)
     comparison = pairs.join(unguided, on=["start_term", "goal_term"], how="left", validate="1:1")
     pairs.write_parquet(out / "pair_results.parquet")
     unguided.write_parquet(out / "unguided_results.parquet")
     comparison.write_parquet(out / "comparison.parquet")
+
+    write_candidate_pools(cache, out / "candidate_run")
+
     config = {
         **args.model_dump(),
         "effective_limits": limits,
@@ -737,9 +781,11 @@ def report_results(
     reached_pairs = int(pairs["guided_success"].sum())
     total_pairs = len(pairs)
     reach_rate = reached_pairs / total_pairs if total_pairs else 0.0
+    attempts_run = int(pairs["attempts_run"].sum())
     print(
         f"\nReached {reached_pairs}/{total_pairs} start/goal pairs "
-        f"(reach rate {reach_rate:.2f}). "
+        f"(reach rate {reach_rate:.2f}) in {attempts_run} attempt(s) and "
+        f"{len(cache.snapshot())} distinct candidate pool(s). "
         f"Wrote {out / 'comparison.parquet'}",
         file=sys.stderr,
     )
@@ -748,25 +794,67 @@ def report_results(
 def main() -> int:
     args = Args()
 
-    exit_if_missing(args.candidates_binary, args.verify_binary)
+    exit_if_missing(args.candidates_binary, args.attempt_binary)
 
     cfg = json.loads((args.path / "problem_args.json").read_text())
-    limits = replay_limits(args, cfg)
+    limits = {
+        key: value
+        for key, value in {
+            "max_iters": args.stop_iters,
+            "max_nodes": args.stop_nodes,
+            "max_time": args.stop_time,
+        }.items()
+        if value is not None
+    }
     base_flags = ["--language", str(cfg["language"]), *limit_flags(limits)]
+    candidate_flags = [
+        "--language",
+        str(cfg["language"]),
+        "--seed",
+        str(args.seed),
+        "--policy",
+        str(args.sample_policy),
+        "--size-search-steps",
+        str(args.size_search_steps),
+    ]
+    if args.frontier:
+        candidate_flags.append("--frontier")
+
     out = resolve_output_dir(args)
 
-    candidates_path = build_candidate_manifest(args, cfg, out / "candidate_run")
-    start_records = json.loads(candidates_path.read_text())
-    items = build_work_items(start_records)
-    warn_pool_shortfall(items, args.n_guides)
+    cache = ExpansionCache(lambda s_expr: draw_expansion(args, candidate_flags, limits, s_expr))
+    ctx = SearchContext(args=args, base_flags=base_flags, cache=cache)
 
-    rows = run_all_pairs(args, base_flags, items)
+    pairs = [
+        Pair(spec.start_term, goal) for spec in flatten_problems(args) for goal in spec.goal_terms
+    ]
+    print(
+        f"Searching {len(pairs)} (start, goal) pair(s) "
+        f"(policy={ctx.args.search_policy}, max_depth={ctx.args.max_depth}, "
+        f"branching={ctx.args.n_guides}, max_attempts={ctx.args.max_attempts}, "
+        f"max_total_time={ctx.args.max_total_time})",
+        file=sys.stderr,
+    )
+    traces = fan_out(
+        ctx.args.jobs or os.cpu_count() or 1,
+        lambda pair: search_pair(ctx, pair),
+        pairs,
+        "search",
+        unit="pair",
+    )
 
     # The baseline is re-run here, not reused from `problems.json`: the search
     # budget is the `--stop-*` one, not the budget generation measured under.
-    unguided_rows = run_all_unguided(args, base_flags, expected_pairs(start_records))
+    print(f"Running {len(pairs)} pair-matched unguided baseline(s)", file=sys.stderr)
+    unguided_rows = fan_out(
+        args.jobs or os.cpu_count() or 1,
+        lambda pair: run_unguided_pair(args, base_flags, pair),
+        pairs,
+        "unguided",
+        unit="pair",
+    )
 
-    report_results(args, out, start_records, rows, unguided_rows, limits)
+    report_results(args, out, traces, unguided_rows, cache, limits)
     return 0
 
 

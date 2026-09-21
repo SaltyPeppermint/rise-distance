@@ -86,8 +86,8 @@ name = "candidates"
 path = "src/bin/candidates.rs"
 
 [[bin]]
-name = "verify"
-path = "src/bin/verify.rs"
+name = "attempt"
+path = "src/bin/attempt.rs"
 
 [[bin]]
 name = "start"

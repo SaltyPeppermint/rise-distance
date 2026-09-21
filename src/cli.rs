@@ -1,5 +1,5 @@
 //! Shared wire types for the guide experiment's `start`, `candidates` and
-//! `verify` binaries.
+//! `attempt` binaries.
 
 use clap::ValueEnum;
 use egg::RecExpr;

@@ -30,13 +30,33 @@ memrun uv run scripts/generate_problems.py \
   --path data/problems/expensive-bird
 or exit $status
 
-# memrun uv run scripts/guided_search.py \
-#   --max-rss 450M \
-#   --sampling-backoff 5 \
-#   --sample-policy uniform \
-#   --start-terms 100 \
-#   --n-guides 10 \
-#   --seed 42 \
-#   --full-union \
-#   data/problems/expensive-bird
-# or exit $status
+set -l search_args \
+  --max-rss 450M \
+  --sampling-backoff 5 \
+  --sample-policy uniform \
+  --start-terms 100 \
+  --n-guides 10 \
+  --seed 42 \
+  --full-union
+
+memrun uv run scripts/guided_search.py $search_args \
+  --max-depth 1 \
+  --output data/guided_search/depth1 \
+  data/problems/expensive-bird
+or exit $status
+
+memrun uv run scripts/guided_search.py $search_args \
+  --max-depth 2 \
+  --max-attempts 30 \
+  --search-policy depth \
+  --output data/guided_search/depth2-depth \
+  data/problems/expensive-bird
+or exit $status
+
+memrun uv run scripts/guided_search.py $search_args \
+  --max-depth 2 \
+  --max-attempts 30 \
+  --search-policy width \
+  --output data/guided_search/depth2-width \
+  data/problems/expensive-bird
+or exit $status

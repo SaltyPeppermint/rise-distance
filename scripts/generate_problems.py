@@ -3,18 +3,16 @@
 Three stages, each fanned out over isolated Rust processes:
 1. `start` samples one validated start term per size slot.
 2. `candidates` draws goal candidates from each start term's novel frontier.
-3. `verify` runs the unguided start->goal search; its peak RSS (`VmHWM`, the
+3. `attempt` runs the unguided start->goal search; its peak RSS (`VmHWM`, the
    only memory number to trust here) decides whether the pair is kept.
 
 Writes `problems.json` (accepted pairs) and `problem_args.json` (config).
 
 Example:
-    cargo build --release --bin start --bin candidates --bin verify
+    cargo build --release --bin start --bin candidates --bin attempt
     uv run scripts/generate_problems.py --starts 10 --min-size 10 --max-size 12 \
       --language math --seed 42 --max-memory 4G --min-rss 3G --rss-max 8G
 """
-
-from __future__ import annotations
 
 import hashlib
 import json
@@ -30,13 +28,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from common import (
     MemoryKilled,
+    attempt_summary,
     exit_if_missing,
     fan_out,
     limit_flags,
     parse_size,
     run_json_subprocess,
     uniform_candidate_allocation,
-    verify_summary,
 )
 
 
@@ -74,9 +72,7 @@ class Args(BaseSettings):
         default=Path("target/release/candidates"), description="Goal-candidate binary."
     )
 
-    verify_bin: Path = Field(
-        default=Path("target/release/verify"), description="Verification binary."
-    )
+    attempt_bin: Path = Field(default=Path("target/release/attempt"), description="Attempt binary.")
 
     # Start terms
     starts: int = Field(gt=0, description="Number of start terms, spread uniformly over the sizes.")
@@ -119,7 +115,7 @@ class Args(BaseSettings):
     min_rss: str = Field(
         default="0",
         description=(
-            "Keep a (start, goal) pair only if the unguided `verify` run's peak "
+            "Keep a (start, goal) pair only if the unguided `attempt` run's peak "
             "RSS reaches this (e.g. `3G`), so cheap problems are dropped."
         ),
     )
@@ -267,10 +263,10 @@ def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[
     return {**start, "goal_terms": records[0]["candidate_s_expr"]}
 
 
-def run_verify(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, Any]:
+def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, Any]:
     """Measure what the unguided start->goal search actually costs."""
     cmd = [
-        str(args.verify_bin),
+        str(args.attempt_bin),
         "--language",
         args.language,
         "--start-term",
@@ -279,13 +275,13 @@ def run_verify(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, 
         pair["goal_term"],
         *flags,
     ]
-    measured = run_json_subprocess(cmd, what=f"verify for goal {pair['goal_term']!r}")
-    return {**pair, **verify_summary(measured.payload), "peak_rss_bytes": measured.peak_rss_bytes}
+    measured = run_json_subprocess(cmd, what=f"attempt for goal {pair['goal_term']!r}")
+    return {**pair, **attempt_summary(measured.payload), "peak_rss_bytes": measured.peak_rss_bytes}
 
 
 def main() -> int:
     args = Args()
-    exit_if_missing(args.start_bin, args.candidates_bin, args.verify_bin)
+    exit_if_missing(args.start_bin, args.candidates_bin, args.attempt_bin)
 
     out = args.path or generate_unique_dir(Path("data/problems"))
     out.mkdir(parents=True, exist_ok=True)
@@ -327,7 +323,7 @@ def main() -> int:
         for goal in start["goal_terms"]
     ]
 
-    measured = fan_out(jobs, lambda p: run_verify(args, flags, p), pairs, "verify")
+    measured = fan_out(jobs, lambda p: run_attempt(args, flags, p), pairs, "attempt")
     problems = [row for row in measured if (row["peak_rss_bytes"] or 0) >= min_rss]
 
     (out / "problems.json").write_text(json.dumps(problems, indent=2))
