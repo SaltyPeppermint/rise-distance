@@ -13,76 +13,30 @@ end
 cargo build --release
 or exit $status
 
-# memrun uv run scripts/generate_problems.py \
-#   --starts 200 \
-#   --min-size 30 \
-#   --max-size 49 \
-#   --language math \
-#   --seed 123 \
-#   --jobs 8 \
-#   --max-iters 2000 \
-#   --max-nodes 1000000 \
-#   --max-time 300 \
-#   --max-memory 500M \
-#   --min-rss 500M \
-#   --rss-max 1G \
-#   --goals 10 \
-#   --path data/problems/squishy-potatoe
-# or exit $status
-
-# memrun uv run scripts/guided_search.py \
-#   --max-rss 450M \
-#   --sampling-retries 5 \
-#   --policy uniform \
-#   --start-terms 100 \
-#   --attempts 10 \
-#   --seed 42 \
-#   --full-union \
-#   data/problems/squishy-potatoe
-# or exit $status
-
-# memrun uv run scripts/guided_search.py \
-#   --max-rss 450M \
-#   --sampling-retries 10 \
-#   --policy count \
-#   --start-terms 100 \
-#   --attempts 10 \
-#   --seed 42 \
-#   --full-union \
-#   data/problems/squishy-potatoe
-# or exit $status
-
-
-memrun uv run scripts/guided_search.py \
-  --max-rss 450M \
-  --sampling-retries 10 \
-  --policy count \
-  --start-terms 100 \
-  --attempts 10 \
-  --seed 42 \
-  data/problems/squishy-potatoe
+memrun uv run scripts/generate_problems.py \
+  --starts 1000 \
+  --min-size 30 \
+  --max-size 60 \
+  --language math \
+  --seed 123 \
+  --jobs 20 \
+  --max-iters 2000 \
+  --max-nodes 1000000 \
+  --max-time 300 \
+  --max-memory 500M \
+  --min-rss 500M \
+  --rss-max 1G \
+  --goals 2 \
+  --path data/problems/expensive-bird
 or exit $status
 
 # memrun uv run scripts/guided_search.py \
 #   --max-rss 450M \
-#   --sampling-retries 10 \
-#   --policy uniform \
+#   --sampling-backoff 5 \
+#   --sample-policy uniform \
 #   --start-terms 100 \
-#   --attempts 10 \
+#   --n-guides 10 \
 #   --seed 42 \
 #   --full-union \
-#   --size-search-steps 100 \
-#   data/problems/squishy-potatoe
-# or exit $status
-
-# memrun uv run scripts/guided_search.py \
-#   --max-rss 450M \
-#   --sampling-retries 5 \
-#   --policy uniform \
-#   --start-terms 100 \
-#   --attempts 10 \
-#   --seed 42 \
-#   --full-union \
-#   --frontier \
-#   data/problems/squishy-potatoe
+#   data/problems/expensive-bird
 # or exit $status

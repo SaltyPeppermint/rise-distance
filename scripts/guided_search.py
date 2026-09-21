@@ -50,10 +50,13 @@ from common import (
 )
 
 # Runs one `candidates` command; `None` when it could not be kept under its cap.
-RunCandidates = Callable[[list[str], str], MeasuredJson | None]
+type RunCandidates = Callable[[list[str], str], MeasuredJson | None]
 
 # TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
-Policy = Literal["count", "uniform"]
+type SamplePolicy = Literal["count", "uniform"]
+
+type ExplorationPolicy = Literal["depth", "width"]
+
 
 # An unreached or panicked leg leaves most of the fields None.
 # unreached-heavy prefix would otherwise make polars infer Null
@@ -140,42 +143,30 @@ class Args(BaseSettings):
     # At least one must be given. Replay ends when the first configured budget
     # is exhausted; omitted budgets are effectively unlimited.
     stop_iters: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Guide-replay iteration budget. Replay stops once this many "
-            "iterations have been reached."
-        ),
+        default=None, gt=0, description=("Guide-replay iteration budget.")
     )
 
     stop_nodes: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Guide-replay egraph-node budget. Replay stops once this many "
-            "egraph nodes have been reached."
-        ),
+        default=None, gt=0, description=("Guide-replay egraph-node budget.")
     )
 
     stop_time: float | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Guide-replay wall-clock budget in seconds. Replay stops once this "
-            "time limit is reached."
-        ),
+        default=None, gt=0, description=("Guide-replay wall-clock budget in seconds.")
+    )
+
+    max_total_time: float | None = Field(
+        default=None, gt=0, description=("Max time for each problem pair, with multiple restarts")
+    )
+
+    max_depth: int = Field(default=1, gt=0, description=("Max number of guides"))
+
+    exploration_policy: ExplorationPolicy = Field(
+        default="depth", description="Exploration for repeated restarts."
     )
 
     # Search policy
-    attempts: int = Field(
-        default=5,
-        gt=0,
-        description=(
-            "Number of legs to try per (start, goal) pair, each using a freshly "
-            "drawn guide. The first try counts, so `attempts=1` means one leg "
-            "with no resampling. Stops early on the first reach and gives up "
-            "after the final attempt."
-        ),
+    n_guides: int = Field(
+        default=5, gt=0, description=("Number of guides to try per (start, goal) pair")
     )
 
     max_rss: str = Field(
@@ -188,7 +179,7 @@ class Args(BaseSettings):
         ),
     )
 
-    sampling_retries: int = Field(
+    sampling_backoff: int = Field(
         default=1,
         ge=0,
         description=(
@@ -203,7 +194,9 @@ class Args(BaseSettings):
         default=200, ge=0, description="How many exact-size-search increments to allow."
     )
 
-    policy: Policy = Field(default="count", description="Candidate-pool sampling starteg.")
+    sample_policy: SamplePolicy = Field(
+        default="count", description="Candidate-pool sampling starteg."
+    )
 
     frontier: bool = Field(
         default=False, description="Sample from the frontier of terms, not the whole egraph"
@@ -356,7 +349,7 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         "--seed",
         str(args.seed),
         "--policy",
-        str(args.policy),
+        str(args.sample_policy),
         "--size-search-steps",
         str(args.size_search_steps),
     ]
@@ -364,57 +357,10 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
         candidate_flags.append("--frontier")
 
     limits = replay_limits(args, cfg)
-    cap = parse_size(args.max_rss)
-
-    def run_capped(cmd: list[str], what: str) -> MeasuredJson | None:
-        """Run under the RSS cap, retrying a replay-phase kill up to
-        `--sampling-retries` times: the first retry replays the iterations that
-        survived, each further one gives up another iteration."""
-        cmd = [*cmd, "--print-success-iters"]
-        iters: int | None = None
-        attempts = 1
-        post_eqsat_kill = 0
-        for retries_left in range(args.sampling_retries, -1, -1):
-            try:
-                # print(f"CMD: {' '.join(attempt)}")
-                measured = run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
-                # print(
-                #     f"{what}:\nsucceeded in attempt {attempts - 1} ({post_eqsat_kill} post eqsat kills)",
-                #     file=sys.stderr,
-                # )
-                return measured
-            except MemoryKilled as killed:
-                if eqsat_finished(killed.stderr):
-                    # after = " after eqsat"
-                    post_eqsat_kill += 1
-                # else:
-                #     after = ""
-
-                if not retries_left:
-                    # at = "" if iters is None else f" at --max-iters {iters}"
-                    # print(
-                    #     f"{what}:\nkilled at RSS cap{at}{after} in attempt {attempts}, no retries left",
-                    #     file=sys.stderr,
-                    # )
-                    return None
-
-                if iters is None:
-                    iters = killed.last_iter
-                    assert iters is not None, "How can it be killed with 0 iters"
-
-                iters -= 1
-                # print(
-                #     f"{what}: killed at RSS cap{after} for the {attempts}nth time, retrying at --max-iters {iters}",
-                #     file=sys.stderr,
-                # )
-                attempts += 1
-
-                cmd = with_max_iters(cmd, iters)
-        return None
 
     # Menu size = exactly what the attempt loop consumes: one guide per attempt.
     print(
-        f"Constructing guide-candidate menu ({args.attempts}/policy, policy={args.policy}, frontier={args.frontier}) "
+        f"Constructing guide-candidate menu ({args.n_guides}/policy, policy={args.sample_policy}, frontier={args.frontier}) "
         f"for {len(specs)} start terms(s) "
         f"-> {candidate_out} ({jobs} workers)",
         file=sys.stderr,
@@ -423,7 +369,12 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
     shards = fan_out(
         jobs,
         lambda spec: build_candidate_shard(
-            args, candidate_flags, limits, args.attempts, spec, run_capped
+            args,
+            candidate_flags,
+            limits,
+            args.n_guides,
+            spec,
+            lambda cmd, what: run_capped(args, cmd, what),
         ),
         specs,
         "candidates",
@@ -433,6 +384,39 @@ def build_candidate_manifest(args: Args, cfg: dict, candidate_out: Path) -> Path
     merged_path = candidate_out / "candidates.json"
     merged_path.write_text(json.dumps(merged))
     return merged_path
+
+
+def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
+    """Run under the RSS cap, retrying a replay-phase kill up to
+    `--sampling-retries` times: the first retry replays the iterations that
+    survived, each further one gives up another iteration."""
+    cmd = [*cmd, "--print-success-iters"]
+    iters: int | None = None
+    attempts = 1
+    post_eqsat_kill = 0
+    cap = parse_size(args.max_rss)
+
+    for retries_left in range(args.sampling_backoff, -1, -1):
+        try:
+            # print(f"CMD: {' '.join(attempt)}")
+            measured = run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
+            return measured
+        except MemoryKilled as killed:
+            if eqsat_finished(killed.stderr):
+                post_eqsat_kill += 1
+
+            if not retries_left:
+                return None
+
+            if iters is None:
+                iters = killed.last_iter
+                assert iters is not None, "How can it be killed with 0 iters"
+
+            iters -= 1
+            attempts += 1
+
+            cmd = with_max_iters(cmd, iters)
+    return None
 
 
 def build_attempt_guides(pool: list, attempts: int, rng: random.Random) -> list:
@@ -485,11 +469,11 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
     everything failed. An empty pool is an error.
     """
     rng = random.Random(f"{args.seed}:{item.start_term}:{item.goal_term}")
-    guides = build_attempt_guides(item.pool, args.attempts, rng)
+    guides = build_attempt_guides(item.pool, args.n_guides, rng)
     if not guides:
         raise RuntimeError(
             f"empty candidate pool for start term {item.start_term!r} goal {item.goal_term!r}: "
-            f"policy {args.policy!r} drew no guides"
+            f"policy {args.sample_policy!r} drew no guides"
         )
 
     rows: list[dict] = []
@@ -508,7 +492,7 @@ def run_pair(args: Args, base_flags: list[str], item: WorkItem) -> list[dict]:
             {
                 "start_term": item.start_term,
                 "goal_term": item.goal_term,
-                "policy": args.policy,
+                "policy": args.sample_policy,
                 "attempt": attempt,
                 "gave_up": False,
                 "verify_peak_rss_bytes": leg_peak_rss_bytes,
@@ -701,8 +685,8 @@ def summarize_pairs(
         summary.append(
             {
                 **pair,
-                "policy": args.policy,
-                "attempt_budget": args.attempts,
+                "policy": args.sample_policy,
+                "attempt_budget": args.n_guides,
                 "guided_success": bool(successes),
                 "success_attempt": successes[0]["attempt"] + 1 if successes else None,
                 "attempts_run": len(attempts),
@@ -774,7 +758,7 @@ def main() -> int:
     candidates_path = build_candidate_manifest(args, cfg, out / "candidate_run")
     start_records = json.loads(candidates_path.read_text())
     items = build_work_items(start_records)
-    warn_pool_shortfall(items, args.attempts)
+    warn_pool_shortfall(items, args.n_guides)
 
     rows = run_all_pairs(args, base_flags, items)
 
