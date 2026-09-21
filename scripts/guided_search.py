@@ -5,13 +5,13 @@ This driver reads the start/goal pairs in ``problems.json`` (written by
 chains explored through a work queue.
 
 Example:
-    cargo build --release --bin candidates --bin attempt
+    cargo build --release --bin samples --bin attempt
     uv run scripts/guided_search.py data/problems/dusky-cramp \\
         --stop-memory 4G --n-guides 5 --max-depth 3 --max-attempts 20 \\
         --max-total-time 300 --exploration-policy width \\
         --policy count --full-union
 
-Pass ``--max-rss`` to hold each ``candidates`` process to a cgroup RSS cap,
+Pass ``--max-rss`` to hold each ``samples`` process to a cgroup RSS cap,
 retrying a killed replay at the last iteration that completed and removing one
 more iter off each further retry (``--sampling-backoff``).
 """
@@ -76,12 +76,11 @@ class Args(BaseSettings):
         ),
     )
 
-    candidates_binary: Path = Field(
-        default=Path("target/release/candidates"),
-        description="Path to the candidate-construction binary.",
+    sample_bin: Path = Field(
+        default=Path("target/release/sample"), description="Path to the sample-construction binary."
     )
 
-    attempt_binary: Path = Field(
+    attempt_bin: Path = Field(
         default=Path("target/release/attempt"), description="Path to the attempt binary."
     )
 
@@ -131,7 +130,7 @@ class Args(BaseSettings):
     max_rss: str = Field(
         default="4G",
         description=(
-            "Cap each `candidates` process at this cgroup RSS limit, as a human "
+            "Cap each `samples` process at this cgroup RSS limit, as a human "
             "size such as `4G`. A process killed during guide replay is retried, "
             "still capped, with `--max-iters` cut to the iterations that "
             "completed. Uncapped if omitted."
@@ -142,7 +141,7 @@ class Args(BaseSettings):
         default=1,
         ge=0,
         description=(
-            "How often a `candidates` process killed at `--max-rss` is "
+            "How often a `samples` process killed at `--max-rss` is "
             "retried. The first retry runs at the iterations that completed, and "
             "each further run reduces `--max-iters` by one more. `0` disables "
             "retrying."
@@ -154,7 +153,7 @@ class Args(BaseSettings):
     )
 
     sample_policy: SamplePolicy = Field(
-        default="count", description="Candidate-pool sampling starteg."
+        default="count", description="sample-pool sampling starteg."
     )
 
     frontier: bool = Field(
@@ -198,19 +197,19 @@ class Args(BaseSettings):
 
 
 @dataclass(frozen=True)
-class Pair:
+class Problem:
     """One start/goal problem."""
 
-    start_term: str
-    goal_term: str
+    start: str
+    goal: str
 
 
 @dataclass(frozen=True)
-class GuideNode:
-    """One guide chain, identified by its tip.
+class SearchNode:
+    """Node in the search tree
 
-    `guide` is the node array `attempt --is-guide` unions; `s_expr` is the same
-    term lowered, which is what `candidates --start-term` samples from next.
+    `guide` is the node array of the guide as origin_lang; `s_expr` is the same
+    term lowered, which is what `samples --start-term` samples from next.
     The root carries the start term and no guide, since it is the unguided
     baseline rather than an attempt.
 
@@ -227,7 +226,7 @@ class GuideNode:
 
 @dataclass(frozen=True)
 class Expansion:
-    """The outcome of one `candidates` process: the pool drawn and its cost."""
+    """The outcome of one `samples` process: the pool drawn and its cost."""
 
     children: list[tuple[list, str]]
     status: Literal["ok", "empty_pool", "no_novel_terms", "rss_killed"]
@@ -240,7 +239,7 @@ class Expansion:
 
 
 @dataclass
-class SearchQueue:
+class SearchFrontier:
     """The work queue, ordered by the exploration policy.
 
     `depth` pops the most recently pushed node, so the search follows one chain
@@ -249,12 +248,12 @@ class SearchQueue:
     """
 
     policy: SearchPolicy
-    _items: deque[GuideNode] = field(default_factory=deque)
+    _items: deque[SearchNode] = field(default_factory=deque)
 
-    def push(self, nodes: list[GuideNode]) -> None:
+    def push(self, nodes: list[SearchNode]) -> None:
         self._items.extend(nodes)
 
-    def pop(self) -> GuideNode | None:
+    def pop(self) -> SearchNode | None:
         if not self._items:
             return None
         return self._items.pop() if self.policy == "depth" else self._items.popleft()
@@ -286,7 +285,7 @@ class Budget:
 class PairTrace:
     """Everything one pair's search did, flattened into rows at report time."""
 
-    pair: Pair
+    pair: Problem
     attempts: list[dict] = field(default_factory=list)
     expansions: list[dict] = field(default_factory=list)
     stop_reason: str = "unstarted"
@@ -305,24 +304,14 @@ class AttemptResult:
     wall_time: float
 
 
-@dataclass(frozen=True)
-class StartSpec:
-    start_term: str
-    goal_terms: list[str]
-
-
-def flatten_problems(args: Args) -> list[StartSpec]:
-    """Group `problems.json`'s pair rows into per-start term specs.
-
-    Start terms are sorted and goals keep file order, so both cutoffs are stable
-    across runs.
-    """
+def flatten_problems(args: Args) -> list[Problem]:
+    """Group `problems.json`'s pair rows into Problem Pairs."""
     rows = json.loads((args.path / "problems.json").read_text())
     goals: dict[str, list[str]] = {}
     for row in rows:
         goals.setdefault(row["start_term"], []).append(row["goal_term"])
-    specs = [StartSpec(start, goals[start][: args.goal_terms]) for start in sorted(goals)]
-    return specs[: args.start_terms]
+    specs = [(start, goals[start][: args.goal_terms]) for start in sorted(goals)]
+    return [Problem(start, goal) for (start, goals) in specs[: args.start_terms] for goal in goals]
 
 
 def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
@@ -364,33 +353,33 @@ def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
     return None
 
 
-def draw_expansion(args: Args, candidate_flags: list[str], limits: dict, s_expr: str) -> Expansion:
-    """Run one `candidates` process from `s_expr`. This is called recursively at every depth"""
+def draw_expansion(args: Args, sample_flags: list[str], limits: dict, s_expr: str) -> Expansion:
+    """Run one `sample` process from `s_expr`. This is called recursively at every depth"""
     cmd = [
-        str(args.candidates_binary),
-        *candidate_flags,
+        str(args.sample_bin),
+        *sample_flags,
         *limit_flags(limits),
         "--start-term",
         s_expr,
-        "--n-candidates",
+        "--n-samples",
         str(args.n_guides),
     ]
 
     started = time.monotonic()
-    measured = run_capped(args, cmd, f"candidates for term {s_expr!r}")
+    measured = run_capped(args, cmd, f"sample for term {s_expr!r}")
     wall_time = time.monotonic() - started
 
     # A capped-out child never printed its `Measured` envelope.
     if measured is None:
         return Expansion([], "rss_killed", dict(EMPTY_GUIDE_META), wall_time)
 
-    # An empty payload is `candidates` reporting that construction failed.
+    # An empty payload is `samples` reporting that construction failed.
     if not measured.payload:
-        meta = {**EMPTY_GUIDE_META, "candidate_peak_rss_bytes": measured.peak_rss_bytes}
+        meta = {**EMPTY_GUIDE_META, "sample_peak_rss_bytes": measured.peak_rss_bytes}
         return Expansion([], "no_novel_terms", meta, wall_time)
 
     record = measured.payload[0]
-    children = list(zip(record["candidates"], record["candidate_s_expr"], strict=True))
+    children = list(zip(record["samples"], record["samples_s_expr"], strict=True))
     meta = {
         "guide_nodes": record["guide_nodes"],
         "guide_classes": record["guide_classes"],
@@ -398,13 +387,15 @@ def draw_expansion(args: Args, candidate_flags: list[str], limits: dict, s_expr:
         "guide_memory": record["guide_memory"],
         "guide_peak_live_heap": record["guide_peak_live_heap"],
         "guide_stop_reason": record["stop_reason"],
-        "candidate_peak_rss_bytes": measured.peak_rss_bytes,
+        "samples_peak_rss_bytes": measured.peak_rss_bytes,
     }
     return Expansion(children, "ok" if children else "empty_pool", meta, wall_time)
 
 
 class ExpansionCache:
-    """Memoize `candidates` runs by the s-expression they sample from"""
+    """Memoize `sample` runs by the s-expression they sample from.
+    This is especially useful so we dont have to resample for goals with the same start
+    """
 
     def __init__(self, draw: Callable[[str], Expansion]) -> None:
         self._draw = draw
@@ -437,7 +428,7 @@ def run_attempt(args: Args, base_flags: list[str], goal: str, guide: list) -> At
     simply moves on to the next node.
     """
     cmd = [
-        str(args.attempt_binary),
+        str(args.attempt_bin),
         *base_flags,
         "--goal-term",
         goal,
@@ -459,21 +450,12 @@ def run_attempt(args: Args, base_flags: list[str], goal: str, guide: list) -> At
     return AttemptResult(summary, peak_rss_bytes, time.monotonic() - started)
 
 
-@dataclass
-class SearchContext:
-    """Everything a pair search needs that is shared across pairs."""
-
-    args: Args
-    base_flags: list[str]
-    cache: ExpansionCache
-
-
 def expand_node(
-    ctx: SearchContext,
+    cache: ExpansionCache,
     trace: PairTrace,
     budget: Budget,
-    frontier: SearchQueue,
-    node: GuideNode,
+    front: SearchFrontier,
+    node: SearchNode,
     ids: itertools.count,
     seen: set[str],
 ) -> None:
@@ -486,7 +468,7 @@ def expand_node(
     but never samples past them.
     """
     started_at = budget.elapsed()
-    expansion, cached = ctx.cache.get(node.s_expr)
+    expansion, cached = cache.get(node.s_expr)
 
     children = []
     for guide, s_expr in expansion.children:
@@ -495,16 +477,16 @@ def expand_node(
             continue
         seen.add(key)
         children.append(
-            GuideNode(
+            SearchNode(
                 next(ids), node.node_id, node.depth + 1, guide, s_expr, terminal=expansion.saturated
             )
         )
-    frontier.push(children)
+    front.push(children)
 
     trace.expansions.append(
         {
-            "start_term": trace.pair.start_term,
-            "goal_term": trace.pair.goal_term,
+            "start_term": trace.pair.start,
+            "goal_term": trace.pair.goal,
             "node_id": node.node_id,
             "depth": node.depth,
             "status": expansion.status,
@@ -520,7 +502,9 @@ def expand_node(
     )
 
 
-def search_pair(ctx: SearchContext, pair: Pair) -> PairTrace:
+def search_pair(
+    args: Args, base_flags: list[str], cache: ExpansionCache, pair: Problem
+) -> PairTrace:
     """Run one pair's sampling/attempt search and return its trace.
 
     The loop is: pop a node, attempt it, and on failure expand it back onto the
@@ -528,7 +512,6 @@ def search_pair(ctx: SearchContext, pair: Pair) -> PairTrace:
     `attempt_peak_rss_bytes` is that attempt's own peak rather than a high-water mark
     shared across the pair.
     """
-    args = ctx.args
     started = time.monotonic()
     budget = Budget(
         started=started,
@@ -537,12 +520,12 @@ def search_pair(ctx: SearchContext, pair: Pair) -> PairTrace:
         max_attempts=args.max_attempts,
     )
     trace = PairTrace(pair)
-    frontier = SearchQueue(args.search_policy)
+    frontier = SearchFrontier(args.search_policy)
     ids = itertools.count(1)
     seen: set[str] = set()
 
-    root = GuideNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=pair.start_term)
-    expand_node(ctx, trace, budget, frontier, root, ids, seen)
+    root = SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=pair.start)
+    expand_node(cache, trace, budget, frontier, root, ids, seen)
 
     while True:
         if budget.expired():
@@ -561,11 +544,11 @@ def search_pair(ctx: SearchContext, pair: Pair) -> PairTrace:
 
         assert node.guide is not None, "the root is a baseline, not an attempt"
         started_at = budget.elapsed()
-        attempt = run_attempt(args, ctx.base_flags, pair.goal_term, node.guide)
+        attempt = run_attempt(args, base_flags, pair.goal, node.guide)
         trace.attempts.append(
             {
-                "start_term": pair.start_term,
-                "goal_term": pair.goal_term,
+                "start_term": pair.start,
+                "goal_term": pair.goal,
                 "policy": args.sample_policy,
                 "attempt": len(trace.attempts),
                 "node_id": node.node_id,
@@ -588,26 +571,26 @@ def search_pair(ctx: SearchContext, pair: Pair) -> PairTrace:
         # would rebuild that same egraph and redraw that same pool. Leaving it
         # unexpanded sends the search back up to whatever the frontier holds.
         if not node.terminal and node.depth < budget.max_depth and not budget.expired():
-            expand_node(ctx, trace, budget, frontier, node, ids, seen)
+            expand_node(cache, trace, budget, frontier, node, ids, seen)
 
     trace.wall_time = budget.elapsed()
     return trace
 
 
-def run_unguided_pair(args: Args, base_flags: list[str], pair: Pair) -> dict:
+def run_unguided_pair(args: Args, base_flags: list[str], pair: Problem) -> dict:
     """Run the pair-matched single-start baseline.
 
     A baseline killed at the RSS cap becomes an ``rss_killed`` failure row.
     """
     cmd = [
-        str(args.attempt_binary),
+        str(args.attempt_bin),
         *base_flags,
         "--start-term",
-        pair.start_term,
+        pair.start,
         "--goal-term",
-        pair.goal_term,
+        pair.goal,
     ]
-    what = f"unguided attempt for goal term {pair.goal_term!r}"
+    what = f"unguided attempt for goal term {pair.goal!r}"
     try:
         measured = run_json_subprocess(cmd, what=what, rss_max_bytes=parse_size(args.max_rss))
         summary = attempt_summary(measured.payload)
@@ -616,8 +599,8 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: Pair) -> dict:
         # print(f"{what}: killed at RSS cap", file=sys.stderr)
         summary, peak_rss_bytes = rss_killed_summary(), None
     return {
-        "start_term": pair.start_term,
-        "goal_term": pair.goal_term,
+        "start_term": pair.start,
+        "goal_term": pair.goal,
         "unguided_success": summary["reached"],
         "unguided_stop_reason": summary["stop_reason"],
         "unguided_panic": summary["panic"],
@@ -667,13 +650,13 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
     attempt_peak_max = max(attempt_peaks) if attempt_peaks else None
 
     expansion_peaks = [
-        exp["candidate_peak_rss_bytes"]
+        exp["sample_peak_rss_bytes"]
         for exp in trace.expansions
-        if exp.get("candidate_peak_rss_bytes") is not None
+        if exp.get("sample_peak_rss_bytes") is not None
     ]
-    candidate_peak = max(expansion_peaks) if expansion_peaks else None
+    sample_peak = max(expansion_peaks) if expansion_peaks else None
 
-    rss_peaks = [peak for peak in (candidate_peak, attempt_peak_max) if peak is not None]
+    rss_peaks = [peak for peak in (sample_peak, attempt_peak_max) if peak is not None]
     live_peaks = [
         peak
         for peak in (
@@ -690,8 +673,8 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         setup_status = "empty_pool"
 
     return {
-        "start_term": trace.pair.start_term,
-        "goal_term": trace.pair.goal_term,
+        "start_term": trace.pair.start,
+        "goal_term": trace.pair.goal,
         "policy": args.sample_policy,
         "exploration_policy": args.search_policy,
         "max_depth": args.max_depth,
@@ -720,28 +703,28 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         ),
         "guided_panic": any(attempt["panic"] for attempt in attempts),
         "setup_status": setup_status,
-        "candidate_status": trace.setup_status,
+        "sample_status": trace.setup_status,
         "attempt_peak_rss_bytes": attempt_peak,
         "attempt_peak_rss_bytes_max": attempt_peak_max,
-        "candidate_peak_rss_bytes": candidate_peak,
+        "sample_peak_rss_bytes": sample_peak,
         "guided_peak_rss_bytes": max(rss_peaks) if rss_peaks else None,
         "guided_peak_live_heap_bytes": max(live_peaks) if live_peaks else None,
     }
 
 
-def write_candidate_pools(cache: ExpansionCache, out: Path) -> None:
+def write_sample_pools(cache: ExpansionCache, out: Path) -> None:
     """Dump every pool the run drew, keyed by the term it was sampled from."""
     out.mkdir(parents=True, exist_ok=True)
     pools = {
         s_expr: {
             "status": expansion.status,
-            "candidates": [guide for guide, _ in expansion.children],
-            "candidate_s_expr": [child for _, child in expansion.children],
+            "samples": [guide for guide, _ in expansion.children],
+            "sample_s_expr": [child for _, child in expansion.children],
             **expansion.meta,
         }
         for s_expr, expansion in cache.snapshot().items()
     }
-    (out / "candidates.json").write_text(json.dumps(pools))
+    (out / "samples.json").write_text(json.dumps(pools))
 
 
 def report_results(
@@ -770,7 +753,7 @@ def report_results(
     unguided.write_parquet(out / "unguided_results.parquet")
     comparison.write_parquet(out / "comparison.parquet")
 
-    write_candidate_pools(cache, out / "candidate_run")
+    write_sample_pools(cache, out / "sample_run")
 
     config = {
         **args.model_dump(),
@@ -785,7 +768,7 @@ def report_results(
     print(
         f"\nReached {reached_pairs}/{total_pairs} start/goal pairs "
         f"(reach rate {reach_rate:.2f}) in {attempts_run} attempt(s) and "
-        f"{len(cache.snapshot())} distinct candidate pool(s). "
+        f"{len(cache.snapshot())} distinct sample pool(s). "
         f"Wrote {out / 'comparison.parquet'}",
         file=sys.stderr,
     )
@@ -794,7 +777,7 @@ def report_results(
 def main() -> int:
     args = Args()
 
-    exit_if_missing(args.candidates_binary, args.attempt_binary)
+    exit_if_missing(args.sample_bin, args.attempt_bin)
 
     cfg = json.loads((args.path / "problem_args.json").read_text())
     limits = {
@@ -807,7 +790,7 @@ def main() -> int:
         if value is not None
     }
     base_flags = ["--language", str(cfg["language"]), *limit_flags(limits)]
-    candidate_flags = [
+    sample_flags = [
         "--language",
         str(cfg["language"]),
         "--seed",
@@ -818,26 +801,23 @@ def main() -> int:
         str(args.size_search_steps),
     ]
     if args.frontier:
-        candidate_flags.append("--frontier")
+        sample_flags.append("--frontier")
 
     out = resolve_output_dir(args)
 
-    cache = ExpansionCache(lambda s_expr: draw_expansion(args, candidate_flags, limits, s_expr))
-    ctx = SearchContext(args=args, base_flags=base_flags, cache=cache)
+    cache = ExpansionCache(lambda s_expr: draw_expansion(args, sample_flags, limits, s_expr))
 
-    pairs = [
-        Pair(spec.start_term, goal) for spec in flatten_problems(args) for goal in spec.goal_terms
-    ]
+    pairs = flatten_problems(args)
     print(
         f"Searching {len(pairs)} (start, goal) pair(s) "
-        f"(policy={ctx.args.search_policy}, max_depth={ctx.args.max_depth}, "
-        f"branching={ctx.args.n_guides}, max_attempts={ctx.args.max_attempts}, "
-        f"max_total_time={ctx.args.max_total_time})",
+        f"(policy={args.search_policy}, max_depth={args.max_depth}, "
+        f"branching={args.n_guides}, max_attempts={args.max_attempts}, "
+        f"max_total_time={args.max_total_time})",
         file=sys.stderr,
     )
     traces = fan_out(
-        ctx.args.jobs or os.cpu_count() or 1,
-        lambda pair: search_pair(ctx, pair),
+        args.jobs or os.cpu_count() or 1,
+        lambda pair: search_pair(args, base_flags, cache, pair),
         pairs,
         "search",
         unit="pair",

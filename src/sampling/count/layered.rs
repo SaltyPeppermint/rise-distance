@@ -10,7 +10,7 @@ use std::hash::Hash;
 use hashbrown::HashMap;
 use num::{BigUint, Zero};
 
-use crate::candidates::convolve_entry;
+use crate::sampling::convolve_entry;
 
 /// Per key, per node: suffix convolution tables in the shape of
 /// [`suffix_convolutions`](super::super::suffix_convolutions), truncated to the

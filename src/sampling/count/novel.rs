@@ -7,12 +7,12 @@ use hashbrown::{HashMap, HashSet};
 use num::{BigUint, Zero};
 use smallvec::SmallVec;
 
-use crate::candidates::count::budgets::RootBudgets;
-use crate::candidates::count::layered::LayeredDp;
-#[cfg(test)]
-use crate::candidates::count::plain::count_histograms_rooted;
-use crate::candidates::count::plain::plain_dp_rooted;
 use crate::previous::PreviousLookup;
+use crate::sampling::count::budgets::RootBudgets;
+use crate::sampling::count::layered::LayeredDp;
+#[cfg(test)]
+use crate::sampling::count::plain::count_histograms_rooted;
+use crate::sampling::count::plain::plain_dp_rooted;
 
 /// A current e-node's match in the previous e-graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

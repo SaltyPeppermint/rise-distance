@@ -36,7 +36,7 @@ ATTEMPT_SCHEMA = {
     "attempt_peak_rss_bytes": pl.Int64,
 }
 
-# One row per `candidates` process the search *used*, so a pool reused from the
+# One row per `samples` process the search *used*, so a pool reused from the
 # cache is charged to every pair that consumed it
 EXPANSION_SCHEMA = {
     "start_term": pl.String,
@@ -56,7 +56,7 @@ EXPANSION_SCHEMA = {
     "guide_memory": pl.Int64,
     "guide_peak_live_heap": pl.Int64,
     "guide_stop_reason": pl.String,
-    "candidate_peak_rss_bytes": pl.Int64,
+    "sample_peak_rss_bytes": pl.Int64,
 }
 
 # One row per pair.
@@ -83,10 +83,10 @@ PAIR_SCHEMA = {
     "guided_stop_reason": pl.String,
     "guided_panic": pl.Boolean,
     "setup_status": pl.String,
-    "candidate_status": pl.String,
+    "sample_status": pl.String,
     "attempt_peak_rss_bytes": pl.Int64,
     "attempt_peak_rss_bytes_max": pl.Int64,
-    "candidate_peak_rss_bytes": pl.Int64,
+    "sample_peak_rss_bytes": pl.Int64,
     "guided_peak_rss_bytes": pl.Int64,
     "guided_peak_live_heap_bytes": pl.Int64,
 }
@@ -103,7 +103,7 @@ UNGUIDED_SCHEMA = {
     "unguided_peak_rss_bytes": pl.Int64,
 }
 
-# What an expansion contributes to a row when its `candidates` process never got
+# What an expansion contributes to a row when its `samples` process never got
 # far enough to report.
 EMPTY_GUIDE_META = {
     k: None
@@ -114,6 +114,6 @@ EMPTY_GUIDE_META = {
         "guide_memory",
         "guide_peak_live_heap",
         "guide_stop_reason",
-        "candidate_peak_rss_bytes",
+        "sample_peak_rss_bytes",
     ]
 }

@@ -231,15 +231,15 @@ def fan_out(
     return [results[i] for i in range(len(items)) if results[i] is not None]
 
 
-def uniform_candidate_allocation(
+def uniform_sample_allocation(
     sizes: list[int],
-    total_candidates: int,
+    total_samples: int,
 ) -> list[tuple[int, int]]:
     if not sizes:
         return []
 
     size_count = len(sizes)
-    base = total_candidates // size_count
-    remainder = total_candidates % size_count
+    base = total_samples // size_count
+    remainder = total_samples % size_count
 
     return [(size, base + int(i < remainder)) for i, size in enumerate(sizes)]

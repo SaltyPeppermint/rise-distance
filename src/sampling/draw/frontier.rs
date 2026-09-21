@@ -5,18 +5,18 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 
-use crate::candidates::count::budgets::RootBudgets;
-use crate::candidates::count::novel::{
+use crate::cli::Policy;
+use crate::eqsat::EqsatResult;
+use crate::sampling::count::budgets::RootBudgets;
+use crate::sampling::count::novel::{
     NodeMatch, NodeMatches, NovelTermCount, enumerate_matches_rooted, find_novel_root_sizes,
     prune_matches,
 };
-use crate::candidates::count::plain::count_histograms_rooted;
-use crate::candidates::draw::{
+use crate::sampling::count::plain::count_histograms_rooted;
+use crate::sampling::draw::{
     CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
 };
-use crate::candidates::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
-use crate::cli::Policy;
-use crate::eqsat::EqsatResult;
+use crate::sampling::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// Draws each frontier term independently using the supplied local weighting
@@ -262,7 +262,7 @@ fn completes_some_match(profile: &[State], matches: &[NodeMatch]) -> bool {
     })
 }
 
-/// Final e-graph and complete count tables for frontier candidate construction.
+/// Final e-graph and complete count tables for frontier sample construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
 pub struct FrontierPackage<L: MyLanguage, N: MyAnalysis<L>> {
@@ -385,8 +385,8 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for FrontierPackage<L,
             .expect("root histogram present iff build returned Some")
     }
 
-    /// Draw exact root candidates absent from the previous boundary.
-    fn draw_candidates(
+    /// Draw exact root samples absent from the previous boundary.
+    fn draw_samples(
         &self,
         count: usize,
         policy: Policy,
@@ -427,9 +427,9 @@ mod tests {
     use num::BigUint;
 
     use super::*;
-    use crate::candidates::draw::CountWeigher;
     use crate::langs::math::Math;
     use crate::lower;
+    use crate::sampling::draw::CountWeigher;
     use crate::utils::{combined_rng, sym};
 
     #[test]
@@ -491,7 +491,7 @@ mod tests {
         for seed in 0..50_u64 {
             let mut rng = combined_rng([seed]);
             let term = lower(drawer.draw(root, 2, &mut rng)).to_string();
-            assert_eq!(term, "(ln b)", "got non-frontier candidate: {term}");
+            assert_eq!(term, "(ln b)", "got non-frontier sample: {term}");
         }
     }
 

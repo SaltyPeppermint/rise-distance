@@ -1,4 +1,4 @@
-//! Guide-candidate construction from an e-graph.
+//! Guide-sample construction from an e-graph.
 
 pub mod count;
 pub mod draw;
@@ -109,30 +109,6 @@ pub fn suffix_convolutions<H: Borrow<HashMap<usize, BigUint>>>(
     }
 
     suffix
-}
-
-/// Distribute `total_candidates` uniformly across `sizes`.
-///
-/// Any remainder is assigned to the first sizes, so the returned counts always
-/// add up to `total_candidates` when at least one size is supplied.
-///
-/// # Panics
-///
-/// On platforms where `usize` is wider than `u64`, panics if the per-size
-/// candidate count cannot be represented as a `u64`.
-#[must_use]
-pub fn uniform_candidate_allocation(sizes: &[usize], total_candidates: usize) -> Vec<(usize, u64)> {
-    if sizes.is_empty() {
-        return vec![];
-    }
-    let size_count = sizes.len();
-    let base = u64::try_from(total_candidates / size_count).unwrap();
-    let remainder = total_candidates % size_count;
-    sizes
-        .iter()
-        .enumerate()
-        .map(|(i, &size)| (size, base + u64::from(i < remainder)))
-        .collect()
 }
 
 #[must_use]

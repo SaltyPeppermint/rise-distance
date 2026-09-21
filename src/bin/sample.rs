@@ -1,28 +1,29 @@
-//! Produce the guide-candidate menu for one start term.
+//! Produce the guide-samples menu for one start term.
 //!
-//! Replays guide-phase eqsat and draws the requested candidate pool.
+//! Replays guide-phase eqsat and draws the requested samples pool.
 //! Arguments come from `guided_search.py`; output is a one-element JSON array
 //! on stdout, or an empty array on failure. Logs go to stderr.
 
 use clap::Parser;
 use egg::{AstSize, CostFunction, RecExpr, Rewrite};
+use serde::Serialize;
 use time::OffsetDateTime;
 
-use rise_distance::candidates::{DrawerPackage, FrontierPackage, PlainPackage};
-use rise_distance::cli::{Candidates, Measured, Policy};
+use rise_distance::cli::{Measured, Policy};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
+use rise_distance::sampling::{DrawerPackage, FrontierPackage, PlainPackage};
 use rise_distance::utils::peak_rss_bytes;
 use rise_distance::{MyAnalysis, MyLanguage, OriginLang, lower};
 
 #[derive(Parser)]
 #[command(
-    about = "Construct the guide-candidate menu for one start term (feeds guided_search.py)",
+    about = "Construct the guide-samples menu for one start term (feeds guided_search.py)",
     after_help = "\
-Prints a one-element `[Candidates]` array to stdout (empty
+Prints a one-element `[Samples]` array to stdout (empty
 on failure); logs go to stderr.
 Example:
-  candidates --language math --start-term '(+ x 0)' \\
+  sample --language math --start-term '(+ x 0)' \\
     --max-iters 38 --max-nodes 1000000 --max-time 10 \\
     --max-memory 2000000000 \\
     --policy count
@@ -41,11 +42,11 @@ struct Args {
     #[command(flatten)]
     eqsat: EqsatConfig,
 
-    /// Number of candidates to draw.
+    /// Number of samples to draw.
     #[arg(long, default_value_t = 1000)]
-    n_candidates: usize,
+    n_samples: usize,
 
-    /// Candidate-construction seed, independent of the batch size.
+    /// samples-construction seed, independent of the batch size.
     #[arg(long, default_value_t = 0)]
     seed: u64,
 
@@ -57,7 +58,7 @@ struct Args {
     #[arg(long, default_value_t = 200)]
     size_search_steps: usize,
 
-    /// Policy used to draw candidates.
+    /// Policy used to draw samples.
     #[arg(long, value_enum)]
     policy: Policy,
 
@@ -88,14 +89,14 @@ fn main() {
     eprintln!("Finished at {}", OffsetDateTime::now_local().unwrap());
 }
 
-/// Build one language-specific seed's candidate record and print it as JSON.
+/// Build one language-specific seed's sample record and print it as JSON.
 fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
     eprintln!(
         "\n=== Start Term: {} (max-iters={}) ===",
         args.start_term, args.eqsat.max_iters
     );
 
-    let out = match build_candidate_record(args, rules) {
+    let out = match build_sample_record(args, rules) {
         Ok(record) => vec![record],
         Err(e) => {
             eprintln!("ERROR OCCURRED:\n{e}");
@@ -108,14 +109,14 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, 
         OffsetDateTime::now_local().unwrap()
     );
 
-    serde_json::to_writer(std::io::stdout(), &Measured::now(out)).expect("write candidates JSON");
+    serde_json::to_writer(std::io::stdout(), &Measured::now(out)).expect("write samples JSON");
     println!();
 }
 
-fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
+fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     rules: &[Rewrite<L, N>],
-) -> Result<Candidates<L>, String> {
+) -> Result<Samples<L>, String> {
     let seed_expr = args
         .start_term
         .parse::<RecExpr<L>>()
@@ -129,7 +130,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     let stop_reason = format!("{:?}", result.stop_reason());
     eprintln!("Guide replay stop reason: {stop_reason}");
 
-    // Absolute process live heap before candidate construction allocates more.
+    // Absolute process live heap before sample construction allocates more.
     let guide_memory = result.allocated();
     let guide_peak_live_heap = result.peak_allocated();
     let guide_nodes = result.curr().total_number_of_nodes();
@@ -141,17 +142,17 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
          {guide_memory} live-heap bytes"
     );
 
-    let candidates = if args.frontier {
-        build_frontier_candidates(args, result, args.policy, &seed_expr)?
+    let samples = if args.frontier {
+        build_frontier_samples(args, result, args.policy, &seed_expr)?
     } else {
-        build_plain_candidates(args, result, args.policy, &seed_expr)?
+        build_plain_samples(args, result, args.policy, &seed_expr)?
     };
     eprintln!("DEBUG: PEAK RSS AFTER SAMPLING: {}", peak_rss_bytes());
-    Ok(Candidates {
+    Ok(Samples {
         start_term: args.start_term.clone(),
         policy: args.policy.to_string(),
-        candidates: candidates.clone().into_iter().map(|e| e.to_vec()).collect(),
-        candidate_s_expr: candidates.into_iter().map(lower).collect(),
+        samples: samples.clone().into_iter().map(|e| e.to_vec()).collect(),
+        samples_s_expr: samples.into_iter().map(lower).collect(),
         guide_nodes,
         guide_classes,
         guide_iters,
@@ -162,7 +163,7 @@ fn build_candidate_record<L: MyLanguage, N: MyAnalysis<L>>(
     })
 }
 
-fn build_frontier_candidates<L: MyLanguage, N: MyAnalysis<L>>(
+fn build_frontier_samples<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     result: EqsatResult<L, N>,
     policy: Policy,
@@ -173,31 +174,31 @@ fn build_frontier_candidates<L: MyLanguage, N: MyAnalysis<L>>(
         result,
         start_size,
         args.size_search_steps,
-        args.n_candidates * 10, // More than 10x the terms should be present so we can easily sample
+        args.n_samples * 10, // More than 10x the terms should be present so we can easily sample
     )
     .map_err(|tried_max_size| {
         format!(
-            "candidate construction found too few novel sizes after {} retries \
+            "samples construction found too few novel sizes after {} retries \
                  (max_size={})",
             args.size_search_steps, tried_max_size
         )
     })?;
     eprintln!("DEBUG: PEAK RSS AFTER ANALYSIS: {}", peak_rss_bytes());
-    eprintln!("Candidate package succeeded with max_size {max_size}!");
+    eprintln!("Sampling package succeeded with max_size {max_size}!");
     package.log_root_counts();
-    let candidates = package
-        .draw_candidates(args.n_candidates, policy, [args.seed, 0])
+    let samples = package
+        .draw_samples(args.n_samples, policy, [args.seed, 0])
         .unwrap_or_else(|e| {
             eprintln!(
-                "WARNING: policy {policy} drew 0 candidates ({e}) \
+                "WARNING: policy {policy} drew 0 n_samples ({e}) \
                      driver legs for this policy will have no guides to pick from"
             );
             Vec::new()
         });
-    Ok(candidates)
+    Ok(samples)
 }
 
-fn build_plain_candidates<L: MyLanguage, N: MyAnalysis<L>>(
+fn build_plain_samples<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     result: EqsatResult<L, N>,
     policy: Policy,
@@ -208,26 +209,51 @@ fn build_plain_candidates<L: MyLanguage, N: MyAnalysis<L>>(
         result,
         start_size,
         args.size_search_steps,
-        args.n_candidates * 10, // More than 10x the terms should be present so we can easily sample
+        args.n_samples * 10, // More than 10x the terms should be present so we can easily sample
     )
     .map_err(|tried_max_size| {
         format!(
-            "candidate construction found too few terms after {} retries \
+            "samples construction found too few terms after {} retries \
                  (max_size={})",
             args.size_search_steps, tried_max_size
         )
     })?;
     eprintln!("DEBUG: PEAK RSS AFTER ANALYSIS: {}", peak_rss_bytes());
-    eprintln!("Candidate package succeeded with max_size {max_size}!");
+    eprintln!("Sampling package succeeded with max_size {max_size}!");
     package.log_root_counts();
-    let candidates = package
-        .draw_candidates(args.n_candidates, policy, [args.seed, 0])
+    let samples = package
+        .draw_samples(args.n_samples, policy, [args.seed, 0])
         .unwrap_or_else(|e| {
             eprintln!(
-                "WARNING: policy {policy} drew 0 candidates ({e}); \
+                "WARNING: policy {policy} drew 0 samples ({e}); \
                      driver legs for this policy will have no guides to pick from"
             );
             Vec::new()
         });
-    Ok(candidates)
+    Ok(samples)
+}
+
+/// For Serialization purposes we have to go via Vec instead of using `RecExpr`
+#[derive(Serialize, Debug, Clone)]
+#[expect(clippy::struct_field_names)]
+struct Samples<L: MyLanguage> {
+    start_term: String,
+    policy: String,
+
+    samples: Vec<Vec<OriginLang<L>>>,
+    samples_s_expr: Vec<RecExpr<L>>,
+    guide_nodes: usize,
+    guide_classes: usize,
+    guide_iters: usize,
+    /// Total wall-clock time (seconds) of the guide-phase replay, so the driver
+    /// can add the guide overhead to each leg's `total_time`.
+    guide_time: f64,
+    /// Guide-phase replay's absolute live allocation (bytes): jemalloc
+    /// `stats.allocated` for the whole process, the same coordinate system the
+    /// configured memory ceiling is expressed in. Includes heap the process
+    /// already held before this run started.
+    guide_memory: u64,
+    /// Largest observed absolute live heap during guide replay.
+    guide_peak_live_heap: u64,
+    stop_reason: String,
 }

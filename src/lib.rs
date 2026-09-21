@@ -7,7 +7,6 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod analysis;
-pub mod candidates;
 pub mod cli;
 mod counter;
 pub mod eqsat;
@@ -15,6 +14,7 @@ pub mod generator;
 pub mod langs;
 mod origin;
 mod previous;
+pub mod sampling;
 pub mod search;
 pub mod sketch;
 pub mod utils;

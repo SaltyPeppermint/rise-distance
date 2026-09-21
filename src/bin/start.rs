@@ -31,7 +31,7 @@ struct Args {
     #[arg(long)]
     seed: u64,
 
-    /// Maximum candidate draws before giving up.
+    /// Maximum samples draws before giving up.
     #[arg(long, default_value_t = 10000)]
     retry_limit: usize,
 
@@ -63,10 +63,10 @@ fn run_one<L: Samplable, N: MyAnalysis<L>>(
     let sampler = SizeUniformSampler::<L>::new(args.size, None);
     let mut rng = ChaCha12Rng::seed_from_u64(args.seed);
     for attempts in 1..=args.retry_limit {
-        let candidate = sampler.sample(&mut rng);
-        if let Some(measurement) = validity_check(&candidate, validity_config, rules) {
+        let sample = sampler.sample(&mut rng);
+        if let Some(measurement) = validity_check(&sample, validity_config, rules) {
             return GoalTerm {
-                term: candidate.to_string(),
+                term: sample.to_string(),
                 attempt: attempts,
                 payload: measurement,
             };

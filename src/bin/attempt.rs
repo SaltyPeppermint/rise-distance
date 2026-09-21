@@ -1,7 +1,7 @@
 //! Run one attempt: union a single guide subset, saturate, and report goal
 //! reachability.
 //!
-//! Stateless — no guide egraph replay or candidate construction.
+//! Stateless — no guide egraph replay or samples construction.
 //! `guided_search.py` spawns this once per attempt, passing everything on argv:
 //! the goal via `--goal-term` and, with `--is-guide`, that attempt's guide as a
 //! JSON array of [`OriginLang`] nodes via `--start-term`. Without `--is-guide`

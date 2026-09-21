@@ -18,7 +18,7 @@ pub use weigher::{CountWeigher, UniformWeigher, Weigher};
 
 // TODO SEPARATE CODE PATHS FOR UNIFORM VS COUNT (DP but with bools)
 
-/// Draws size-targeted candidates from an e-graph.
+/// Draws size-targeted sample from an e-graph.
 pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
     fn root(&self) -> Id;
 
@@ -92,7 +92,7 @@ pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
         // Deterministic rng
         let mut rng = utils::combined_rng([size as u64, seed[0], seed[1]]);
         let mut drawn = HashSet::new();
-        let mut budget = requested_count * MAX_DRAW_ATTEMPTS_PER_CANDIDATE;
+        let mut budget = requested_count * MAX_DRAW_ATTEMPTS_PER_SAMPLE;
         while drawn.len() < target && budget > 0 {
             drawn.insert(self.draw(id, size, &mut rng));
             budget -= 1;
@@ -183,12 +183,12 @@ pub trait DrawerPackage<L: MyLanguage, N: MyAnalysis<L>> {
         }
     }
 
-    /// Draw `count` candidates for specific size under a specific policy with a specific seed
+    /// Draw `count` samples for specific size under a specific policy with a specific seed
     ///
     /// # Errors
     ///
     /// Errors if the drawing fails and not enough terms could be sampled
-    fn draw_candidates(
+    fn draw_samples(
         &self,
         count: usize,
         policy: Policy,
@@ -201,5 +201,5 @@ pub trait DrawerPackage<L: MyLanguage, N: MyAnalysis<L>> {
     fn root(&self) -> Id;
 }
 
-/// Cap on how many draws `draw_size` attempts per requested candidate.
-pub(super) const MAX_DRAW_ATTEMPTS_PER_CANDIDATE: u64 = 32;
+/// Cap on how many draws `draw_size` attempts per requested samples.
+pub(super) const MAX_DRAW_ATTEMPTS_PER_SAMPLE: u64 = 32;

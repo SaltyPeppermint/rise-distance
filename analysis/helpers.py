@@ -13,7 +13,7 @@ REQUIRED_COMPARISON_COLUMNS = {
     "goal_term",
     "guided_success",
     "unguided_success",
-    "candidate_peak_rss_bytes",
+    "sample_peak_rss_bytes",
     "verify_peak_rss_bytes",
     "guided_peak_rss_bytes",
     "attempts_run",
@@ -83,19 +83,19 @@ def _run_label(directory: Path, config: dict) -> str:
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
     """Resolve completed individual runs; empty selects every new-schema run."""
-    candidates = (
+    samples = (
         [path for path in _run_dirs("run.", "guided_search")]
         if not patterns
         else [
             matches[-1] for pattern in patterns if (matches := _run_dirs(pattern, "guided_search"))
         ]
     )
-    if patterns and len(candidates) != len(patterns):
-        found = {path.name for path in candidates}
+    if patterns and len(samples) != len(patterns):
+        found = {path.name for path in samples}
         raise FileNotFoundError(f"Could not resolve all run patterns; found {sorted(found)}")
 
     runs = []
-    for directory in dict.fromkeys(candidates):
+    for directory in dict.fromkeys(samples):
         comparison = directory / "comparison.parquet"
         config_path = directory / "config.json"
         missing = [path.name for path in (comparison, config_path) if not path.is_file()]
@@ -269,7 +269,7 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
     )
 
 
-def _setup_category(status: pl.Expr, candidate_peak: pl.Expr) -> pl.Expr:
+def _setup_category(status: pl.Expr, sample_peak: pl.Expr) -> pl.Expr:
     """Name why a pair never got a guide menu, from its non-ok ``setup_status``.
 
     ``guide menu: out of memory``
@@ -297,7 +297,7 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
         "mode",
         pl.lit("guided").alias("method"),
         pl.when(pl.col("setup_status") != "ok")
-        .then(_setup_category(pl.col("setup_status"), pl.col("candidate_peak_rss_bytes")))
+        .then(_setup_category(pl.col("setup_status"), pl.col("sample_peak_rss_bytes")))
         .when(pl.col("guided_panic").fill_null(False))
         .then(pl.lit("panic"))
         .otherwise(_stop_category(pl.col("guided_stop_reason")))

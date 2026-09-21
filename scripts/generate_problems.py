@@ -2,14 +2,14 @@
 
 Three stages, each fanned out over isolated Rust processes:
 1. `start` samples one validated start term per size slot.
-2. `candidates` draws goal candidates from each start term's novel frontier.
+2. `sample` draws goal samples from each start term's novel frontier.
 3. `attempt` runs the unguided start->goal search; its peak RSS (`VmHWM`, the
    only memory number to trust here) decides whether the pair is kept.
 
 Writes `problems.json` (accepted pairs) and `problem_args.json` (config).
 
 Example:
-    cargo build --release --bin start --bin candidates --bin attempt
+    cargo build --release --bin start --bin samples --bin attempt
     uv run scripts/generate_problems.py --starts 10 --min-size 10 --max-size 12 \
       --language math --seed 42 --max-memory 4G --min-rss 3G --rss-max 8G
 """
@@ -34,7 +34,7 @@ from common import (
     limit_flags,
     parse_size,
     run_json_subprocess,
-    uniform_candidate_allocation,
+    uniform_sample_allocation,
 )
 
 
@@ -48,10 +48,10 @@ def generate_unique_dir(parent: Path, max_attempts: int = 100) -> Path:
     adjectives = _load_wordlist("en_adjectives")
     nouns = _load_wordlist("en_nouns")
     for _ in range(max_attempts):
-        candidate = parent / f"{secrets.choice(adjectives)}-{secrets.choice(nouns)}"
-        if not candidate.exists():
-            candidate.mkdir()
-            return candidate
+        sample = parent / f"{secrets.choice(adjectives)}-{secrets.choice(nouns)}"
+        if not sample.exists():
+            sample.mkdir()
+            return sample
     raise RuntimeError(f"Could not find an unused name under {parent}")
 
 
@@ -68,8 +68,8 @@ class Args(BaseSettings):
         default=Path("target/release/start"), description="Start-term generation binary."
     )
 
-    candidates_bin: Path = Field(
-        default=Path("target/release/candidates"), description="Goal-candidate binary."
+    sample_bin: Path = Field(
+        default=Path("target/release/sample"), description="Goal-sample binary."
     )
 
     attempt_bin: Path = Field(default=Path("target/release/attempt"), description="Attempt binary.")
@@ -86,14 +86,14 @@ class Args(BaseSettings):
     seed: int = Field(description="Global seed; per-slot seeds are derived from it.")
 
     retry_limit: int = Field(
-        default=10_000, gt=0, description="Candidate draws per `start` process before it gives up."
+        default=10_000, gt=0, description="Samples draws per `start` process before it gives up."
     )
 
-    # Goal candidates
-    goals: int = Field(default=10, gt=0, description="Goal candidates drawn per start term.")
+    # Goal Samples
+    goals: int = Field(default=10, gt=0, description="Goal samples drawn per start term.")
 
     policy: Literal["count", "uniform"] = Field(
-        default="count", description="Frontier draw policy used by `candidates`."
+        default="count", description="Frontier draw policy used by `samples`."
     )
 
     size_search_steps: int = Field(
@@ -233,15 +233,15 @@ def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, 
     return None
 
 
-def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[str, Any] | None:
-    """Draw goal candidates from one start term's novel frontier."""
+def run_samples(args: Args, flags: list[str], start: dict[str, Any]) -> dict[str, Any] | None:
+    """Draw goal samples from one start term's novel frontier."""
     cmd = [
-        str(args.candidates_bin),
+        str(args.sample_bin),
         "--language",
         args.language,
         "--start-term",
         start["start_term"],
-        "--n-candidates",
+        "--n-samples",
         str(args.goals),
         "--seed",
         str(args.seed),
@@ -252,15 +252,15 @@ def run_candidates(args: Args, flags: list[str], start: dict[str, Any]) -> dict[
         "--frontier",
         *flags,
     ]
-    measured = run_json_subprocess(cmd, what=f"candidates for start term {start['start_term']!r}")
+    measured = run_json_subprocess(cmd, what=f"samples for start term {start['start_term']!r}")
     records = measured.payload
     if not records:
         print(
-            f"WARNING: candidates found nothing for start term {start['start_term']!r}",
+            f"WARNING: samples found nothing for start term {start['start_term']!r}",
             file=sys.stderr,
         )
         return None
-    return {**start, "goal_terms": records[0]["candidate_s_expr"]}
+    return {**start, "goal_terms": records[0]["sample_s_expr"]}
 
 
 def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, Any]:
@@ -281,7 +281,7 @@ def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str,
 
 def main() -> int:
     args = Args()
-    exit_if_missing(args.start_bin, args.candidates_bin, args.attempt_bin)
+    exit_if_missing(args.start_bin, args.sample_bin, args.attempt_bin)
 
     out = args.path or generate_unique_dir(Path("data/problems"))
     out.mkdir(parents=True, exist_ok=True)
@@ -292,7 +292,7 @@ def main() -> int:
 
     slots = [
         (size, index)
-        for size, count in uniform_candidate_allocation(
+        for size, count in uniform_sample_allocation(
             list(range(args.min_size, args.max_size + 1)), args.starts
         )
         for index in range(count)
@@ -316,7 +316,7 @@ def main() -> int:
     seen: set[str] = set()
     starts = [s for s in starts if not (s["start_term"] in seen or seen.add(s["start_term"]))]
 
-    enriched = fan_out(jobs, lambda s: run_candidates(args, flags, s), starts, "candidates")
+    enriched = fan_out(jobs, lambda s: run_samples(args, flags, s), starts, "samples")
     pairs = [
         {**{k: v for k, v in start.items() if k != "goal_terms"}, "goal_term": goal}
         for start in enriched

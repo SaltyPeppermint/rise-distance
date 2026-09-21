@@ -6,14 +6,14 @@ use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 
-use crate::candidates::count::budgets::RootBudgets;
-use crate::candidates::count::plain::{count_histograms_rooted, find_plain_root_size};
-use crate::candidates::draw::{
-    CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
-};
-use crate::candidates::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
+use crate::sampling::count::budgets::RootBudgets;
+use crate::sampling::count::plain::{count_histograms_rooted, find_plain_root_size};
+use crate::sampling::draw::{
+    CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
+};
+use crate::sampling::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 pub struct PlainDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
@@ -112,7 +112,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for PlainDrawer<'
     }
 }
 
-/// Final e-graph and complete count tables for whole-graph candidate
+/// Final e-graph and complete count tables for whole-graph sample
 /// construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
@@ -212,8 +212,8 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for PlainPackage<L, N>
             .expect("root histogram present iff build returned Some")
     }
 
-    /// Draw exact root candidates from the whole e-graph.
-    fn draw_candidates(
+    /// Draw exact root samples from the whole e-graph.
+    fn draw_samples(
         &self,
         count: usize,
         policy: Policy,
@@ -247,9 +247,9 @@ mod tests {
     use egg::EGraph;
 
     use super::*;
-    use crate::candidates::draw::{CountWeigher, UniformWeigher};
     use crate::langs::math::Math;
     use crate::lower;
+    use crate::sampling::draw::{CountWeigher, UniformWeigher};
     use crate::utils::combined_rng;
     use crate::utils::sym;
 

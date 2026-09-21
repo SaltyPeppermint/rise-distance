@@ -2,8 +2,8 @@ use egg::{Analysis, EGraph, Id, Language};
 use hashbrown::HashMap;
 use num::{BigUint, Zero};
 
-use crate::candidates::count::budgets::RootBudgets;
-use crate::candidates::count::layered::LayeredDp;
+use crate::sampling::count::budgets::RootBudgets;
+use crate::sampling::count::layered::LayeredDp;
 
 /// Count distinct terms within pre-established root budgets.
 pub(crate) fn count_histograms_rooted<L: Language, N: Analysis<L>>(

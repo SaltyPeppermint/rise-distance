@@ -13,22 +13,22 @@ end
 cargo build --release
 or exit $status
 
-memrun uv run scripts/generate_problems.py \
-  --starts 1000 \
-  --min-size 30 \
-  --max-size 60 \
-  --language math \
-  --seed 123 \
-  --jobs 20 \
-  --max-iters 2000 \
-  --max-nodes 1000000 \
-  --max-time 300 \
-  --max-memory 500M \
-  --min-rss 500M \
-  --rss-max 1G \
-  --goals 2 \
-  --path data/problems/expensive-bird
-or exit $status
+# memrun uv run scripts/generate_problems.py \
+#   --starts 1000 \
+#   --min-size 30 \
+#   --max-size 60 \
+#   --language math \
+#   --seed 123 \
+#   --jobs 20 \
+#   --max-iters 2000 \
+#   --max-nodes 1000000 \
+#   --max-time 300 \
+#   --max-memory 500M \
+#   --min-rss 500M \
+#   --rss-max 1G \
+#   --goals 2 \
+#   --path data/problems/expensive-bird
+# or exit $status
 
 set -l search_args \
   --max-rss 450M \
