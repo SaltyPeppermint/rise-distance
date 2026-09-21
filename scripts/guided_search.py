@@ -16,14 +16,14 @@ retrying a killed replay at the last iteration that completed and removing one
 more iter off each further retry (``--sampling-backoff``).
 """
 
+import asyncio
 import itertools
 import json
 import os
 import sys
-import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -36,10 +36,10 @@ from common import (
     MeasuredJson,
     MemoryKilled,
     attempt_summary,
+    cli_flags,
     eqsat_finished,
     exit_if_missing,
     fan_out,
-    limit_flags,
     parse_size,
     rss_killed_summary,
     run_json_subprocess,
@@ -141,10 +141,7 @@ class Args(BaseSettings):
         default=1,
         ge=0,
         description=(
-            "How often a `samples` process killed at `--max-rss` is "
-            "retried. The first retry runs at the iterations that completed, and "
-            "each further run reduces `--max-iters` by one more. `0` disables "
-            "retrying."
+            "How often a `samples` process killed at `--max-rss` is retried. `0` disables retrying."
         ),
     )
 
@@ -194,6 +191,30 @@ class Args(BaseSettings):
             "attempt egraphs exhaust available RAM."
         ),
     )
+
+    @property
+    def limits(self) -> dict[str, int | float]:
+        """The configured guide-replay budgets, without the omitted ones."""
+        budgets = {
+            "max_iters": self.stop_iters,
+            "max_nodes": self.stop_nodes,
+            "max_time": self.stop_time,
+        }
+        return {key: value for key, value in budgets.items() if value is not None}
+
+    def base_flags(self, language: str) -> list[str]:
+        """Flags shared by every `attempt` process."""
+        return cli_flags(language=language, **self.limits)
+
+    def sample_flags(self, language: str) -> list[str]:
+        """Flags shared by every `sample` process."""
+        return cli_flags(
+            language=language,
+            seed=self.seed,
+            policy=self.sample_policy,
+            size_search_steps=self.size_search_steps,
+            frontier=self.frontier,
+        )
 
 
 @dataclass(frozen=True)
@@ -314,7 +335,7 @@ def flatten_problems(args: Args) -> list[Problem]:
     return [Problem(start, goal) for (start, goals) in specs[: args.start_terms] for goal in goals]
 
 
-def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
+async def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
     """Run under the RSS cap, retrying a replay-phase kill up to
     `--sampling-backoff` times: the first retry replays the iterations that
     survived, each further one gives up another iteration."""
@@ -327,7 +348,7 @@ def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
     for retries_left in range(args.sampling_backoff, -1, -1):
         try:
             # print(f"CMD: {' '.join(cmd)}")
-            measured = run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
+            measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
             return measured
         except MemoryKilled as killed:
             if eqsat_finished(killed.stderr):
@@ -353,20 +374,16 @@ def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | None:
     return None
 
 
-def draw_expansion(args: Args, sample_flags: list[str], limits: dict, s_expr: str) -> Expansion:
+async def draw_expansion(args: Args, sample_flags: list[str], s_expr: str) -> Expansion:
     """Run one `sample` process from `s_expr`. This is called recursively at every depth"""
     cmd = [
         str(args.sample_bin),
         *sample_flags,
-        *limit_flags(limits),
-        "--start-term",
-        s_expr,
-        "--n-samples",
-        str(args.n_guides),
+        *cli_flags(**args.limits, start_term=s_expr, n_samples=args.n_guides),
     ]
 
     started = time.monotonic()
-    measured = run_capped(args, cmd, f"sample for term {s_expr!r}")
+    measured = await run_capped(args, cmd, f"sample for term {s_expr!r}")
     wall_time = time.monotonic() - started
 
     # A capped-out child never printed its `Measured` envelope.
@@ -392,35 +409,44 @@ def draw_expansion(args: Args, sample_flags: list[str], limits: dict, s_expr: st
     return Expansion(children, "ok" if children else "empty_pool", meta, wall_time)
 
 
-class ExpansionCache:
-    """Memoize `sample` runs by the s-expression they sample from.
-    This is especially useful so we dont have to resample for goals with the same start
+class SamplePools:
+    """Every `sample` task the run started, keyed by the start term it sampled from.
+
+    This allows lazy sampling! Later callers simply get the cached results
+
+    The sample draws are all in the same `group` so a failed pair cancels
+    sample tasks still running instead of leaving them un-awaited
     """
 
-    def __init__(self, draw: Callable[[str], Expansion]) -> None:
-        self._draw = draw
-        self._guard = threading.Lock()
-        self._locks: dict[str, threading.Lock] = {}
-        self._done: dict[str, Expansion] = {}
+    def __init__(self, args: Args, sample_flags: list[str], group: asyncio.TaskGroup) -> None:
+        self.args = args
+        self.sample_flags = sample_flags
+        self.group = group
+        self.tasks: dict[str, asyncio.Task[Expansion]] = {}
 
-    def get(self, s_expr: str) -> tuple[Expansion, bool]:
-        """Return the pool for `s_expr` and whether it came from the cache."""
-        with self._guard:
-            lock = self._locks.setdefault(s_expr, threading.Lock())
-        with lock:
-            hit = self._done.get(s_expr)
-            if hit is not None:
-                return hit, True
-            expansion = self._draw(s_expr)
-            self._done[s_expr] = expansion
-            return expansion, False
+    def __len__(self) -> int:
+        return len(self.tasks)
 
-    def snapshot(self) -> dict[str, Expansion]:
-        with self._guard:
-            return dict(self._done)
+    async def draw(self, s_expr: str) -> tuple[Expansion, bool]:
+        """That term's pool plus if someone else is the one paying for it."""
+        # No `await` before the task finishes, so no race
+        cached = s_expr in self.tasks
+        if not cached:
+            self.tasks[s_expr] = self.group.create_task(
+                draw_expansion(self.args, self.sample_flags, s_expr)
+            )
+        return await self.tasks[s_expr], cached
+
+    def drawn(self) -> dict[str, Expansion]:
+        """Serialize finished draws for reporting."""
+        return {
+            s_expr: task.result()
+            for s_expr, task in self.tasks.items()
+            if task.done() and not task.cancelled() and task.exception() is None
+        }
 
 
-def run_attempt(args: Args, base_flags: list[str], goal: str, guide: list) -> AttemptResult:
+async def run_attempt(args: Args, base_flags: list[str], goal: str, guide: list) -> AttemptResult:
     """Run one attempt in its own process.
 
     An attempt killed at the RSS cap comes back as a failed attempt with
@@ -430,18 +456,17 @@ def run_attempt(args: Args, base_flags: list[str], goal: str, guide: list) -> At
     cmd = [
         str(args.attempt_bin),
         *base_flags,
-        "--goal-term",
-        goal,
-        "--is-guide",
-        "--start-term",
-        json.dumps(guide),
+        *cli_flags(
+            goal_term=goal,
+            is_guide=True,
+            start_term=json.dumps(guide),
+            full_union=args.full_union,
+        ),
     ]
-    if args.full_union:
-        cmd.append("--full-union")
 
     started = time.monotonic()
     try:
-        measured = run_json_subprocess(
+        measured = await run_json_subprocess(
             cmd, what=f"attempt for goal {goal!r}", rss_max_bytes=parse_size(args.max_rss)
         )
         summary, peak_rss_bytes = attempt_summary(measured.payload), measured.peak_rss_bytes
@@ -450,8 +475,8 @@ def run_attempt(args: Args, base_flags: list[str], goal: str, guide: list) -> At
     return AttemptResult(summary, peak_rss_bytes, time.monotonic() - started)
 
 
-def expand_node(
-    cache: ExpansionCache,
+async def expand_node(
+    pools: SamplePools,
     trace: PairTrace,
     budget: Budget,
     front: SearchFrontier,
@@ -461,14 +486,15 @@ def expand_node(
 ) -> None:
     """Draw `node`'s pool, record what it cost, and queue the unseen children.
 
-    Guides already tried on this pair are dropped: the cache makes the search
-    tree a DAG, and skips guides already attempted on this pair.
+    Guides already tried on this pair are dropped: sharing pools across nodes
+    makes the search tree a DAG, and skips guides already attempted on this
+    pair.
 
     A saturated replay marks its children terminal, so the search attempts them
     but never samples past them.
     """
     started_at = budget.elapsed()
-    expansion, cached = cache.get(node.s_expr)
+    expansion, cached = await pools.draw(node.s_expr)
 
     children = []
     for guide, s_expr in expansion.children:
@@ -502,8 +528,8 @@ def expand_node(
     )
 
 
-def search_pair(
-    args: Args, base_flags: list[str], cache: ExpansionCache, pair: Problem
+async def search_pair(
+    args: Args, base_flags: list[str], pools: SamplePools, pair: Problem
 ) -> PairTrace:
     """Run one pair's sampling/attempt search and return its trace.
 
@@ -525,7 +551,7 @@ def search_pair(
     seen: set[str] = set()
 
     root = SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=pair.start)
-    expand_node(cache, trace, budget, frontier, root, ids, seen)
+    await expand_node(pools, trace, budget, frontier, root, ids, seen)
 
     while True:
         if budget.expired():
@@ -544,7 +570,7 @@ def search_pair(
 
         assert node.guide is not None, "the root is a baseline, not an attempt"
         started_at = budget.elapsed()
-        attempt = run_attempt(args, base_flags, pair.goal, node.guide)
+        attempt = await run_attempt(args, base_flags, pair.goal, node.guide)
         trace.attempts.append(
             {
                 "start_term": pair.start,
@@ -571,13 +597,13 @@ def search_pair(
         # would rebuild that same egraph and redraw that same pool. Leaving it
         # unexpanded sends the search back up to whatever the frontier holds.
         if not node.terminal and node.depth < budget.max_depth and not budget.expired():
-            expand_node(cache, trace, budget, frontier, node, ids, seen)
+            await expand_node(pools, trace, budget, frontier, node, ids, seen)
 
     trace.wall_time = budget.elapsed()
     return trace
 
 
-def run_unguided_pair(args: Args, base_flags: list[str], pair: Problem) -> dict:
+async def run_unguided_pair(args: Args, base_flags: list[str], pair: Problem) -> dict:
     """Run the pair-matched single-start baseline.
 
     A baseline killed at the RSS cap becomes an ``rss_killed`` failure row.
@@ -585,14 +611,11 @@ def run_unguided_pair(args: Args, base_flags: list[str], pair: Problem) -> dict:
     cmd = [
         str(args.attempt_bin),
         *base_flags,
-        "--start-term",
-        pair.start,
-        "--goal-term",
-        pair.goal,
+        *cli_flags(start_term=pair.start, goal_term=pair.goal),
     ]
     what = f"unguided attempt for goal term {pair.goal!r}"
     try:
-        measured = run_json_subprocess(cmd, what=what, rss_max_bytes=parse_size(args.max_rss))
+        measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=parse_size(args.max_rss))
         summary = attempt_summary(measured.payload)
         peak_rss_bytes = measured.peak_rss_bytes
     except MemoryKilled:
@@ -712,30 +735,30 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
     }
 
 
-def write_sample_pools(cache: ExpansionCache, out: Path) -> None:
+def write_sample_pools(pools: SamplePools, out: Path) -> None:
     """Dump every pool the run drew, keyed by the term it was sampled from."""
     out.mkdir(parents=True, exist_ok=True)
-    pools = {
+    dumped = {
         s_expr: {
             "status": expansion.status,
             "samples": [guide for guide, _ in expansion.children],
             "sample_s_expr": [child for _, child in expansion.children],
             **expansion.meta,
         }
-        for s_expr, expansion in cache.snapshot().items()
+        for s_expr, expansion in pools.drawn().items()
     }
-    (out / "samples.json").write_text(json.dumps(pools))
+    (out / "samples.json").write_text(json.dumps(dumped))
 
 
 def report_results(
     args: Args,
-    out: Path,
     traces: list[PairTrace],
     unguided_rows: list[dict],
-    cache: ExpansionCache,
-    limits: dict,
+    pools: SamplePools,
 ) -> None:
     """Write attempt, expansion, pair, baseline, and joined comparison results."""
+    out = resolve_output_dir(args)
+
     attempt_rows = [row for trace in traces for row in trace.attempts]
     expansion_rows = [row for trace in traces for row in trace.expansions]
 
@@ -753,11 +776,11 @@ def report_results(
     unguided.write_parquet(out / "unguided_results.parquet")
     comparison.write_parquet(out / "comparison.parquet")
 
-    write_sample_pools(cache, out / "sample_run")
+    write_sample_pools(pools, out / "sample_run")
 
     config = {
         **args.model_dump(),
-        "effective_limits": limits,
+        "effective_limits": args.limits,
     }
     (out / "config.json").write_text(json.dumps(config, indent=2, default=str))
 
@@ -768,44 +791,22 @@ def report_results(
     print(
         f"\nReached {reached_pairs}/{total_pairs} start/goal pairs "
         f"(reach rate {reach_rate:.2f}) in {attempts_run} attempt(s) and "
-        f"{len(cache.snapshot())} distinct sample pool(s). "
+        f"{len(pools)} distinct sample pool(s). "
         f"Wrote {out / 'comparison.parquet'}",
         file=sys.stderr,
     )
 
 
-def main() -> int:
+async def main() -> int:
     args = Args()
 
     exit_if_missing(args.sample_bin, args.attempt_bin)
+    jobs = args.jobs or os.cpu_count() or 1
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=jobs))
 
     cfg = json.loads((args.path / "problem_args.json").read_text())
-    limits = {
-        key: value
-        for key, value in {
-            "max_iters": args.stop_iters,
-            "max_nodes": args.stop_nodes,
-            "max_time": args.stop_time,
-        }.items()
-        if value is not None
-    }
-    base_flags = ["--language", str(cfg["language"]), *limit_flags(limits)]
-    sample_flags = [
-        "--language",
-        str(cfg["language"]),
-        "--seed",
-        str(args.seed),
-        "--policy",
-        str(args.sample_policy),
-        "--size-search-steps",
-        str(args.size_search_steps),
-    ]
-    if args.frontier:
-        sample_flags.append("--frontier")
-
-    out = resolve_output_dir(args)
-
-    cache = ExpansionCache(lambda s_expr: draw_expansion(args, sample_flags, limits, s_expr))
+    base_flags = args.base_flags(str(cfg["language"]))
+    sample_flags = args.sample_flags(str(cfg["language"]))
 
     pairs = flatten_problems(args)
     print(
@@ -815,28 +816,29 @@ def main() -> int:
         f"max_total_time={args.max_total_time})",
         file=sys.stderr,
     )
-    traces = fan_out(
-        args.jobs or os.cpu_count() or 1,
-        lambda pair: search_pair(args, base_flags, cache, pair),
-        pairs,
-        "search",
-        unit="pair",
-    )
+    # The pools draw in this scope rather than in detached tasks, so the first
+    # failed pair cancels the draws still running instead of leaving orphaned
+    # `sample` children behind.
+    async with asyncio.TaskGroup() as draws:
+        pools = SamplePools(args, sample_flags, draws)
+        traces = await fan_out(
+            jobs,
+            lambda pair: search_pair(args, base_flags, pools, pair),
+            pairs,
+            "search",
+            unit="pair",
+        )
 
     # The baseline is re-run here, not reused from `problems.json`: the search
     # budget is the `--stop-*` one, not the budget generation measured under.
     print(f"Running {len(pairs)} pair-matched unguided baseline(s)", file=sys.stderr)
-    unguided_rows = fan_out(
-        args.jobs or os.cpu_count() or 1,
-        lambda pair: run_unguided_pair(args, base_flags, pair),
-        pairs,
-        "unguided",
-        unit="pair",
+    unguided_rows = await fan_out(
+        jobs, lambda pair: run_unguided_pair(args, base_flags, pair), pairs, "unguided", unit="pair"
     )
 
-    report_results(args, out, traces, unguided_rows, cache, limits)
+    report_results(args, traces, unguided_rows, pools)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(asyncio.run(main()))

@@ -14,11 +14,13 @@ Example:
       --language math --seed 42 --max-memory 4G --min-rss 3G --rss-max 8G
 """
 
+import asyncio
 import hashlib
 import json
 import os
 import secrets
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
@@ -29,9 +31,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from common import (
     MemoryKilled,
     attempt_summary,
+    cli_flags,
     exit_if_missing,
     fan_out,
-    limit_flags,
     parse_size,
     run_json_subprocess,
     uniform_sample_allocation,
@@ -178,7 +180,7 @@ def eqsat_limits(cfg: dict) -> dict:
     }
 
 
-def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, Any] | None:
+async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, Any] | None:
     """Sample one validated start term of the slot's size, under the RSS cap.
 
     A slot killed at the cap is redrawn under a bumped seed. `start` seeds its
@@ -197,21 +199,14 @@ def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, 
         seed = derive_seed(*fields)
         cmd = [
             str(args.start_bin),
-            "--size",
-            str(size),
-            "--seed",
-            str(seed),
-            "--language",
-            args.language,
-            "--retry-limit",
-            str(args.retry_limit),
+            *cli_flags(size=size, seed=seed, language=args.language, retry_limit=args.retry_limit),
             *flags,
         ]
         what = f"start for size {size} slot {index}"
         if retry:
             what += f" (reseed {retry})"
         try:
-            measured = run_json_subprocess(cmd, what=what, rss_max_bytes=rss_max)
+            measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=rss_max)
         except MemoryKilled as killed:
             print(f"WARNING: {killed!s}", file=sys.stderr)
             continue
@@ -233,26 +228,24 @@ def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, 
     return None
 
 
-def run_samples(args: Args, flags: list[str], start: dict[str, Any]) -> dict[str, Any] | None:
+async def run_samples(args: Args, flags: list[str], start: dict[str, Any]) -> dict[str, Any] | None:
     """Draw goal samples from one start term's novel frontier."""
     cmd = [
         str(args.sample_bin),
-        "--language",
-        args.language,
-        "--start-term",
-        start["start_term"],
-        "--n-samples",
-        str(args.goals),
-        "--seed",
-        str(args.seed),
-        "--policy",
-        args.policy,
-        "--size-search-steps",
-        str(args.size_search_steps),
-        "--frontier",
+        *cli_flags(
+            language=args.language,
+            start_term=start["start_term"],
+            n_samples=args.goals,
+            seed=args.seed,
+            policy=args.policy,
+            size_search_steps=args.size_search_steps,
+            frontier=True,
+        ),
         *flags,
     ]
-    measured = run_json_subprocess(cmd, what=f"samples for start term {start['start_term']!r}")
+    measured = await run_json_subprocess(
+        cmd, what=f"samples for start term {start['start_term']!r}"
+    )
     records = measured.payload
     if not records:
         print(
@@ -260,34 +253,32 @@ def run_samples(args: Args, flags: list[str], start: dict[str, Any]) -> dict[str
             file=sys.stderr,
         )
         return None
-    return {**start, "goal_terms": records[0]["sample_s_expr"]}
+    return {**start, "goal_terms": records[0]["samples_s_expr"]}
 
 
-def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, Any]:
+async def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, Any]:
     """Measure what the unguided start->goal search actually costs."""
     cmd = [
         str(args.attempt_bin),
-        "--language",
-        args.language,
-        "--start-term",
-        pair["start_term"],
-        "--goal-term",
-        pair["goal_term"],
+        *cli_flags(
+            language=args.language, start_term=pair["start_term"], goal_term=pair["goal_term"]
+        ),
         *flags,
     ]
-    measured = run_json_subprocess(cmd, what=f"attempt for goal {pair['goal_term']!r}")
+    measured = await run_json_subprocess(cmd, what=f"attempt for goal {pair['goal_term']!r}")
     return {**pair, **attempt_summary(measured.payload), "peak_rss_bytes": measured.peak_rss_bytes}
 
 
-def main() -> int:
+async def main() -> int:
     args = Args()
     exit_if_missing(args.start_bin, args.sample_bin, args.attempt_bin)
 
     out = args.path or generate_unique_dir(Path("data/problems"))
     out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=jobs))
     limits = eqsat_limits(args.model_dump())
-    flags = limit_flags(limits)
+    flags = cli_flags(**limits)
     min_rss = parse_size(args.min_rss)
 
     slots = [
@@ -298,7 +289,7 @@ def main() -> int:
         for index in range(count)
     ]
     print(f"Generating {len(slots)} start term(s) -> {out} ({jobs} workers)", file=sys.stderr)
-    starts = fan_out(jobs, lambda slot: run_start(args, flags, slot), slots, "starts")
+    starts = await fan_out(jobs, lambda slot: run_start(args, flags, slot), slots, "starts")
     # A kept slot's `start_retry` is how many kills it was redrawn past; the
     # slots that came back with nothing were killed past their last reseed (or
     # failed outright, which warns for itself above). Silent when the cap cost
@@ -316,14 +307,14 @@ def main() -> int:
     seen: set[str] = set()
     starts = [s for s in starts if not (s["start_term"] in seen or seen.add(s["start_term"]))]
 
-    enriched = fan_out(jobs, lambda s: run_samples(args, flags, s), starts, "samples")
+    enriched = await fan_out(jobs, lambda s: run_samples(args, flags, s), starts, "samples")
     pairs = [
         {**{k: v for k, v in start.items() if k != "goal_terms"}, "goal_term": goal}
         for start in enriched
         for goal in start["goal_terms"]
     ]
 
-    measured = fan_out(jobs, lambda p: run_attempt(args, flags, p), pairs, "attempt")
+    measured = await fan_out(jobs, lambda p: run_attempt(args, flags, p), pairs, "attempt")
     problems = [row for row in measured if (row["peak_rss_bytes"] or 0) >= min_rss]
 
     (out / "problems.json").write_text(json.dumps(problems, indent=2))
@@ -350,4 +341,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(asyncio.run(main()))

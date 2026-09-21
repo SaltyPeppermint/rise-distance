@@ -2,12 +2,12 @@
 plumbing, binary checks, the `attempt` payload schema, and eqsat CLI flag
 building."""
 
+import asyncio
 import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -106,7 +106,7 @@ class MemoryKilled(RuntimeError):
         self.last_iter = last_success_iter(stderr)
 
 
-def run_json_subprocess(
+async def run_json_subprocess(
     cmd: list[str],
     *,
     what: str,
@@ -122,14 +122,16 @@ def run_json_subprocess(
 
     Raises `MemoryKilled` when `rss_max_bytes` is set and the cap killed it.
     """
-    proc = subprocess.run(
-        prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd,
-        input=input,
-        stdin=None if input is not None else subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
+    proc = await asyncio.to_thread(
+        lambda: subprocess.run(
+            prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd,
+            input=input,
+            stdin=None if input is not None else subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
     )
     if rss_max_bytes is not None and proc.returncode in OOM_RETURNCODES:
         raise MemoryKilled(what, proc.stderr)
@@ -200,41 +202,50 @@ def rss_killed_summary() -> dict[str, Any]:
     return {**empty, "reached": False, "panic": False, "stop_reason": "rss_killed"}
 
 
-def limit_flags(limits: dict) -> list[str]:
-    """Convert limit settings into CLI `--max-*` arguments."""
-    flags = []
+def cli_flags(**values: str | float | bool | None) -> list[str]:
+    flags: list[str] = []
 
-    for key in ("max_memory", "max_iters", "max_nodes", "max_time"):
-        if (value := limits.get(key)) is not None:
-            flags.extend((f"--{key.replace('_', '-')}", str(value)))
+    for key, value in values.items():
+        if value is None or value is False:
+            continue
+        flags.append(f"--{key.replace('_', '-')}")
+        if value is not True:
+            flags.append(str(value))
 
     return flags
 
 
-def fan_out(
-    jobs: int,
-    fn: Callable[[Any], Any],
-    items: list,
-    desc: str,
-    unit: str = "job",
+async def _run_limited(
+    limit: asyncio.Semaphore, bar: tqdm, fn: Callable[[Any], Awaitable[Any]], item: Any
+) -> Any:
+    """Run if a slot is free and tick the bar."""
+    async with limit:
+        result = await fn(item)
+    bar.update(1)
+    return result
+
+
+async def fan_out(
+    jobs: int, fn: Callable[[Any], Awaitable[Any]], items: list, desc: str, unit: str = "job"
 ) -> list:
-    """Run `fn` over `items` concurrently, dropping the ones that returned None.
+    """Run `fn` over `items`, `jobs` at a time, dropping the ones that returned None.
 
-    Results come back in `items` order rather than completion order, so a run's
-    output does not depend on how the pool happened to schedule it.
+    Each item is its own task behind a semaphore, so a slow item holds up only
+    itself. Results come back in `items` order rather than completion order, so
+    a run's output does not depend on which item finished first.
     """
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = {pool.submit(fn, item): i for i, item in enumerate(items)}
-        results: dict[int, Any] = {}
-        for fut in tqdm(as_completed(futures), total=len(futures), desc=desc, unit=unit):
-            results[futures[fut]] = fut.result()
-    return [results[i] for i in range(len(items)) if results[i] is not None]
+    limit = asyncio.Semaphore(jobs)
+    with tqdm(total=len(items), desc=desc, unit=unit) as bar:
+        # A task group rather than `gather`, so the first failure cancels the
+        # items still queued on the semaphore instead of letting them start
+        # more processes on the way down.
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(_run_limited(limit, bar, fn, item)) for item in items]
+
+    return [result for task in tasks if (result := task.result()) is not None]
 
 
-def uniform_sample_allocation(
-    sizes: list[int],
-    total_samples: int,
-) -> list[tuple[int, int]]:
+def uniform_sample_allocation(sizes: list[int], total_samples: int) -> list[tuple[int, int]]:
     if not sizes:
         return []
 
