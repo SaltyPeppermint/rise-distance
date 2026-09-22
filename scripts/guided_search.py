@@ -404,7 +404,7 @@ async def draw_expansion(args: Args, sample_flags: list[str], s_expr: str) -> Ex
         "guide_memory": record["guide_memory"],
         "guide_peak_live_heap": record["guide_peak_live_heap"],
         "guide_stop_reason": record["stop_reason"],
-        "samples_peak_rss_bytes": measured.peak_rss_bytes,
+        "sample_peak_rss_bytes": measured.peak_rss_bytes,
     }
     return Expansion(children, "ok" if children else "empty_pool", meta, wall_time)
 
