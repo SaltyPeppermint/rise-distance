@@ -20,6 +20,13 @@ GUIDED_PEAK_SCOPES = {
 }
 
 
+# The event table each kind of saturation is counted from, beside the
+# comparison a run writes, and what a saturated event looks like in it.
+SATURATION_EVENTS = {
+    "sampling e-graph": ("expansions.parquet", pl.col("saturated")),
+    "proof attempt": ("results.parquet", pl.col("stop_reason") == "Saturated"),
+}
+
 # Share of a bin's width left empty, so grouped bars separate into buckets.
 BRUTE_COST_BIN_PAD = 0.14
 # Ordered: the drawing slot of a grouped bar is the position in this tuple.
@@ -315,6 +322,39 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
         )
         .sort("mode", "method", "count", descending=[False, False, True])
     )
+
+
+def saturation_rates(runs: Sequence[Run]) -> pl.DataFrame:
+    """How often each run saturated, as a share of the events that could.
+
+    Two different things saturate, so both are counted. A `sampling e-graph`
+    saturated while drawing a guide menu, which means the pool it offers is
+    everything that term can reach. A `proof attempt` saturated without the
+    goal in it, a definitive failure for that guide rather than an exhausted
+    budget.
+
+    The denominator is every event of that kind the run recorded, so a pair
+    that expanded five times counts five times. A cached expansion is charged
+    to every pair that consumed it, exactly as the run recorded it.
+    """
+    rows = []
+    for run in runs:
+        for kind, (filename, saturated) in SATURATION_EVENTS.items():
+            path = run.directory / filename
+            if not path.is_file():
+                raise FileNotFoundError(f"{run.directory.name} has no {filename}")
+            frame = pl.read_parquet(path)
+            hits = int(frame.select(saturated.fill_null(False).sum()).item()) if frame.height else 0
+            rows.append(
+                {
+                    "mode": run.label,
+                    "kind": kind,
+                    "saturated": hits,
+                    "n": frame.height,
+                    "rate": hits / frame.height if frame.height else None,
+                }
+            )
+    return pl.DataFrame(rows).sort("mode", "kind")
 
 
 def guided_vs_brute(frame: pl.DataFrame, scope: str) -> pl.DataFrame:

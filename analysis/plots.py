@@ -27,6 +27,8 @@ WIN_ORDER = ["below brute force", "at or above"]
 WIN_COLORS = ["#4c9f70", "#eb6834"]
 BRUTE_COST_ORDER = ["guided failed", "guided proved, at or above", "guided proved, cheaper"]
 BRUTE_COST_COLORS = ["#eb6834", "#eda100", "#4c9f70"]
+SATURATION_ORDER = ["sampling e-graph", "proof attempt"]
+SATURATION_COLORS = [PALETTE[4], PALETTE[5]]
 
 # `helpers` breaks a run label over two lines. Vega stacks a text array into
 # lines but never splits a string itself, so every encoding that draws a mode
@@ -176,6 +178,33 @@ def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
         .properties(title=_title("Failure causes", meta))  # .  width=420, height=alt.Step(34))
+    )
+
+
+def saturation_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Share of sampling e-graphs and of proof attempts that saturated."""
+    return (
+        alt.Chart(rates)
+        .mark_bar()
+        .encode(  # ty: ignore[unresolved-attribute]
+            x=alt.X("rate:Q", title="share of events that saturated", axis=alt.Axis(format="%")),
+            y=_mode_axis(meta["modes"]),
+            yOffset=alt.YOffset("kind:N", sort=SATURATION_ORDER),
+            color=alt.Color(
+                "kind:N",
+                sort=SATURATION_ORDER,
+                scale=alt.Scale(domain=SATURATION_ORDER, range=SATURATION_COLORS),
+                legend=alt.Legend(title=None),
+            ),
+            tooltip=[
+                "mode:N",
+                "kind:N",
+                alt.Tooltip("saturated:Q", title="saturated events"),
+                alt.Tooltip("n:Q", title="events"),
+                alt.Tooltip("rate:Q", format=".1%", title="share"),
+            ],
+        )
+        .properties(title=_title("Saturation", meta), height=alt.Step(48))
     )
 
 
