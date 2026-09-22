@@ -546,6 +546,7 @@ async def search_pair(
     )
     trace = PairTrace(pair)
     frontier = SearchFrontier(args.search_policy)
+    pending: deque[SearchNode] = deque()
     ids = itertools.count(1)
     seen: set[str] = set()
 
@@ -560,11 +561,15 @@ async def search_pair(
             trace.stop_reason = "attempt_budget_exhausted"
             break
         node = frontier.pop()
+        while node is None and pending and not budget.expired():
+            # The deferred draw now have to be done with the frontier empty
+            await expand_node(pools, trace, budget, frontier, pending.popleft(), ids, seen)
+            node = frontier.pop()
         if node is None:
             # Every node bottomed out at `--max-depth`, hit a saturated egraph,
             # or the pools ran dry; `setup_status` and the expansion rows'
             # `saturated` flag tell those apart.
-            trace.stop_reason = "frontier_exhausted"
+            trace.stop_reason = "time_exhausted" if budget.expired() else "frontier_exhausted"
             break
 
         assert node.guide is not None, "the root is a baseline, not an attempt"
@@ -595,8 +600,14 @@ async def search_pair(
         # A terminal node came out of a saturated egraph, so sampling from it
         # would rebuild that same egraph and redraw that same pool. Leaving it
         # unexpanded sends the search back up to whatever the frontier holds.
-        if not node.terminal and node.depth < budget.max_depth and not budget.expired():
-            await expand_node(pools, trace, budget, frontier, node, ids, seen)
+        if node.terminal or node.depth >= budget.max_depth:
+            continue
+        if args.search_policy == "depth":
+            # The children land where the next pop reads from, so this draw is ok
+            if not budget.expired() and budget.attempts_left(len(trace.attempts)):
+                await expand_node(pools, trace, budget, frontier, node, ids, seen)
+        else:
+            pending.append(node)
 
     trace.wall_time = budget.elapsed()
     return trace
