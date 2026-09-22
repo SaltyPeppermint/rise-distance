@@ -80,6 +80,7 @@ PAIR_SCHEMA = {
     "root_saturated": pl.Boolean,
     "deepest_attempt": pl.Int64,
     "pair_wall_time": pl.Float64,
+    "pair_cost_time": pl.Float64,
     "guided_stop_reason": pl.String,
     "guided_panic": pl.Boolean,
     "setup_status": pl.String,

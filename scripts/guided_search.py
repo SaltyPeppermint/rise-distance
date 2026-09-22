@@ -308,6 +308,7 @@ class PairTrace:
     pair: Problem
     attempts: list[dict] = field(default_factory=list)
     expansions: list[dict] = field(default_factory=list)
+    drawn: set[str] = field(default_factory=set)
     stop_reason: str = "unstarted"
     wall_time: float = 0.0
 
@@ -426,15 +427,17 @@ class SamplePools:
     def __len__(self) -> int:
         return len(self.tasks)
 
-    async def draw(self, s_expr: str) -> tuple[Expansion, bool]:
-        """That term's pool plus if someone else is the one paying for it."""
+    async def draw(self, s_expr: str) -> Expansion:
+        """That term's pool, drawing it only if this run has not already.
+
+        The Pool may cache for the whole run but it simulates being pair independence.
+        """
         # No `await` before the task finishes, so no race
-        cached = s_expr in self.tasks
-        if not cached:
+        if s_expr not in self.tasks:
             self.tasks[s_expr] = self.group.create_task(
                 draw_expansion(self.args, self.sample_flags, s_expr)
             )
-        return await self.tasks[s_expr], cached
+        return await self.tasks[s_expr]
 
     def drawn(self) -> dict[str, Expansion]:
         """Serialize finished draws for reporting."""
@@ -493,7 +496,9 @@ async def expand_node(
     but never samples past them.
     """
     started_at = budget.elapsed()
-    expansion, cached = await pools.draw(node.s_expr)
+    cached = node.s_expr in trace.drawn
+    trace.drawn.add(node.s_expr)
+    expansion = await pools.draw(node.s_expr)
 
     children = []
     for guide, s_expr in expansion.children:
@@ -520,7 +525,7 @@ async def expand_node(
             "drawn": len(expansion.children),
             "pushed": len(children),
             "started_at": started_at,
-            # A cached pool cost this pair nothing but the lookup.
+            # A pool this pair already drew cost it nothing but the lookup.
             "wall_time": 0.0 if cached else expansion.wall_time,
             **expansion.meta,
         }
@@ -725,7 +730,8 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         # It does not make sense to draw guides from a saturated egraph.
         "root_saturated": bool(trace.expansions and trace.expansions[0]["saturated"]),
         "deepest_attempt": max((attempt["depth"] for attempt in attempts), default=None),
-        "pair_wall_time": trace.wall_time,
+        "pair_cost_time": sum(exp["wall_time"] for exp in trace.expansions)
+        + sum(attempt["wall_time"] for attempt in attempts),
         # The last attempt's reason when one ran, otherwise why none did.
         "guided_stop_reason": None
         if successes
