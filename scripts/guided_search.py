@@ -32,11 +32,11 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
 from common import (
+    EQSAT_DONE_RE,
     MeasuredJson,
     MemoryKilled,
     attempt_summary,
     cli_flags,
-    eqsat_finished,
     exit_if_missing,
     fan_out,
     parse_size,
@@ -258,28 +258,97 @@ class Expansion:
         return self.meta.get("guide_stop_reason") == SATURATED
 
 
-@dataclass
 class SearchFrontier:
-    """The work queue, ordered by the exploration policy.
+    """The work queue with the drawing logic once the queue runs empty.
 
+    Nodes to descend are remembered via `defer`.
     `depth` pops the most recently pushed node, so the search follows one chain
-    down before trying its siblings; `width` pops the oldest, exhausting a depth
-    before descending.
+    down before trying its siblings, and drains the deferred nodes first so a
+    node's own children are ready before its siblings get a turn; `width` pops
+    the oldest, exhausting a depth before descending, so it only draws once the
+    frontier is empty.
     """
 
-    policy: SearchPolicy
-    _items: deque[SearchNode] = field(default_factory=deque)
+    def __init__(
+        self, policy: SearchPolicy, root: str, pools: SamplePools, trace: PairTrace, budget: Budget
+    ) -> None:
+        self.policy = policy
+        self.pools = pools
+        self.trace = trace
+        self.budget = budget
+        self._items: deque[SearchNode] = deque()
+        # The first `pop` draws the roots pool.
+        self._pending: deque[SearchNode] = deque(
+            [SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=root)]
+        )
+        self._ids = itertools.count(1)
+        self._seen: set[str] = set()
 
-    def push(self, nodes: list[SearchNode]) -> None:
-        self._items.extend(nodes)
+    def defer(self, node: SearchNode) -> None:
+        """Place later to expand node in queue"""
+        self._pending.append(node)
 
-    def pop(self) -> SearchNode | None:
+    async def pop(self) -> SearchNode | None:
+        """The next node to attempt."""
+        while self._pending and not self.budget.expired():
+            if self.policy == "depth":
+                # Descend into the node eagerly, not just deferred before anything else.
+                await self._expand(self._pending.pop())
+            elif self._items:
+                break
+            else:
+                await self._expand(self._pending.popleft())
+
         if not self._items:
             return None
         return self._items.pop() if self.policy == "depth" else self._items.popleft()
 
-    def __len__(self) -> int:
-        return len(self._items)
+    async def _expand(self, node: SearchNode) -> None:
+        """Draw `node`'s pool, record what it cost, and queue the unseen children.
+
+        A saturated replay marks its children terminal, so the search attempts them
+        but never samples past them.
+        """
+        started_at = self.budget.elapsed()
+        cached = node.s_expr in self.trace.drawn
+        self.trace.drawn.add(node.s_expr)
+        expansion = await self.pools.draw(node.s_expr)
+
+        children = []
+        for guide, s_expr in expansion.children:
+            key = json.dumps(guide)
+            if key in self._seen:
+                continue
+            self._seen.add(key)
+            children.append(
+                SearchNode(
+                    next(self._ids),
+                    node.node_id,
+                    node.depth + 1,
+                    guide,
+                    s_expr,
+                    terminal=expansion.saturated,
+                )
+            )
+        self._items.extend(children)
+
+        self.trace.expansions.append(
+            {
+                "start_term": self.trace.pair.start,
+                "goal_term": self.trace.pair.goal,
+                "node_id": node.node_id,
+                "depth": node.depth,
+                "status": expansion.status,
+                "cached": cached,
+                "saturated": expansion.saturated,
+                "drawn": len(expansion.children),
+                "pushed": len(children),
+                "started_at": started_at,
+                # A pool this pair already drew cost it nothing but the lookup.
+                "wall_time": 0.0 if cached else expansion.wall_time,
+                **expansion.meta,
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -310,7 +379,6 @@ class PairTrace:
     expansions: list[dict] = field(default_factory=list)
     drawn: set[str] = field(default_factory=set)
     stop_reason: str = "unstarted"
-    wall_time: float = 0.0
 
     @property
     def setup_status(self) -> str:
@@ -351,7 +419,7 @@ async def run_capped(args: Args, cmd: list[str], what: str) -> MeasuredJson | No
             measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=cap)
             return measured
         except MemoryKilled as killed:
-            if eqsat_finished(killed.stderr):
+            if EQSAT_DONE_RE.search(killed.stderr) is not None:
                 post_eqsat_kill += 1
 
             if not retries_left:
@@ -477,70 +545,15 @@ async def run_attempt(args: Args, base_flags: list[str], goal: str, guide: list)
     return AttemptResult(summary, peak_rss_bytes, time.monotonic() - started)
 
 
-async def expand_node(
-    pools: SamplePools,
-    trace: PairTrace,
-    budget: Budget,
-    front: SearchFrontier,
-    node: SearchNode,
-    ids: itertools.count,
-    seen: set[str],
-) -> None:
-    """Draw `node`'s pool, record what it cost, and queue the unseen children.
-
-    Guides already tried on this pair are dropped: sharing pools across nodes
-    makes the search tree a DAG, and skips guides already attempted on this
-    pair.
-
-    A saturated replay marks its children terminal, so the search attempts them
-    but never samples past them.
-    """
-    started_at = budget.elapsed()
-    cached = node.s_expr in trace.drawn
-    trace.drawn.add(node.s_expr)
-    expansion = await pools.draw(node.s_expr)
-
-    children = []
-    for guide, s_expr in expansion.children:
-        key = json.dumps(guide)
-        if key in seen:
-            continue
-        seen.add(key)
-        children.append(
-            SearchNode(
-                next(ids), node.node_id, node.depth + 1, guide, s_expr, terminal=expansion.saturated
-            )
-        )
-    front.push(children)
-
-    trace.expansions.append(
-        {
-            "start_term": trace.pair.start,
-            "goal_term": trace.pair.goal,
-            "node_id": node.node_id,
-            "depth": node.depth,
-            "status": expansion.status,
-            "cached": cached,
-            "saturated": expansion.saturated,
-            "drawn": len(expansion.children),
-            "pushed": len(children),
-            "started_at": started_at,
-            # A pool this pair already drew cost it nothing but the lookup.
-            "wall_time": 0.0 if cached else expansion.wall_time,
-            **expansion.meta,
-        }
-    )
-
-
 async def search_pair(
     args: Args, base_flags: list[str], pools: SamplePools, pair: Problem
 ) -> PairTrace:
     """Run one pair's sampling/attempt search and return its trace.
 
-    The loop is: pop a node, attempt it, and on failure expand it back onto the
-    frontier. Each attempt is a separate `attempt` process, so its
-    `attempt_peak_rss_bytes` is that attempt's own peak rather than a high-water mark
-    shared across the pair.
+    The loop is: pop a node, attempt it, and on failure hand it back to the
+    frontier, which draws its pool once it needs the children. Each attempt is a
+    separate `attempt` process, so its `attempt_peak_rss_bytes` is that attempt's
+    own peak rather than a high-water mark shared across the pair.
     """
     started = time.monotonic()
     budget = Budget(
@@ -550,13 +563,7 @@ async def search_pair(
         max_attempts=args.max_attempts,
     )
     trace = PairTrace(pair)
-    frontier = SearchFrontier(args.search_policy)
-    pending: deque[SearchNode] = deque()
-    ids = itertools.count(1)
-    seen: set[str] = set()
-
-    root = SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=pair.start)
-    await expand_node(pools, trace, budget, frontier, root, ids, seen)
+    frontier = SearchFrontier(args.search_policy, pair.start, pools, trace, budget)
 
     while True:
         if budget.expired():
@@ -565,11 +572,7 @@ async def search_pair(
         if not budget.attempts_left(len(trace.attempts)):
             trace.stop_reason = "attempt_budget_exhausted"
             break
-        node = frontier.pop()
-        while node is None and pending and not budget.expired():
-            # The deferred draw now have to be done with the frontier empty
-            await expand_node(pools, trace, budget, frontier, pending.popleft(), ids, seen)
-            node = frontier.pop()
+        node = await frontier.pop()
         if node is None:
             # Every node bottomed out at `--max-depth`, hit a saturated egraph,
             # or the pools ran dry; `setup_status` and the expansion rows'
@@ -603,18 +606,11 @@ async def search_pair(
             break
 
         # A terminal node came out of a saturated egraph, so sampling from it
-        # would rebuild that same egraph and redraw that same pool. Leaving it
-        # unexpanded sends the search back up to whatever the frontier holds.
-        if node.terminal or node.depth >= budget.max_depth:
-            continue
-        if args.search_policy == "depth":
-            # The children land where the next pop reads from, so this draw is ok
-            if not budget.expired() and budget.attempts_left(len(trace.attempts)):
-                await expand_node(pools, trace, budget, frontier, node, ids, seen)
-        else:
-            pending.append(node)
+        # would rebuild that same egraph and redraw that same pool. Not deferring
+        # it sends the search back up to whatever the frontier holds.
+        if not node.terminal and node.depth < budget.max_depth:
+            frontier.defer(node)
 
-    trace.wall_time = budget.elapsed()
     return trace
 
 
@@ -634,7 +630,6 @@ async def run_unguided_pair(args: Args, base_flags: list[str], pair: Problem) ->
         summary = attempt_summary(measured.payload)
         peak_rss_bytes = measured.peak_rss_bytes
     except MemoryKilled:
-        # print(f"{what}: killed at RSS cap", file=sys.stderr)
         summary, peak_rss_bytes = rss_killed_summary(), None
     return {
         "start_term": pair.start,

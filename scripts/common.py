@@ -97,11 +97,6 @@ def last_success_iter(stderr: str) -> int | None:
     return int(matches[-1]) if matches else None
 
 
-def eqsat_finished(stderr: str) -> bool:
-    """Whether the eqsat run itself reached a stop reason."""
-    return EQSAT_DONE_RE.search(stderr) is not None
-
-
 class MemoryKilled(RuntimeError):
     """A capped child was SIGKILLed by its cgroup memory limit."""
 
