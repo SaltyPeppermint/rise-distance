@@ -551,9 +551,11 @@ async def search_pair(
     """Run one pair's sampling/attempt search and return its trace.
 
     The loop is: pop a node, attempt it, and on failure hand it back to the
-    frontier, which draws its pool once it needs the children. Each attempt is a
-    separate `attempt` process, so its `attempt_peak_rss_bytes` is that attempt's
-    own peak rather than a high-water mark shared across the pair.
+    frontier, which draws its pool once it needs the children. A node whose
+    attempt saturated is never handed back, since its subtree cannot hold the
+    goal. Each attempt is a separate `attempt` process, so its
+    `attempt_peak_rss_bytes` is that attempt's own peak rather than a high-water
+    mark shared across the pair.
     """
     started = time.monotonic()
     budget = Budget(
@@ -575,8 +577,9 @@ async def search_pair(
         node = await frontier.pop()
         if node is None:
             # Every node bottomed out at `--max-depth`, hit a saturated egraph,
-            # or the pools ran dry; `setup_status` and the expansion rows'
-            # `saturated` flag tell those apart.
+            # was pruned as a dead end, or the pools ran dry; `setup_status`, the
+            # expansion rows' `saturated` flag, and the attempt rows'
+            # `stop_reason` tell those apart.
             trace.stop_reason = "time_exhausted" if budget.expired() else "frontier_exhausted"
             break
 
@@ -608,7 +611,13 @@ async def search_pair(
         # A terminal node came out of a saturated egraph, so sampling from it
         # would rebuild that same egraph and redraw that same pool. Not deferring
         # it sends the search back up to whatever the frontier holds.
-        if not node.terminal and node.depth < budget.max_depth:
+        # A saturated attempt is a dead end as well, we wont get past that
+        # so we don't even queue it as deferred.
+        if (
+            attempt.summary["stop_reason"] != SATURATED
+            and not node.terminal
+            and node.depth < budget.max_depth
+        ):
             frontier.defer(node)
 
     return trace

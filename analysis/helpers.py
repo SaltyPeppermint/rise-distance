@@ -327,11 +327,22 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
 def saturation_rates(runs: Sequence[Run]) -> pl.DataFrame:
     """How often each run saturated, as a share of the events that could.
 
-    Two different things saturate, so both are counted. A `sampling e-graph`
-    saturated while drawing a guide menu, which means the pool it offers is
-    everything that term can reach. A `proof attempt` saturated without the
-    goal in it, a definitive failure for that guide rather than an exhausted
-    budget.
+    Two different things saturate, so both are counted, and the search treats
+    them differently enough that the two numbers do not read the same way.
+
+    A `proof attempt` saturated without the goal in it. That is a definitive
+    failure for the guide rather than an exhausted budget: the goal is not in
+    that node's closure, and every guide drawn from the node stays inside the
+    same closure. The search prunes the subtree instead of expanding it, so
+    this denominator excludes the attempts those dead subtrees would have run.
+
+    A `sampling e-graph` saturated while drawing a guide menu. Because a node
+    whose attempt saturated is never expanded, this is a residual rather than a
+    rate and belongs at 0. Above 0 it is an expansion that saturated even
+    though its own attempt did not, which would mean the pruning misses cases
+    and has to consult the sampling e-graph as well.
+
+    Neither number compares against a run made before the pruning landed.
 
     The denominator is every event of that kind the run recorded, so a pair
     that expanded five times counts five times. A cached expansion is charged
