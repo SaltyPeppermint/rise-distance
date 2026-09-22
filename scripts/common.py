@@ -3,9 +3,9 @@ plumbing, binary checks, the `attempt` payload schema, and eqsat CLI flag
 building."""
 
 import asyncio
+import contextlib
 import json
 import re
-import subprocess
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -71,6 +71,11 @@ def prefix_rss_cap(argv: list[str], limit_bytes) -> list[str]:
         f"MemoryMax={limit_bytes}",
         "-p",
         "MemorySwapMax=0",
+        # An OOM-killed scope stops in `failed` state and stays loaded, so a run
+        # that caps on purpose leaks one unit per kill until the user manager
+        # goes `degraded`. This lets systemd collect them as they die.
+        "-p",
+        "CollectMode=inactive-or-failed",
         "--",
     ] + argv
 
@@ -122,27 +127,40 @@ async def run_json_subprocess(
 
     Raises `MemoryKilled` when `rss_max_bytes` is set and the cap killed it.
     """
-    proc = await asyncio.to_thread(
-        lambda: subprocess.run(
-            prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd,
-            input=input,
-            stdin=None if input is not None else subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+    proc = await asyncio.create_subprocess_exec(
+        *(prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd),
+        stdin=asyncio.subprocess.DEVNULL if input is None else asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    if rss_max_bytes is not None and proc.returncode in OOM_RETURNCODES:
-        raise MemoryKilled(what, proc.stderr)
-    if proc.returncode != 0:
-        raise RuntimeError(f"{what} failed (code {proc.returncode}):\n{proc.stderr}")
     try:
-        envelope = json.loads(proc.stdout)
+        out, err = await asyncio.wait_for(
+            proc.communicate(None if input is None else input.encode()), timeout
+        )
+    except TimeoutError, asyncio.CancelledError:
+        # Both only unwind the *read*, so the child has to be killed by hand.
+        # `systemd-run --scope` execs the workload in place rather than forking,
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            # An already-cancelled caller is handed a second `CancelledError`
+            # The child watcher reaps the child either way.
+            with contextlib.suppress(asyncio.CancelledError):
+                await proc.wait()
+        raise
+
+    stdout, stderr = out.decode(errors="replace"), err.decode(errors="replace")
+
+    if rss_max_bytes is not None and proc.returncode in OOM_RETURNCODES:
+        raise MemoryKilled(what, stderr)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{what} failed (code {proc.returncode}):\n{stderr}")
+    try:
+        envelope = json.loads(stdout)
     except json.JSONDecodeError as e:
         raise RuntimeError(
             f"{what} returned non-JSON stdout: {e}\n"
-            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+            f"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
         ) from e
     return MeasuredJson(payload=envelope["payload"], peak_rss_bytes=int(envelope["peak_rss_bytes"]))
 

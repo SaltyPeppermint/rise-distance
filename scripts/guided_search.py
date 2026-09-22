@@ -23,7 +23,6 @@ import os
 import sys
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -802,7 +801,6 @@ async def main() -> int:
 
     exit_if_missing(args.sample_bin, args.attempt_bin)
     jobs = args.jobs or os.cpu_count() or 1
-    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=jobs))
 
     cfg = json.loads((args.path / "problem_args.json").read_text())
     base_flags = args.base_flags(str(cfg["language"]))

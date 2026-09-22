@@ -20,7 +20,6 @@ import json
 import os
 import secrets
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
@@ -276,7 +275,6 @@ async def main() -> int:
     out = args.path or generate_unique_dir(Path("data/problems"))
     out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
-    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=jobs))
     limits = eqsat_limits(args.model_dump())
     flags = cli_flags(**limits)
     min_rss = parse_size(args.min_rss)
