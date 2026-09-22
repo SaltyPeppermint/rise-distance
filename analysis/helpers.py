@@ -8,24 +8,16 @@ from pathlib import Path
 
 import polars as pl
 
-REQUIRED_COMPARISON_COLUMNS = {
-    "start_term",
-    "goal_term",
-    "guided_success",
-    "unguided_success",
-    "sample_peak_rss_bytes",
-    "verify_peak_rss_bytes",
-    "guided_peak_rss_bytes",
-    "attempts_run",
-    "success_attempt",
-    "setup_status",
-}
-
 BRUTE_COLUMNS = {"peak_rss_bytes": "brute_peak_rss_bytes"}
 
 GUIDED_WORKFLOW_COLUMN = "guided_peak_rss_bytes"
-GUIDED_VERIFICATION_COLUMN = "verify_peak_rss_bytes"
 BRUTE_COLUMN = "brute_peak_rss_bytes"
+
+# Guided peaks comparable with brute force
+GUIDED_PEAK_SCOPES = {
+    "guided attempt": "attempt_peak_rss_bytes",
+    "guided workflow": GUIDED_WORKFLOW_COLUMN,
+}
 
 
 # Share of a bin's width left empty, so grouped bars separate into buckets.
@@ -55,67 +47,53 @@ def _run_dirs(pattern: str, subdir: str) -> list[Path]:
     )
 
 
-def _format_memory_limit(value: int | None) -> str:
-    if value is None:
-        return "unbounded"
-    for unit, size in (("TiB", 2**40), ("GiB", 2**30), ("MiB", 2**20), ("KiB", 2**10)):
-        if value >= size and value % size == 0:
-            return f"{value // size} {unit}"
-    return f"{value} B"
+def _budget(value: float | None) -> str:
+    return "∞" if value is None else f"{value:g}"
 
 
 def _run_label(directory: Path, config: dict) -> str:
-    """Two lines: what the run is, then how hard it was allowed to look."""
-    # Absent in runs predating `--sampling-rss-max`.
-    cap = config["max_rss"]
     frontier = "frontier" if config["frontier"] else "naive"
     full_union = "full_union" if config["full_union"] else "simple_union"
-    sampling_retries = config["sampling_retries"]
-    size_search_steps = config["size_search_steps"]
-    attempts = config["attempts"]
-    seed = config["seed"]
     return (
-        f"{directory.name} · {config['policy']} · {frontier} · {full_union}\n"
-        f"cap={cap} · attempts={attempts} · seed={seed}\n"
-        f"size_steps={size_search_steps} · sampling_retries={sampling_retries}"
+        f"{directory.name} · {config['search_policy']} · "
+        f"depth={config['max_depth']} · branching={config['n_guides']}\n"
+        f"{config['sample_policy']} · {frontier} · {full_union} · "
+        f"size_steps={config['size_search_steps']}\n"
+        f"cap={config['max_rss']} · attempts={_budget(config['max_attempts'])} · "
+        f"time={_budget(config['max_total_time'])} · "
+        f"backoff={config['sampling_backoff']} · seed={config['seed']}"
     )
 
 
 def resolve_runs(patterns: Sequence[str]) -> list[Run]:
-    """Resolve completed individual runs; empty selects every new-schema run."""
-    samples = (
-        [path for path in _run_dirs("run.", "guided_search")]
+    """Resolve run folders under `data/guided_search` by name substring."""
+    directories = (
+        _run_dirs("", "guided_search")
         if not patterns
         else [
             matches[-1] for pattern in patterns if (matches := _run_dirs(pattern, "guided_search"))
         ]
     )
-    if patterns and len(samples) != len(patterns):
-        found = {path.name for path in samples}
+    if patterns and len(directories) != len(patterns):
+        found = {path.name for path in directories}
         raise FileNotFoundError(f"Could not resolve all run patterns; found {sorted(found)}")
 
     runs = []
-    for directory in dict.fromkeys(samples):
+    for directory in dict.fromkeys(directories):
         comparison = directory / "comparison.parquet"
         config_path = directory / "config.json"
-        missing = [path.name for path in (comparison, config_path) if not path.is_file()]
-        if missing:
+        absent = [path.name for path in (comparison, config_path) if not path.is_file()]
+        if absent:
             if patterns:
                 raise ValueError(
-                    f"{directory} is incomplete; missing final artifacts: {', '.join(missing)}"
+                    f"{directory} is incomplete; missing final artifacts: {', '.join(absent)}"
                 )
             continue
         config = json.loads(config_path.read_text())
         runs.append(Run(directory, _run_label(directory, config), config))
     if not runs:
-        raise FileNotFoundError("No completed peak-memory guided-search runs")
+        raise FileNotFoundError("No completed guided-search runs")
     return runs
-
-
-def _validate_comparison(frame: pl.DataFrame, source: Path) -> None:
-    missing = REQUIRED_COMPARISON_COLUMNS - set(frame.columns)
-    if missing:
-        raise ValueError(f"{source} is missing comparison fields: {sorted(missing)}")
 
 
 def _brute_baseline(run: Run) -> pl.DataFrame:
@@ -156,7 +134,6 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     frames = []
     for run in runs:
         frame = pl.read_parquet(run.directory / "comparison.parquet")
-        _validate_comparison(frame, run.directory)
         frame = frame.join(_brute_baseline(run), on=["start_term", "goal_term"], how="left")
         unmatched = frame.filter(pl.col("brute_peak_rss_bytes").is_null()).height
         if unmatched:
@@ -265,25 +242,39 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
         .then(pl.lit("rss cap kill"))
         .when(reason == "Saturated")
         .then(pl.lit("saturated without goal"))
+        # A pair whose search never ran an attempt falls back to the search's
+        # own stop reason, so those land here too.
+        .when(reason == "time_exhausted")
+        .then(pl.lit("pair time budget"))
+        .when(reason == "attempt_budget_exhausted")
+        .then(pl.lit("attempt budget"))
+        .when(reason == "frontier_exhausted")
+        .then(pl.lit("frontier exhausted"))
+        .when(reason == "unstarted")
+        .then(pl.lit("search never started"))
         .otherwise(pl.lit("other"))
     )
 
 
-def _setup_category(status: pl.Expr, sample_peak: pl.Expr) -> pl.Expr:
+def _setup_category(status: pl.Expr) -> pl.Expr:
     """Name why a pair never got a guide menu, from its non-ok ``setup_status``.
 
     ``guide menu: out of memory``
-        Every attempt died at the RSS cap.
+        Every `sample` try, `--sampling-backoff` retries included, died at the
+        RSS cap.
     ``guide menu: no novel terms``
-        The child survived the cap and still printed an empty payload: No
-        novel root terms below the size cap, so there was nothing to draw.s
+        The child survived the cap and still printed an empty payload: no
+        novel root terms below the size cap, so there was nothing to draw.
+    ``guide menu: empty pool``
+        The draw succeeded but returned no samples, or every sample it
+        returned had already been attempted on this pair.
 
     An unrecognized status simply gets passed through.
     """
     return (
         pl.when(status == "rss_killed")
         .then(pl.lit("guide menu: out of memory"))
-        .when((status == "no_novel_terms") | (status == "failed"))
+        .when(status == "no_novel_terms")
         .then(pl.lit("guide menu: no novel terms"))
         .when(status == "empty_pool")
         .then(pl.lit("guide menu: empty pool"))
@@ -297,7 +288,7 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
         "mode",
         pl.lit("guided").alias("method"),
         pl.when(pl.col("setup_status") != "ok")
-        .then(_setup_category(pl.col("setup_status"), pl.col("sample_peak_rss_bytes")))
+        .then(_setup_category(pl.col("setup_status")))
         .when(pl.col("guided_panic").fill_null(False))
         .then(pl.lit("panic"))
         .otherwise(_stop_category(pl.col("guided_stop_reason")))
@@ -326,36 +317,25 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _guided_vs_brute(
-    frame: pl.DataFrame, guided_peak_column: str, guided_peak_scope: str
-) -> pl.DataFrame:
-    """Compare one explicitly named guided peak with the brute-force proof cost.
+def guided_vs_brute(frame: pl.DataFrame, scope: str) -> pl.DataFrame:
+    """One `GUIDED_PEAK_SCOPES` peak against the brute-force cost of the same pair.
 
     Conditioned on guided success only: a guided failure has no peak to
     compare, just the budget it exhausted.
     """
+    column = GUIDED_PEAK_SCOPES[scope]
     return (
         frame.filter(pl.col("guided_success"))
-        .drop_nulls([guided_peak_column, BRUTE_COLUMN])
-        .filter((pl.col(guided_peak_column) > 0) & (pl.col(BRUTE_COLUMN) > 0))
+        .drop_nulls([column, BRUTE_COLUMN])
+        .filter((pl.col(column) > 0) & (pl.col(BRUTE_COLUMN) > 0))
         .with_columns(
-            pl.lit(guided_peak_scope).alias("guided_peak_scope"),
-            (pl.col(guided_peak_column) / 2**20).alias("guided_peak_mib"),
+            pl.lit(scope).alias("guided_peak_scope"),
+            (pl.col(column) / 2**20).alias("guided_peak_mib"),
             (pl.col(BRUTE_COLUMN) / 2**20).alias("brute_peak_mib"),
-            (pl.col(guided_peak_column) / pl.col(BRUTE_COLUMN)).alias("peak_ratio"),
+            (pl.col(column) / pl.col(BRUTE_COLUMN)).alias("peak_ratio"),
         )
         .with_columns(((1 - pl.col("peak_ratio")) * 100).alias("memory_saved_pct"))
     )
-
-
-def verification_vs_brute(frame: pl.DataFrame) -> pl.DataFrame:
-    """Guided verification versus the brute-force proof cost for the same pair."""
-    return _guided_vs_brute(frame, GUIDED_VERIFICATION_COLUMN, "guided verification")
-
-
-def workflow_vs_brute(frame: pl.DataFrame) -> pl.DataFrame:
-    """The complete guided workflow versus the brute-force proof cost for the same pair."""
-    return _guided_vs_brute(frame, GUIDED_WORKFLOW_COLUMN, "guided workflow")
 
 
 def peak_win_counts(frame: pl.DataFrame) -> pl.DataFrame:
@@ -365,8 +345,8 @@ def peak_win_counts(frame: pl.DataFrame) -> pl.DataFrame:
     partition `n_guided_successes`.
     """
     counts = []
-    for builder in (verification_vs_brute, workflow_vs_brute):
-        comparison = builder(frame)
+    for scope in GUIDED_PEAK_SCOPES:
+        comparison = guided_vs_brute(frame, scope)
         if comparison.is_empty():
             continue
         counts.append(

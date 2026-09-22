@@ -48,6 +48,7 @@ or exit $status
 memrun uv run scripts/guided_search.py $search_args \
   --max-depth 2 \
   --max-attempts 30 \
+  --max-total-time 300 \
   --search-policy depth \
   --output data/guided_search/depth2-depth \
   data/problems/expensive-bird
@@ -56,6 +57,7 @@ or exit $status
 memrun uv run scripts/guided_search.py $search_args \
   --max-depth 2 \
   --max-attempts 30 \
+  --max-total-time 300 \
   --search-policy width \
   --output data/guided_search/depth2-width \
   data/problems/expensive-bird
