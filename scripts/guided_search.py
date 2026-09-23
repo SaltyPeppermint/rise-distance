@@ -267,6 +267,7 @@ class SearchFrontier:
     node's own children are ready before its siblings get a turn; `width` pops
     the oldest, exhausting a depth before descending, so it only draws once the
     frontier is empty.
+    Under both policies siblings are tried in the order `sample` returned them.
     """
 
     def __init__(
@@ -330,7 +331,8 @@ class SearchFrontier:
                     terminal=expansion.saturated,
                 )
             )
-        self._items.extend(children)
+        # `depth` pops from the right, so push reversed to keep siblings left to right.
+        self._items.extend(reversed(children) if self.policy == "depth" else children)
 
         self.trace.expansions.append(
             {
