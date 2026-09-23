@@ -35,7 +35,7 @@ SATURATION_COLORS = [PALETTE[4], PALETTE[5]]
 # label has to ask for the split.
 MODE_LABEL_SPLIT = "split(datum.label, '\\n')"
 
-THEME = {
+THEME: alt.theme.ThemeConfig = {
     "config": {
         "view": {"continuousWidth": 360, "continuousHeight": 260, "strokeOpacity": 0},
         "axis": {
