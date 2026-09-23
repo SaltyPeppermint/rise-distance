@@ -19,14 +19,16 @@ use crate::sampling::convolve_entry;
 ///
 /// SPACE SAVING:
 ///
-/// `suffix_convolutions` produces `n + 1` tables for an `n`-ary node, but the
-/// last two are never worth materializing: position `n` is the empty product
-/// `{0: 1}`, and position `n - 1` convolves the last child against that empty
-/// product, so it is a verbatim copy of that child's histogram. Only positions
-/// `0..n - 1` are stored. We have a lot of nodes for which this kicks in.
+/// `suffix_convolutions` produces `n + 1` tables for an `n`-ary node, but
+/// only positions `1..n - 1` are stored, so `tables[j]` is position `j + 1`:
+/// - Position `n` is the empty product `{0: 1}`, and position `n - 1`
+///   convolves the last child against it, so it is a verbatim copy of that
+///   child's histogram. Both are reconstructed on read.
+/// - Position `0` is only ever read at the current layer's total, to sum the
+///   key's count. It is computed on the fly and never stored.
 ///
-/// Both implicit positions are reconstructed on read. In an e-graph of mostly
-/// binary nodes this is the difference between three tables per node and one.
+/// In an e-graph of mostly binary nodes this is the difference between three
+/// tables per node and none.
 type SuffixTables<K> = HashMap<K, Vec<Vec<HashMap<usize, BigUint>>>>;
 
 /// Size-layered counting over e-class keys or current/previous class pairs.
@@ -53,9 +55,10 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
             .map(|&k| {
                 let tables = children_of[&k]
                     .iter()
-                    // The two trailing positions stay implicit, so an `n`-ary
-                    // node keeps `n - 1` tables and a leaf or unary node none.
-                    .map(|children| vec![HashMap::default(); children.len().saturating_sub(1)])
+                    // The first and the two trailing positions stay implicit,
+                    // so an `n`-ary node keeps `n - 2` tables and a node of
+                    // arity below three none.
+                    .map(|children| vec![HashMap::default(); children.len().saturating_sub(2)])
                     .collect();
                 (k, tables)
             })
@@ -86,58 +89,69 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
             ..
         } = self;
 
-        // Extend the suffix tables by `total`. Subterm sizes are >= 1, so
-        // every part of `total` is <= size - 1: exactly the histogram
-        // entries that already exist, and those are final. For the same
-        // reason the `total` entry inserted into `tables[i + 1]` in this
-        // very loop can never feed into `tables[i]`, and `data` still holds
-        // nothing at `size` — this layer's histograms land below.
+        // Extend the stored suffix tables by `total` and sum each key's count
+        // at `size`: the number of ways any of its nodes fills its children
+        // with `total`, i.e. the sum over its nodes of suffix position 0.
+        // Subterm sizes are >= 1, so every part of `total` is <= size - 1:
+        // exactly the histogram entries that already exist, and those are
+        // final. For the same reason the `total` entry inserted into
+        // `tables[j + 1]` in this very loop can never feed into `tables[j]`.
+        // This layer's counts are collected and only land in `data` after
+        // the loop.
+        let mut layer = Vec::new();
         for (&k, _) in budgets.iter().filter(|&(_, &budget)| size <= budget) {
             let per_node = suffix.get_mut(&k).unwrap();
+            let mut count = BigUint::ZERO;
             for (children, tables) in children_of[&k].iter().zip(per_node.iter_mut()) {
-                // A leaf stores no tables and has no last child to stand in
-                // for the implicit position.
-                let Some(last) = children.last() else {
-                    continue;
-                };
-                for i in (0..tables.len()).rev() {
-                    let Some(child_hist) = data.get(&children[i]) else {
-                        continue;
-                    };
-                    let (head, tail) = tables.split_at_mut(i + 1);
-                    // `tail` is empty exactly when position `i + 1` is the
-                    // implicit last-child one; read that child's histogram
-                    // directly. Truncating it at this key's budget would
-                    // change nothing: every part of `total` is <= `total`.
-                    let Some(rest) = tail.first().or_else(|| data.get(last)) else {
-                        continue;
-                    };
-                    let count = convolve_entry(child_hist, rest, total);
-                    if count != BigUint::ZERO {
-                        head[i].insert(total, count);
+                match children.as_slice() {
+                    // A leaf is one term of size one, with nothing to fill.
+                    [] => {
+                        if total == 0 {
+                            count += 1u32;
+                        }
+                    }
+                    // A lone child takes the whole total itself.
+                    [only] => {
+                        if let Some(c) = data.get(only).and_then(|hist| hist.get(&total)) {
+                            count += c;
+                        }
+                    }
+                    [first, .., last] => {
+                        // `tables[j]` is position `j + 1`, filled by child
+                        // `j + 1` against position `j + 2`.
+                        for j in (0..tables.len()).rev() {
+                            let Some(child_hist) = data.get(&children[j + 1]) else {
+                                continue;
+                            };
+                            let (head, tail) = tables.split_at_mut(j + 1);
+                            // `tail` is empty exactly when position `j + 2`
+                            // is the implicit last-child one; read that
+                            // child's histogram directly. Truncating it at
+                            // this key's budget would change nothing: every
+                            // part of `total` is <= `total`.
+                            let Some(rest) = tail.first().or_else(|| data.get(last)) else {
+                                continue;
+                            };
+                            let c = convolve_entry(child_hist, rest, total);
+                            if !c.is_zero() {
+                                head[j].insert(total, c);
+                            }
+                        }
+                        // Position 0, only needed at `total`. Position 1 is
+                        // the last child itself for a binary node.
+                        let rest = tables.first().or_else(|| data.get(last));
+                        if let (Some(first_hist), Some(rest)) = (data.get(first), rest) {
+                            count += convolve_entry(first_hist, rest, total);
+                        }
                     }
                 }
             }
-        }
-
-        // A key's count at `size` is the number of ways any of its nodes
-        // fills its children with `total`, i.e. the sum over its nodes of
-        // suffix position 0 implicit for arity below two.
-        for (&k, _) in budgets.iter().filter(|&(_, &budget)| size <= budget) {
-            let count = children_of[&k]
-                .iter()
-                .zip(&suffix[&k])
-                .filter_map(|(children, tables)| match children.as_slice() {
-                    // A leaf is one term of size one, with nothing to fill.
-                    [] => (total == 0).then_some(&BigUint::ONE),
-                    // A lone child takes the whole total itself.
-                    [only] => data.get(only)?.get(&total),
-                    _ => tables[0].get(&total),
-                })
-                .sum::<BigUint>();
             if !count.is_zero() {
-                data.entry(k).or_default().insert(size, count);
+                layer.push((k, count));
             }
+        }
+        for (k, count) in layer {
+            data.entry(k).or_default().insert(size, count);
         }
 
         size

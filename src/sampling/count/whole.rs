@@ -191,12 +191,14 @@ mod tests {
         let b = egraph.add(SymbolLang::leaf("b"));
         let apb = egraph.add(SymbolLang::new("+", vec![a, b]));
         let gab = egraph.add(SymbolLang::new("g", vec![apb, b]));
+        // A ternary node is the only kind that stores a table.
+        let root = egraph.add(SymbolLang::new("h", vec![gab, apb, b]));
 
         egraph.union(a, apb);
         egraph.rebuild();
 
         let limit = 9;
-        let budgets = RootBudgets::of_root(&egraph, gab, limit);
+        let budgets = RootBudgets::of_root(&egraph, root, limit);
         let mut dp = whole_dp_rooted(&egraph, &budgets);
         for _ in 0..budgets.limit() {
             dp.step();
@@ -216,11 +218,11 @@ mod tests {
                 let budget = budgets.budget(id).unwrap() - 1;
                 let expected = suffix_convolutions(&histograms, budget);
 
-                // Only positions `0..n - 1` are stored; the last two are
-                // implicit, and drawers rebuild them with
+                // Only positions `1..n - 1` are stored; the first and the
+                // last two are implicit, and drawers rebuild them with
                 // `suffix_convolutions` over the same histograms.
-                assert_eq!(tables.len(), children.len().saturating_sub(1));
-                assert_eq!(tables.as_slice(), &expected[..tables.len()]);
+                assert_eq!(tables.len(), children.len().saturating_sub(2));
+                assert_eq!(tables.as_slice(), &expected[1..=tables.len()]);
             }
         }
     }
