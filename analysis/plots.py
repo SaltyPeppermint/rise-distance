@@ -19,16 +19,22 @@ PALETTE = [
 ]
 # Peak RSS is the only memory metric reported; it names every memory axis.
 MEMORY_LABEL = "peak RSS"
+# Success green, failure orange, and neutral gray
+SUCCESS_COLOR = "#4c9f70"
+FAILURE_COLOR = "#c1503f"
+NEUTRAL_COLOR = "#b8b8b4"
+
+GUIDED_COLOR = PALETTE[0]
+UNGUIDED_COLOR = PALETTE[1]
+
 METHOD_ORDER = ["guided", "unguided"]
-METHOD_COLORS = [PALETTE[0], PALETTE[1]]
+METHOD_COLORS = [GUIDED_COLOR, UNGUIDED_COLOR]
 OUTCOME_ORDER = ["both", "guided only", "unguided only", "neither"]
-OUTCOME_COLORS = ["#4c9f70", "#2a78d6", "#eb6834", "#b8b8b4"]
+OUTCOME_COLORS = [PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR]
 WIN_ORDER = ["below brute force", "at or above"]
-WIN_COLORS = ["#4c9f70", "#eb6834"]
+WIN_COLORS = [SUCCESS_COLOR, FAILURE_COLOR]
 BRUTE_COST_ORDER = ["guided failed", "guided proved, at or above", "guided proved, cheaper"]
-BRUTE_COST_COLORS = ["#eb6834", "#eda100", "#4c9f70"]
-SATURATION_ORDER = ["sampling e-graph", "proof attempt"]
-SATURATION_COLORS = [PALETTE[4], PALETTE[5]]
+BRUTE_COST_COLORS = [FAILURE_COLOR, PALETTE[5], SUCCESS_COLOR]
 
 # `helpers` breaks a run label over two lines. Vega stacks a text array into
 # lines but never splits a string itself, so every encoding that draws a mode
@@ -189,16 +195,10 @@ def saturation_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("rate:Q", title="share of events that saturated", axis=alt.Axis(format="%")),
             y=_mode_axis(meta["modes"]),
-            yOffset=alt.YOffset("kind:N", sort=SATURATION_ORDER),
-            color=alt.Color(
-                "kind:N",
-                sort=SATURATION_ORDER,
-                scale=alt.Scale(domain=SATURATION_ORDER, range=SATURATION_COLORS),
-                legend=alt.Legend(title=None),
-            ),
+            yOffset=alt.YOffset("kind:N"),
+            color=alt.Color("kind:N", legend=alt.Legend(title=None)),
             tooltip=[
                 "mode:N",
-                "kind:N",
                 alt.Tooltip("saturated:Q", title="saturated events"),
                 alt.Tooltip("n:Q", title="events"),
                 alt.Tooltip("rate:Q", format=".1%", title="share"),
