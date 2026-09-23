@@ -74,7 +74,7 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
     }
 
     /// Complete and return the next size layer. Counts through it are final.
-    pub fn step(&mut self) -> usize {
+    pub(crate) fn step(&mut self) -> usize {
         self.size += 1;
         let size = self.size;
         // Children of a size-`size` term share this budget; it is also the
@@ -158,24 +158,24 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
     }
 
     #[must_use]
-    pub const fn data(&self) -> &HashMap<K, HashMap<usize, BigUint>> {
+    pub(crate) const fn data(&self) -> &HashMap<K, HashMap<usize, BigUint>> {
         &self.data
     }
 
     #[must_use]
-    pub const fn budgets(&self) -> &HashMap<K, usize> {
+    pub(crate) const fn budgets(&self) -> &HashMap<K, usize> {
         &self.budgets
     }
 
     /// The DP's working tables, in the truncated [`SuffixTables`] layout.
     #[cfg(test)]
-    pub const fn suffix(&self) -> &SuffixTables<K> {
+    pub(crate) const fn suffix(&self) -> &SuffixTables<K> {
         &self.suffix
     }
 
     /// Consume the DP, returning the histograms and dropping the suffix
     /// tables.
-    pub fn into_data(self) -> HashMap<K, HashMap<usize, BigUint>> {
+    pub(crate) fn into_data(self) -> HashMap<K, HashMap<usize, BigUint>> {
         self.data
     }
 }

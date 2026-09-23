@@ -11,6 +11,7 @@ use rise_distance::langs::diospyros::rewriteconcats::list_to_concats;
 use rise_distance::langs::diospyros::rules::{filter_applicable_rules, rules};
 use rise_distance::langs::diospyros::stringconversion::convert_string;
 use rise_distance::sampling::{AnalysisPackage, FrontierPackage};
+use rise_distance::search::{BruteArgs, CutArgs, SearchMode};
 use rise_distance::{eqsat, lower};
 
 #[derive(Parser)]
@@ -44,7 +45,7 @@ struct Args {
     no_vec: bool,
 
     #[command(subcommand)]
-    mode: Mode,
+    mode: SearchMode,
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -54,48 +55,6 @@ enum Mode {
     /// Grow the egraph to a cut point, construct novel frontier samples, restart
     /// eqsat from each, and keep the best cost found across all restarts.
     Cut(CutArgs),
-}
-
-#[derive(clap::Args, Clone, Debug)]
-struct BruteArgs {
-    /// Wall-clock timeout in seconds.
-    #[arg(long, default_value_t = 180.0)]
-    timeout: f64,
-
-    /// Maximum egraph nodes before stopping.
-    #[arg(long, default_value_t = 10_000_000)]
-    max_nodes: usize,
-
-    /// Maximum eqsat iterations.
-    #[arg(long, default_value_t = 10_000)]
-    max_iters: usize,
-}
-
-#[derive(clap::Args, Clone, Debug)]
-struct CutArgs {
-    /// Stop the first phase after this many iterations and construct samples.
-    #[arg(long, default_value_t = 10)]
-    cut_iters: usize,
-
-    /// Maximum egraph nodes per phase.
-    #[arg(long, default_value_t = 10_000_000)]
-    max_nodes: usize,
-
-    /// Wall-clock timeout (seconds) per phase.
-    #[arg(long, default_value_t = 60.0)]
-    timeout: f64,
-
-    /// Maximum eqsat iterations in the second (verify) phase.
-    #[arg(long, default_value_t = 10_000)]
-    verify_iters: usize,
-
-    /// Number of novel frontier samples to draw at the cut point.
-    #[arg(long, default_value_t = 50)]
-    sample_count: usize,
-
-    /// Maximum term size considered when enumerating frontier terms.
-    #[arg(long, default_value_t = 30)]
-    max_size: usize,
 }
 
 struct RunResult {
@@ -142,11 +101,11 @@ fn load_benchmark(path: &Path) -> RecExpr<VecLang> {
         .unwrap_or_else(|e| panic!("parse failed for {display}: {e}"))
 }
 
-fn run_benchmark(path: &Path, mode: &Mode, no_ac: bool, no_vec: bool) {
+fn run_benchmark(path: &Path, mode: &SearchMode, no_ac: bool, no_vec: bool) {
     let prog = load_benchmark(path);
     let result = match mode {
-        Mode::Brute(a) => run_brute(&prog, a, no_ac, no_vec),
-        Mode::Cut(a) => run_cut(&prog, a, no_ac, no_vec),
+        SearchMode::Brute(a) => run_brute(&prog, a, no_ac, no_vec),
+        SearchMode::Cut(a) => run_cut(&prog, a, no_ac, no_vec),
     };
 
     let Some(result) = result else {
@@ -195,7 +154,7 @@ fn run_brute(
     let mut rule_set = rules(no_ac, no_vec);
     filter_applicable_rules(&mut rule_set, prog);
 
-    let cfg = config(args.max_iters, args.max_nodes, args.timeout);
+    let cfg = config(args.max_iters, args.max_nodes, args.max_time);
     let Some(result) = eqsat::run_eqsat::<VecLang, (), _>(prog, rule_set.iter(), &cfg) else {
         eprintln!("run_eqsat returned None. Not enough distinct iterations");
         return None;
@@ -222,7 +181,7 @@ fn run_cut(
     filter_applicable_rules(&mut rule_set, prog);
 
     // Phase 1: grow to the cut point, then construct novel frontier samples.
-    let cut_cfg = config(args.cut_iters, args.max_nodes, args.timeout);
+    let cut_cfg = config(args.cut_iters, args.max_nodes, args.max_time);
     let Some(cut_result) = eqsat::run_eqsat::<VecLang, (), _>(prog, rule_set.iter(), &cut_cfg)
     else {
         eprintln!("Cut phase 1 returned None");
@@ -240,14 +199,17 @@ fn run_cut(
         return None;
     };
 
-    let samples =
-        match package.draw_samples(args.sample_count, Policy::Count, [args.cut_iters as u64, 0]) {
-            Ok(samples) => samples,
-            Err(e) => {
-                eprintln!("Sample drawing failed {e}");
-                return None;
-            }
-        };
+    let samples = match package.draw_samples(
+        args.samples_count,
+        Policy::Count,
+        [args.cut_iters as u64, 0],
+    ) {
+        Ok(samples) => samples,
+        Err(e) => {
+            eprintln!("Sample drawing failed {e}");
+            return None;
+        }
+    };
 
     println!(
         "Cut: drew {} frontier sample after {} iters",
@@ -256,7 +218,7 @@ fn run_cut(
     );
 
     // Phase 2: run eqsat from each samples and keep the best cost.
-    let verify_cfg = config(args.verify_iters, args.max_nodes, args.timeout);
+    let verify_cfg = config(args.cut_iters, args.max_nodes, args.max_time);
     let runs = samples.iter().enumerate().filter_map(|(i, samples)| {
         let start = lower(samples.clone());
         eqsat::run_eqsat::<VecLang, (), _>(&start, &rule_set, &verify_cfg)

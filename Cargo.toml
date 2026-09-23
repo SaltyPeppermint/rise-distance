@@ -100,9 +100,5 @@ name = "rise"
 path = "src/bin/rise.rs"
 
 [[bin]]
-name = "measure-cost"
-path = "src/bin/measure_cost.rs"
-
-[[bin]]
 name = "diospyros"
 path = "src/bin/diospyros.rs"

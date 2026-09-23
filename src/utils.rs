@@ -1,9 +1,7 @@
 use std::collections::VecDeque;
 use std::hash::Hash;
 
-use egg::{
-    Analysis, CostFunction, Extractor, Id, Language, LpCostFunction, LpExtractor, RecExpr, Runner,
-};
+use egg::{Id, Language, RecExpr};
 use foldhash::fast::FixedState;
 use procfs::process::Process;
 use rand::SeedableRng;
@@ -83,19 +81,19 @@ impl<U: Eq + Hash + Clone + Default> FromIterator<U> for UniqueQueue<U> {
 }
 
 impl<T: Eq + Hash + Clone> UniqueQueue<T> {
-    pub fn insert(&mut self, t: T) {
+    pub(crate) fn insert(&mut self, t: T) {
         if self.set.insert(t.clone()) {
             self.queue.push_back(t);
         }
     }
 
-    pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+    pub(crate) fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for t in iter {
             self.insert(t);
         }
     }
 
-    pub fn pop(&mut self) -> Option<T> {
+    pub(crate) fn pop(&mut self) -> Option<T> {
         let res = self.queue.pop_front();
         if let Some(t) = &res {
             self.set.remove(t);
@@ -162,27 +160,6 @@ impl<L: Language> ExprHashCons<L> {
 
         fresh
     }
-}
-
-// TODO REMOVE ME
-pub fn cheapest<CF, L, N, I>(runner: &Runner<L, N, I>, cf: CF) -> usize
-where
-    CF: CostFunction<L, Cost = usize>,
-    L: Language,
-    N: Analysis<L>,
-{
-    Extractor::new(&runner.egraph, cf).find_best_cost(runner.roots[0])
-}
-
-// TODO REMOVE ME
-pub fn cheapest_ilp<CF, L, N, I>(runner: &Runner<L, N, I>, cf: CF) -> RecExpr<L>
-where
-    CF: LpCostFunction<L, N>,
-    L: Language,
-    N: Analysis<L>,
-{
-    let root = runner.egraph.find(runner.roots[0]);
-    LpExtractor::new(&runner.egraph, cf).solve(root)
 }
 
 pub fn stack_children<L: Language>(children: &[RecExpr<L>], root: L) -> RecExpr<L> {

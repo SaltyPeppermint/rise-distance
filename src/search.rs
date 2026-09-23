@@ -9,8 +9,6 @@
 //! - [`SearchMode::Brute`]: grow one continuous e-graph and check the sketches
 //!   directly, with no sample restart.
 
-// TODO MOVE WHOLE FILE INTO DISOPEROOUS NOT USED ANYWHERE ELSE
-
 use std::fmt::Display;
 
 use egg::{Language, RecExpr, Rewrite};
@@ -65,7 +63,7 @@ pub struct BruteArgs {
 }
 
 /// Which search strategy to run.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, clap::Subcommand)]
 pub enum SearchMode {
     /// Cut at an iteration, construct novel samples, continue, and verify.
     Cut(CutArgs),
