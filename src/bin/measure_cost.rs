@@ -1,11 +1,11 @@
 // TODO: DELETE ME
-
+#![expect(clippy::disallowed_types, reason = "not in the main path")]
 use core::panic;
 
 use clap::Parser;
 use egg::{AstDepth, AstSize, Iteration, IterationData, RecExpr, Rewrite, Runner};
-use hashbrown::HashMap;
 
+use hashbrown::HashMap;
 use serde::Serialize;
 
 use rise_distance::cheapest;

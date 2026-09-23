@@ -1,6 +1,6 @@
 use std::io;
 
-use hashbrown::HashMap;
+use crate::utils::HashMap;
 
 /// Transforms a named location in an array to a Get expressions.
 /// For example, the name A$13 is transformed into (Get A 13).
@@ -95,7 +95,7 @@ pub fn convert_string(input: &str) -> io::Result<String> {
     let input = input.replace('\'', "");
     let v = lexpr::from_str(&input)?;
     // Rewrite specifications
-    let mut rewrites = HashMap::new();
+    let mut rewrites = HashMap::default();
     rewrites.insert("list", "List");
     let egg = to_egg(v, false, &rewrites);
     lexpr::to_string(&egg)

@@ -2,8 +2,9 @@ use egg::{
     Analysis, Applier, ConditionEqual, DidMerge, EGraph, Id, Language, Pattern, PatternAst,
     Rewrite, Subst, Symbol, Var, define_language, merge_option, rewrite,
 };
-use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
+
+use crate::utils::HashSet;
 
 define_language! {
     #[derive(Deserialize,Serialize)]

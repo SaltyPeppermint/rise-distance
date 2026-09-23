@@ -7,16 +7,17 @@ pub use draw::{DrawerPackage, FrontierPackage, PlainPackage};
 
 use std::borrow::Borrow;
 
-use hashbrown::HashMap;
 use num::{BigUint, ToPrimitive, Zero};
+
+use crate::utils::HashMap;
 
 /// Convolve all child histograms into a single result (left-to-right).
 pub fn convolve<H: Borrow<HashMap<usize, BigUint>>>(
     histograms: &[H],
     budget: usize,
 ) -> HashMap<usize, BigUint> {
-    let mut acc = HashMap::from([(0, BigUint::ONE)]);
-    let mut prev = HashMap::new();
+    let mut acc = [(0, BigUint::ONE)].into_iter().collect();
+    let mut prev = HashMap::default();
 
     for h in histograms {
         std::mem::swap(&mut acc, &mut prev);
@@ -88,8 +89,8 @@ pub fn suffix_convolutions<H: Borrow<HashMap<usize, BigUint>>>(
     budget: usize,
 ) -> Vec<HashMap<usize, BigUint>> {
     let n = histograms.len();
-    let mut suffix = vec![HashMap::new(); n + 1];
-    suffix[n] = HashMap::from([(0, BigUint::ONE)]);
+    let mut suffix = vec![HashMap::default(); n + 1];
+    suffix[n] = [(0, BigUint::ONE)].into_iter().collect();
 
     for i in (0..n).rev() {
         let (left, right) = suffix.split_at_mut(i + 1);

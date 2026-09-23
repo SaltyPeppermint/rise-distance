@@ -5,9 +5,8 @@ mod extract;
 use std::fmt::Debug;
 
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
-use hashbrown::HashMap;
 
-use crate::utils::UniqueQueue;
+use crate::utils::{HashMap, UniqueQueue};
 
 pub(crate) use contains::{SatisfiesContainsAnalysis, SatisfiesOnlyContainsAnalysis};
 pub(crate) use extract::{ExtractAnalysis, ExtractContainsAnalysis, ExtractOnlyContainsAnalysis};

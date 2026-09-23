@@ -4,10 +4,16 @@ use std::hash::Hash;
 use egg::{
     Analysis, CostFunction, Extractor, Id, Language, LpCostFunction, LpExtractor, RecExpr, Runner,
 };
-use hashbrown::{HashMap, HashSet};
+use foldhash::fast::FixedState;
 use procfs::process::Process;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
+
+// Deterministic HashMap and HashSet
+#[expect(clippy::disallowed_types, reason = "defines the safe crate wide type")]
+pub(crate) type HashMap<K, V> = hashbrown::HashMap<K, V, FixedState>;
+#[expect(clippy::disallowed_types, reason = "defines the safe crate wide type")]
+pub(crate) type HashSet<V> = hashbrown::HashSet<V, FixedState>;
 
 /// Minimal union-find for dense index types.
 ///
@@ -62,7 +68,7 @@ where
 /// Thanks @Bastacyclop for the implementation!
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub(crate) struct UniqueQueue<T: Eq + Hash + Clone> {
-    set: HashSet<T>, // hashbrown::
+    set: HashSet<T>,
     queue: VecDeque<T>,
 }
 
@@ -136,7 +142,7 @@ impl<L: Language> ExprHashCons<L> {
     }
 
     pub(crate) fn extract(&self, id: usize) -> RecExpr<L> {
-        let mut used = HashSet::new();
+        let mut used = HashSet::default();
         used.insert(id);
         for (i, node) in self.node_store.iter().enumerate().rev() {
             if used.contains(&i) {

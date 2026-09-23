@@ -1,15 +1,12 @@
 use std::fmt::Debug;
 
 use egg::{Analysis, CostFunction, EGraph, Id, Language, RecExpr};
-use hashbrown::HashMap;
 
 use super::{Sketch, SketchLang};
-use crate::{
-    analysis::semilattice::{
-        ExtractAnalysis, ExtractContainsAnalysis, ExtractOnlyContainsAnalysis, SemiLatticeAnalysis,
-    },
-    utils::ExprHashCons,
+use crate::analysis::semilattice::{
+    ExtractAnalysis, ExtractContainsAnalysis, ExtractOnlyContainsAnalysis, SemiLatticeAnalysis,
 };
+use crate::utils::{ExprHashCons, HashMap};
 
 /// Returns the best program satisfying `s` according to `cost_fn` that is represented in the `id` e-class of `egraph`, if it exists.
 pub fn eclass_extract<L, A, CF>(

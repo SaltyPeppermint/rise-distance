@@ -3,13 +3,13 @@ mod plain;
 mod weigher;
 
 use egg::{Id, RecExpr};
-use hashbrown::{HashMap, HashSet};
 use num::{BigUint, ToPrimitive};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use thiserror::Error;
 
 use crate::cli::Policy;
+use crate::utils::{HashMap, HashSet};
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
 pub use frontier::{FrontierDrawer, FrontierPackage};
@@ -91,7 +91,7 @@ pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
 
         // Deterministic rng
         let mut rng = utils::combined_rng([size as u64, seed[0], seed[1]]);
-        let mut drawn = HashSet::new();
+        let mut drawn = HashSet::default();
         let mut budget = requested_count * MAX_DRAW_ATTEMPTS_PER_SAMPLE;
         while drawn.len() < target && budget > 0 {
             drawn.insert(self.draw(id, size, &mut rng));

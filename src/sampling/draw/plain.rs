@@ -1,5 +1,4 @@
 use egg::{EGraph, Id, RecExpr};
-use hashbrown::HashMap;
 use num::BigUint;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
@@ -14,6 +13,7 @@ use crate::sampling::draw::{
     CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
 };
 use crate::sampling::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
+use crate::utils::HashMap;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 pub struct PlainDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {

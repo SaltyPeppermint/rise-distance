@@ -1,0 +1,10 @@
+disallowed-types = [
+    { path = "hashbrown::HashMap", reason = "randomly seeded hasher; use `crate::utils::HashMap`" },
+    { path = "hashbrown::HashSet", reason = "randomly seeded hasher; use `crate::utils::HashSet`" },
+    { path = "std::collections::HashMap", reason = "randomly seeded hasher; use `crate::utils::HashMap`" },
+    { path = "std::collections::HashSet", reason = "randomly seeded hasher; use `crate::utils::HashSet`" },
+    { path = "hashbrown::DefaultHashBuilder", reason = "randomly seeded hasher; use `foldhash::fast::FixedState`" },
+    { path = "std::hash::RandomState", reason = "randomly seeded hasher; use `foldhash::fast::FixedState`" },
+    { path = "foldhash::fast::RandomState", reason = "randomly seeded hasher; use `foldhash::fast::FixedState`" },
+    { path = "foldhash::quality::RandomState", reason = "randomly seeded hasher; use `foldhash::quality::FixedState`" },
+]

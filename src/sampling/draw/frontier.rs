@@ -1,5 +1,4 @@
 use egg::{EGraph, Id, RecExpr};
-use hashbrown::HashMap;
 use num::{BigUint, Zero};
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
@@ -17,6 +16,7 @@ use crate::sampling::draw::{
     CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
 };
 use crate::sampling::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
+use crate::utils::HashMap;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
 /// Draws each frontier term independently using the supplied local weighting

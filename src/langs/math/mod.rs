@@ -5,12 +5,12 @@ use egg::{
     Analysis, Applier, DidMerge, EGraph, Id, Language, PatternAst, Rewrite, Subst, Symbol, Var,
     define_language, merge_option, rewrite,
 };
-use hashbrown::HashSet;
 use num::rational::Ratio;
 use num::{BigInt, FromPrimitive, Zero};
 use num::{Signed, ToPrimitive};
 use serde::{Deserialize, Serialize};
 
+use crate::utils::HashSet;
 pub use cost_fn::{
     AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive, SillyCheap, TinyConstant,
 };
@@ -255,7 +255,7 @@ fn has_small_constant_descendant(
     bound: f64,
 ) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
     move |egraph, root, _| {
-        let mut visited: HashSet<Id> = HashSet::new();
+        let mut visited: HashSet<Id> = HashSet::default();
         let mut stack = vec![egraph.find(root)];
         while let Some(id) = stack.pop() {
             let id = egraph.find(id);

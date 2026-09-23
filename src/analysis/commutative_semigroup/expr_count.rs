@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
-use hashbrown::HashMap;
+use utils::HashMap;
 
 use super::CommutativeSemigroupAnalysis;
 use crate::Counter;

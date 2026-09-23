@@ -7,8 +7,9 @@
 
 use std::hash::Hash;
 
-use hashbrown::HashMap;
 use num::{BigUint, Zero};
+
+use crate::utils::HashMap;
 
 use crate::sampling::convolve_entry;
 
@@ -54,7 +55,7 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
                     .iter()
                     // The two trailing positions stay implicit, so an `n`-ary
                     // node keeps `n - 1` tables and a leaf or unary node none.
-                    .map(|children| vec![HashMap::new(); children.len().saturating_sub(1)])
+                    .map(|children| vec![HashMap::default(); children.len().saturating_sub(1)])
                     .collect();
                 (k, tables)
             })
@@ -64,7 +65,7 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
             children_of,
             budgets,
             suffix,
-            data: HashMap::new(),
+            data: HashMap::default(),
             size: 0,
         }
     }

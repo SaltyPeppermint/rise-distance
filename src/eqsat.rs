@@ -5,7 +5,6 @@ use egg::{
     Analysis, AstSize, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language, RecExpr,
     Rewrite, Runner, StopReason,
 };
-use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use strum::Display;
 use thiserror::Error;
@@ -15,6 +14,7 @@ use crate::origin::{OriginLang, lower};
 use crate::previous::PrevIndex;
 use crate::sketch::{self, Sketch};
 use crate::utils::live_heap_bytes;
+use crate::utils::{HashMap, HashSet};
 
 /// Prefix of the machine-readable eqsat progress events written to stderr,
 /// to avoid confusion with human-intended logging
@@ -475,7 +475,7 @@ where
     D: IterationData<L, N>,
     I: IntoIterator<Item = &'a RecExpr<OriginLang<L>>>,
 {
-    let mut origin_to_new_ids = HashMap::new();
+    let mut origin_to_new_ids = HashMap::default();
 
     for guide in guides {
         let new_root = add_uncanon_remember(&mut runner.egraph, guide, &mut origin_to_new_ids);

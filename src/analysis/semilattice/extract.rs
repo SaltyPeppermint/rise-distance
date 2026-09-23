@@ -1,10 +1,9 @@
 use std::{cmp::Ordering, fmt::Debug};
 
 use egg::{Analysis, CostFunction, DidMerge, EGraph, Id, Language};
-use hashbrown::HashMap;
 
 use super::SemiLatticeAnalysis;
-use crate::utils::ExprHashCons;
+use crate::utils::{ExprHashCons, HashMap};
 
 #[derive(Debug)]
 pub(crate) struct ExtractAnalysis<'a, L: Language, CF> {

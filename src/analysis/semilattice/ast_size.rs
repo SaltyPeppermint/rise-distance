@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 
 use egg::{Analysis, AstSize, DidMerge, EGraph, Id, Language};
-use hashbrown::HashMap;
 
 use super::SemiLatticeAnalysis;
+use crate::utils::HashMap;
 
 impl<L: Language, N: Analysis<L>> SemiLatticeAnalysis<L, N> for AstSize {
     type Data = usize;
@@ -35,9 +35,9 @@ impl<L: Language, N: Analysis<L>> SemiLatticeAnalysis<L, N> for AstSize {
 #[cfg(test)]
 mod tests {
     use egg::SymbolLang;
-    use hashbrown::HashMap;
 
     use super::*;
+    use crate::utils::HashMap;
 
     #[test]
     fn simple_analysis() {

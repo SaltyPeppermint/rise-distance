@@ -1,10 +1,9 @@
 use egg::{Id, Language, RecExpr, Symbol};
-use hashbrown::HashSet;
 use num::FromPrimitive;
 use num::rational::Ratio;
 
 use crate::generator::{Grammar, Samplable};
-use crate::utils::id0;
+use crate::utils::{HashSet, id0};
 
 use super::Math;
 

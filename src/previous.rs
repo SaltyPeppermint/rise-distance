@@ -1,12 +1,12 @@
 //! Compact lookup index for an earlier e-graph boundary.
 
 use egg::{Id, Language, UnionEvent};
-use hashbrown::HashMap;
 
 #[cfg(test)]
 use egg::{Analysis, EGraph, RecExpr};
+use foldhash::fast::FixedState;
 
-use crate::utils::DenseUnionFind;
+use crate::utils::{DenseUnionFind, HashMap};
 #[cfg(test)]
 use crate::{MyLanguage, OriginLang};
 
@@ -52,7 +52,7 @@ impl<L: Language> PrevIndex<L> {
             );
             replay.union(event.left, event.right);
         }
-        let mut memo = HashMap::with_capacity(raw_node_count);
+        let mut memo = HashMap::with_capacity_and_hasher(raw_node_count, FixedState::default());
         for (raw_index, raw_node) in raw_nodes[..raw_node_count].iter().enumerate() {
             let mut node = raw_node.clone();
             node.for_each_mut(|child| {

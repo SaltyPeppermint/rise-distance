@@ -30,12 +30,13 @@ fn default_symbols() -> Vec<Prop> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::generator::SizeUniformSampler;
     use egg::{AstSize, CostFunction};
-    use hashbrown::HashSet;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
+
+    use super::*;
+    use crate::generator::SizeUniformSampler;
+    use crate::utils::HashSet;
 
     #[test]
     fn samples_have_exactly_the_target_size() {

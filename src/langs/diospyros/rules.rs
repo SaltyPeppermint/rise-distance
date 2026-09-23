@@ -1,5 +1,4 @@
 use egg::{EGraph, Extractor, Id, Pattern, RecExpr, Rewrite, Runner, Subst, Var, rewrite as rw};
-use hashbrown::HashSet;
 
 use super::VECTOR_WIDTH;
 use super::binopsearcher::build_binop_or_zero_rule;
@@ -7,6 +6,7 @@ use super::cost::VecCostFn;
 use super::macsearcher::build_mac_rule;
 use super::searchutils::{ids_with_prefix, vec_fold_op, vec_map_op, vec_with_var};
 use super::veclang::VecLang;
+use crate::utils::HashSet;
 
 // Check if all the variables, in this case memories, are equivalent
 fn is_all_same_memory_or_zero(
@@ -15,7 +15,7 @@ fn is_all_same_memory_or_zero(
     let vars: Vec<Var> = vars.iter().map(|v| v.parse().unwrap()).collect();
     let zero = VecLang::Num(0);
     move |egraph, _, subst| {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let non_zero_unique = vars
             .iter()
             .filter(|v| !egraph[subst[**v]].nodes.contains(&zero))

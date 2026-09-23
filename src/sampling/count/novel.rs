@@ -3,7 +3,7 @@
 //! A current term is novel when no previous e-class can extract it.
 
 use egg::{Analysis, EGraph, Id, Language};
-use hashbrown::{HashMap, HashSet};
+use foldhash::fast::FixedState;
 use num::{BigUint, Zero};
 use smallvec::SmallVec;
 
@@ -13,6 +13,7 @@ use crate::sampling::count::layered::LayeredDp;
 #[cfg(test)]
 use crate::sampling::count::plain::count_histograms_rooted;
 use crate::sampling::count::plain::plain_dp_rooted;
+use crate::utils::{HashMap, HashSet};
 
 /// A current e-node's match in the previous e-graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -72,12 +73,13 @@ impl NovelTermCount {
     ) -> Self {
         let joint = compute_joint_rooted(curr, &matches, budgets);
         // Calculate cover
-        let cover = joint
-            .keys()
-            .fold(HashMap::new(), |mut out: HashMap<Id, Vec<Id>>, &(c, pc)| {
+        let cover = joint.keys().fold(
+            HashMap::default(),
+            |mut out: HashMap<Id, Vec<Id>>, &(c, pc)| {
                 out.entry(c).or_default().push(pc);
                 out
-            });
+            },
+        );
         let data = derive_novel(plain, &joint);
 
         Self {
@@ -150,8 +152,8 @@ pub(crate) fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousL
     budgets: &RootBudgets,
 ) -> NodeMatches {
     // Previous classes sharing an extraction with each current class.
-    let mut cover = HashMap::new();
-    let mut matches = NodeMatches::new();
+    let mut cover = HashMap::default();
+    let mut matches = NodeMatches::default();
 
     loop {
         // Deduplication goes through the kept matches
@@ -272,7 +274,7 @@ fn joint_children_of<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     matches: &NodeMatches,
 ) -> PairChildren {
-    let mut out = PairChildren::new();
+    let mut out = PairChildren::default();
     for ((c, idx), ms) in matches {
         let node = &curr[*c].nodes[*idx];
         for m in ms {
@@ -369,7 +371,7 @@ fn derive_novel(
     // contributes to exactly one `(c, pc)` pair. Hence
     // `non_novel[c][s] <= plain[c][s]` always (every non-novel term is also
     // a plain term).
-    let mut non_novel: HashMap<Id, HashMap<usize, BigUint>> = HashMap::new();
+    let mut non_novel: HashMap<Id, HashMap<usize, BigUint>> = HashMap::default();
     for ((c, _pc), hist) in joint {
         let entry = non_novel.entry(*c).or_default();
         for (size, count) in hist {
@@ -380,10 +382,10 @@ fn derive_novel(
         }
     }
 
-    let mut out = HashMap::with_capacity(plain.len());
+    let mut out = HashMap::with_capacity_and_hasher(plain.len(), FixedState::default());
     for (c, plain_hist) in plain {
         let nn = non_novel.get(c);
-        let mut hist = HashMap::with_capacity(plain_hist.len());
+        let mut hist = HashMap::with_capacity_and_hasher(plain_hist.len(), FixedState::default());
         for (&size, total) in plain_hist {
             let novel = match nn.and_then(|h| h.get(&size)) {
                 Some(non_novel_count) => {

@@ -379,7 +379,6 @@ fn count_terms<L: Samplable>(
 #[expect(clippy::cast_precision_loss, clippy::float_cmp)]
 mod tests {
     use egg::{Id, RecExpr, define_language};
-    use hashbrown::{HashMap, HashSet};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
     use serde::{Deserialize, Serialize};
@@ -387,7 +386,7 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::langs::prop::Prop;
-    use crate::utils::id0;
+    use crate::utils::{HashMap, HashSet, id0};
 
     #[test]
     fn one_tuple_counts_equal_term_counts_through_limit() {
@@ -543,7 +542,7 @@ mod tests {
         let sampler = SizeUniformSampler::<Tiny>::new(TARGET, None);
         assert_eq!(sampler.space_size(), expected.len() as f64);
 
-        let mut observed = HashMap::<String, usize>::new();
+        let mut observed = HashMap::<String, usize>::default();
         let mut rng = ChaCha8Rng::seed_from_u64(0x5eed);
         for expr in sampler.sample_many(&mut rng, DRAWS) {
             *observed.entry(expr.to_string()).or_default() += 1;

@@ -32,7 +32,6 @@ or exit $status
 
 set -l search_args \
   --max-rss 450M \
-  --sampling-backoff 5 \
   --sample-policy uniform \
   --start-terms 100 \
   --n-guides 10 \
@@ -40,25 +39,55 @@ set -l search_args \
   --full-union
 
 memrun uv run scripts/guided_search.py $search_args \
+  --sampling-backoff 5 \
   --max-depth 1 \
-  --output data/guided_search/depth1 \
+  --output data/guided_search/depth1-backoff-5 \
   data/problems/expensive-bird
 or exit $status
 
 memrun uv run scripts/guided_search.py $search_args \
+  --sampling-backoff 5 \
   --max-depth 2 \
   --max-attempts 30 \
   --max-total-time 300 \
   --search-policy depth \
-  --output data/guided_search/depth2-depth \
+  --output data/guided_search/depth2-death-backoff-5 \
   data/problems/expensive-bird
 or exit $status
 
 memrun uv run scripts/guided_search.py $search_args \
+  --sampling-backoff 5 \
   --max-depth 2 \
   --max-attempts 30 \
   --max-total-time 300 \
   --search-policy width \
-  --output data/guided_search/depth2-width \
+  --output data/guided_search/depth2-width-backoff-5 \
+  data/problems/expensive-bird
+or exit $status
+
+memrun uv run scripts/guided_search.py $search_args \
+  --sampling-backoff 20 \
+  --max-depth 1 \
+  --output data/guided_search/depth1-backoff-20 \
+  data/problems/expensive-bird
+or exit $status
+
+memrun uv run scripts/guided_search.py $search_args \
+  --sampling-backoff 20 \
+  --max-depth 2 \
+  --max-attempts 30 \
+  --max-total-time 300 \
+  --search-policy depth \
+  --output data/guided_search/depth2-death-backoff-20 \
+  data/problems/expensive-bird
+or exit $status
+
+memrun uv run scripts/guided_search.py $search_args \
+  --sampling-backoff 20 \
+  --max-depth 2 \
+  --max-attempts 30 \
+  --max-total-time 300 \
+  --search-policy width \
+  --output data/guided_search/depth2-width-backoff-20 \
   data/problems/expensive-bird
 or exit $status

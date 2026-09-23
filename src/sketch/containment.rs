@@ -1,10 +1,10 @@
 use egg::{Analysis, EGraph, Id, Language};
-use hashbrown::{HashMap, HashSet};
 
 use super::{Sketch, SketchLang};
 use crate::analysis::semilattice::{
     SatisfiesContainsAnalysis, SatisfiesOnlyContainsAnalysis, SemiLatticeAnalysis,
 };
+use crate::utils::{HashMap, HashSet};
 
 /// Is the `id` e-class of `egraph` representing at least one program satisfying `s`?
 pub fn eclass_contains<L: Language, A: Analysis<L>>(
@@ -79,7 +79,7 @@ fn rec_contains<L: Language, A: Analysis<L>>(
             let mut data = egraph
                 .classes()
                 .map(|eclass| (eclass.id, contained_matched.contains(&eclass.id)))
-                .collect::<HashMap<_, _>>();
+                .collect();
 
             SatisfiesContainsAnalysis.one_shot_analysis(egraph, &mut data);
 
@@ -93,7 +93,7 @@ fn rec_contains<L: Language, A: Analysis<L>>(
             let mut data = egraph
                 .classes()
                 .map(|eclass| (eclass.id, contained_matched.contains(&eclass.id)))
-                .collect::<HashMap<_, _>>();
+                .collect();
 
             SatisfiesOnlyContainsAnalysis.one_shot_analysis(egraph, &mut data);
 
