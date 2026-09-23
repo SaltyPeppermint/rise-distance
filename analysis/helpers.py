@@ -59,7 +59,7 @@ def _budget(value: float | None) -> str:
 
 
 def _run_label(directory: Path, config: dict) -> str:
-    frontier = "frontier" if config["frontier"] else "naive"
+    frontier = "frontier" if config["frontier"] else "whole"
     full_union = "full_union" if config["full_union"] else "simple_union"
     return (
         f"{directory.name} · {config['search_policy']} · "

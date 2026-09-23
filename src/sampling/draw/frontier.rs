@@ -11,7 +11,7 @@ use crate::sampling::count::novel::{
     NodeMatch, NodeMatches, NovelTermCount, enumerate_matches_rooted, find_novel_root_sizes,
     prune_matches,
 };
-use crate::sampling::count::plain::count_histograms_rooted;
+use crate::sampling::count::whole::count_histograms_rooted;
 use crate::sampling::draw::{
     CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
 };
@@ -23,7 +23,7 @@ use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 /// policy.
 ///
 /// `CountWeigher` draws proportionally to the number of complete terms below
-/// each derivation choice. `NaiveWeigher` gives every feasible local choice
+/// each derivation choice. `UniformWeigher` gives every feasible local choice
 /// equal weight. Neither policy coordinates choices across a batch.
 pub struct FrontierDrawer<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
     counts: &'a NovelTermCount,
@@ -298,9 +298,9 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         budgets: &RootBudgets,
     ) -> Option<FrontierPackage<L, N>> {
         let (egraph, root) = result.into_curr();
-        let plain = count_histograms_rooted(&egraph, budgets);
-        let counts = NovelTermCount::from_rooted_matches(&egraph, &plain, matches, budgets);
-        drop(plain);
+        let whole = count_histograms_rooted(&egraph, budgets);
+        let counts = NovelTermCount::from_rooted_matches(&egraph, &whole, matches, budgets);
+        drop(whole);
 
         let root = egraph.find(root);
         let histogram = counts.data().get(&root)?;

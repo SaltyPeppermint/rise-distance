@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use rise_distance::cli::{Measured, Policy};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
-use rise_distance::sampling::{DrawerPackage, FrontierPackage, PlainPackage};
+use rise_distance::sampling::{DrawerPackage, FrontierPackage, WholePackage};
 use rise_distance::utils::peak_rss_bytes;
 use rise_distance::{MyAnalysis, MyLanguage, OriginLang, lower};
 
@@ -145,7 +145,7 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
     let samples = if args.frontier {
         build_frontier_samples(args, result, args.policy, &seed_expr)?
     } else {
-        build_plain_samples(args, result, args.policy, &seed_expr)?
+        build_whole_samples(args, result, args.policy, &seed_expr)?
     };
     eprintln!("DEBUG: PEAK RSS AFTER SAMPLING: {}", peak_rss_bytes());
     Ok(Samples {
@@ -198,14 +198,14 @@ fn build_frontier_samples<L: MyLanguage, N: MyAnalysis<L>>(
     Ok(samples)
 }
 
-fn build_plain_samples<L: MyLanguage, N: MyAnalysis<L>>(
+fn build_whole_samples<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     result: EqsatResult<L, N>,
     policy: Policy,
     seed_expr: &RecExpr<L>,
 ) -> Result<Vec<RecExpr<OriginLang<L>>>, String> {
     let start_size = AstSize.cost_rec(seed_expr);
-    let (max_size, package) = PlainPackage::build_through_sizes(
+    let (max_size, package) = WholePackage::build_through_sizes(
         result,
         start_size,
         args.size_search_steps,

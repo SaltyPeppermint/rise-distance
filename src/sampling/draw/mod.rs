@@ -1,6 +1,6 @@
 mod frontier;
-mod plain;
 mod weigher;
+mod whole;
 
 use egg::{Id, RecExpr};
 use num::{BigUint, ToPrimitive};
@@ -13,8 +13,8 @@ use crate::utils::{HashMap, HashSet};
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
 pub use frontier::{FrontierDrawer, FrontierPackage};
-pub use plain::{PlainDrawer, PlainPackage};
 pub use weigher::{CountWeigher, UniformWeigher, Weigher};
+pub use whole::{WholeDrawer, WholePackage};
 
 // TODO SEPARATE CODE PATHS FOR UNIFORM VS COUNT (DP but with bools)
 

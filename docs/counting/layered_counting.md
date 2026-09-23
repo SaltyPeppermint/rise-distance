@@ -7,11 +7,13 @@ bound every production counting phase.
 
 The relevant code is:
 
-- [src/candidates/count/layered.rs](../../src/candidates/count/layered.rs) —
-  `RootBudgets`, `root_budgets`, and `LayeredDp`.
-- [src/candidates/draw/plain.rs](../../src/candidates/draw/plain.rs) —
-  top-down consumption of rooted plain histograms and suffix tables.
-- [src/candidates/count/novel.rs](../../src/candidates/count/novel.rs) — reuse of
+- [src/sampling/count/budgets.rs](../../src/sampling/count/budgets.rs) —
+  `RootBudgets` and `RootBudgets::of_root`.
+- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) —
+  `LayeredDp`.
+- [src/sampling/draw/whole.rs](../../src/sampling/draw/whole.rs) —
+  top-down consumption of rooted whole histograms and suffix tables.
+- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — reuse of
   the kernel for rooted joint counting and the novel-size scan.
 - [src/analysis/semilattice/ast_size.rs](../../src/analysis/semilattice/ast_size.rs)
   — minimum extraction sizes used by the budget calculation.
@@ -21,16 +23,16 @@ The relevant code is:
 For a current e-class `c`, the sparse histogram
 
 ```text
-plain(c, s) = number of terms of exactly size s extractable from c
+whole(c, s) = number of terms of exactly size s extractable from c
 ```
 
 uses AST node count as size. For an e-node `f(c_1, ..., c_k)`, the node costs
 one and its children share the remaining `s - 1` nodes:
 
 ```text
-plain(c, s) = sum over nodes f(c_1, ..., c_k) in c
+whole(c, s) = sum over nodes f(c_1, ..., c_k) in c
               sum over s_1 + ... + s_k = s - 1
-              product_i plain(c_i, s_i)
+              product_i whole(c_i, s_i)
 ```
 
 Every child size is strictly smaller than `s`. Counts at layer `s` therefore
@@ -49,7 +51,7 @@ There is a cycle between e-classes but no cycle between expanded
 
 ## The `LayeredDp` kernel
 
-`LayeredDp<K, C>` is generic over a state key `K` and counter type `C`. Plain
+`LayeredDp<K, C>` is generic over a state key `K` and counter type `C`. Whole
 counting uses `K = Id`; joint current/previous counting uses
 `K = (Id, Id)`.
 
@@ -73,7 +75,7 @@ the key publishes its layer count by summing `S_0(s - 1)` over its nodes.
 Separating suffix extension from publication makes the result independent of
 hash-map iteration order.
 
-Plain counting retains these suffix tables because top-down drawing uses them
+Whole counting retains these suffix tables because top-down drawing uses them
 to split a requested size among children without proposing infeasible
 remainders.
 
@@ -87,7 +89,7 @@ current root and limit. It owns:
 - the root limit.
 
 Bundling these values prevents a global size limit from being passed where a
-per-class limit is required. The same value is consumed by plain counting,
+per-class limit is required. The same value is consumed by whole counting,
 rooted match enumeration, the exact scan, and rooted joint counting.
 
 Let `min(c)` be the smallest term extractable from `c`. The root starts with
@@ -124,15 +126,15 @@ Suppose a parent extraction fits within `budget(p)`. After paying for the node
 and giving every sibling at least its minimum size, child `c_i` can receive no
 more than `budget(c_i)` by construction. Consequently:
 
-- every recursive plain-count lookup requested by the root is retained;
+- every recursive whole-count lookup requested by the root is retained;
 - every suffix-table remainder reachable during drawing is retained;
 - every recursive draw call satisfies `size <= budget(child)`; and
-- joint terms are also safe because a joint term for `(c, pc)` is a plain term
+- joint terms are also safe because a joint term for `(c, pc)` is a whole term
   of current class `c`.
 
 The restriction removes only states no extraction from the selected root can
 query. Direct histogram queries against deeper classes are intentionally
-capped; `ExactCandidatePackage` exposes root-driven candidate drawing, not a global
+capped; `FrontierPackage` exposes root-driven candidate drawing, not a global
 all-class analysis.
 
 ## Rooted joint counting

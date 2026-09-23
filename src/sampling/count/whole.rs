@@ -10,15 +10,15 @@ pub(crate) fn count_histograms_rooted<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
 ) -> HashMap<Id, HashMap<usize, BigUint>> {
-    let mut dp = plain_dp_rooted(egraph, rooted);
+    let mut dp = whole_dp_rooted(egraph, rooted);
     for _ in 0..rooted.limit() {
         dp.step();
     }
     dp.into_data()
 }
 
-/// Create an unstepped plain DP for the root budgets.
-pub(crate) fn plain_dp_rooted<L: Language, N: Analysis<L>>(
+/// Create an unstepped whole-graph DP for the root budgets.
+pub(crate) fn whole_dp_rooted<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     rooted: &RootBudgets,
 ) -> LayeredDp<Id> {
@@ -45,27 +45,27 @@ pub(crate) fn plain_dp_rooted<L: Language, N: Analysis<L>>(
 /// Find the smallest root size that makes at least `min_extractable` terms
 /// available within `rooted`.
 ///
-/// The plain analogue of `find_novel_root_sizes`: with no previous boundary to
+/// The whole-graph analogue of `find_novel_root_sizes`: with no previous boundary to
 /// subtract, every term the root can extract counts toward the threshold.
 ///
 /// # Errors
 ///
 /// Returns the terms found when `rooted` is exhausted below `min_extractable`.
-pub(crate) fn find_plain_root_size<L: Language, N: Analysis<L>>(
+pub(crate) fn find_whole_root_size<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     root: Id,
     min_extractable: usize,
     rooted: &RootBudgets,
 ) -> Result<usize, BigUint> {
     let root = egraph.find(root);
-    let mut plain = plain_dp_rooted(egraph, rooted);
+    let mut whole = whole_dp_rooted(egraph, rooted);
 
     let mut term_count = BigUint::ZERO;
     for _ in 0..rooted.limit() {
-        let size = plain.step();
+        let size = whole.step();
 
         // Final as of this layer. Zero-count entries are absent and read as 0.
-        let count = plain.data().get(&root).and_then(|hist| hist.get(&size));
+        let count = whole.data().get(&root).and_then(|hist| hist.get(&size));
         if let Some(count) = count.filter(|count| !count.is_zero()) {
             term_count += count;
             if term_count >= min_extractable.into() {
@@ -197,7 +197,7 @@ mod tests {
 
         let limit = 9;
         let budgets = RootBudgets::of_root(&egraph, gab, limit);
-        let mut dp = plain_dp_rooted(&egraph, &budgets);
+        let mut dp = whole_dp_rooted(&egraph, &budgets);
         for _ in 0..budgets.limit() {
             dp.step();
         }

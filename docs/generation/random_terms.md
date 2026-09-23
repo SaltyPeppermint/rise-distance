@@ -2,7 +2,7 @@
 
 Seed terms are sampled directly from a language grammar, before an e-graph
 exists. This differs from
-[exact novel-candidate construction](../candidates/exact_novel_candidates.md),
+[exact novel-candidate construction](../candidates/novel_candidates.md),
 which draws terms from an e-graph.
 
 The implementation is in
@@ -103,16 +103,17 @@ does not inspect an e-graph.
 
 The candidate documents describe a separate pipeline:
 
-- [Exact novel-candidate construction](../candidates/exact_novel_candidates.md)
+- [Exact novel-candidate construction](../candidates/novel_candidates.md)
   counts terms extractable from a current e-graph but absent from a previous
   e-graph.
 
-## Filtering in `generate`
+## Filtering in `start`
 
-The [`generate` binary](../../src/bin/generate.rs) further filters samples:
+The [`start` binary](../../src/bin/start.rs) further filters samples:
 
 - Candidates that saturate before hitting an eqsat resource limit are rejected.
-- Duplicate terms within a size bucket are rejected.
+- Duplicate terms within a size bucket are rejected afterwards by
+  [`generate_problems.py`](../../scripts/generate_problems.py).
 
 `--retry-limit` bounds the draws spent finding each distinct, validated term.
 The saved corpus is therefore conditioned on validation and uniqueness; it is

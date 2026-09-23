@@ -10,10 +10,9 @@ drawer and its binder semantics, see
 
 The relevant code lives in:
 
-- [src/candidates/exact/count/novel.rs](../../src/candidates/exact/count/novel.rs) — counting & match enumeration.
-- [src/candidates/exact/draw/frontier/space.rs](../../src/candidates/exact/draw/frontier/space.rs) — the shared frontier-constrained derivation space.
-- [src/candidates/exact/draw/frontier/independent.rs](../../src/candidates/exact/draw/frontier/independent.rs) — independent weighted drawing over that space.
-- [exact_frontier_drawing.md](exact_frontier_drawing.md) — the separation between frontier correctness and drawing policy.
+- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — counting & match enumeration.
+- [src/sampling/draw/frontier.rs](../../src/sampling/draw/frontier.rs) — the frontier-constrained derivation space and independent weighted drawing over it.
+- [frontier_drawing.md](frontier_drawing.md) — the separation between frontier correctness and drawing policy.
 
 ---
 
@@ -36,11 +35,11 @@ joint(c, pc)(s) =
         such that prev.lookup(t) = Some(pc) } |
 ```
 
-From `joint` and the standard plain count `plain(c)(s)` we derive the **novel histogram**:
+From `joint` and the standard whole count `whole(c)(s)` we derive the **novel histogram**:
 
 ```
 non_novel(c, s) = sum over pc of joint(c, pc)(s)
-novel(c, s)     = plain(c, s) - non_novel(c, s)
+novel(c, s)     = whole(c, s) - non_novel(c, s)
 ```
 
 `novel(c, s)` is what `possible_size` consults and what the drawer weighs.
@@ -114,7 +113,8 @@ to child. See
 [root-restricted package construction](../counting/novel_size_search.md#why-rooted-enumeration-is-complete).
 
 The implementation builds the drawer-facing `cover` from nonempty `joint`
-keys afterwards ([`build_cover`](../../src/candidates/exact/count/novel.rs)).
+keys afterwards, in
+[`NovelTermCount::from_rooted_matches`](../../src/sampling/count/novel.rs).
 
 ### Phase 2: Joint counts, layered by size
 
@@ -131,12 +131,12 @@ Where `c_i` is the i-th canonical curr child class of `n`. For zero-arity nodes 
 
 Only pairs whose current class `c` has a root budget are created, and pair
 `(c, pc)` receives `budget(c)`. The previous class has no separate budget: a
-joint term is a plain term of `c`, so the current root budget is the sound
+joint term is a whole term of `c`, so the current root budget is the sound
 bound. Child pairs missing from the budget map contribute no terms.
 
 The matched e-node costs 1, so every child pair is evaluated at a size
 strictly below `s`: the recurrence is stratified by size exactly like the
-plain counts ([layered counting](../counting/layered_counting.md) §2), and the
+whole counts ([layered counting](../counting/layered_counting.md) §2), and the
 implementation reuses the same generic layer-by-layer kernel (`LayeredDp`,
 one pass per size, each `(pair, size)` cell computed once — no fixpoint,
 even on cyclic e-graphs). `joint_children_of` translates the match table
@@ -150,11 +150,11 @@ replaced a worklist fixpoint over whole per-pair histograms).
 Pointwise subtraction:
 
 ```
-function derive_novel(plain, joint):
+function derive_novel(whole, joint):
     non_novel : Map<curr_class, Histogram> = sum_pc joint[(c, pc)]
     novel     : Map<curr_class, Histogram>
-    for each (c, plain_hist) in plain:
-        for each size, total in plain_hist:
+    for each (c, whole_hist) in whole:
+        for each size, total in whole_hist:
             n = total - non_novel[c].get(size, 0)
             if n > 0: novel[c][size] = n
     return novel
@@ -169,33 +169,33 @@ function derive_novel(plain, joint):
 
 ### Frontier automaton states
 
-Once we know we want a novel-rooted term, the shared `FrontierSpace` threads a
-`FrontierState` through every subtree:
+Once we know we want a novel-rooted term, `FrontierDrawer` threads a
+`State` through every subtree:
 
 ```
-enum FrontierState {
-    OutsidePrev,       // subtree must not be extractable from any prev class
-    InsidePrev(pc),    // subtree must be extractable from prev's pc
+enum State {
+    Novel,           // subtree must not be extractable from any prev class
+    SharedWith(pc),  // subtree must be extractable from prev's pc
 }
 ```
 
-- The public `draw(root, size, rng)` always starts in `OutsidePrev`.
-- An `OutsidePrev` recursion may *choose* to make some children agree with specific prev classes — those children recurse in `InsidePrev(pc)`.
-- An `InsidePrev(pc)` recursion is fully determined by the joint table: it just picks compatible (node, match) pairs and recurses.
+- The public `draw(root, size, rng)` always starts in `Novel`.
+- A `Novel` recursion may *choose* to make some children agree with specific prev classes — those children recurse in `SharedWith(pc)`.
+- A `SharedWith(pc)` recursion is fully determined by the joint table: it just picks compatible (node, match) pairs and recurses.
 
-It is useful to read `OutsidePrev` as a top-down proof obligation. The drawer
-can discharge it at the current node by choosing an all-`InsidePrev` child
+It is useful to read `Novel` as a top-down proof obligation. The drawer
+can discharge it at the current node by choosing an all-`SharedWith` child
 profile that matches no previous e-node, or delegate it to one or more
-`OutsidePrev` children. Once any child is outside, the completed parent and
+`Novel` children. Once any child is outside, the completed parent and
 all of its ancestors are necessarily outside too. Therefore a term needs only
 one point where reconstruction in `prev` fails; the states locate that point
 while keeping every child in a disjoint counted category. See
-[exact_frontier_drawing.md](exact_frontier_drawing.md#outsideprev-as-a-proof-obligation)
+[frontier_drawing.md](frontier_drawing.md#novel-as-a-proof-obligation)
 for a worked profile example.
 
 There is no "Free" mode — once we're committed to producing a novel term, every subtree is constrained either to be novel or to agree with a specific prev class.
 
-### InsidePrev — straightforward weighted drawing
+### SharedWith — straightforward weighted drawing
 
 When drawing at curr-class `c`, target size `s`, and committed prev class `pc`:
 
@@ -215,7 +215,7 @@ function construct_inside(c, s, pc, rng):
     children = draw_children(
         children_ids = n.children,
         child_hists  = child_hists,
-        states       = [InsidePrev(m.prev_children[i])  for i in 0..k],
+        states       = [SharedWith(m.prev_children[i])  for i in 0..k],
         child_budget = s - 1,
         rng,
     )
@@ -223,11 +223,11 @@ function construct_inside(c, s, pc, rng):
     return stack_children(children, OriginLang(n, c))
 ```
 
-`InsidePrev` cannot fail in a healthy state: by the time we recurse into it,
+`SharedWith` cannot fail in a healthy state: by the time we recurse into it,
 the parent's profile picked `pc` from `cover[c]`, so at least one match in `c`
 has `prev_class = pc`.
 
-### OutsidePrev — agreement profiles
+### Novel — agreement profiles
 
 This is the heart of the refined drawer. At curr-class `c`, target size `s`:
 
@@ -273,8 +273,8 @@ function construct_outside(c, s, rng):
     n = eclass(c).nodes[idx]
 
     states[i] =
-        if profile[i] = None:         OutsidePrev
-        else (profile[i] = Some(pc)): InsidePrev(pc)
+        if profile[i] = None:         Novel
+        else (profile[i] = Some(pc)): SharedWith(pc)
 
     children = draw_children(
         children_ids = n.children,
@@ -300,7 +300,7 @@ Profiles containing any `None` cannot complete any match, since `None` never equ
 
 Once a candidate `(idx, profile-or-match, child_hists)` is chosen, we need to split `child_budget = s - 1` into `(s_1, ..., s_k)` summing to `child_budget`, weighted by per-child counts and a suffix convolution.
 
-This is identical to the plain drawer's child-size loop, just using the mode-specific `child_hists`:
+This is identical to the whole drawer's child-size loop, just using the mode-specific `child_hists`:
 
 ```
 function draw_children(children_ids, child_hists, states, child_budget, rng):
@@ -323,7 +323,7 @@ function draw_children(children_ids, child_hists, states, child_budget, rng):
 
 The suffix convolution is built once per call from the chosen `child_hists`,
 so each child's size is drawn with awareness of the remaining children's
-joint feasibility. Plain drawing does the same from the rooted histograms:
+joint feasibility. Whole drawing does the same from the rooted histograms:
 counting keeps no suffix tables of its own.
 
 ---
@@ -334,8 +334,8 @@ counting keeps no suffix tables of its own.
 
 We prove two statements together by induction on `size`:
 
-- **(A)** Constructing under `InsidePrev(pc)` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = Some(pc)` (assuming the precondition that `joint[(c, pc)](s) > 0`).
-- **(N)** Constructing under `OutsidePrev` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = None` (assuming `novel(c)(s) > 0`).
+- **(A)** Constructing under `SharedWith(pc)` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = Some(pc)` (assuming the precondition that `joint[(c, pc)](s) > 0`).
+- **(N)** Constructing under `Novel` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = None` (assuming `novel(c)(s) > 0`).
 
 ### Base case (size 1, leaves)
 
@@ -345,7 +345,7 @@ We prove two statements together by induction on `size`:
 
 ### Inductive step (size > 1)
 
-**(A) at `(c, s, pc)`.** The drawer picks `(idx, m)` with `m.prev_class = pc` and a child-size split `(s_1, …, s_k)` summing to `s - 1` with each `joint(c_i, m.prev_children[i])(s_i) > 0`. Each child recurses under `InsidePrev(m.prev_children[i])`; by IH (A), child `i` returns `t_i` with `prev.lookup(t_i) = m.prev_children[i]`. Then `prev.lookup(n(t_1, …, t_k))` looks up the prev e-node with operator `n` and child classes `m.prev_children`, which by definition of the match sits in `m.prev_class = pc`. So `prev.lookup(t) = pc`. ✓
+**(A) at `(c, s, pc)`.** The drawer picks `(idx, m)` with `m.prev_class = pc` and a child-size split `(s_1, …, s_k)` summing to `s - 1` with each `joint(c_i, m.prev_children[i])(s_i) > 0`. Each child recurses under `SharedWith(m.prev_children[i])`; by IH (A), child `i` returns `t_i` with `prev.lookup(t_i) = m.prev_children[i]`. Then `prev.lookup(n(t_1, …, t_k))` looks up the prev e-node with operator `n` and child classes `m.prev_children`, which by definition of the match sits in `m.prev_class = pc`. So `prev.lookup(t) = pc`. ✓
 
 **(N) at `(c, s)`.** Suppose for contradiction that the drawer returns `t = n(t_1, …, t_k)` with `prev.lookup(t) = Some(P)` for some prev class `P`. Then prev contains an e-node `n'` in `P` with canonical child classes `[q_1, …, q_k]` and `prev.lookup(t_i) = q_i` for each `i`.
 
@@ -354,17 +354,17 @@ The chosen profile `(a_1, …, a_k)` and the IHs determine each `t_i`:
 - If `a_i = None`: by IH (N), `prev.lookup(t_i) = None`. But we just said `prev.lookup(t_i) = q_i`, a concrete prev class. Contradiction unless every `a_i ≠ None`.
 - If `a_i = Some(pc_i)`: by IH (A), `prev.lookup(t_i) = pc_i`. So `q_i = pc_i`.
 
-Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. Because this is a real recursive drawing query, `c`, its node, and every `c_i` fit the shared root budgets. The cartesian product loop in [`enumerate_matches_rooted`](../../src/candidates/exact/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
+Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. Because this is a real recursive drawing query, `c`, its node, and every `c_i` fit the shared root budgets. The cartesian product loop in [`enumerate_matches_rooted`](../../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
 
-(The `cover_of` exposed to the drawer is a subset of match enumeration's internal cover — rooted joint counting drops `(c, pc)` pairs whose histogram is empty within the class budget. That's harmless here: any `q_i` reached by a real drawn child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `FrontierSpace` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
+(The `cover_of` exposed to the drawer is a subset of match enumeration's internal cover — rooted joint counting drops `(c, pc)` pairs whose histogram is empty within the class budget. That's harmless here: any `q_i` reached by a real drawn child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `FrontierDrawer` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
 
-So no `t` produced under `OutsidePrev` can have `prev.lookup(t) = Some(_)`, i.e., every produced term is novel. ✓
+So no `t` produced under `Novel` can have `prev.lookup(t) = Some(_)`, i.e., every produced term is novel. ✓
 
 ### Why the joint sum doesn't double-count
 
 The argument above also shows why `non_novel(c)(s) = sum_pc joint[(c, pc)](s)` doesn't double-count: if `t = n(t_1, …, t_k)` is non-novel, the unique prev class `P` containing it together with the unique tuple `[q_1, …, q_k] = [prev.lookup(t_i)]` nails down a unique match `m`. So `t` is counted exactly once across all `(c, pc)` pairs — under `pc = P`, by the match `m`. Two different matches at the same node would have to disagree on at least one `prev_children[i]`, but `prev.lookup(t_i)` is a single value, so at most one match's `prev_children` can equal the tuple of child lookups.
 
-This is the partition argument used by `FrontierSpace`: the partition is by the unique witnessing match, with no overlap.
+This is the partition argument used by `FrontierDrawer`: the partition is by the unique witnessing match, with no overlap.
 
 ### Termination
 
@@ -414,10 +414,10 @@ So `matches[(R, 0)]` has exactly one entry.
 
 ### Novel histogram
 
-- `plain(M)(1) = 2`, `non_novel(M)(1) = 1 + 1 = 2`, so `novel(M)(1)` is empty (every leaf of `M` is in some prev class).
-- `plain(R)(3) = 4` (the four ordered pairs over `{a, b}`), `non_novel(R)(3) = 1`, so `novel(R)(3) = 3`.
+- `whole(M)(1) = 2`, `non_novel(M)(1) = 1 + 1 = 2`, so `novel(M)(1)` is empty (every leaf of `M` is in some prev class).
+- `whole(R)(3) = 4` (the four ordered pairs over `{a, b}`), `non_novel(R)(3) = 1`, so `novel(R)(3) = 3`.
 
-### Drawing at `(R, size = 3, OutsidePrev)`
+### Drawing at `(R, size = 3, Novel)`
 
 Slot options for `Add(M, M)`'s two children:
 
@@ -426,7 +426,7 @@ Slot options for `Add(M, M)`'s two children:
 
 Nine profiles total. The single match `(R_prev, [A, B])` is completed by the profile `(Some(A), Some(B))` only, so eight profiles are novel-via-`n`. Of those, the ones with non-zero count at total budget 2:
 
-- `(Some(A), Some(A))`: child_hists = `[joint(M,A), joint(M,A)] = [{1:1}, {1:1}]`, conv at 2 = 1. Recurse children with `InsidePrev(A)`. Result: `Add(a, a)`.
+- `(Some(A), Some(A))`: child_hists = `[joint(M,A), joint(M,A)] = [{1:1}, {1:1}]`, conv at 2 = 1. Recurse children with `SharedWith(A)`. Result: `Add(a, a)`.
 - `(Some(B), Some(A))`: similarly → `Add(b, a)`.
 - `(Some(B), Some(B))`: similarly → `Add(b, b)`.
 
@@ -435,7 +435,7 @@ Profiles with any `None` have count 0 because `novel_histogram(M)` is empty. The
 So the drawer picks uniformly (under `CountWeigher`) from the three terms
 novel relative to `prev`: `Add(a,a)`, `Add(b,a)`, `Add(b,b)`, but never
 `Add(a,b)`. This is exactly what
-`candidates::exact::draw::frontier::independent::tests::independent_frontier_draw_union_diagonal`
+`sampling::draw::frontier::tests::independent_frontier_draw_union_diagonal`
 asserts.
 
 ---
@@ -443,20 +443,21 @@ asserts.
 ## 6. API summary
 
 ```rust
-let package = ExactCandidatePackage::<C, _, _>::build(result, max_size)?;
-let terms = package.draw_frontier_candidates(
-    count,
-    allocation,
-    policy,
-    seed,
-)?;
+// Fixed size limit; `None` for an empty frontier.
+let package = FrontierPackage::build(result, max_size)?;
+// Or: scan for the smallest limit with at least `min_extractable` novel terms.
+let (max_size, package) =
+    FrontierPackage::build_through_novel_sizes(result, start_size, search_steps, min_extractable)?;
+
+// `DrawerPackage` trait: spread `count` draws over the root sizes, then draw.
+let terms = package.draw_samples(count, policy, seed)?;
 ```
 
-`IndependentFrontierDrawer` implements the
-[`Drawer`](../../src/candidates/draw/mod.rs) trait, so it gets `draw_batch` and
+`FrontierDrawer` implements the
+[`Drawer`](../../src/sampling/draw/mod.rs) trait, so it gets `draw_batch` and
 `draw_root_batch` from the shared bounded distinct-collection implementation.
 
-`ExactCandidatePackage` ([src/candidates/exact/package.rs](../../src/candidates/exact/package.rs))
+`FrontierPackage` ([src/sampling/draw/frontier.rs](../../src/sampling/draw/frontier.rs))
 is the construction boundary. It reconstructs the complete previous lookup,
 computes current-root budgets, performs rooted matching and counting, retains
 only final-budget package data, and then drops the previous boundary.

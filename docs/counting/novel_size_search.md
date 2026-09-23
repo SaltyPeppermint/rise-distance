@@ -7,11 +7,13 @@ cannot use.
 
 The relevant code is:
 
-- [src/candidates/count/layered.rs](../../src/candidates/count/layered.rs) — shared
-  current-root budgets and the generic layered DP.
-- [src/candidates/count/novel.rs](../../src/candidates/count/novel.rs) — rooted
+- [src/sampling/count/budgets.rs](../../src/sampling/count/budgets.rs) — shared
+  current-root budgets.
+- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) — the
+  generic layered DP.
+- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — rooted
   match enumeration, pruning, joint counting, and the exact scan.
-- [src/candidates/package.rs](../../src/candidates/package.rs) — phase
+- [src/sampling/draw/frontier.rs](../../src/sampling/draw/frontier.rs) — phase
   ordering, package retention, and telemetry.
 
 For the counting recurrence, first read
@@ -26,8 +28,8 @@ the final size is selected:
 ```text
 cap = start_size + search_steps
 
-prev_lookup = reconstruct_previous_boundary()
-cap_budgets = root_budgets(curr, root, cap)
+prev_lookup = result.prev_index()
+cap_budgets = RootBudgets::of_root(curr, root, cap)
 matches = enumerate_matches_rooted(curr, prev_lookup, cap_budgets)
 drop(prev_lookup)
 
@@ -38,12 +40,12 @@ final_max_size = find_novel_root_sizes(
 if fewer than min_extractable terms were found:
     return Err(cap)
 
-final_budgets = root_budgets(curr, root, final_max_size)
+final_budgets = RootBudgets::of_root(curr, root, final_max_size)
 prune_matches(curr, matches, final_budgets)
 
-plain = count_plain_rooted(curr, final_budgets)
-joint = count_joint_rooted(curr, matches, final_budgets)
-package = derive_novel_and_retain_package_data(plain, joint, matches)
+whole = count_histograms_rooted(curr, final_budgets)
+joint = compute_joint_rooted(curr, matches, final_budgets)
+package = NovelTermCount::from_rooted_matches(whole, joint, matches)
 ```
 
 `FrontierPackage::build(result, max_size)` already knows its final
@@ -55,9 +57,9 @@ is no retry schedule. On success, both the returned size and the package limit
 are the smallest novel root size at which the cumulative novel term count
 reaches `min_extractable`.
 
-`PlainPackage::build_through_sizes` has the same shape with no previous
+`WholePackage::build_through_sizes` has the same shape with no previous
 boundary to subtract: it skips match enumeration entirely and scans
-`find_plain_root_size` over plain root counts, where every extractable term
+`find_whole_root_size` over whole root counts, where every extractable term
 counts toward `min_extractable`.
 
 ## How `search_steps` drives memory
@@ -75,7 +77,7 @@ realization did not fit the old cap. The budget map is the domain of everything
 downstream.
 
 **The DP skeleton is allocated for that whole domain up front.**
-`plain_dp_rooted` builds `children_of` — canonical child ids per node — for
+`whole_dp_rooted` builds `children_of` — canonical child ids per node — for
 every budgeted class, and `LayeredDp::new` allocates one suffix table per node
 position for each of them, before a single layer is stepped.
 
@@ -153,12 +155,12 @@ decreases in size from parent to child.
 
 ## Exact incremental scan
 
-Plain and joint counts advance together one size layer at a time. The joint
+Whole and joint counts advance together one size layer at a time. The joint
 key is `(current_class, previous_class)`, and every pair inherits its current
 class budget. After layer `s`, the root count is final:
 
 ```text
-novel(root, s) = plain(root, s)
+novel(root, s) = whole(root, s)
                - sum_pc joint((root, pc), s)
 ```
 
@@ -167,7 +169,7 @@ sizes in ascending order and stops at the requested count; no larger scan
 layer or exact-drawing suffix cache is constructed.
 
 The final package is a separate pass because drawing needs complete rooted
-histograms and plain suffix tables through `final_max_size`, potentially with
+histograms and whole suffix tables through `final_max_size`, potentially with
 the caller's counter type rather than `BigUint`.
 
 ## Final-size pruning and retained data
@@ -182,7 +184,7 @@ Every previous witness attached to a surviving current node is retained.
 Rooted joint counting decides which current/previous pairs have nonzero cells
 within budget. The package retains only:
 
-- rooted plain histograms and exact-drawing suffix tables;
+- rooted whole histograms and exact-drawing suffix tables;
 - nonempty rooted joint histograms;
 - cover entries derived from nonempty joint keys;
 - the final-budget-pruned node-match table; and
@@ -194,7 +196,7 @@ For a selected root `r` and final limit `M`, every query reachable while
 constructing a term of size at most `M` remains available:
 
 - the exact novel histogram at `r` through `M`;
-- recursive plain and joint histogram lookups;
+- recursive whole and joint histogram lookups;
 - covers and node matches needed by every feasible frontier state; and
 - suffix tables needed to split child sizes.
 

@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::sampling::count::budgets::RootBudgets;
-use crate::sampling::count::plain::{count_histograms_rooted, find_plain_root_size};
+use crate::sampling::count::whole::{count_histograms_rooted, find_whole_root_size};
 use crate::sampling::draw::{
     CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
 };
@@ -16,7 +16,7 @@ use crate::sampling::{convolve_at, greedy_distribute_alloc, suffix_convolutions}
 use crate::utils::HashMap;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
 
-pub struct PlainDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
+pub struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
     /// Histogram of the counts for each class, indexed by `node_idx`
     counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
     graph: &'b EGraph<L, N>,
@@ -24,7 +24,7 @@ pub struct PlainDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
     weigher: W,
 }
 
-impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> PlainDrawer<'a, 'b, L, N, W> {
+impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> WholeDrawer<'a, 'b, L, N, W> {
     #[must_use]
     pub const fn new(
         counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
@@ -50,7 +50,7 @@ impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> PlainDrawer<'a, 'b, L,
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for PlainDrawer<'_, '_, L, N, W> {
+impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for WholeDrawer<'_, '_, L, N, W> {
     fn root(&self) -> Id {
         self.root
     }
@@ -116,7 +116,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for PlainDrawer<'
 /// construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
-pub struct PlainPackage<L: MyLanguage, N: MyAnalysis<L>> {
+pub struct WholePackage<L: MyLanguage, N: MyAnalysis<L>> {
     egraph: EGraph<L, N>,
     counts: HashMap<Id, HashMap<usize, BigUint>>,
     min_size: usize,
@@ -124,11 +124,11 @@ pub struct PlainPackage<L: MyLanguage, N: MyAnalysis<L>> {
     root: Id,
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
     /// Build counts through `max_size` over the whole e-graph.
     /// Returns `None` if the root has no terms within `max_size`.
     #[must_use]
-    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<PlainPackage<L, N>> {
+    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<WholePackage<L, N>> {
         let curr = result.curr();
         let root = curr.find(result.root());
         let budgets = RootBudgets::of_root(curr, root, max_size);
@@ -140,7 +140,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
         result: EqsatResult<L, N>,
         max_size: usize,
         budgets: &RootBudgets,
-    ) -> Option<PlainPackage<L, N>> {
+    ) -> Option<WholePackage<L, N>> {
         let (egraph, root) = result.into_curr();
         let counts = count_histograms_rooted(&egraph, budgets);
 
@@ -148,7 +148,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
         let histogram = counts.get(&root)?;
 
         let min_size = histogram.keys().min().copied().unwrap_or(1);
-        Some(PlainPackage {
+        Some(WholePackage {
             egraph,
             counts,
             min_size,
@@ -179,7 +179,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
         let root = curr.find(result.root());
         let cap_budgets = RootBudgets::of_root(curr, root, cap);
 
-        let max_size = match find_plain_root_size(curr, root, min_extractable, &cap_budgets) {
+        let max_size = match find_whole_root_size(curr, root, min_extractable, &cap_budgets) {
             Ok(max_size) => max_size,
             Err(term_count) => {
                 eprintln!(
@@ -200,7 +200,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> PlainPackage<L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for PlainPackage<L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for WholePackage<L, N> {
     /// Root-term counts by size.
     ///
     /// # Panics
@@ -225,13 +225,13 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for PlainPackage<L, N>
 
         match policy {
             Policy::Uniform => {
-                PlainDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
+                WholeDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
                     .draw_root_batch(&requests, seed)
             }
-            Policy::Count => PlainDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
+            Policy::Count => WholeDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
                 .draw_root_batch(&requests, seed),
             Policy::Smallest => Ok(vec![
-                PlainDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
+                WholeDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
                     .smallest_root(),
             ]),
         }
@@ -266,7 +266,7 @@ mod tests {
     fn build_through_sizes_stops_at_min_extractable() {
         // Unioning `a` with the root of (+ a b) creates a cycle: the root
         // class extracts a, (+ a b), (+ (+ a b) b), ... — one term each at
-        // sizes 1, 3, 5, ... The naive package ignores prev entirely, so a
+        // sizes 1, 3, 5, ... The whole package ignores prev entirely, so a
         // threshold of 3 terms must yield max_size = 5 (where the frontier
         // would yield 9).
         let mut curr = EGraph::<Math, ()>::new(());
@@ -283,7 +283,7 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let (used_max_size, package) = PlainPackage::build_through_sizes(result, 30, 2, 3)
+        let (used_max_size, package) = WholePackage::build_through_sizes(result, 30, 2, 3)
             .expect("build_through_sizes should succeed");
 
         assert_eq!(used_max_size, 5);
@@ -307,7 +307,7 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(graph, root, prev_raw_node_count, prev_union_event_count);
-        let Err(cap) = PlainPackage::build_through_sizes(result, 3, 20, 3) else {
+        let Err(cap) = WholePackage::build_through_sizes(result, 3, 20, 3) else {
             panic!("a single term cannot satisfy a threshold of 3");
         };
 
@@ -315,13 +315,13 @@ mod tests {
     }
 
     #[test]
-    fn naive_draw_single_leaf() {
+    fn uniform_draw_single_leaf() {
         let mut graph = EGraph::<Math, ()>::new(());
         let root = graph.add(sym("a"));
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, UniformWeigher);
 
         let mut rng = combined_rng([42]);
         let term = drawer.draw(root, 1, &mut rng);
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn naive_draw_picks_valid_choice() {
+    fn uniform_draw_picks_valid_choice() {
         let mut graph = EGraph::<Math, ()>::new(());
         let a = graph.add(sym("a"));
         let b = graph.add(sym("b"));
@@ -337,7 +337,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, a);
-        let drawer = PlainDrawer::new(&counts, &graph, a, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, a, UniformWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -347,14 +347,14 @@ mod tests {
     }
 
     #[test]
-    fn naive_possible_size_correct() {
+    fn uniform_possible_size_correct() {
         let mut graph = EGraph::<Math, ()>::new(());
         let a = graph.add(sym("a"));
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, UniformWeigher);
 
         assert!(!drawer.possible_size(root, 1, 0));
         assert!(!drawer.possible_size(root, 3, 0));
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn naive_draw_batch_finds_all_unique() {
+    fn uniform_draw_batch_finds_all_unique() {
         let mut graph = EGraph::<Math, ()>::new(());
         let a1 = graph.add(sym("a1"));
         let a2 = graph.add(sym("a2"));
@@ -377,7 +377,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, UniformWeigher);
 
         let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
         assert!(result.len() <= 6);
@@ -390,7 +390,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, CountWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, CountWeigher);
 
         let mut rng = combined_rng([42]);
         let term = drawer.draw(root, 1, &mut rng);
@@ -406,7 +406,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, a);
-        let drawer = PlainDrawer::new(&counts, &graph, a, CountWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, a, CountWeigher);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -430,7 +430,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, CountWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, CountWeigher);
 
         let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
 
@@ -455,7 +455,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, CountWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, CountWeigher);
 
         let exact = drawer
             .draw_root_batch(&[(3, 6)], [1, 2])
@@ -482,7 +482,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = PlainDrawer::new(&counts, &graph, root, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, UniformWeigher);
 
         let satisfiable = drawer
             .draw_root_batch(&[(2, 1)], [1, 2])

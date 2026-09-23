@@ -11,8 +11,8 @@ use crate::previous::PreviousLookup;
 use crate::sampling::count::budgets::RootBudgets;
 use crate::sampling::count::layered::LayeredDp;
 #[cfg(test)]
-use crate::sampling::count::plain::count_histograms_rooted;
-use crate::sampling::count::plain::plain_dp_rooted;
+use crate::sampling::count::whole::count_histograms_rooted;
+use crate::sampling::count::whole::whole_dp_rooted;
 use crate::utils::{HashMap, HashSet};
 
 /// A current e-node's match in the previous e-graph.
@@ -41,7 +41,7 @@ pub struct NovelTermCount {
     matches: NodeMatches,
 
     /// Novel extraction counts by current class and size.
-    /// `data[c][s] = plain[c][s] - sum_pc joint[(c, pc)][s]`.
+    /// `data[c][s] = whole[c][s] - sum_pc joint[(c, pc)][s]`.
     data: HashMap<Id, HashMap<usize, BigUint>>,
 }
 
@@ -56,18 +56,18 @@ impl NovelTermCount {
     ) -> Self {
         let budgets = RootBudgets::of_root(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
-        let plain = count_histograms_rooted(curr, &budgets);
-        Self::from_rooted_matches(curr, &plain, matches, &budgets)
+        let whole = count_histograms_rooted(curr, &budgets);
+        Self::from_rooted_matches(curr, &whole, matches, &budgets)
     }
 
     /// Run root-restricted joint counting using the same current-class
-    /// budgets that produced `plain` and `matches`.
+    /// budgets that produced `whole` and `matches`.
     ///
-    /// `plain` is consumed by the novel subtraction and then dropped.
+    /// `whole` is consumed by the novel subtraction and then dropped.
     #[must_use]
     pub(crate) fn from_rooted_matches<L: Language, N: Analysis<L>>(
         curr: &EGraph<L, N>,
-        plain: &HashMap<Id, HashMap<usize, BigUint>>,
+        whole: &HashMap<Id, HashMap<usize, BigUint>>,
         matches: NodeMatches,
         budgets: &RootBudgets,
     ) -> Self {
@@ -80,7 +80,7 @@ impl NovelTermCount {
                 out
             },
         );
-        let data = derive_novel(plain, &joint);
+        let data = derive_novel(whole, &joint);
 
         Self {
             joint,
@@ -303,18 +303,18 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     rooted: &RootBudgets,
 ) -> Result<usize, BigUint> {
     let root = curr.find(root);
-    let mut plain = plain_dp_rooted(curr, rooted);
+    let mut whole = whole_dp_rooted(curr, rooted);
 
     // Each pair inherits its curr class's rooted budget: joint terms are
-    // plain terms of that class, and the budget recurrence relaxes with
-    // plain minima, which lower-bound joint subterm sizes too — so every
+    // whole terms of that class, and the budget recurrence relaxes with
+    // whole minima, which lower-bound joint subterm sizes too — so every
     // cell a root query depends on stays within budget. Pairs of classes
     // unreachable within `max_size` can never be depended on and are
     // skipped entirely.
     let children_of = joint_children_of(curr, matches);
     let budgets = children_of
         .keys()
-        .filter_map(|&(c, pc)| plain.budgets().get(&c).map(|&b| ((c, pc), b)))
+        .filter_map(|&(c, pc)| whole.budgets().get(&c).map(|&b| ((c, pc), b)))
         .collect::<HashMap<_, _>>();
     let root_pairs = budgets
         .keys()
@@ -326,7 +326,7 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     let mut max_size;
     let mut term_count = BigUint::ZERO;
     for _ in 0..rooted.limit() {
-        let size = plain.step();
+        let size = whole.step();
         eprintln!(
             "DEBUG: PEAK RSS IN NOVEL ROOT DP AFTER STEP {size}: {}",
             crate::utils::peak_rss_bytes()
@@ -334,7 +334,7 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
         joint.step();
 
         // Final as of this layer. Zero-count entries are absent and read as 0.
-        let mut novel = plain
+        let mut novel = whole
             .data()
             .get(&root)
             .and_then(|hist| hist.get(&size))
@@ -363,14 +363,14 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
 // ============================================================================
 
 fn derive_novel(
-    plain: &HashMap<Id, HashMap<usize, BigUint>>,
+    whole: &HashMap<Id, HashMap<usize, BigUint>>,
     joint: &JointTable,
 ) -> HashMap<Id, HashMap<usize, BigUint>> {
     // Aggregate sum_pc joint[(c, pc)] per curr class. No double-counting:
     // `prev.lookup(t)` is unique once prev is rebuilt, so each non-novel term
     // contributes to exactly one `(c, pc)` pair. Hence
-    // `non_novel[c][s] <= plain[c][s]` always (every non-novel term is also
-    // a plain term).
+    // `non_novel[c][s] <= whole[c][s]` always (every non-novel term is also
+    // a whole term).
     let mut non_novel: HashMap<Id, HashMap<usize, BigUint>> = HashMap::default();
     for ((c, _pc), hist) in joint {
         let entry = non_novel.entry(*c).or_default();
@@ -382,11 +382,11 @@ fn derive_novel(
         }
     }
 
-    let mut out = HashMap::with_capacity_and_hasher(plain.len(), FixedState::default());
-    for (c, plain_hist) in plain {
+    let mut out = HashMap::with_capacity_and_hasher(whole.len(), FixedState::default());
+    for (c, whole_hist) in whole {
         let nn = non_novel.get(c);
-        let mut hist = HashMap::with_capacity_and_hasher(plain_hist.len(), FixedState::default());
-        for (&size, total) in plain_hist {
+        let mut hist = HashMap::with_capacity_and_hasher(whole_hist.len(), FixedState::default());
+        for (&size, total) in whole_hist {
             let novel = match nn.and_then(|h| h.get(&size)) {
                 Some(non_novel_count) => {
                     debug_assert!(non_novel_count <= total);
@@ -424,8 +424,8 @@ mod tests {
     ) -> NovelTermCount {
         let budgets = RootBudgets::of_root(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
-        let plain = count_histograms_rooted(curr, &budgets);
-        NovelTermCount::from_rooted_matches(curr, &plain, matches, &budgets)
+        let whole = count_histograms_rooted(curr, &budgets);
+        NovelTermCount::from_rooted_matches(curr, &whole, matches, &budgets)
     }
 
     #[test]
@@ -491,7 +491,7 @@ mod tests {
         let novel = rooted_novel(&curr, &prev, root, 5);
 
         let root_canon = curr.find(root);
-        // Plain at size 3 = 4 (aa, ab, ba, bb). Only Add(a, b) was in prev.
+        // Whole at size 3 = 4 (aa, ab, ba, bb). Only Add(a, b) was in prev.
         // So novel = 4 - 1 = 3.
         assert_eq!(novel.data()[&root_canon][&3], BigUint::from(3u32));
     }

@@ -4,7 +4,6 @@ The documentation is organized by purpose:
 
 ```text
 docs/
-├── guide_experiment.md   runnable experiment workflow
 ├── candidates/           guide-candidate construction
 ├── counting/             counting algorithms and size discovery
 └── generation/           direct grammar term generation
@@ -12,8 +11,6 @@ docs/
 
 ## Start here
 
-- To run the guide experiment, follow the
-  [guide experiment pipeline](guide_experiment.md).
 - For seed generation, read
   [random term generation](generation/random_terms.md).
 - To understand how novel candidates are defined, counted, and drawn,

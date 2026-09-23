@@ -1,22 +1,23 @@
 # Exact frontier drawing
 
 Frontier membership and random selection are separate responsibilities.
-`FrontierSpace` owns the correctness-critical constrained derivation space;
-`IndependentFrontierDrawer` chooses among the feasible productions it exposes.
-Changing the probability distribution therefore does not require
-reimplementing the frontier test.
+`FrontierDrawer` enumerates the correctness-critical feasible productions,
+and its `Weigher` chooses among them. Changing the probability distribution
+therefore only means swapping the `Weigher`, not reimplementing the frontier
+test.
 
 The relevant implementation is:
 
-- [`src/candidates/count/novel.rs`](../../src/candidates/count/novel.rs):
-  previous-node matches plus plain, joint, and novel histograms;
-- [`src/candidates/draw/frontier/space.rs`](../../src/candidates/draw/frontier/space.rs):
-  frontier states and feasible derivations; and
-- [`src/candidates/draw/frontier/independent.rs`](../../src/candidates/draw/frontier/independent.rs):
-  independent weighted drawing over that space.
+- [`src/sampling/count/novel.rs`](../../src/sampling/count/novel.rs):
+  previous-node matches plus whole, joint, and novel histograms;
+- [`src/sampling/draw/frontier.rs`](../../src/sampling/draw/frontier.rs):
+  frontier states, feasible derivations, and independent weighted drawing
+  over them; and
+- [`src/sampling/draw/weigher.rs`](../../src/sampling/draw/weigher.rs):
+  the `CountWeigher` and `UniformWeigher` selection policies.
 
 The detailed counting argument is in
-[`exact_novel_candidates.md`](exact_novel_candidates.md). Direct grammar
+[`novel_candidates.md`](novel_candidates.md). Direct grammar
 drawing, including binder handling, is documented separately in
 [`../generation/random_terms.md`](../generation/random_terms.md).
 
@@ -40,53 +41,53 @@ For a current e-class, a concrete subtree is constructed under one of two
 states:
 
 ```rust
-enum FrontierState {
-    OutsidePrev,
-    InsidePrev(Id),
+enum State {
+    Novel,
+    SharedWith(Id),
 }
 ```
 
-- `InsidePrev(pc)` means that the concrete subtree must also be extractable
+- `SharedWith(pc)` means that the concrete subtree must also be extractable
   from previous e-class `pc`.
-- `OutsidePrev` means that the concrete subtree must not be extractable from
+- `Novel` means that the concrete subtree must not be extractable from
   any previous e-class.
 
 The transition at a current e-node is determined by its child states:
 
-1. If any child is `OutsidePrev`, the parent is also `OutsidePrev`.
-2. Otherwise every child is `InsidePrev(pc_i)`. Replace the current e-node's
+1. If any child is `Novel`, the parent is also `Novel`.
+2. Otherwise every child is `SharedWith(pc_i)`. Replace the current e-node's
    children with those previous-class ids and look up the translated node in
    the previous graph.
-   - A successful lookup places the parent in `InsidePrev(parent_pc)`.
-   - A failed lookup places the parent in `OutsidePrev`.
+   - A successful lookup places the parent in `SharedWith(parent_pc)`.
+   - A failed lookup places the parent in `Novel`.
 
-### `OutsidePrev` as a proof obligation
+### `Novel` as a proof obligation
 
-Construction runs top-down, so `OutsidePrev` is an obligation that a selected
+Construction runs top-down, so `Novel` is an obligation that a selected
 production must discharge or delegate:
 
-- An all-`InsidePrev` child profile discharges the obligation at the current
+- An all-`SharedWith` child profile discharges the obligation at the current
   node when the translated parent has no previous-node match.
-- A profile containing an `OutsidePrev` child delegates the obligation to that
+- A profile containing a `Novel` child delegates the obligation to that
   child. Its eventual failure to reconstruct also makes every ancestor absent
   from the previous graph.
 
 For example, if the previous graph contains `F(A, B)` but not `F(B, B)`, then:
 
 ```text
-[InsidePrev(A), InsidePrev(B)]  rejected: reconstructs F(A, B)
-[InsidePrev(B), InsidePrev(B)]  accepted: steps outside at F
-[OutsidePrev,  InsidePrev(B)]   accepted: delegates to the first child
+[SharedWith(A), SharedWith(B)]  rejected: reconstructs F(A, B)
+[SharedWith(B), SharedWith(B)]  accepted: steps outside at F
+[Novel,  SharedWith(B)]   accepted: delegates to the first child
 ```
 
-Every child remains classified as either `OutsidePrev` or one particular
-`InsidePrev(pc)`. These cases are disjoint because a concrete previous term
+Every child remains classified as either `Novel` or one particular
+`SharedWith(pc)`. These cases are disjoint because a concrete previous term
 belongs to a unique rebuilt previous e-class.
 
 Drawing a frontier term starts at:
 
 ```text
-(current root class, requested size, OutsidePrev)
+(current root class, requested size, Novel)
 ```
 
 This is more precise than requiring the term to contain a newly added e-node.
@@ -98,25 +99,25 @@ classes.
 The counted implementation maps its histograms onto the automaton states:
 
 ```text
-histogram(current_class, OutsidePrev)
+histogram(current_class, Novel)
     = novel[current_class]
 
-histogram(current_class, InsidePrev(previous_class))
+histogram(current_class, SharedWith(previous_class))
     = joint[(current_class, previous_class)]
 ```
 
-For `InsidePrev(pc)`, `FrontierSpace` considers current e-node matches whose
+For `SharedWith(pc)`, `FrontierDrawer` considers current e-node matches whose
 previous parent is `pc`. Each child receives the corresponding
-`InsidePrev(previous_child)` state.
+`SharedWith(previous_child)` state.
 
-For `OutsidePrev`, each child slot receives these possible states:
+For `Novel`, each child slot receives these possible states:
 
 ```text
-OutsidePrev
-InsidePrev(pc) for each previous class in the child's match cover
+Novel
+SharedWith(pc) for each previous class in the child's match cover
 ```
 
-`FrontierSpace` enumerates child-state profiles and rejects every profile that
+`FrontierDrawer` enumerates child-state profiles and rejects every profile that
 exactly completes a known previous-node match. It then uses the state
 histograms and exact convolution to retain only profiles whose children can
 fill the requested parent size.
@@ -128,36 +129,36 @@ branches and size splits.
 
 ## Selection distributions
 
-`IndependentFrontierDrawer` draws each complete expression without reference
+`FrontierDrawer` draws each complete expression without reference
 to earlier expressions in the batch. A `Weigher` controls its local random
 choices:
 
 - `CountWeigher` weights a branch by its number of complete expressions and a
   child-size split by `child_count * rest_count`.
-- `NaiveWeigher` assigns equal weight to every feasible local branch and
+- `UniformWeigher` assigns equal weight to every feasible local branch and
   child-size choice.
 
-Both distributions operate over the same `FrontierSpace`; they can affect
+Both distributions operate over the same feasible productions; they can affect
 which valid expression is likely, but not its size or frontier membership.
 
 ## Correctness argument
 
 The recursive invariants are:
 
-- constructing `(c, s, InsidePrev(pc))` returns a size-`s` extraction from
+- constructing `(c, s, SharedWith(pc))` returns a size-`s` extraction from
   current class `c` whose lookup in the previous graph is `pc`; and
-- constructing `(c, s, OutsidePrev)` returns a size-`s` extraction from current
+- constructing `(c, s, Novel)` returns a size-`s` extraction from current
   class `c` whose lookup in the previous graph fails.
 
-For `InsidePrev(pc)`, every exposed current-node/previous-match pair has
+For `SharedWith(pc)`, every exposed current-node/previous-match pair has
 previous parent `pc`, and every child receives the matched previous-child
 state. The induction hypothesis establishes the child lookups, so the
 translated parent exists in `pc`.
 
-For `OutsidePrev`, `FrontierSpace` rejects every child-state profile equal to a
-known previous-node match. If the selected profile contains `OutsidePrev`, the
+For `Novel`, `FrontierDrawer` rejects every child-state profile equal to a
+known previous-node match. If the selected profile contains `Novel`, the
 induction hypothesis makes reconstruction of a previous parent impossible. If
-all children are `InsidePrev`, the rejected-match check establishes that the
+all children are `SharedWith`, the rejected-match check establishes that the
 translated parent is absent.
 
 For both states, suffix feasibility makes the selected child sizes sum to
