@@ -1,10 +1,5 @@
 import polars as pl
 
-# The fields `attempt_summary` flattens a payload into, and the polars dtypes
-# they are read back at. Both come from here so they cannot drift: an
-# unreached or panicked attempt leaves most of them None, and an
-# unreached-heavy prefix would otherwise make polars infer Null and reject the
-# first real value.
 ATTEMPT_DTYPES = {
     "reached": pl.Boolean,
     "panic": pl.Boolean,

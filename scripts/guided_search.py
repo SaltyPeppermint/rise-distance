@@ -60,18 +60,12 @@ class Args(BaseSettings):
 
     # I/O
     path: CliPositionalArg[Path] = Field(
-        description=(
-            "Problem folder with `problems.json` and `problem_args.json` "
-            "(both written by `generate_problems.py`)."
-        )
+        description=("Problem folder with `the problems (both written by `generate_problems.py`).")
     )
 
     output: Path | None = Field(
         default=None,
-        description=(
-            "Run folder for `results.parquet`/`results.json`. Auto-created under "
-            "`data/guided_search/` if omitted."
-        ),
+        description=("Run folder for `results.parquet`/`results.json`. Auto-created if omitted."),
     )
 
     sample_bin: Path = Field(
@@ -122,9 +116,7 @@ class Args(BaseSettings):
 
     # Search policy
     n_guides: int = Field(
-        default=5,
-        gt=0,
-        description=("Guides drawn each time a node is expanded. -> Branching"),
+        default=5, gt=0, description=("Guides drawn each time a node is expanded. -> Branching")
     )
 
     max_rss: str = Field(
@@ -140,21 +132,17 @@ class Args(BaseSettings):
     sampling_backoff: int = Field(
         default=1,
         ge=0,
-        description=(
-            "How often a `samples` process killed at `--max-rss` is retried. `0` disables retrying."
-        ),
+        description=("How often a `samples` process killed at `--max-rss` is retried."),
     )
 
     size_search_steps: int = Field(
         default=200, ge=0, description="How many exact-size-search increments to allow."
     )
 
-    sample_policy: SamplePolicy = Field(
-        default="count", description="sample-pool sampling starteg."
-    )
+    sample_policy: SamplePolicy = Field(default="count", description="pool sampling policy.")
 
     frontier: bool = Field(
-        default=False, description="Sample from the frontier of terms, not the whole egraph"
+        default=False, description="Sample only the frontier of terms, not the whole egraph"
     )
 
     full_union: bool = Field(
@@ -165,8 +153,7 @@ class Args(BaseSettings):
         default=None,
         gt=0,
         description=(
-            "Only process the first N start terms in sorted order, making the "
-            "cutoff stable across runs. All start terms are processed if omitted."
+            "Only process the first N start terms in sorted order. All start terms are processed if omitted."
         ),
     )
 
@@ -174,8 +161,7 @@ class Args(BaseSettings):
         default=None,
         gt=0,
         description=(
-            "Only use the first N goals per start term in file order, making the "
-            "cutoff stable across runs. All goals are used if omitted."
+            "Only use the first N goals per start term in file order. All goals are used if omitted."
         ),
     )
 
