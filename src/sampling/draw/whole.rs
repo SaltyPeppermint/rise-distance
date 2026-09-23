@@ -10,7 +10,7 @@ use crate::eqsat::EqsatResult;
 use crate::sampling::count::budgets::RootBudgets;
 use crate::sampling::count::whole::{count_histograms_rooted, find_whole_root_size};
 use crate::sampling::draw::{
-    CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
+    Count, Drawer, AnalysisPackage, DrawingError, Uniform, Weigher,
 };
 use crate::sampling::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
 use crate::utils::HashMap;
@@ -200,7 +200,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for WholePackage<L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for WholePackage<L, N> {
     /// Root-term counts by size.
     ///
     /// # Panics
@@ -225,13 +225,13 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for WholePackage<L, N>
 
         match policy {
             Policy::Uniform => {
-                WholeDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
+                WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
                     .draw_root_batch(&requests, seed)
             }
-            Policy::Count => WholeDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
+            Policy::Count => WholeDrawer::new(&self.counts, &self.egraph, self.root, Count)
                 .draw_root_batch(&requests, seed),
             Policy::Smallest => Ok(vec![
-                WholeDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
+                WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
                     .smallest_root(),
             ]),
         }
@@ -249,7 +249,7 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::lower;
-    use crate::sampling::draw::{CountWeigher, UniformWeigher};
+    use crate::sampling::draw::{Count, Uniform};
     use crate::utils::combined_rng;
     use crate::utils::sym;
 
@@ -321,7 +321,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = WholeDrawer::new(&counts, &graph, root, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
         let mut rng = combined_rng([42]);
         let term = drawer.draw(root, 1, &mut rng);
@@ -337,7 +337,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, a);
-        let drawer = WholeDrawer::new(&counts, &graph, a, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, a, Uniform);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -354,7 +354,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = WholeDrawer::new(&counts, &graph, root, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
         assert!(!drawer.possible_size(root, 1, 0));
         assert!(!drawer.possible_size(root, 3, 0));
@@ -377,7 +377,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = WholeDrawer::new(&counts, &graph, root, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
         let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
         assert!(result.len() <= 6);
@@ -390,7 +390,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = WholeDrawer::new(&counts, &graph, root, CountWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
         let mut rng = combined_rng([42]);
         let term = drawer.draw(root, 1, &mut rng);
@@ -406,7 +406,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, a);
-        let drawer = WholeDrawer::new(&counts, &graph, a, CountWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, a, Count);
 
         for s in 0..50_u64 {
             let mut rng = combined_rng([s]);
@@ -430,7 +430,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = WholeDrawer::new(&counts, &graph, root, CountWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
         let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
 
@@ -455,7 +455,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = WholeDrawer::new(&counts, &graph, root, CountWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
         let exact = drawer
             .draw_root_batch(&[(3, 6)], [1, 2])
@@ -482,7 +482,7 @@ mod tests {
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
-        let drawer = WholeDrawer::new(&counts, &graph, root, UniformWeigher);
+        let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
         let satisfiable = drawer
             .draw_root_batch(&[(2, 1)], [1, 2])

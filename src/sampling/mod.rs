@@ -3,7 +3,7 @@
 pub mod count;
 pub mod draw;
 
-pub use draw::{DrawerPackage, FrontierPackage, WholePackage};
+pub use draw::{AnalysisPackage, FrontierPackage, WholePackage};
 
 use std::borrow::Borrow;
 

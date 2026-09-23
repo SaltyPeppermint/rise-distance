@@ -12,9 +12,7 @@ use crate::sampling::count::novel::{
     prune_matches,
 };
 use crate::sampling::count::whole::count_histograms_rooted;
-use crate::sampling::draw::{
-    CountWeigher, Drawer, DrawerPackage, DrawingError, UniformWeigher, Weigher,
-};
+use crate::sampling::draw::{AnalysisPackage, Count, Drawer, DrawingError, Uniform, Weigher};
 use crate::sampling::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
 use crate::utils::HashMap;
 use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
@@ -372,7 +370,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for FrontierPackage<L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for FrontierPackage<L, N> {
     /// Novel root-term counts by size.
     ///
     /// # Panics
@@ -401,17 +399,12 @@ impl<L: MyLanguage, N: MyAnalysis<L>> DrawerPackage<L, N> for FrontierPackage<L,
         let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
 
         match policy {
-            Policy::Uniform => {
-                FrontierDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
-                    .draw_root_batch(&requests, seed)
-            }
-            Policy::Count => {
-                FrontierDrawer::new(&self.counts, &self.egraph, self.root, CountWeigher)
-                    .draw_root_batch(&requests, seed)
-            }
+            Policy::Uniform => FrontierDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
+                .draw_root_batch(&requests, seed),
+            Policy::Count => FrontierDrawer::new(&self.counts, &self.egraph, self.root, Count)
+                .draw_root_batch(&requests, seed),
             Policy::Smallest => Ok(vec![
-                FrontierDrawer::new(&self.counts, &self.egraph, self.root, UniformWeigher)
-                    .smallest_root(),
+                FrontierDrawer::new(&self.counts, &self.egraph, self.root, Uniform).smallest_root(),
             ]),
         }
     }
@@ -429,7 +422,7 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::lower;
-    use crate::sampling::draw::CountWeigher;
+    use crate::sampling::draw::Count;
     use crate::utils::{combined_rng, sym};
 
     #[test]
@@ -486,7 +479,7 @@ mod tests {
         curr.rebuild();
 
         let novel = NovelTermCount::rooted_for_tests(5, &curr, &prev, root);
-        let drawer = FrontierDrawer::new(&novel, &curr, root, CountWeigher);
+        let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..50_u64 {
             let mut rng = combined_rng([seed]);
@@ -511,7 +504,7 @@ mod tests {
         curr.rebuild();
 
         let novel = NovelTermCount::rooted_for_tests(5, &curr, &prev, root);
-        let drawer = FrontierDrawer::new(&novel, &curr, root, CountWeigher);
+        let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..100_u64 {
             let mut rng = combined_rng([seed]);
@@ -531,7 +524,7 @@ mod tests {
         graph.rebuild();
 
         let novel = NovelTermCount::rooted_for_tests(5, &graph, &graph, a);
-        let drawer = FrontierDrawer::new(&novel, &graph, a, CountWeigher);
+        let drawer = FrontierDrawer::new(&novel, &graph, a, Count);
 
         assert!(!drawer.possible_size(a, 1, 0));
     }

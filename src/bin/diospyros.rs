@@ -10,7 +10,7 @@ use rise_distance::langs::diospyros::cost::VecCostFn;
 use rise_distance::langs::diospyros::rewriteconcats::list_to_concats;
 use rise_distance::langs::diospyros::rules::{filter_applicable_rules, rules};
 use rise_distance::langs::diospyros::stringconversion::convert_string;
-use rise_distance::sampling::{DrawerPackage, FrontierPackage};
+use rise_distance::sampling::{AnalysisPackage, FrontierPackage};
 use rise_distance::{eqsat, lower};
 
 #[derive(Parser)]

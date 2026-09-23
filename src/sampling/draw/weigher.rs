@@ -5,9 +5,9 @@ pub trait Weigher {
     fn child_weight(&self, child_count: &BigUint, rest_count: &BigUint) -> BigUint;
 }
 
-pub struct UniformWeigher;
+pub struct Uniform;
 
-impl Weigher for UniformWeigher {
+impl Weigher for Uniform {
     fn node_weight(&self, _count: &BigUint) -> BigUint {
         BigUint::ONE
     }
@@ -16,9 +16,9 @@ impl Weigher for UniformWeigher {
         BigUint::ONE
     }
 }
-pub struct CountWeigher;
+pub struct Count;
 
-impl Weigher for CountWeigher {
+impl Weigher for Count {
     fn node_weight(&self, count: &BigUint) -> BigUint {
         count.clone()
     }

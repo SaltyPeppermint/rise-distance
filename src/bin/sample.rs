@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use rise_distance::cli::{Measured, Policy};
 use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
 use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
-use rise_distance::sampling::{DrawerPackage, FrontierPackage, WholePackage};
+use rise_distance::sampling::{AnalysisPackage, FrontierPackage, WholePackage};
 use rise_distance::utils::peak_rss_bytes;
 use rise_distance::{MyAnalysis, MyLanguage, OriginLang, lower};
 

@@ -13,7 +13,7 @@ use crate::utils::{HashMap, HashSet};
 use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
 
 pub use frontier::{FrontierDrawer, FrontierPackage};
-pub use weigher::{CountWeigher, UniformWeigher, Weigher};
+pub use weigher::{Count, Uniform, Weigher};
 pub use whole::{WholeDrawer, WholePackage};
 
 // TODO SEPARATE CODE PATHS FOR UNIFORM VS COUNT (DP but with bools)
@@ -164,7 +164,7 @@ pub enum DrawingError {
     InsufficientTerms,
 }
 
-pub trait DrawerPackage<L: MyLanguage, N: MyAnalysis<L>> {
+pub trait AnalysisPackage<L: MyLanguage, N: MyAnalysis<L>> {
     /// Log the stats about the root into `out`.
     ///
     /// # Panics

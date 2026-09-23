@@ -17,7 +17,7 @@ use egg::{Language, RecExpr, Rewrite};
 
 use crate::cli::Policy;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
-use crate::sampling::{DrawerPackage, FrontierPackage};
+use crate::sampling::{AnalysisPackage, FrontierPackage};
 use crate::sketch::Sketch;
 use crate::{MyAnalysis, MyLanguage, OriginLang, id0, lower};
 
