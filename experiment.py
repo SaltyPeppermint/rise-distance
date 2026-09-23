@@ -47,6 +47,7 @@ GRID = {
     "--sampling-backoff": [5, 20],
     "--max-depth": [1, 2],
     "--search-policy": ["depth", "width"],
+    "--frontier": [True, False],
 }
 
 
@@ -63,6 +64,7 @@ subprocess.run(["cargo", "build", "--release"], check=True)
 
 for i, values in enumerate(itertools.product(*GRID.values()), start=1):
     grid_args = [arg for flag, value in zip(GRID, values) for arg in flag_args(flag, value)]
+    print(f"GRID ARGS: {grid_args}")
     proc = subprocess.Popen(
         [
             *MEMRUN,

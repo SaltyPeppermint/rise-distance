@@ -7,6 +7,7 @@ import contextlib
 import json
 import re
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,8 @@ def exit_if_missing(*binaries: Path) -> None:
 class MeasuredJson:
     payload: Any
     peak_rss_bytes: int
+    # From the child's spawn to its exit, so time queued for a slot is excluded.
+    wall_time: float
 
 
 def prefix_rss_cap(argv: list[str], limit_bytes) -> list[str]:
@@ -100,10 +103,11 @@ def last_success_iter(stderr: str) -> int | None:
 class MemoryKilled(RuntimeError):
     """A capped child was SIGKILLed by its cgroup memory limit."""
 
-    def __init__(self, what: str, stderr: str) -> None:
+    def __init__(self, what: str, stderr: str, wall_time: float) -> None:
         super().__init__(f"{what} was killed at its RSS cap")
         self.stderr = stderr
         self.last_iter = last_success_iter(stderr)
+        self.wall_time = wall_time
 
 
 async def run_json_subprocess(
@@ -113,6 +117,7 @@ async def run_json_subprocess(
     rss_max_bytes: int | None = None,
     input: str | None = None,
     timeout: float | None = None,
+    limit: asyncio.Semaphore | None = None,
 ) -> MeasuredJson:
     """Run a JSON child and return its payload plus its peak RSS.
 
@@ -120,34 +125,40 @@ async def run_json_subprocess(
     otherwise print, under a `peak_rss_bytes` the binary reads from its own
     `VmHWM` just before serializing.
 
+    With `limit`, the child only spawns once it holds a slot, and its
+    `wall_time` starts counting then.
+
     Raises `MemoryKilled` when `rss_max_bytes` is set and the cap killed it.
     """
-    proc = await asyncio.create_subprocess_exec(
-        *(prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd),
-        stdin=asyncio.subprocess.DEVNULL if input is None else asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        out, err = await asyncio.wait_for(
-            proc.communicate(None if input is None else input.encode()), timeout
+    async with contextlib.nullcontext() if limit is None else limit:
+        started = time.monotonic()
+        proc = await asyncio.create_subprocess_exec(
+            *(prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd),
+            stdin=asyncio.subprocess.DEVNULL if input is None else asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-    except TimeoutError, asyncio.CancelledError:
-        # Both only unwind the *read*, so the child has to be killed by hand.
-        # `systemd-run --scope` execs the workload in place rather than forking,
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            # An already-cancelled caller is handed a second `CancelledError`
-            # The child watcher reaps the child either way.
-            with contextlib.suppress(asyncio.CancelledError):
-                await proc.wait()
-        raise
+        try:
+            out, err = await asyncio.wait_for(
+                proc.communicate(None if input is None else input.encode()), timeout
+            )
+        except TimeoutError, asyncio.CancelledError:
+            # Both only unwind the *read*, so the child has to be killed by hand.
+            # `systemd-run --scope` execs the workload in place rather than forking,
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                # An already-cancelled caller is handed a second `CancelledError`
+                # The child watcher reaps the child either way.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await proc.wait()
+            raise
+        wall_time = time.monotonic() - started
 
     stdout, stderr = out.decode(errors="replace"), err.decode(errors="replace")
 
     if rss_max_bytes is not None and proc.returncode in OOM_RETURNCODES:
-        raise MemoryKilled(what, stderr)
+        raise MemoryKilled(what, stderr, wall_time)
     if proc.returncode != 0:
         raise RuntimeError(f"{what} failed (code {proc.returncode}):\n{stderr}")
     try:
@@ -157,7 +168,7 @@ async def run_json_subprocess(
             f"{what} returned non-JSON stdout: {e}\n"
             f"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
         ) from e
-    return MeasuredJson(payload=envelope["payload"], peak_rss_bytes=int(envelope["peak_rss_bytes"]))
+    return MeasuredJson(envelope["payload"], int(envelope["peak_rss_bytes"]), wall_time)
 
 
 def stop_reason_name(raw: Any) -> str:
@@ -229,25 +240,28 @@ def cli_flags(**values: str | float | bool | None) -> list[str]:
 
 
 async def _run_limited(
-    limit: asyncio.Semaphore, bar: tqdm, fn: Callable[[Any], Awaitable[Any]], item: Any
+    limit: asyncio.Semaphore | None, bar: tqdm, fn: Callable[[Any], Awaitable[Any]], item: Any
 ) -> Any:
     """Run if a slot is free and tick the bar."""
-    async with limit:
+    async with contextlib.nullcontext() if limit is None else limit:
         result = await fn(item)
     bar.update(1)
     return result
 
 
 async def fan_out(
-    jobs: int, fn: Callable[[Any], Awaitable[Any]], items: list, desc: str, unit: str = "job"
+    jobs: int | None, fn: Callable[[Any], Awaitable[Any]], items: list, desc: str, unit: str = "job"
 ) -> list:
     """Run `fn` over `items`, `jobs` at a time, dropping the ones that returned None.
 
     Each item is its own task behind a semaphore, so a slow item holds up only
     itself. Results come back in `items` order rather than completion order, so
     a run's output does not depend on which item finished first.
+
+    `jobs=None` starts every item at once, for an `fn` that limits its own
+    subprocesses through `run_json_subprocess`'s `limit`.
     """
-    limit = asyncio.Semaphore(jobs)
+    limit = None if jobs is None else asyncio.Semaphore(jobs)
     with tqdm(total=len(items), desc=desc, unit=unit) as bar:
         # A task group rather than `gather`, so the first failure cancels the
         # items still queued on the semaphore instead of letting them start
