@@ -1,3 +1,4 @@
+#!/usr/bin/env -S uv run --script
 import itertools
 import subprocess
 
@@ -62,17 +63,20 @@ subprocess.run(["cargo", "build", "--release"], check=True)
 
 for i, values in enumerate(itertools.product(*GRID.values()), start=1):
     grid_args = [arg for flag, value in zip(GRID, values) for arg in flag_args(flag, value)]
-    with open(f"experiment_{i}.log", "w") as log:
-        subprocess.run(
-            [
-                *MEMRUN,
-                "uv", "run", "scripts/guided_search.py",
-                *BASE_ARGS,
-                *grid_args,
-                "--output", f"data/guided_search/{i}",
-                "data/problems/expensive-bird",
-            ],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )  # fmt: skip
+    proc = subprocess.Popen(
+        [
+            *MEMRUN,
+            "uv", "run", "scripts/guided_search.py",
+            *BASE_ARGS,
+            *grid_args,
+            "--output", f"data/guided_search/{i}",
+            "data/problems/expensive-bird",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )  # fmt: skip
+    tee = subprocess.Popen(["tee", f"experiment_{i}.log"], stdin=proc.stdout)
+    assert proc.stdout is not None
+    proc.stdout.close()  # so proc gets SIGPIPE if tee exits early
+    tee.wait()
+    proc.wait()
