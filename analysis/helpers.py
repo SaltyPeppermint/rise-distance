@@ -243,7 +243,7 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
         .when(reason.str.starts_with('Other("predicted upcoming-iteration'))
         .then(pl.lit("predictive memory stop"))
         .when(reason == "rss_killed")
-        .then(pl.lit("rss cap kill"))
+        .then(pl.lit("attempts exhausted, all oomed"))
         .when(reason == "Saturated")
         .then(pl.lit("saturated without goal"))
         # A pair whose search never ran an attempt falls back to the search's
