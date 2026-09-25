@@ -102,8 +102,7 @@ impl<T: Eq + Hash + Clone> UniqueQueue<T> {
     }
 }
 
-#[must_use]
-pub fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
+pub(crate) fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
     const { assert!(N >= 1 && N <= 4, "must provide 1 to 4 u64 values") };
 
     let mut seed = [0u8; 32];
@@ -180,7 +179,7 @@ pub fn stack_children<L: Language>(children: &[RecExpr<L>], root: L) -> RecExpr<
 }
 
 #[must_use]
-pub fn id0() -> Id {
+pub(crate) fn id0() -> Id {
     Id::from(0)
 }
 
@@ -199,7 +198,7 @@ pub fn id0() -> Id {
 /// Panics if the jemalloc ctl epoch cannot be advanced or `stats.allocated`
 /// cannot be read (both indicate jemalloc is not the active allocator).
 #[must_use]
-pub fn live_heap_bytes() -> u64 {
+pub(crate) fn live_heap_bytes() -> u64 {
     // TODO: REPLACE ME WITH RSS QUERY, NO TIKZ MALLOC DEPENDENCY ANYMORE, DO IT ALSO IN THE VENDORED EGG FORK
     // Stats are cached per epoch; advance it so the read reflects current state.
     tikv_jemalloc_ctl::epoch::advance().expect("failed to advance jemalloc epoch");
@@ -207,22 +206,11 @@ pub fn live_heap_bytes() -> u64 {
         as u64
 }
 
-pub fn log_live_heap_bytes(context: &'static str) {
-    let current = live_heap_bytes();
-    eprintln!("CURRENT HEAP BYTES: {current}. CONTEXT: {context}");
-}
-
 #[expect(clippy::missing_panics_doc)]
 #[must_use]
 pub fn peak_rss_bytes() -> u64 {
     let status = Process::myself().unwrap().status().unwrap();
     status.vmhwm.unwrap() * 1024
-}
-
-#[cfg(test)]
-#[must_use]
-pub fn sym(name: &str) -> crate::langs::math::Math {
-    crate::langs::math::Math::Symbol(name.into())
 }
 
 #[cfg(test)]

@@ -7,12 +7,14 @@ use super::CommutativeSemigroupAnalysis;
 use crate::utils::HashMap;
 
 #[derive(Debug, Copy, Clone)]
+#[allow(dead_code)]
 pub struct ExprCount {
     limit: usize,
 }
 
 impl ExprCount {
     #[must_use]
+    #[allow(dead_code)]
     pub const fn new(limit: usize) -> Self {
         Self { limit }
     }

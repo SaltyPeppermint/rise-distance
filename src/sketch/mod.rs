@@ -8,7 +8,7 @@ use egg::{FromOp, Id, Language, RecExpr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub use containment::{contains, eclass_contains};
+pub use containment::eclass_contains;
 pub use extraction::eclass_extract;
 
 /// Simple alias

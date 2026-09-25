@@ -2,6 +2,7 @@
 
 mod count;
 mod draw;
+mod weigher;
 
 use std::borrow::Borrow;
 

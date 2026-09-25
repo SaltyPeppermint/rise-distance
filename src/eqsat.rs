@@ -563,20 +563,20 @@ mod tests {
         );
 
         let a = prev
-            .lookup(utils::sym("a"))
+            .lookup(math::sym("a"))
             .expect("a existed at the boundary");
         let b = prev
-            .lookup(utils::sym("b"))
+            .lookup(math::sym("b"))
             .expect("b existed at the boundary");
         assert_eq!(a, b, "a and b were already unioned at the boundary");
         assert!(
-            prev.lookup(utils::sym("c")).is_none(),
+            prev.lookup(math::sym("c")).is_none(),
             "c was added only in the final distinct state"
         );
 
         let prev_again = result.prev_index();
-        assert!(prev_again.lookup(utils::sym("a")).is_some());
-        assert!(prev_again.lookup(utils::sym("c")).is_none());
+        assert!(prev_again.lookup(math::sym("a")).is_some());
+        assert!(prev_again.lookup(math::sym("c")).is_none());
     }
 
     #[test]

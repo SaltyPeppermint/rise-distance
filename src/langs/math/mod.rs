@@ -10,6 +10,7 @@ use num::{BigInt, FromPrimitive, Signed, ToPrimitive, Zero};
 use serde::{Deserialize, Serialize};
 
 use crate::utils::HashSet;
+
 pub use cost_fn::{
     AddCheap, AddExpensive, DiffIntCheap, DiffIntExpensive, SillyCheap, TinyConstant,
 };
@@ -313,6 +314,12 @@ impl Applier<Math, ConstantFold> for TinyConstApplier {
             vec![]
         }
     }
+}
+
+#[cfg(test)]
+#[must_use]
+pub fn sym(name: &str) -> crate::langs::math::Math {
+    crate::langs::math::Math::Symbol(name.into())
 }
 
 #[cfg(test)]

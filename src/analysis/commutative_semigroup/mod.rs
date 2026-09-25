@@ -6,8 +6,10 @@ use egg::{Analysis, DidMerge, EGraph, Id, Language};
 
 use crate::utils::{HashMap, UniqueQueue};
 
+#[allow(unused_imports)]
 pub use expr_count::ExprCount;
 
+#[allow(dead_code)]
 pub trait CommutativeSemigroupAnalysis<L: Language, N: Analysis<L>>: Sized + Debug {
     type Data: PartialEq;
 

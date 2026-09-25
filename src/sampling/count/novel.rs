@@ -408,8 +408,7 @@ fn derive_novel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::langs::math::Math;
-    use crate::utils;
+    use crate::langs::math::{self, Math};
 
     fn rooted_novel(
         curr: &EGraph<Math, ()>,
@@ -426,8 +425,8 @@ mod tests {
     #[test]
     fn no_novelty_yields_empty() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(utils::sym("a"));
-        let b = graph.add(utils::sym("b"));
+        let a = graph.add(math::sym("a"));
+        let b = graph.add(math::sym("b"));
         graph.union(a, b);
         graph.rebuild();
 
@@ -442,8 +441,8 @@ mod tests {
         // union a and b in curr so ln(b) becomes a new extraction from the
         // root class.
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(utils::sym("a"));
-        let b = curr.add(utils::sym("b"));
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
         let root = curr.add(Math::Ln(a));
         curr.rebuild();
         let prev = curr.clone();
@@ -474,8 +473,8 @@ mod tests {
         // 4 terms: aa, ab, ba, bb. Only ab was in prev (and possibly ba is
         // not since Math::Add is non-commutative). So 3 novel.
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(utils::sym("a"));
-        let b = curr.add(utils::sym("b"));
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
         let root = curr.add(Math::Add([a, b]));
         curr.rebuild();
         let prev = curr.clone();
@@ -494,7 +493,7 @@ mod tests {
     #[test]
     fn rooted_match_fixpoint_builds_parent_from_child_cover() {
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(utils::sym("a"));
+        let a = curr.add(math::sym("a"));
         let ln = curr.add(Math::Ln(a));
         let root = curr.add(Math::Sqrt(ln));
         curr.rebuild();
@@ -509,8 +508,8 @@ mod tests {
     #[test]
     fn rooted_matches_skip_unreachable_classes() {
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(utils::sym("a"));
-        let b = curr.add(utils::sym("b"));
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
         let root = curr.add(Math::Ln(a));
         let unreachable = curr.add(Math::Sqrt(b));
         curr.rebuild();
@@ -526,7 +525,7 @@ mod tests {
     #[test]
     fn final_pruning_removes_oversized_node_matches() {
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(utils::sym("a"));
+        let a = curr.add(math::sym("a"));
         let ln = curr.add(Math::Ln(a));
         let oversized = curr.add(Math::Sqrt(ln));
         curr.rebuild();
@@ -553,8 +552,8 @@ mod tests {
     #[test]
     fn rooted_matches_keep_all_previous_witness_classes() {
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(utils::sym("a"));
-        let b = curr.add(utils::sym("b"));
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
         curr.rebuild();
         let prev = curr.clone();
         curr.union(a, b);

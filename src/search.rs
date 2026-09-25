@@ -16,10 +16,10 @@ use egg::{Language, RecExpr, Rewrite};
 use crate::cli::Policy;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
 use crate::langs::{MyAnalysis, MyLanguage};
-use crate::origin::{OriginLang, lower};
+use crate::origin::{self, OriginLang};
 use crate::sampling::{AnalysisPackage, FrontierPackage};
 use crate::sketch::Sketch;
-use crate::utils::id0;
+use crate::utils;
 
 /// Tunable knobs for the cut-and-restart search strategy.
 #[derive(Copy, Clone, Debug, clap::Args)]
@@ -174,7 +174,7 @@ fn reach_cut<L: MyLanguage, N: MyAnalysis<L>>(
         cut_iters
     );
     for sample in &samples {
-        println!("{}", lower(sample.to_owned()));
+        println!("{}", origin::lower(sample.to_owned()));
     }
 
     let verify = eqsat::guided_eqsat(
@@ -197,7 +197,7 @@ fn reach_cut<L: MyLanguage, N: MyAnalysis<L>>(
 
     ReachResult {
         reached,
-        samples: samples.into_iter().map(lower).collect(),
+        samples: samples.into_iter().map(origin::lower).collect(),
         eqsat_meta,
     }
 }
@@ -229,7 +229,7 @@ where
     let guide = start
         .as_ref()
         .iter()
-        .map(|n| OriginLang::new(n.clone(), id0()))
+        .map(|n| OriginLang::new(n.clone(), utils::id0()))
         .collect();
 
     let verify = eqsat::guided_eqsat(

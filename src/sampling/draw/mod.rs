@@ -1,5 +1,4 @@
 mod frontier;
-mod weigher;
 mod whole;
 
 use egg::{Id, RecExpr};
@@ -14,7 +13,6 @@ use crate::origin::OriginLang;
 use crate::utils::{self, HashMap, HashSet};
 
 pub use frontier::FrontierPackage;
-pub use weigher::{Count, Uniform, Weigher};
 pub use whole::WholePackage;
 
 // TODO SEPARATE CODE PATHS FOR UNIFORM VS COUNT (DP but with bools)

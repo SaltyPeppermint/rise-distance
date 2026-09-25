@@ -6,7 +6,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-pub mod analysis;
+mod analysis;
 pub mod cli;
 pub mod eqsat;
 pub mod generator;
@@ -15,6 +15,6 @@ pub mod origin;
 mod previous;
 pub mod sampling;
 pub mod search;
-pub mod sketch;
+mod sketch;
 pub mod utils;
 pub mod zs;

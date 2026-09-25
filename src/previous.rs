@@ -131,15 +131,14 @@ impl<L: Language, N: Analysis<L>> PreviousLookup<L> for EGraph<L, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::langs::math::Math;
-    use crate::utils;
+    use crate::langs::math::{self, Math};
 
     #[test]
     fn replay_reconstructs_merge_and_congruence() {
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let a = graph.add(utils::sym("a"));
-        let b = graph.add(utils::sym("b"));
+        let a = graph.add(math::sym("a"));
+        let b = graph.add(math::sym("b"));
         let fa = graph.add(Math::Ln(a));
         let fb = graph.add(Math::Ln(b));
         graph.rebuild();
@@ -157,11 +156,11 @@ mod tests {
 
         assert_eq!(
             index.lookup_expr(&"a".parse().unwrap()),
-            Some(index.lookup(utils::sym("a")).unwrap())
+            Some(index.lookup(math::sym("a")).unwrap())
         );
         assert_eq!(
-            index.lookup(Math::Ln(index.lookup(utils::sym("a")).unwrap())),
-            index.lookup(Math::Ln(index.lookup(utils::sym("b")).unwrap()))
+            index.lookup(Math::Ln(index.lookup(math::sym("a")).unwrap())),
+            index.lookup(Math::Ln(index.lookup(math::sym("b")).unwrap()))
         );
         assert_eq!(graph.find(fa), graph.find(fb));
     }
@@ -170,12 +169,12 @@ mod tests {
     fn replay_boundary_excludes_later_nodes_and_unions() {
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let a = graph.add(utils::sym("a"));
+        let a = graph.add(math::sym("a"));
         graph.rebuild();
         let raw_count = graph.nodes().len();
         let event_count = graph.union_event_count();
 
-        let b = graph.add(utils::sym("b"));
+        let b = graph.add(math::sym("b"));
         graph.union(a, b);
         graph.rebuild();
 
@@ -185,16 +184,16 @@ mod tests {
             event_count,
             graph.union_events(),
         );
-        assert!(index.lookup(utils::sym("a")).is_some());
-        assert!(index.lookup(utils::sym("b")).is_none());
+        assert!(index.lookup(math::sym("a")).is_some());
+        assert!(index.lookup(math::sym("b")).is_none());
     }
 
     #[test]
     fn recorder_ignores_repeated_noop_unions() {
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let a = graph.add(utils::sym("a"));
-        let b = graph.add(utils::sym("b"));
+        let a = graph.add(math::sym("a"));
+        let b = graph.add(math::sym("b"));
 
         assert!(graph.union(a, b));
         assert_eq!(graph.union_event_count(), 1);
@@ -206,8 +205,8 @@ mod tests {
     fn recorder_captures_explanation_hashcons_unions() {
         let mut graph = EGraph::<Math, ()>::new(()).with_explanations_enabled();
         graph.enable_union_event_recording();
-        let a = graph.add_uncanonical(utils::sym("a"));
-        let b = graph.add_uncanonical(utils::sym("b"));
+        let a = graph.add_uncanonical(math::sym("a"));
+        let b = graph.add_uncanonical(math::sym("b"));
         graph.union_trusted(a, b, "merge");
         graph.rebuild();
 
@@ -226,7 +225,7 @@ mod tests {
     fn origin_membership_ignores_origins_and_rejects_new_children() {
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let a = graph.add(utils::sym("a"));
+        let a = graph.add(math::sym("a"));
         let fa = graph.add(Math::Ln(a));
         graph.rebuild();
         let index = PrevIndex::from_union_history(
@@ -237,11 +236,11 @@ mod tests {
         );
 
         let old = RecExpr::from(vec![
-            OriginLang::new(utils::sym("a"), Id::from(999)),
+            OriginLang::new(math::sym("a"), Id::from(999)),
             OriginLang::new(Math::Ln(Id::from(0)), Id::from(998)),
         ]);
         let new = RecExpr::from(vec![
-            OriginLang::new(utils::sym("b"), a),
+            OriginLang::new(math::sym("b"), a),
             OriginLang::new(Math::Ln(Id::from(0)), fa),
         ]);
         assert!(index.contains_origin_expr(&old));

@@ -11,7 +11,8 @@ use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::{RootBudgets, whole};
-use crate::sampling::draw::{AnalysisPackage, Count, Drawer, DrawingError, Uniform, Weigher};
+use crate::sampling::draw::{AnalysisPackage, Drawer, DrawingError};
+use crate::sampling::weigher::{Count, Uniform, Weigher};
 use crate::utils::{self, HashMap};
 
 pub struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
@@ -242,7 +243,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for WholePackage<L, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::langs::math::Math;
+    use crate::langs::math::{self, Math};
     use crate::origin;
 
     fn rooted_counts(
@@ -263,8 +264,8 @@ mod tests {
         // would yield 9).
         let mut curr = EGraph::<Math, ()>::new(());
         curr.enable_union_event_recording();
-        let a = curr.add(utils::sym("a"));
-        let b = curr.add(utils::sym("b"));
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
         let apb = curr.add(Math::Add([a, b]));
         curr.rebuild();
         let prev_raw_node_count = curr.nodes().len();
@@ -292,7 +293,7 @@ mod tests {
         // 3 can never be met and the scan must report the cap.
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let root = graph.add(utils::sym("a"));
+        let root = graph.add(math::sym("a"));
         graph.rebuild();
         let prev_raw_node_count = graph.nodes().len();
         let prev_union_event_count = graph.union_event_count();
@@ -309,7 +310,7 @@ mod tests {
     #[test]
     fn uniform_draw_single_leaf() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let root = graph.add(utils::sym("a"));
+        let root = graph.add(math::sym("a"));
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
@@ -323,8 +324,8 @@ mod tests {
     #[test]
     fn uniform_draw_picks_valid_choice() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(utils::sym("a"));
-        let b = graph.add(utils::sym("b"));
+        let a = graph.add(math::sym("a"));
+        let b = graph.add(math::sym("b"));
         graph.union(a, b);
         graph.rebuild();
 
@@ -341,7 +342,7 @@ mod tests {
     #[test]
     fn uniform_possible_size_correct() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(utils::sym("a"));
+        let a = graph.add(math::sym("a"));
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
@@ -357,12 +358,12 @@ mod tests {
     #[test]
     fn uniform_draw_batch_finds_all_unique() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a1 = graph.add(utils::sym("a1"));
-        let a2 = graph.add(utils::sym("a2"));
+        let a1 = graph.add(math::sym("a1"));
+        let a2 = graph.add(math::sym("a2"));
         graph.union(a1, a2);
-        let b1 = graph.add(utils::sym("b1"));
-        let b2 = graph.add(utils::sym("b2"));
-        let b3 = graph.add(utils::sym("b3"));
+        let b1 = graph.add(math::sym("b1"));
+        let b2 = graph.add(math::sym("b2"));
+        let b3 = graph.add(math::sym("b3"));
         graph.union(b1, b2);
         graph.union(b1, b3);
         let root = graph.add(Math::Add([a1, b1]));
@@ -378,7 +379,7 @@ mod tests {
     #[test]
     fn count_weighted_draw_single_leaf() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let root = graph.add(utils::sym("a"));
+        let root = graph.add(math::sym("a"));
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
@@ -392,8 +393,8 @@ mod tests {
     #[test]
     fn count_weighted_draw_picks_valid_choice() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(utils::sym("a"));
-        let b = graph.add(utils::sym("b"));
+        let a = graph.add(math::sym("a"));
+        let b = graph.add(math::sym("b"));
         graph.union(a, b);
         graph.rebuild();
 
@@ -410,12 +411,12 @@ mod tests {
     #[test]
     fn count_draw_batch_finds_unique() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a1 = graph.add(utils::sym("a1"));
-        let a2 = graph.add(utils::sym("a2"));
+        let a1 = graph.add(math::sym("a1"));
+        let a2 = graph.add(math::sym("a2"));
         graph.union(a1, a2);
-        let b1 = graph.add(utils::sym("b1"));
-        let b2 = graph.add(utils::sym("b2"));
-        let b3 = graph.add(utils::sym("b3"));
+        let b1 = graph.add(math::sym("b1"));
+        let b2 = graph.add(math::sym("b2"));
+        let b3 = graph.add(math::sym("b3"));
         graph.union(b1, b2);
         graph.union(b1, b3);
         let root = graph.add(Math::Add([a1, b1]));
@@ -435,12 +436,12 @@ mod tests {
         // A batch is all-or-nothing: exactly 6 is satisfiable, and asking for
         // more than the size holds fails instead of returning a short draw.
         let mut graph = EGraph::<Math, ()>::new(());
-        let a1 = graph.add(utils::sym("a1"));
-        let a2 = graph.add(utils::sym("a2"));
+        let a1 = graph.add(math::sym("a1"));
+        let a2 = graph.add(math::sym("a2"));
         graph.union(a1, a2);
-        let b1 = graph.add(utils::sym("b1"));
-        let b2 = graph.add(utils::sym("b2"));
-        let b3 = graph.add(utils::sym("b3"));
+        let b1 = graph.add(math::sym("b1"));
+        let b2 = graph.add(math::sym("b2"));
+        let b3 = graph.add(math::sym("b3"));
         graph.union(b1, b2);
         graph.union(b1, b3);
         let root = graph.add(Math::Add([a1, b1]));
@@ -469,7 +470,7 @@ mod tests {
         // The satisfiable size alone succeeds, but pairing it with an empty
         // size fails the whole batch rather than silently dropping it.
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(utils::sym("a"));
+        let a = graph.add(math::sym("a"));
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 

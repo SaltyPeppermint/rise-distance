@@ -11,7 +11,8 @@ use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::novel::{self, NodeMatch, NodeMatches, NovelTermCount};
 use crate::sampling::count::{RootBudgets, whole};
-use crate::sampling::draw::{AnalysisPackage, Count, Drawer, DrawingError, Uniform, Weigher};
+use crate::sampling::draw::{AnalysisPackage, Drawer, DrawingError};
+use crate::sampling::weigher::{Count, Uniform, Weigher};
 use crate::utils::{self, HashMap};
 
 /// Draws each frontier term independently using the supplied local weighting
@@ -415,7 +416,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for FrontierPackage<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::langs::math::Math;
+    use crate::langs::math::{self, Math};
     use crate::origin;
 
     #[test]
@@ -426,8 +427,8 @@ mod tests {
         // 5, 7, 9, ... asking for 3 sizes must yield max_size = 9.
         let mut curr = EGraph::<Math, ()>::new(());
         curr.enable_union_event_recording();
-        let a = curr.add(utils::sym("a"));
-        let b = curr.add(utils::sym("b"));
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
         let apb = curr.add(Math::Add([a, b]));
         curr.rebuild();
         let prev_raw_node_count = curr.nodes().len();
@@ -461,8 +462,8 @@ mod tests {
         // curr: same plus union(a, b). Now ln(b) is extractable from curr's
         // root but not from any prev class.
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(utils::sym("a"));
-        let b = curr.add(utils::sym("b"));
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
         let root = curr.add(Math::Ln(a));
         curr.rebuild();
         let prev = curr.clone();
@@ -487,8 +488,8 @@ mod tests {
         // curr: same plus union(a, b). Add(merged, merged) extracts 4 terms;
         // only Add(a, b) is in prev.
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(utils::sym("a"));
-        let b = curr.add(utils::sym("b"));
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
         let root = curr.add(Math::Add([a, b]));
         curr.rebuild();
         let prev = curr.clone();
@@ -513,7 +514,7 @@ mod tests {
     #[test]
     fn independent_frontier_possible_size_excludes_old_terms() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(utils::sym("a"));
+        let a = graph.add(math::sym("a"));
         graph.rebuild();
 
         let novel = NovelTermCount::rooted_for_tests(5, &graph, &graph, a);
