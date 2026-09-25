@@ -2,9 +2,8 @@ use std::fmt::Debug;
 
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
 
-use crate::utils::HashMap;
-
 use super::SemiLatticeAnalysis;
+use crate::utils::HashMap;
 
 #[derive(Debug)]
 pub struct SatisfiesContainsAnalysis;

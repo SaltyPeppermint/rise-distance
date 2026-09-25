@@ -8,8 +8,8 @@ use egg::{Analysis, DidMerge, EGraph, Id, Language};
 
 use crate::utils::{HashMap, UniqueQueue};
 
-pub(crate) use contains::{SatisfiesContainsAnalysis, SatisfiesOnlyContainsAnalysis};
-pub(crate) use extract::{ExtractAnalysis, ExtractContainsAnalysis, ExtractOnlyContainsAnalysis};
+pub use contains::{SatisfiesContainsAnalysis, SatisfiesOnlyContainsAnalysis};
+pub use extract::{ExtractAnalysis, ExtractContainsAnalysis, ExtractOnlyContainsAnalysis};
 
 pub trait SemiLatticeAnalysis<L: Language, N: Analysis<L>>: Sized + Debug {
     type Data: Debug;

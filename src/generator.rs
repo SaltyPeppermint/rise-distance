@@ -2,8 +2,8 @@ use egg::RecExpr;
 use rand::Rng;
 use rand::seq::SliceRandom;
 
-use crate::MyLanguage;
-use crate::utils::stack_children;
+use crate::langs::MyLanguage;
+use crate::utils;
 
 /// How an operator's children are filled when building a term.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +165,7 @@ impl<L: Samplable> SizeUniformSampler<L> {
             Shape::Arity(k) => {
                 let op = pick(rng, self.grammar.pool(k));
                 let children = self.gen_children(rng, k, n - 1);
-                stack_children(&children, op)
+                utils::stack_children(&children, op)
             }
             Shape::Binder => {
                 let op = pick(rng, &self.grammar.binder);
@@ -174,8 +174,8 @@ impl<L: Samplable> SizeUniformSampler<L> {
                 let var_idx = *free
                     .choose(rng)
                     .expect("weighted body generation guarantees a free variable");
-                let var = stack_children(&[], self.grammar.vars[var_idx].clone());
-                stack_children(&[body, var], op)
+                let var = utils::stack_children(&[], self.grammar.vars[var_idx].clone());
+                utils::stack_children(&[body, var], op)
             }
         }
     }
@@ -386,7 +386,7 @@ mod tests {
     use super::*;
     use crate::langs::math::Math;
     use crate::langs::prop::Prop;
-    use crate::utils::{HashMap, HashSet, id0};
+    use crate::utils::{HashMap, HashSet};
 
     #[test]
     fn one_tuple_counts_equal_term_counts_through_limit() {
@@ -449,10 +449,10 @@ mod tests {
                 vec![
                     vec![Tiny::X, Tiny::Y, Tiny::C],
                     Vec::new(),
-                    vec![Tiny::Add([id0(), id0()])],
+                    vec![Tiny::Add([utils::id0(), utils::id0()])],
                 ],
                 vec![Tiny::X, Tiny::Y],
-                vec![Tiny::Bind([id0(), id0()])],
+                vec![Tiny::Bind([utils::id0(), utils::id0()])],
             )
         }
 
@@ -485,7 +485,7 @@ mod tests {
             vec![
                 vec![Tiny::X, Tiny::Y, Tiny::C],
                 Vec::new(),
-                vec![Tiny::Add([id0(), id0()])],
+                vec![Tiny::Add([utils::id0(), utils::id0()])],
             ],
             vec![Tiny::X, Tiny::Y],
             Vec::new(),
@@ -499,7 +499,7 @@ mod tests {
         if n == 1 {
             return [Tiny::X, Tiny::Y, Tiny::C]
                 .into_iter()
-                .map(|leaf| stack_children(&[], leaf))
+                .map(|leaf| utils::stack_children(&[], leaf))
                 .collect();
         }
 
@@ -509,9 +509,9 @@ mod tests {
             let right_size = n - 1 - left_size;
             for left in enumerate_tiny(left_size) {
                 for right in enumerate_tiny(right_size) {
-                    result.push(stack_children(
+                    result.push(utils::stack_children(
                         &[left.clone(), right],
-                        Tiny::Add([id0(), id0()]),
+                        Tiny::Add([utils::id0(), utils::id0()]),
                     ));
                 }
             }
@@ -519,10 +519,10 @@ mod tests {
         if n >= 3 {
             for body in enumerate_tiny(n - 2) {
                 for var_idx in Tiny::free_var_indices(&grammar, &body) {
-                    let var = stack_children(&[], grammar.vars[var_idx].clone());
-                    result.push(stack_children(
+                    let var = utils::stack_children(&[], grammar.vars[var_idx].clone());
+                    result.push(utils::stack_children(
                         &[body.clone(), var],
-                        Tiny::Bind([id0(), id0()]),
+                        Tiny::Bind([utils::id0(), utils::id0()]),
                     ));
                 }
             }

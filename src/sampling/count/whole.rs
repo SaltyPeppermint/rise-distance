@@ -1,8 +1,8 @@
 use egg::{Analysis, EGraph, Id, Language};
 use num::{BigUint, Zero};
 
-use crate::sampling::count::budgets::RootBudgets;
-use crate::sampling::count::layered::LayeredDp;
+use super::budgets::RootBudgets;
+use super::layered::LayeredDp;
 use crate::utils::HashMap;
 
 /// Count distinct terms within pre-established root budgets.
@@ -78,10 +78,10 @@ pub(crate) fn find_whole_root_size<L: Language, N: Analysis<L>>(
 
 #[cfg(test)]
 mod tests {
-    use egg::{EGraph, SymbolLang};
+    use egg::SymbolLang;
 
-    use super::super::super::suffix_convolutions;
     use super::*;
+    use crate::sampling;
 
     fn rooted_counts(
         egraph: &EGraph<SymbolLang, ()>,
@@ -216,7 +216,7 @@ mod tests {
                     .map(|c| dp.data().get(c).cloned().unwrap_or_default())
                     .collect::<Vec<_>>();
                 let budget = budgets.budget(id).unwrap() - 1;
-                let expected = suffix_convolutions(&histograms, budget);
+                let expected = sampling::suffix_convolutions(&histograms, budget);
 
                 // Only positions `1..n - 1` are stored; the first and the
                 // last two are implicit, and drawers rebuild them with

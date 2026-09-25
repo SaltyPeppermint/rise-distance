@@ -15,9 +15,11 @@ use egg::{Language, RecExpr, Rewrite};
 
 use crate::cli::Policy;
 use crate::eqsat::{self, EqsatConfig, EqsatMetadata, Goal};
+use crate::langs::{MyAnalysis, MyLanguage};
+use crate::origin::{OriginLang, lower};
 use crate::sampling::{AnalysisPackage, FrontierPackage};
 use crate::sketch::Sketch;
-use crate::{MyAnalysis, MyLanguage, OriginLang, id0, lower};
+use crate::utils::id0;
 
 /// Tunable knobs for the cut-and-restart search strategy.
 #[derive(Copy, Clone, Debug, clap::Args)]

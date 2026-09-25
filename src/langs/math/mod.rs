@@ -3,11 +3,10 @@ mod generate;
 
 use egg::{
     Analysis, Applier, DidMerge, EGraph, Id, Language, PatternAst, Rewrite, Subst, Symbol, Var,
-    define_language, merge_option, rewrite,
+    define_language, rewrite,
 };
 use num::rational::Ratio;
-use num::{BigInt, FromPrimitive, Zero};
-use num::{Signed, ToPrimitive};
+use num::{BigInt, FromPrimitive, Signed, ToPrimitive, Zero};
 use serde::{Deserialize, Serialize};
 
 use crate::utils::HashSet;
@@ -93,7 +92,7 @@ impl Analysis<Math> for ConstantFold {
     }
 
     fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-        merge_option(to, from, |a, b| {
+        egg::merge_option(to, from, |a, b| {
             assert_eq!(a.0, b.0, "Merged non-equal constants");
             DidMerge(false, false)
         })
@@ -500,8 +499,8 @@ mod tests {
 
     #[test]
     fn test_basic_egraph_union_intersect() {
-        let mut egraph1 = egg::EGraph::new(ConstantFold {}).with_explanations_enabled();
-        let mut egraph2 = egg::EGraph::new(ConstantFold {}).with_explanations_enabled();
+        let mut egraph1 = EGraph::new(ConstantFold {}).with_explanations_enabled();
+        let mut egraph2 = EGraph::new(ConstantFold {}).with_explanations_enabled();
         egraph1.union_instantiations(
             &"x".parse().unwrap(),
             &"y".parse().unwrap(),
@@ -569,8 +568,8 @@ mod tests {
 
     #[test]
     fn test_intersect_basic() {
-        let mut egraph1 = egg::EGraph::new(ConstantFold {}).with_explanations_enabled();
-        let mut egraph2 = egg::EGraph::new(ConstantFold {}).with_explanations_enabled();
+        let mut egraph1 = EGraph::new(ConstantFold {}).with_explanations_enabled();
+        let mut egraph2 = EGraph::new(ConstantFold {}).with_explanations_enabled();
         egraph1.union_instantiations(
             &"(+ x 0)".parse().unwrap(),
             &"(+ y 0)".parse().unwrap(),
@@ -600,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_medium_intersect() {
-        let mut egraph1 = egg::EGraph::<Math, ()>::new(());
+        let mut egraph1 = EGraph::<Math, ()>::new(());
 
         egraph1.add_expr(&"(sqrt (ln 1))".parse().unwrap());
         let ln = egraph1.add_expr(&"(ln 1)".parse().unwrap());
@@ -621,7 +620,7 @@ mod tests {
             egraph1.add_expr(&"(+ (* k pi) (* k pi))".parse().unwrap())
         );
 
-        let mut egraph2 = egg::EGraph::<Math, ()>::new(());
+        let mut egraph2 = EGraph::<Math, ()>::new(());
         let ln2 = egraph2.add_expr(&"(ln 2)".parse().unwrap());
         let k2 = egraph2.add_expr(&"k".parse().unwrap());
         let mk1 = egraph2.add_expr(&"(* k 1)".parse().unwrap());

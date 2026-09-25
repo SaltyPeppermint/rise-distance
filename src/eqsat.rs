@@ -10,11 +10,10 @@ use strum::Display;
 use thiserror::Error;
 
 use crate::langs::{MyAnalysis, MyLanguage};
-use crate::origin::{OriginLang, lower};
+use crate::origin::{self, OriginLang};
 use crate::previous::PrevIndex;
 use crate::sketch::{self, Sketch};
-use crate::utils::live_heap_bytes;
-use crate::utils::{HashMap, HashSet};
+use crate::utils::{self, HashMap, HashSet};
 
 /// Prefix of the machine-readable eqsat progress events written to stderr,
 /// to avoid confusion with human-intended logging
@@ -90,7 +89,7 @@ impl EqsatConfig {
     ) -> Runner<L, N, D> {
         let mut runner = Runner::<L, N, D>::new_with_memory_tracker(
             N::default(),
-            live_heap_bytes,
+            utils::live_heap_bytes,
             self.max_memory,
         )
         .with_iter_limit(self.max_iters)
@@ -347,7 +346,7 @@ impl<L: MyLanguage> Goal<L> {
 /// Outputs from a reached run, including the rebuilt final e-graph size.
 #[derive(Serialize)]
 pub struct ReachedRun<L: MyLanguage> {
-    pub iterations: Vec<egg::Iteration<()>>,
+    pub iterations: Vec<Iteration<()>>,
     pub target: RecExpr<L>,
     pub nodes: usize,
     pub classes: usize,
@@ -457,7 +456,7 @@ where
     I: IntoIterator<Item = &'a RecExpr<OriginLang<L>>>,
 {
     for guide in guides {
-        let expr = lower(guide.clone());
+        let expr = origin::lower(guide.clone());
         runner = runner.with_expr(&expr);
     }
 
@@ -523,14 +522,10 @@ mod tests {
     use std::sync::Mutex;
 
     use clap::Parser;
-    use egg::{RecExpr, StopReason};
 
-    use super::{EqsatConfig, Goal, GuideError, guided_eqsat, run_eqsat, unguided_eqsat};
-    use crate::OriginLang;
+    use super::*;
     use crate::langs::math::{self, ConstantFold, Math};
     use crate::previous::PreviousLookup;
-    use crate::utils::live_heap_bytes;
-    use crate::utils::sym;
 
     // jemalloc stats are process-wide, so keep allocation-sensitive tests from
     // perturbing one another.
@@ -567,17 +562,21 @@ mod tests {
             "reconstructing the previous index must not drain the final e-graph"
         );
 
-        let a = prev.lookup(sym("a")).expect("a existed at the boundary");
-        let b = prev.lookup(sym("b")).expect("b existed at the boundary");
+        let a = prev
+            .lookup(utils::sym("a"))
+            .expect("a existed at the boundary");
+        let b = prev
+            .lookup(utils::sym("b"))
+            .expect("b existed at the boundary");
         assert_eq!(a, b, "a and b were already unioned at the boundary");
         assert!(
-            prev.lookup(sym("c")).is_none(),
+            prev.lookup(utils::sym("c")).is_none(),
             "c was added only in the final distinct state"
         );
 
         let prev_again = result.prev_index();
-        assert!(prev_again.lookup(sym("a")).is_some());
-        assert!(prev_again.lookup(sym("c")).is_none());
+        assert!(prev_again.lookup(utils::sym("a")).is_some());
+        assert!(prev_again.lookup(utils::sym("c")).is_none());
     }
 
     #[test]
@@ -640,9 +639,9 @@ mod tests {
         for byte in held.iter_mut().step_by(4096) {
             *byte = 1;
         }
-        let runner = egg::Runner::<Math, ConstantFold>::new_with_memory_tracker(
+        let runner = Runner::<Math, ConstantFold>::new_with_memory_tracker(
             ConstantFold,
-            live_heap_bytes,
+            utils::live_heap_bytes,
             None,
         );
         std::hint::black_box(&held);
@@ -664,7 +663,7 @@ mod tests {
         }
         std::hint::black_box(root);
 
-        let before = live_heap_bytes();
+        let before = utils::live_heap_bytes();
         let config = EqsatConfig {
             max_iters: 1,
             max_nodes: usize::MAX,
@@ -685,15 +684,13 @@ mod tests {
         );
     }
 
-    /// `live_heap_bytes` tracks allocation and release under jemalloc.
+    /// `utils::live_heap_bytes` tracks allocation and release under jemalloc.
     #[test]
     fn live_heap_tracks_allocations() {
-        use super::live_heap_bytes;
-
         const BYTES: usize = 512 * 1024 * 1024; // 512 MiB
         let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-        let before = live_heap_bytes();
+        let before = utils::live_heap_bytes();
 
         // Touch every page so the allocation is real, then drop it.
         let mut buf = vec![0u8; BYTES];
@@ -701,10 +698,10 @@ mod tests {
             buf[i] = 1;
         }
         std::hint::black_box(&buf);
-        let peak = live_heap_bytes();
+        let peak = utils::live_heap_bytes();
         drop(buf);
 
-        let after = live_heap_bytes();
+        let after = utils::live_heap_bytes();
 
         // The buffer clearly showed up in the live-heap reading...
         assert!(

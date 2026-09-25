@@ -7,14 +7,12 @@ use smallvec::SmallVec;
 
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
-use crate::sampling::count::budgets::RootBudgets;
-use crate::sampling::count::whole::{count_histograms_rooted, find_whole_root_size};
-use crate::sampling::draw::{
-    Count, Drawer, AnalysisPackage, DrawingError, Uniform, Weigher,
-};
-use crate::sampling::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
-use crate::utils::HashMap;
-use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
+use crate::langs::{MyAnalysis, MyLanguage};
+use crate::origin::OriginLang;
+use crate::sampling;
+use crate::sampling::count::{RootBudgets, whole};
+use crate::sampling::draw::{AnalysisPackage, Count, Drawer, DrawingError, Uniform, Weigher};
+use crate::utils::{self, HashMap};
 
 pub struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
     /// Histogram of the counts for each class, indexed by `node_idx`
@@ -73,7 +71,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for WholeDrawer<'
             .iter()
             .map(|node| {
                 self.child_hists(node)
-                    .and_then(|hists| convolve_at(&hists, child_budget))
+                    .and_then(|hists| sampling::convolve_at(&hists, child_budget))
                     .map_or_else(|| BigUint::ZERO, |count| self.weigher.node_weight(&count))
             })
             .collect::<Vec<_>>();
@@ -84,7 +82,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for WholeDrawer<'
         let hists = self
             .child_hists(pick)
             .expect("a weighted node has counted children");
-        let suffix = suffix_convolutions(&hists, child_budget);
+        let suffix = sampling::suffix_convolutions(&hists, child_budget);
 
         let mut remaining = child_budget;
         let children = pick
@@ -108,7 +106,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for WholeDrawer<'
             })
             .collect::<Vec<_>>();
 
-        stack_children(&children, OriginLang::new(pick.clone(), canon_id))
+        utils::stack_children(&children, OriginLang::new(pick.clone(), canon_id))
     }
 }
 
@@ -142,7 +140,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
         budgets: &RootBudgets,
     ) -> Option<WholePackage<L, N>> {
         let (egraph, root) = result.into_curr();
-        let counts = count_histograms_rooted(&egraph, budgets);
+        let counts = whole::count_histograms_rooted(&egraph, budgets);
 
         let root = egraph.find(root);
         let histogram = counts.get(&root)?;
@@ -179,7 +177,8 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
         let root = curr.find(result.root());
         let cap_budgets = RootBudgets::of_root(curr, root, cap);
 
-        let max_size = match find_whole_root_size(curr, root, min_extractable, &cap_budgets) {
+        let max_size = match whole::find_whole_root_size(curr, root, min_extractable, &cap_budgets)
+        {
             Ok(max_size) => max_size,
             Err(term_count) => {
                 eprintln!(
@@ -221,18 +220,16 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for WholePackage<L, 
     ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError> {
         let histogram = self.root_histogram();
 
-        let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
+        let requests =
+            sampling::greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
 
         match policy {
-            Policy::Uniform => {
-                WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
-                    .draw_root_batch(&requests, seed)
-            }
+            Policy::Uniform => WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
+                .draw_root_batch(&requests, seed),
             Policy::Count => WholeDrawer::new(&self.counts, &self.egraph, self.root, Count)
                 .draw_root_batch(&requests, seed),
             Policy::Smallest => Ok(vec![
-                WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
-                    .smallest_root(),
+                WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform).smallest_root(),
             ]),
         }
     }
@@ -244,14 +241,9 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for WholePackage<L, 
 
 #[cfg(test)]
 mod tests {
-    use egg::EGraph;
-
     use super::*;
     use crate::langs::math::Math;
-    use crate::lower;
-    use crate::sampling::draw::{Count, Uniform};
-    use crate::utils::combined_rng;
-    use crate::utils::sym;
+    use crate::origin;
 
     fn rooted_counts(
         max_size: usize,
@@ -259,7 +251,7 @@ mod tests {
         root: Id,
     ) -> HashMap<Id, HashMap<usize, BigUint>> {
         let budgets = RootBudgets::of_root(graph, root, max_size);
-        count_histograms_rooted(graph, &budgets)
+        whole::count_histograms_rooted(graph, &budgets)
     }
 
     #[test]
@@ -271,8 +263,8 @@ mod tests {
         // would yield 9).
         let mut curr = EGraph::<Math, ()>::new(());
         curr.enable_union_event_recording();
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
+        let a = curr.add(utils::sym("a"));
+        let b = curr.add(utils::sym("b"));
         let apb = curr.add(Math::Add([a, b]));
         curr.rebuild();
         let prev_raw_node_count = curr.nodes().len();
@@ -300,7 +292,7 @@ mod tests {
         // 3 can never be met and the scan must report the cap.
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let root = graph.add(sym("a"));
+        let root = graph.add(utils::sym("a"));
         graph.rebuild();
         let prev_raw_node_count = graph.nodes().len();
         let prev_union_event_count = graph.union_event_count();
@@ -317,22 +309,22 @@ mod tests {
     #[test]
     fn uniform_draw_single_leaf() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let root = graph.add(sym("a"));
+        let root = graph.add(utils::sym("a"));
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
-        let mut rng = combined_rng([42]);
+        let mut rng = utils::combined_rng([42]);
         let term = drawer.draw(root, 1, &mut rng);
-        assert_eq!(lower(term).to_string(), "a");
+        assert_eq!(origin::lower(term).to_string(), "a");
     }
 
     #[test]
     fn uniform_draw_picks_valid_choice() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(sym("a"));
-        let b = graph.add(sym("b"));
+        let a = graph.add(utils::sym("a"));
+        let b = graph.add(utils::sym("b"));
         graph.union(a, b);
         graph.rebuild();
 
@@ -340,8 +332,8 @@ mod tests {
         let drawer = WholeDrawer::new(&counts, &graph, a, Uniform);
 
         for s in 0..50_u64 {
-            let mut rng = combined_rng([s]);
-            let term = lower(drawer.draw(a, 1, &mut rng)).to_string();
+            let mut rng = utils::combined_rng([s]);
+            let term = origin::lower(drawer.draw(a, 1, &mut rng)).to_string();
             assert!(term == "a" || term == "b", "got unexpected: {term}");
         }
     }
@@ -349,7 +341,7 @@ mod tests {
     #[test]
     fn uniform_possible_size_correct() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(sym("a"));
+        let a = graph.add(utils::sym("a"));
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
@@ -365,12 +357,12 @@ mod tests {
     #[test]
     fn uniform_draw_batch_finds_all_unique() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a1 = graph.add(sym("a1"));
-        let a2 = graph.add(sym("a2"));
+        let a1 = graph.add(utils::sym("a1"));
+        let a2 = graph.add(utils::sym("a2"));
         graph.union(a1, a2);
-        let b1 = graph.add(sym("b1"));
-        let b2 = graph.add(sym("b2"));
-        let b3 = graph.add(sym("b3"));
+        let b1 = graph.add(utils::sym("b1"));
+        let b2 = graph.add(utils::sym("b2"));
+        let b3 = graph.add(utils::sym("b3"));
         graph.union(b1, b2);
         graph.union(b1, b3);
         let root = graph.add(Math::Add([a1, b1]));
@@ -386,22 +378,22 @@ mod tests {
     #[test]
     fn count_weighted_draw_single_leaf() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let root = graph.add(sym("a"));
+        let root = graph.add(utils::sym("a"));
         graph.rebuild();
 
         let counts = rooted_counts(10, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
-        let mut rng = combined_rng([42]);
+        let mut rng = utils::combined_rng([42]);
         let term = drawer.draw(root, 1, &mut rng);
-        assert_eq!(lower(term).to_string(), "a");
+        assert_eq!(origin::lower(term).to_string(), "a");
     }
 
     #[test]
     fn count_weighted_draw_picks_valid_choice() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(sym("a"));
-        let b = graph.add(sym("b"));
+        let a = graph.add(utils::sym("a"));
+        let b = graph.add(utils::sym("b"));
         graph.union(a, b);
         graph.rebuild();
 
@@ -409,8 +401,8 @@ mod tests {
         let drawer = WholeDrawer::new(&counts, &graph, a, Count);
 
         for s in 0..50_u64 {
-            let mut rng = combined_rng([s]);
-            let term = lower(drawer.draw(a, 1, &mut rng)).to_string();
+            let mut rng = utils::combined_rng([s]);
+            let term = origin::lower(drawer.draw(a, 1, &mut rng)).to_string();
             assert!(term == "a" || term == "b", "got unexpected: {term}");
         }
     }
@@ -418,12 +410,12 @@ mod tests {
     #[test]
     fn count_draw_batch_finds_unique() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a1 = graph.add(sym("a1"));
-        let a2 = graph.add(sym("a2"));
+        let a1 = graph.add(utils::sym("a1"));
+        let a2 = graph.add(utils::sym("a2"));
         graph.union(a1, a2);
-        let b1 = graph.add(sym("b1"));
-        let b2 = graph.add(sym("b2"));
-        let b3 = graph.add(sym("b3"));
+        let b1 = graph.add(utils::sym("b1"));
+        let b2 = graph.add(utils::sym("b2"));
+        let b3 = graph.add(utils::sym("b3"));
         graph.union(b1, b2);
         graph.union(b1, b3);
         let root = graph.add(Math::Add([a1, b1]));
@@ -443,12 +435,12 @@ mod tests {
         // A batch is all-or-nothing: exactly 6 is satisfiable, and asking for
         // more than the size holds fails instead of returning a short draw.
         let mut graph = EGraph::<Math, ()>::new(());
-        let a1 = graph.add(sym("a1"));
-        let a2 = graph.add(sym("a2"));
+        let a1 = graph.add(utils::sym("a1"));
+        let a2 = graph.add(utils::sym("a2"));
         graph.union(a1, a2);
-        let b1 = graph.add(sym("b1"));
-        let b2 = graph.add(sym("b2"));
-        let b3 = graph.add(sym("b3"));
+        let b1 = graph.add(utils::sym("b1"));
+        let b2 = graph.add(utils::sym("b2"));
+        let b3 = graph.add(utils::sym("b3"));
         graph.union(b1, b2);
         graph.union(b1, b3);
         let root = graph.add(Math::Add([a1, b1]));
@@ -477,7 +469,7 @@ mod tests {
         // The satisfiable size alone succeeds, but pairing it with an empty
         // size fails the whole batch rather than silently dropping it.
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(sym("a"));
+        let a = graph.add(utils::sym("a"));
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 

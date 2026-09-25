@@ -4,15 +4,15 @@ use clap::{Parser, Subcommand};
 use egg::{Extractor, RecExpr};
 
 use rise_distance::cli::Policy;
-use rise_distance::eqsat::{EqsatConfig, EqsatMetadata, EqsatResult};
+use rise_distance::eqsat::{self, EqsatConfig, EqsatMetadata, EqsatResult};
 use rise_distance::langs::diospyros::VecLang;
 use rise_distance::langs::diospyros::cost::VecCostFn;
 use rise_distance::langs::diospyros::rewriteconcats::list_to_concats;
 use rise_distance::langs::diospyros::rules::{filter_applicable_rules, rules};
 use rise_distance::langs::diospyros::stringconversion::convert_string;
+use rise_distance::origin;
 use rise_distance::sampling::{AnalysisPackage, FrontierPackage};
 use rise_distance::search::{BruteArgs, CutArgs, SearchMode};
-use rise_distance::{eqsat, lower};
 
 #[derive(Parser)]
 #[command(
@@ -220,7 +220,7 @@ fn run_cut(
     // Phase 2: run eqsat from each samples and keep the best cost.
     let verify_cfg = config(args.cut_iters, args.max_nodes, args.max_time);
     let runs = samples.iter().enumerate().filter_map(|(i, samples)| {
-        let start = lower(samples.clone());
+        let start = origin::lower(samples.clone());
         eqsat::run_eqsat::<VecLang, (), _>(&start, &rule_set, &verify_cfg)
             .or_else(|| {
                 eprintln!("Sample {i}: run_eqsat returned None, skipping");

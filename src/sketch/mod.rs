@@ -110,10 +110,10 @@ impl<L: Language + Display> Display for SketchLang<L> {
     }
 }
 
-impl<L> egg::FromOp for SketchLang<L>
+impl<L> FromOp for SketchLang<L>
 where
     L::Error: Display,
-    L: egg::FromOp,
+    L: FromOp,
 {
     type Error = SketchError<L>;
 
@@ -165,7 +165,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use egg::{RecExpr, SymbolLang};
+    use egg::SymbolLang;
 
     use super::*;
 

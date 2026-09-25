@@ -1,8 +1,7 @@
 mod generate;
 
 use egg::{
-    Analysis, DidMerge, EGraph, Id, PatternAst, Rewrite, Subst, Symbol, define_language,
-    merge_option, rewrite,
+    Analysis, DidMerge, EGraph, Id, PatternAst, Rewrite, Subst, Symbol, define_language, rewrite,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +23,7 @@ pub struct ConstantFold;
 impl Analysis<Prop> for ConstantFold {
     type Data = Option<(bool, PatternAst<Prop>)>;
     fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-        merge_option(to, from, |a, b| {
+        egg::merge_option(to, from, |a, b| {
             assert_eq!(a.0, b.0, "Merged non-equal constants");
             DidMerge(false, false)
         })

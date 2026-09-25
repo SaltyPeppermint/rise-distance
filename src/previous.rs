@@ -6,9 +6,11 @@ use egg::{Id, Language, UnionEvent};
 use egg::{Analysis, EGraph, RecExpr};
 use foldhash::fast::FixedState;
 
-use crate::utils::{DenseUnionFind, HashMap};
 #[cfg(test)]
-use crate::{MyLanguage, OriginLang};
+use crate::langs::MyLanguage;
+#[cfg(test)]
+use crate::origin::OriginLang;
+use crate::utils::{DenseUnionFind, HashMap};
 
 /// The lookup behavior novelty matching needs from the previous state.
 pub(crate) trait PreviousLookup<L: Language> {
@@ -128,18 +130,16 @@ impl<L: Language, N: Analysis<L>> PreviousLookup<L> for EGraph<L, N> {
 
 #[cfg(test)]
 mod tests {
-    use egg::EGraph;
-
     use super::*;
     use crate::langs::math::Math;
-    use crate::utils::sym;
+    use crate::utils;
 
     #[test]
     fn replay_reconstructs_merge_and_congruence() {
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let a = graph.add(sym("a"));
-        let b = graph.add(sym("b"));
+        let a = graph.add(utils::sym("a"));
+        let b = graph.add(utils::sym("b"));
         let fa = graph.add(Math::Ln(a));
         let fb = graph.add(Math::Ln(b));
         graph.rebuild();
@@ -157,11 +157,11 @@ mod tests {
 
         assert_eq!(
             index.lookup_expr(&"a".parse().unwrap()),
-            Some(index.lookup(sym("a")).unwrap())
+            Some(index.lookup(utils::sym("a")).unwrap())
         );
         assert_eq!(
-            index.lookup(Math::Ln(index.lookup(sym("a")).unwrap())),
-            index.lookup(Math::Ln(index.lookup(sym("b")).unwrap()))
+            index.lookup(Math::Ln(index.lookup(utils::sym("a")).unwrap())),
+            index.lookup(Math::Ln(index.lookup(utils::sym("b")).unwrap()))
         );
         assert_eq!(graph.find(fa), graph.find(fb));
     }
@@ -170,12 +170,12 @@ mod tests {
     fn replay_boundary_excludes_later_nodes_and_unions() {
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let a = graph.add(sym("a"));
+        let a = graph.add(utils::sym("a"));
         graph.rebuild();
         let raw_count = graph.nodes().len();
         let event_count = graph.union_event_count();
 
-        let b = graph.add(sym("b"));
+        let b = graph.add(utils::sym("b"));
         graph.union(a, b);
         graph.rebuild();
 
@@ -185,16 +185,16 @@ mod tests {
             event_count,
             graph.union_events(),
         );
-        assert!(index.lookup(sym("a")).is_some());
-        assert!(index.lookup(sym("b")).is_none());
+        assert!(index.lookup(utils::sym("a")).is_some());
+        assert!(index.lookup(utils::sym("b")).is_none());
     }
 
     #[test]
     fn recorder_ignores_repeated_noop_unions() {
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let a = graph.add(sym("a"));
-        let b = graph.add(sym("b"));
+        let a = graph.add(utils::sym("a"));
+        let b = graph.add(utils::sym("b"));
 
         assert!(graph.union(a, b));
         assert_eq!(graph.union_event_count(), 1);
@@ -206,8 +206,8 @@ mod tests {
     fn recorder_captures_explanation_hashcons_unions() {
         let mut graph = EGraph::<Math, ()>::new(()).with_explanations_enabled();
         graph.enable_union_event_recording();
-        let a = graph.add_uncanonical(sym("a"));
-        let b = graph.add_uncanonical(sym("b"));
+        let a = graph.add_uncanonical(utils::sym("a"));
+        let b = graph.add_uncanonical(utils::sym("b"));
         graph.union_trusted(a, b, "merge");
         graph.rebuild();
 
@@ -226,7 +226,7 @@ mod tests {
     fn origin_membership_ignores_origins_and_rejects_new_children() {
         let mut graph = EGraph::<Math, ()>::new(());
         graph.enable_union_event_recording();
-        let a = graph.add(sym("a"));
+        let a = graph.add(utils::sym("a"));
         let fa = graph.add(Math::Ln(a));
         graph.rebuild();
         let index = PrevIndex::from_union_history(
@@ -237,11 +237,11 @@ mod tests {
         );
 
         let old = RecExpr::from(vec![
-            OriginLang::new(sym("a"), Id::from(999)),
+            OriginLang::new(utils::sym("a"), Id::from(999)),
             OriginLang::new(Math::Ln(Id::from(0)), Id::from(998)),
         ]);
         let new = RecExpr::from(vec![
-            OriginLang::new(sym("b"), a),
+            OriginLang::new(utils::sym("b"), a),
             OriginLang::new(Math::Ln(Id::from(0)), fa),
         ]);
         assert!(index.contains_origin_expr(&old));

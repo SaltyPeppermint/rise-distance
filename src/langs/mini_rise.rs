@@ -1,15 +1,15 @@
-use std::fmt::Write;
+use std::fmt::{Display, Write};
 
-use egg::{Language, RecExpr, rewrite};
+use egg::{Language, SymbolLang, rewrite};
 
-use crate::search::{ReachResult, SearchMode, reach_sketches};
+use crate::search::{self, ReachResult, SearchMode};
 use crate::sketch::SketchLang;
 
-type Lang = egg::SymbolLang;
+type Lang = SymbolLang;
 
 type Rewrite = egg::Rewrite<Lang, ()>;
 type Expr = egg::RecExpr<Lang>;
-type Sketch = RecExpr<SketchLang<Lang>>;
+type Sketch = egg::RecExpr<SketchLang<Lang>>;
 
 // f o g = (o f g)
 // semantic: \x. f (g x)
@@ -202,7 +202,7 @@ pub fn tile(
             split_rules.extend(split_map());
             split_rules.extend(transpose_maps()); // <<< unused
             let ss = parse_sketch(&split_sketch);
-            reach_sketches::<Lang, ()>(
+            search::reach_sketches::<Lang, ()>(
                 &format!("tile_{name}_s"),
                 &start_expr,
                 &split_rules,
@@ -217,14 +217,26 @@ pub fn tile(
             let rs = parse_sketch(&reorder_sketches);
             // The reorder phase starts from the (single) split program.
             let se = parse_expr(&split_expected);
-            reach_sketches::<Lang, ()>(&format!("tile_{name}_r"), &se, &reorder_rules, rs, mode)
+            search::reach_sketches::<Lang, ()>(
+                &format!("tile_{name}_r"),
+                &se,
+                &reorder_rules,
+                rs,
+                mode,
+            )
         }
         TilingSearch::Tile => {
             let mut tile_rules = common_rules();
             tile_rules.extend(split_map());
             tile_rules.extend(transpose_maps());
             let rs = parse_sketch(&reorder_sketches);
-            reach_sketches::<Lang, ()>(&format!("tile_{name}"), &start_expr, &tile_rules, rs, mode)
+            search::reach_sketches::<Lang, ()>(
+                &format!("tile_{name}"),
+                &start_expr,
+                &tile_rules,
+                rs,
+                mode,
+            )
         }
     }
 }
@@ -285,13 +297,13 @@ pub fn string_of_expr_rec(nodes: &[Lang], i: usize, flatten_o: bool, acc: &mut S
 }
 
 #[must_use]
-pub fn latex_of_expr<L: Language + std::fmt::Display>(e: &egg::RecExpr<L>) -> String {
+pub fn latex_of_expr<L: Language + Display>(e: &egg::RecExpr<L>) -> String {
     let mut res = String::new();
     latex_of_expr_rec(e.as_ref(), e.as_ref().len() - 1, &mut res);
     res
 }
 
-pub fn latex_of_expr_rec<L: Language + std::fmt::Display>(nodes: &[L], i: usize, acc: &mut String) {
+pub fn latex_of_expr_rec<L: Language + Display>(nodes: &[L], i: usize, acc: &mut String) {
     let node = &nodes[i];
     let op = node.to_string();
 

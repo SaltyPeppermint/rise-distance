@@ -21,9 +21,9 @@ use clap::Parser;
 use egg::{RecExpr, Rewrite};
 
 use rise_distance::cli::Measured;
-use rise_distance::eqsat::{EqsatConfig, Goal, guided_eqsat, unguided_eqsat};
-use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
-use rise_distance::{MyAnalysis, MyLanguage, OriginLang};
+use rise_distance::eqsat::{self, EqsatConfig, Goal};
+use rise_distance::langs::{AvailableLanguages, MyAnalysis, MyLanguage, diospyros, math, prop};
+use rise_distance::origin::OriginLang;
 
 #[derive(Parser)]
 #[command(
@@ -89,7 +89,7 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
     let result = if args.is_guide {
         let start_term: Vec<OriginLang<L>> = serde_json::from_str(&args.start_term)
             .unwrap_or_else(|e| panic!("Failed to parse start term '{}': {e}", args.start_term));
-        guided_eqsat(
+        eqsat::guided_eqsat(
             &[RecExpr::from(start_term)],
             &goal,
             rules,
@@ -101,7 +101,7 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
             .start_term
             .parse::<RecExpr<L>>()
             .unwrap_or_else(|e| panic!("Failed to parse start term '{}': {e}", args.start_term));
-        unguided_eqsat(&start_term, &goal, rules, &args.eqsat)
+        eqsat::unguided_eqsat(&start_term, &goal, rules, &args.eqsat)
     };
 
     serde_json::to_writer(std::io::stdout(), &Measured::now(result))

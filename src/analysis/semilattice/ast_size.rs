@@ -37,7 +37,6 @@ mod tests {
     use egg::SymbolLang;
 
     use super::*;
-    use crate::utils::HashMap;
 
     #[test]
     fn simple_analysis() {

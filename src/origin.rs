@@ -3,7 +3,8 @@ use std::fmt::Display;
 use egg::{FromOp, Id, Language, RecExpr};
 use serde::{Deserialize, Serialize};
 
-use crate::{MyLanguage, id0};
+use crate::langs::MyLanguage;
+use crate::utils;
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(bound = "L: MyLanguage")]
@@ -52,7 +53,7 @@ impl<L: MyLanguage> FromOp for OriginLang<L> {
     fn from_op(op: &str, children: Vec<Id>) -> Result<Self, Self::Error> {
         Ok(OriginLang {
             inner: L::from_op(op, children)?,
-            origin: id0(),
+            origin: utils::id0(),
         })
     }
 }

@@ -1,15 +1,15 @@
 //! Guide-sample construction from an e-graph.
 
-pub mod count;
-pub mod draw;
-
-pub use draw::{AnalysisPackage, FrontierPackage, WholePackage};
+mod count;
+mod draw;
 
 use std::borrow::Borrow;
 
 use num::{BigUint, ToPrimitive, Zero};
 
 use crate::utils::HashMap;
+
+pub use draw::{AnalysisPackage, FrontierPackage, WholePackage};
 
 /// Convolve all child histograms into a single result (left-to-right).
 pub fn convolve<H: Borrow<HashMap<usize, BigUint>>>(

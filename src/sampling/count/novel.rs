@@ -7,12 +7,10 @@ use foldhash::fast::FixedState;
 use num::{BigUint, Zero};
 use smallvec::SmallVec;
 
+use super::budgets::RootBudgets;
+use super::layered::LayeredDp;
+use super::whole;
 use crate::previous::PreviousLookup;
-use crate::sampling::count::budgets::RootBudgets;
-use crate::sampling::count::layered::LayeredDp;
-#[cfg(test)]
-use crate::sampling::count::whole::count_histograms_rooted;
-use crate::sampling::count::whole::whole_dp_rooted;
 use crate::utils::{HashMap, HashSet};
 
 /// A current e-node's match in the previous e-graph.
@@ -56,7 +54,7 @@ impl NovelTermCount {
     ) -> Self {
         let budgets = RootBudgets::of_root(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
-        let whole = count_histograms_rooted(curr, &budgets);
+        let whole = whole::count_histograms_rooted(curr, &budgets);
         Self::from_rooted_matches(curr, &whole, matches, &budgets)
     }
 
@@ -303,7 +301,7 @@ pub(crate) fn find_novel_root_sizes<L: Language, N: Analysis<L>>(
     rooted: &RootBudgets,
 ) -> Result<usize, BigUint> {
     let root = curr.find(root);
-    let mut whole = whole_dp_rooted(curr, rooted);
+    let mut whole = whole::whole_dp_rooted(curr, rooted);
 
     // Each pair inherits its curr class's rooted budget: joint terms are
     // whole terms of that class, and the budget recurrence relaxes with
@@ -409,12 +407,9 @@ fn derive_novel(
 
 #[cfg(test)]
 mod tests {
-    use egg::EGraph;
-    use num::BigUint;
-
     use super::*;
     use crate::langs::math::Math;
-    use crate::utils::sym;
+    use crate::utils;
 
     fn rooted_novel(
         curr: &EGraph<Math, ()>,
@@ -424,15 +419,15 @@ mod tests {
     ) -> NovelTermCount {
         let budgets = RootBudgets::of_root(curr, root, max_size);
         let matches = enumerate_matches_rooted(curr, prev, &budgets);
-        let whole = count_histograms_rooted(curr, &budgets);
+        let whole = whole::count_histograms_rooted(curr, &budgets);
         NovelTermCount::from_rooted_matches(curr, &whole, matches, &budgets)
     }
 
     #[test]
     fn no_novelty_yields_empty() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(sym("a"));
-        let b = graph.add(sym("b"));
+        let a = graph.add(utils::sym("a"));
+        let b = graph.add(utils::sym("b"));
         graph.union(a, b);
         graph.rebuild();
 
@@ -447,8 +442,8 @@ mod tests {
         // union a and b in curr so ln(b) becomes a new extraction from the
         // root class.
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
+        let a = curr.add(utils::sym("a"));
+        let b = curr.add(utils::sym("b"));
         let root = curr.add(Math::Ln(a));
         curr.rebuild();
         let prev = curr.clone();
@@ -479,8 +474,8 @@ mod tests {
         // 4 terms: aa, ab, ba, bb. Only ab was in prev (and possibly ba is
         // not since Math::Add is non-commutative). So 3 novel.
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
+        let a = curr.add(utils::sym("a"));
+        let b = curr.add(utils::sym("b"));
         let root = curr.add(Math::Add([a, b]));
         curr.rebuild();
         let prev = curr.clone();
@@ -499,7 +494,7 @@ mod tests {
     #[test]
     fn rooted_match_fixpoint_builds_parent_from_child_cover() {
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
+        let a = curr.add(utils::sym("a"));
         let ln = curr.add(Math::Ln(a));
         let root = curr.add(Math::Sqrt(ln));
         curr.rebuild();
@@ -514,8 +509,8 @@ mod tests {
     #[test]
     fn rooted_matches_skip_unreachable_classes() {
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
+        let a = curr.add(utils::sym("a"));
+        let b = curr.add(utils::sym("b"));
         let root = curr.add(Math::Ln(a));
         let unreachable = curr.add(Math::Sqrt(b));
         curr.rebuild();
@@ -531,7 +526,7 @@ mod tests {
     #[test]
     fn final_pruning_removes_oversized_node_matches() {
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
+        let a = curr.add(utils::sym("a"));
         let ln = curr.add(Math::Ln(a));
         let oversized = curr.add(Math::Sqrt(ln));
         curr.rebuild();
@@ -558,8 +553,8 @@ mod tests {
     #[test]
     fn rooted_matches_keep_all_previous_witness_classes() {
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
+        let a = curr.add(utils::sym("a"));
+        let b = curr.add(utils::sym("b"));
         curr.rebuild();
         let prev = curr.clone();
         curr.union(a, b);

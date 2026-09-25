@@ -3,13 +3,12 @@ mod expr_count;
 use std::fmt::Debug;
 
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
-use utils::HashMap;
 
-use crate::utils::UniqueQueue;
+use crate::utils::{HashMap, UniqueQueue};
 
 pub use expr_count::ExprCount;
 
-pub trait CommutativeSemigroupAnalysis<L: Language, N: Analysis<L>, C = ()>: Sized + Debug {
+pub trait CommutativeSemigroupAnalysis<L: Language, N: Analysis<L>>: Sized + Debug {
     type Data: PartialEq;
 
     fn make(
@@ -33,7 +32,7 @@ pub trait CommutativeSemigroupAnalysis<L: Language, N: Analysis<L>, C = ()>: Siz
             .map(|eclass| eclass.id)
             .collect();
 
-        let mut data = HashMap::new();
+        let mut data = HashMap::default();
         resolve_pending_analysis(egraph, self, &mut data, &mut analysis_pending);
 
         debug_assert!(egraph.classes().all(|eclass| data.contains_key(&eclass.id)));
@@ -49,7 +48,7 @@ pub trait CommutativeSemigroupAnalysis<L: Language, N: Analysis<L>, C = ()>: Siz
 /// a fresher value under a non-atomic read-modify-write, under-counting
 /// classes in a cycle. Measurements showed the parallelism bought ~1.0x
 /// while doing so, so it was removed rather than made race-safe.)
-fn resolve_pending_analysis<L, N, B, CC>(
+fn resolve_pending_analysis<L, N, B>(
     egraph: &EGraph<L, N>,
     analysis: &B,
     data: &mut HashMap<Id, B::Data>,
@@ -57,7 +56,7 @@ fn resolve_pending_analysis<L, N, B, CC>(
 ) where
     L: Language,
     N: Analysis<L>,
-    B: CommutativeSemigroupAnalysis<L, N, CC>,
+    B: CommutativeSemigroupAnalysis<L, N>,
 {
     while let Some(id) = analysis_pending.pop() {
         let canonical_id = egraph.find(id);

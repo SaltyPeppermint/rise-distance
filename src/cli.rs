@@ -1,7 +1,7 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::peak_rss_bytes;
+use crate::utils;
 
 /// Envelope every JSON-emitting binary prints: the payload plus this process's
 /// lifetime peak RSS.
@@ -19,7 +19,7 @@ impl<T> Measured<T> {
     #[must_use]
     pub fn now(payload: T) -> Self {
         Self {
-            peak_rss_bytes: peak_rss_bytes(),
+            peak_rss_bytes: utils::peak_rss_bytes(),
             payload,
         }
     }

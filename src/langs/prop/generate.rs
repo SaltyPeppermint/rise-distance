@@ -1,7 +1,6 @@
-use crate::generator::{Grammar, Samplable};
-use crate::utils::id0;
-
 use super::Prop;
+use crate::generator::{Grammar, Samplable};
+use crate::utils;
 
 /// Grammar for random propositional terms.
 impl Samplable for Prop {
@@ -9,11 +8,11 @@ impl Samplable for Prop {
         Grammar::new(
             vec![
                 leaf_symbols.unwrap_or_else(default_symbols),
-                vec![Prop::Not(id0())],
+                vec![Prop::Not(utils::id0())],
                 vec![
-                    Prop::And([id0(), id0()]),
-                    Prop::Or([id0(), id0()]),
-                    Prop::Implies([id0(), id0()]),
+                    Prop::And([utils::id0(), utils::id0()]),
+                    Prop::Or([utils::id0(), utils::id0()]),
+                    Prop::Implies([utils::id0(), utils::id0()]),
                 ],
             ],
             Vec::new(),
@@ -56,7 +55,7 @@ mod tests {
         let distinct = sampler
             .sample_many(&mut rng, 200)
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(ToString::to_string)
             .collect::<HashSet<_>>();
         assert!(distinct.len() > 190, "only {} distinct", distinct.len());
     }
@@ -68,7 +67,7 @@ mod tests {
         let all = sampler
             .sample_many(&mut rng, 500)
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(" ");
         for op in ["&", "~", "|", "->"] {

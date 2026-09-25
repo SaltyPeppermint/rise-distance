@@ -9,12 +9,13 @@ use rand_chacha::ChaCha12Rng;
 use thiserror::Error;
 
 use crate::cli::Policy;
-use crate::utils::{HashMap, HashSet};
-use crate::{MyAnalysis, MyLanguage, OriginLang, utils};
+use crate::langs::{MyAnalysis, MyLanguage};
+use crate::origin::OriginLang;
+use crate::utils::{self, HashMap, HashSet};
 
-pub use frontier::{FrontierDrawer, FrontierPackage};
+pub use frontier::FrontierPackage;
 pub use weigher::{Count, Uniform, Weigher};
-pub use whole::{WholeDrawer, WholePackage};
+pub use whole::WholePackage;
 
 // TODO SEPARATE CODE PATHS FOR UNIFORM VS COUNT (DP but with bools)
 
@@ -119,14 +120,14 @@ pub trait Drawer<L: MyLanguage, N: MyAnalysis<L>> {
         self.draw_batch(self.root(), requests, seed)
     }
 
-    /// All sizes for which `id` has at least one extractable term under this
-    /// drawer's constraints. Iteration order is unspecified.
-    fn term_sizes(&self, id: Id) -> Vec<usize> {
-        let canon_id = self.find(id);
-        self.size_histogram(canon_id)
-            .map(|h| h.keys().copied().collect())
-            .unwrap_or_default()
-    }
+    // /// All sizes for which `id` has at least one extractable term under this
+    // /// drawer's constraints. Iteration order is unspecified.
+    // fn term_sizes(&self, id: Id) -> Vec<usize> {
+    //     let canon_id = self.find(id);
+    //     self.size_histogram(canon_id)
+    //         .map(|h| h.keys().copied().collect())
+    //         .unwrap_or_default()
+    // }
 
     /// Smallest size with at least one extractable term.
     ///

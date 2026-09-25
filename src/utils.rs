@@ -116,12 +116,13 @@ pub fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
 /// hash consed storage for expressions,
 /// cheap replacement for garbage collected expressions
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) struct ExprHashCons<L: Hash + Eq + Language> {
+pub struct ExprHashCons<L: Hash + Eq + Language> {
     node_store: Vec<L>,
     memo: HashMap<L, usize>,
 }
 
 impl<L: Language> ExprHashCons<L> {
+    #[must_use]
     pub fn new() -> Self {
         ExprHashCons {
             node_store: Vec::new(),
@@ -159,6 +160,12 @@ impl<L: Language> ExprHashCons<L> {
         }
 
         fresh
+    }
+}
+
+impl<L: Language> Default for ExprHashCons<L> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

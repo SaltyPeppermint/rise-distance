@@ -222,11 +222,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use egg::{AstSize, RecExpr, SymbolLang, rewrite};
-
-    use crate::sketch::contains;
+    use egg::{AstSize, SymbolLang, rewrite};
 
     use super::*;
+    use crate::sketch;
 
     #[test]
     fn simple_extract() {
@@ -243,7 +242,7 @@ mod tests {
 
         egraph.rebuild();
 
-        let sat1 = contains(&sketch, &egraph);
+        let sat1 = sketch::contains(&sketch, &egraph);
         assert_eq!(sat1.len(), 5);
         assert!(sat1.contains(&a));
         assert!(sat1.contains(&b));
@@ -252,7 +251,7 @@ mod tests {
         egraph.union(a, b);
         egraph.rebuild();
 
-        let sat2 = contains(&sketch, &egraph);
+        let sat2 = sketch::contains(&sketch, &egraph);
         assert_eq!(sat2.len(), 4);
         assert!(sat2.contains(&a));
         assert!(sat2.contains(&egraph.find(b)));

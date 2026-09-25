@@ -6,7 +6,7 @@ use super::SemiLatticeAnalysis;
 use crate::utils::{ExprHashCons, HashMap};
 
 #[derive(Debug)]
-pub(crate) struct ExtractAnalysis<'a, L: Language, CF> {
+pub struct ExtractAnalysis<'a, L: Language, CF> {
     pub(crate) exprs: &'a mut ExprHashCons<L>,
     pub(crate) cost_fn: &'a mut CF,
 }

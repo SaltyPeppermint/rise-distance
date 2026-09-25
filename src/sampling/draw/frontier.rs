@@ -6,16 +6,13 @@ use rand_chacha::ChaCha12Rng;
 
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
-use crate::sampling::count::budgets::RootBudgets;
-use crate::sampling::count::novel::{
-    NodeMatch, NodeMatches, NovelTermCount, enumerate_matches_rooted, find_novel_root_sizes,
-    prune_matches,
-};
-use crate::sampling::count::whole::count_histograms_rooted;
+use crate::langs::{MyAnalysis, MyLanguage};
+use crate::origin::OriginLang;
+use crate::sampling;
+use crate::sampling::count::novel::{self, NodeMatch, NodeMatches, NovelTermCount};
+use crate::sampling::count::{RootBudgets, whole};
 use crate::sampling::draw::{AnalysisPackage, Count, Drawer, DrawingError, Uniform, Weigher};
-use crate::sampling::{convolve_at, greedy_distribute_alloc, suffix_convolutions};
-use crate::utils::HashMap;
-use crate::{MyAnalysis, MyLanguage, OriginLang, stack_children};
+use crate::utils::{self, HashMap};
 
 /// Draws each frontier term independently using the supplied local weighting
 /// policy.
@@ -77,7 +74,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
             .zip(child_states.iter().copied())
             .map(|(child, state)| self.histogram(child, state))
             .collect::<Option<Vec<_>>>()?;
-        let count = convolve_at(&child_hists, child_budget)?;
+        let count = sampling::convolve_at(&child_hists, child_budget)?;
         Some(Branch {
             node_idx,
             child_states,
@@ -106,7 +103,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
         let branch = &branches[branch_idx];
         let node = &self.graph[curr].nodes[branch.node_idx];
         let child_budget = size - 1;
-        let suffix = suffix_convolutions(&branch.child_hists, child_budget);
+        let suffix = sampling::suffix_convolutions(&branch.child_hists, child_budget);
 
         let mut remaining = child_budget;
         let mut children = Vec::with_capacity(node.children().len());
@@ -138,7 +135,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
             children.push(child);
         }
 
-        stack_children(&children, OriginLang::new(node.clone(), curr))
+        utils::stack_children(&children, OriginLang::new(node.clone(), curr))
     }
 
     fn branches(&self, curr: Id, size: usize, state: State) -> Vec<Branch<'_>> {
@@ -281,9 +278,9 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         let budgets = RootBudgets::of_root(curr, root, max_size);
 
         let prev = result.prev_index();
-        let mut matches = enumerate_matches_rooted(curr, &prev, &budgets);
+        let mut matches = novel::enumerate_matches_rooted(curr, &prev, &budgets);
         drop(prev);
-        prune_matches(curr, &mut matches, &budgets);
+        novel::prune_matches(curr, &mut matches, &budgets);
         Self::from_rooted_matches(result, max_size, matches, &budgets)
     }
 
@@ -296,7 +293,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         budgets: &RootBudgets,
     ) -> Option<FrontierPackage<L, N>> {
         let (egraph, root) = result.into_curr();
-        let whole = count_histograms_rooted(&egraph, budgets);
+        let whole = whole::count_histograms_rooted(&egraph, budgets);
         let counts = NovelTermCount::from_rooted_matches(&egraph, &whole, matches, budgets);
         drop(whole);
 
@@ -337,11 +334,11 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         let curr = result.curr();
         let root = curr.find(result.root());
         let cap_budgets = RootBudgets::of_root(curr, root, cap);
-        let mut matches = enumerate_matches_rooted(curr, &prev, &cap_budgets);
+        let mut matches = novel::enumerate_matches_rooted(curr, &prev, &cap_budgets);
 
         drop(prev);
 
-        let max_size = match find_novel_root_sizes(
+        let max_size = match novel::find_novel_root_sizes(
             curr,
             root,
             &matches,
@@ -358,7 +355,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         };
 
         let final_budgets = RootBudgets::of_root(curr, root, max_size);
-        prune_matches(curr, &mut matches, &final_budgets);
+        novel::prune_matches(curr, &mut matches, &final_budgets);
 
         let Some(package) = Self::from_rooted_matches(result, max_size, matches, &final_budgets)
         else {
@@ -396,7 +393,8 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for FrontierPackage<
             .get(&self.root)
             .ok_or(DrawingError::HistogramEmpty)?;
 
-        let requests = greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
+        let requests =
+            sampling::greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
 
         match policy {
             Policy::Uniform => FrontierDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
@@ -416,14 +414,9 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for FrontierPackage<
 
 #[cfg(test)]
 mod tests {
-    use egg::EGraph;
-    use num::BigUint;
-
     use super::*;
     use crate::langs::math::Math;
-    use crate::lower;
-    use crate::sampling::draw::Count;
-    use crate::utils::{combined_rng, sym};
+    use crate::origin;
 
     #[test]
     fn build_through_novel_sizes_runs_analysis_at_kth_novel_size() {
@@ -433,8 +426,8 @@ mod tests {
         // 5, 7, 9, ... asking for 3 sizes must yield max_size = 9.
         let mut curr = EGraph::<Math, ()>::new(());
         curr.enable_union_event_recording();
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
+        let a = curr.add(utils::sym("a"));
+        let b = curr.add(utils::sym("b"));
         let apb = curr.add(Math::Add([a, b]));
         curr.rebuild();
         let prev_raw_node_count = curr.nodes().len();
@@ -468,8 +461,8 @@ mod tests {
         // curr: same plus union(a, b). Now ln(b) is extractable from curr's
         // root but not from any prev class.
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
+        let a = curr.add(utils::sym("a"));
+        let b = curr.add(utils::sym("b"));
         let root = curr.add(Math::Ln(a));
         curr.rebuild();
         let prev = curr.clone();
@@ -482,8 +475,8 @@ mod tests {
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..50_u64 {
-            let mut rng = combined_rng([seed]);
-            let term = lower(drawer.draw(root, 2, &mut rng)).to_string();
+            let mut rng = utils::combined_rng([seed]);
+            let term = origin::lower(drawer.draw(root, 2, &mut rng)).to_string();
             assert_eq!(term, "(ln b)", "got non-frontier sample: {term}");
         }
     }
@@ -494,8 +487,8 @@ mod tests {
         // curr: same plus union(a, b). Add(merged, merged) extracts 4 terms;
         // only Add(a, b) is in prev.
         let mut curr = EGraph::<Math, ()>::new(());
-        let a = curr.add(sym("a"));
-        let b = curr.add(sym("b"));
+        let a = curr.add(utils::sym("a"));
+        let b = curr.add(utils::sym("b"));
         let root = curr.add(Math::Add([a, b]));
         curr.rebuild();
         let prev = curr.clone();
@@ -507,8 +500,8 @@ mod tests {
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..100_u64 {
-            let mut rng = combined_rng([seed]);
-            let term = lower(drawer.draw(root, 3, &mut rng)).to_string();
+            let mut rng = utils::combined_rng([seed]);
+            let term = origin::lower(drawer.draw(root, 3, &mut rng)).to_string();
             assert_ne!(term, "(+ a b)", "produced non-frontier term");
             assert!(
                 ["(+ a a)", "(+ b a)", "(+ b b)"].contains(&term.as_str()),
@@ -520,7 +513,7 @@ mod tests {
     #[test]
     fn independent_frontier_possible_size_excludes_old_terms() {
         let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(sym("a"));
+        let a = graph.add(utils::sym("a"));
         graph.rebuild();
 
         let novel = NovelTermCount::rooted_for_tests(5, &graph, &graph, a);

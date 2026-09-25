@@ -6,20 +6,15 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-mod analysis;
+pub mod analysis;
 pub mod cli;
 pub mod eqsat;
 pub mod generator;
 pub mod langs;
-mod origin;
+pub mod origin;
 mod previous;
 pub mod sampling;
 pub mod search;
 pub mod sketch;
 pub mod utils;
-mod zs;
-
-pub use langs::{MyAnalysis, MyLanguage};
-pub use origin::{OriginLang, lower};
-pub use utils::{id0, stack_children};
-pub use zs::{find_min_zs, tree_distance_unit};
+pub mod zs;

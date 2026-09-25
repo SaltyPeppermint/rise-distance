@@ -1,10 +1,10 @@
 use std::fmt::Debug;
 
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
-use utils::HashMap;
+use num::BigUint;
 
 use super::CommutativeSemigroupAnalysis;
-use crate::Counter;
+use crate::utils::HashMap;
 
 #[derive(Debug, Copy, Clone)]
 pub struct ExprCount {
@@ -18,9 +18,9 @@ impl ExprCount {
     }
 }
 
-impl<C: Counter, L: Language, N: Analysis<L>> CommutativeSemigroupAnalysis<L, N, C> for ExprCount {
+impl<L: Language, N: Analysis<L>> CommutativeSemigroupAnalysis<L, N> for ExprCount {
     // Size and number of programs of that size
-    type Data = HashMap<usize, C>;
+    type Data = HashMap<usize, BigUint>;
 
     fn make(
         &self,
@@ -38,9 +38,9 @@ impl<C: Counter, L: Language, N: Analysis<L>> CommutativeSemigroupAnalysis<L, N,
 
         let mut tmp = Vec::new();
 
-        children_data
-            .into_iter()
-            .fold(HashMap::from([(1, C::one())]), |mut acc, child_data| {
+        children_data.into_iter().fold(
+            [(1, BigUint::ONE)].into_iter().collect(),
+            |mut acc, child_data| {
                 tmp.extend(acc.drain());
 
                 for (acc_size, acc_count) in &tmp {
@@ -58,7 +58,8 @@ impl<C: Counter, L: Language, N: Analysis<L>> CommutativeSemigroupAnalysis<L, N,
 
                 tmp.clear();
                 acc
-            })
+            },
+        )
     }
 
     fn merge(&self, a: &mut Self::Data, b: Self::Data) -> DidMerge {
@@ -87,8 +88,7 @@ impl<C: Counter, L: Language, N: Analysis<L>> CommutativeSemigroupAnalysis<L, N,
 
 #[cfg(test)]
 mod tests {
-    use egg::{EGraph, SymbolLang};
-    use num::BigUint;
+    use egg::SymbolLang;
 
     use super::*;
 

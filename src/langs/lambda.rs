@@ -1,6 +1,6 @@
 use egg::{
     Analysis, Applier, ConditionEqual, DidMerge, EGraph, Id, Language, Pattern, PatternAst,
-    Rewrite, Subst, Symbol, Var, define_language, merge_option, rewrite,
+    Rewrite, Subst, Symbol, Var, define_language, rewrite,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ define_language! {
 
         "if" = If([Id; 3]),
 
-        Symbol(egg::Symbol),
+        Symbol(Symbol),
     }
 }
 
@@ -76,7 +76,7 @@ impl Analysis<Lambda> for LambdaAnalysis {
         DidMerge(
             before_len != to.free.len(),
             to.free.len() != from.free.len(),
-        ) | merge_option(&mut to.constant, from.constant, |a, b| {
+        ) | egg::merge_option(&mut to.constant, from.constant, |a, b| {
             assert_eq!(a.0, b.0, "Merged non-equal constants");
             DidMerge(false, false)
         })
@@ -211,8 +211,8 @@ impl Applier<Lambda, LambdaAnalysis> for CaptureAvoid {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[expect(unused_imports)]
+    use egg::RecExpr;
+    #[cfg(not(debug_assertions))]
     use egg::Runner;
 
     egg::test_fn! {
@@ -420,8 +420,6 @@ mod tests {
 
         egg::test::bench_egraph("lambda", rules(), exprs, extra_patterns);
     }
-
-    use egg::RecExpr;
 
     #[test]
     fn nested() {

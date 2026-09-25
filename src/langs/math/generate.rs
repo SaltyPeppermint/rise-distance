@@ -2,10 +2,9 @@ use egg::{Id, Language, RecExpr, Symbol};
 use num::FromPrimitive;
 use num::rational::Ratio;
 
-use crate::generator::{Grammar, Samplable};
-use crate::utils::{HashSet, id0};
-
 use super::Math;
+use crate::generator::{Grammar, Samplable};
+use crate::utils::{self, HashSet};
 
 /// Grammar for random math terms, including scoped `Diff`/`Integral` binders.
 impl Samplable for Math {
@@ -21,21 +20,24 @@ impl Samplable for Math {
             vec![
                 leaves,
                 vec![
-                    Math::Ln(id0()),
-                    Math::Sqrt(id0()),
-                    Math::Sin(id0()),
-                    Math::Cos(id0()),
+                    Math::Ln(utils::id0()),
+                    Math::Sqrt(utils::id0()),
+                    Math::Sin(utils::id0()),
+                    Math::Cos(utils::id0()),
                 ],
                 vec![
-                    Math::Add([id0(), id0()]),
-                    Math::Sub([id0(), id0()]),
-                    Math::Mul([id0(), id0()]),
-                    Math::Div([id0(), id0()]),
-                    Math::Pow([id0(), id0()]),
+                    Math::Add([utils::id0(), utils::id0()]),
+                    Math::Sub([utils::id0(), utils::id0()]),
+                    Math::Mul([utils::id0(), utils::id0()]),
+                    Math::Div([utils::id0(), utils::id0()]),
+                    Math::Pow([utils::id0(), utils::id0()]),
                 ],
             ],
             vars,
-            vec![Math::Diff([id0(), id0()]), Math::Integral([id0(), id0()])],
+            vec![
+                Math::Diff([utils::id0(), utils::id0()]),
+                Math::Integral([utils::id0(), utils::id0()]),
+            ],
         )
     }
 
@@ -83,11 +85,12 @@ fn default_symbols() -> Vec<Math> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::generator::SizeUniformSampler;
     use egg::{AstSize, CostFunction};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
+
+    use super::*;
+    use crate::generator::SizeUniformSampler;
 
     fn binders_valid(expr: &RecExpr<Math>) -> bool {
         fn rec(expr: &RecExpr<Math>, id: Id) -> bool {
@@ -153,7 +156,7 @@ mod tests {
         let distinct = sampler
             .sample_many(&mut rng, 200)
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(ToString::to_string)
             .collect::<HashSet<_>>();
         assert!(distinct.len() > 190, "only {} distinct", distinct.len());
     }
@@ -165,7 +168,7 @@ mod tests {
         let all = sampler
             .sample_many(&mut rng, 500)
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(" ");
         for op in [

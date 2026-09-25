@@ -9,9 +9,8 @@ use std::hash::Hash;
 
 use num::{BigUint, Zero};
 
+use crate::sampling;
 use crate::utils::HashMap;
-
-use crate::sampling::convolve_entry;
 
 /// Per key, per node: suffix convolution tables in the shape of
 /// [`suffix_convolutions`](super::super::suffix_convolutions), truncated to the
@@ -132,7 +131,7 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
                             let Some(rest) = tail.first().or_else(|| data.get(last)) else {
                                 continue;
                             };
-                            let c = convolve_entry(child_hist, rest, total);
+                            let c = sampling::convolve_entry(child_hist, rest, total);
                             if !c.is_zero() {
                                 head[j].insert(total, c);
                             }
@@ -141,7 +140,7 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
                         // the last child itself for a binary node.
                         let rest = tables.first().or_else(|| data.get(last));
                         if let (Some(first_hist), Some(rest)) = (data.get(first), rest) {
-                            count += convolve_entry(first_hist, rest, total);
+                            count += sampling::convolve_entry(first_hist, rest, total);
                         }
                     }
                 }

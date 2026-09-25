@@ -9,8 +9,7 @@ use serde::Serialize;
 use rise_distance::cli::Measured;
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::generator::{Samplable, SizeUniformSampler};
-use rise_distance::langs::{AvailableLanguages, math, prop};
-use rise_distance::{MyAnalysis, MyLanguage};
+use rise_distance::langs::{AvailableLanguages, MyAnalysis, MyLanguage, math, prop};
 
 #[derive(Parser)]
 #[command(

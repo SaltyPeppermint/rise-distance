@@ -10,11 +10,11 @@ use serde::Serialize;
 use time::OffsetDateTime;
 
 use rise_distance::cli::{Measured, Policy};
-use rise_distance::eqsat::{EqsatConfig, EqsatResult, run_eqsat};
-use rise_distance::langs::{AvailableLanguages, diospyros, math, prop};
+use rise_distance::eqsat::{self, EqsatConfig, EqsatResult};
+use rise_distance::langs::{AvailableLanguages, MyAnalysis, MyLanguage, diospyros, math, prop};
+use rise_distance::origin::{self, OriginLang};
 use rise_distance::sampling::{AnalysisPackage, FrontierPackage, WholePackage};
-use rise_distance::utils::peak_rss_bytes;
-use rise_distance::{MyAnalysis, MyLanguage, OriginLang, lower};
+use rise_distance::utils;
 
 #[derive(Parser)]
 #[command(
@@ -124,9 +124,9 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
 
     // Replay the guide phase under the effective limits the driver computed;
     // the replay ends at whichever limit trips first.
-    let result = run_eqsat(&seed_expr, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
+    let result = eqsat::run_eqsat(&seed_expr, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
 
-    eprintln!("DEBUG: PEAK RSS AFTER EQSAT: {}", peak_rss_bytes());
+    eprintln!("DEBUG: PEAK RSS AFTER EQSAT: {}", utils::peak_rss_bytes());
     let stop_reason = format!("{:?}", result.stop_reason());
     eprintln!("Guide replay stop reason: {stop_reason}");
 
@@ -147,12 +147,15 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
     } else {
         build_whole_samples(args, result, args.policy, &seed_expr)?
     };
-    eprintln!("DEBUG: PEAK RSS AFTER SAMPLING: {}", peak_rss_bytes());
+    eprintln!(
+        "DEBUG: PEAK RSS AFTER SAMPLING: {}",
+        utils::peak_rss_bytes()
+    );
     Ok(Samples {
         start_term: args.start_term.clone(),
         policy: args.policy.to_string(),
         samples: samples.clone().into_iter().map(|e| e.to_vec()).collect(),
-        samples_s_expr: samples.into_iter().map(lower).collect(),
+        samples_s_expr: samples.into_iter().map(origin::lower).collect(),
         guide_nodes,
         guide_classes,
         guide_iters,
@@ -183,7 +186,10 @@ fn build_frontier_samples<L: MyLanguage, N: MyAnalysis<L>>(
             args.size_search_steps, tried_max_size
         )
     })?;
-    eprintln!("DEBUG: PEAK RSS AFTER ANALYSIS: {}", peak_rss_bytes());
+    eprintln!(
+        "DEBUG: PEAK RSS AFTER ANALYSIS: {}",
+        utils::peak_rss_bytes()
+    );
     eprintln!("Sampling package succeeded with max_size {max_size}!");
     package.log_root_counts();
     let samples = package
@@ -218,7 +224,10 @@ fn build_whole_samples<L: MyLanguage, N: MyAnalysis<L>>(
             args.size_search_steps, tried_max_size
         )
     })?;
-    eprintln!("DEBUG: PEAK RSS AFTER ANALYSIS: {}", peak_rss_bytes());
+    eprintln!(
+        "DEBUG: PEAK RSS AFTER ANALYSIS: {}",
+        utils::peak_rss_bytes()
+    );
     eprintln!("Sampling package succeeded with max_size {max_size}!");
     package.log_root_counts();
     let samples = package

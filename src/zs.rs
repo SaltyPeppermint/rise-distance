@@ -2,7 +2,9 @@ use std::fmt::{self, Display};
 
 use egg::{Id, Language, RecExpr};
 
-use crate::{MyLanguage, OriginLang, id0};
+use crate::langs::MyLanguage;
+use crate::origin::OriginLang;
+use crate::utils;
 
 // TODO: COMPARE DISTANCE OF SAMPLED GUIDES BUT THAT'S A WHOLE BIG THING
 
@@ -10,7 +12,7 @@ use crate::{MyLanguage, OriginLang, id0};
 ///
 /// Applies size-difference and Euler-string lower-bound pruning before computing
 /// the full edit distance.
-pub fn find_min_zs<L: MyLanguage, CF: EditCosts<L>, I: Iterator<Item = RecExpr<L>>>(
+pub fn find_min_zs<L: Language, CF: EditCosts<L>, I: Iterator<Item = RecExpr<L>>>(
     candidates: I,
     reference: &RecExpr<L>,
     costs: &CF,
@@ -90,7 +92,7 @@ struct PostorderNode<'a, L: Language> {
 /// Preprocessed tree for Zhang-Shasha algorithm.
 ///
 /// Reuse this when computing distances against multiple candidate trees.
-pub struct PreprocessedTree<'a, L: Language> {
+struct PreprocessedTree<'a, L: Language> {
     nodes: Vec<PostorderNode<'a, L>>,
     keyroots: Vec<usize>,
 }
@@ -226,7 +228,7 @@ pub fn tree_distance<L: Language, C: EditCosts<L>>(
 }
 
 /// Compute distance with a pre-preprocessed reference tree.
-pub fn tree_distance_with_ref<L: Language, C: EditCosts<L>>(
+fn tree_distance_with_ref<L: Language, C: EditCosts<L>>(
     candidate: &FlatTree<L>,
     reference: &PreprocessedTree<L>,
     costs: &C,
@@ -236,7 +238,7 @@ pub fn tree_distance_with_ref<L: Language, C: EditCosts<L>>(
 }
 
 /// Compute distance between two preprocessed trees.
-pub fn tree_distance_preprocessed<L: Language, C: EditCosts<L>>(
+fn tree_distance_preprocessed<L: Language, C: EditCosts<L>>(
     t1: &PreprocessedTree<L>,
     t2: &PreprocessedTree<L>,
     costs: &C,
@@ -373,7 +375,7 @@ impl<L: Language> From<&RecExpr<L>> for FlatTree<L> {
                 .iter()
                 .map(|c_id| rec(expr, *c_id))
                 .collect();
-            let label = expr[id].clone().map_children(|_| id0());
+            let label = expr[id].clone().map_children(|_| utils::id0());
             FlatTree { label, children }
         }
         rec(value, value.root())
@@ -389,7 +391,7 @@ impl<L: MyLanguage> From<&RecExpr<OriginLang<L>>> for FlatTree<L> {
                 .iter()
                 .map(|c_id| rec(expr, *c_id))
                 .collect();
-            let label = expr[id].inner().clone().map_children(|_| id0());
+            let label = expr[id].inner().clone().map_children(|_| utils::id0());
             FlatTree { label, children }
         }
         rec(value, value.root())
