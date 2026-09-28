@@ -82,7 +82,7 @@ subprocess.run(["cargo", "build", "--release"], check=True)
 
 OUTPUT_BASE = Path("data/guided_search")
 OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
-RUN_SUFFIX = f"{datetime.now().astimezone():%Y-%m-%d:%H-%M}_{git_short_hash()}"
+RUN_SUFFIX = f"{datetime.now().astimezone():%Y-%m-%dT%H:%M}_{git_short_hash()}"
 FIRST_RUN = next_run_number(OUTPUT_BASE)
 
 for i, values in enumerate(itertools.product(*GRID.values()), start=FIRST_RUN):
