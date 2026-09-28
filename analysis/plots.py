@@ -216,16 +216,8 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
         alt.Chart(comparison)
         .mark_circle(size=45, opacity=0.58)
         .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X(
-                "brute_peak_mib:Q",
-                title=f"brute-force proof {MEMORY_LABEL} (MiB, log)",
-                scale=alt.Scale(type="log"),
-            ),
-            y=alt.Y(
-                "guided_peak_mib:Q",
-                title=f"{guided_scope} {MEMORY_LABEL} (MiB, log)",
-                scale=alt.Scale(type="log"),
-            ),
+            x=alt.X("brute_peak_mib:Q", title=f"brute-force proof {MEMORY_LABEL} (MiB)"),
+            y=alt.Y("guided_peak_mib:Q", title=f"{guided_scope} {MEMORY_LABEL} (MiB)"),
             color=_mode_color(meta["modes"], stacked=True),
             tooltip=[
                 "mode:N",
@@ -246,9 +238,7 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     diagonal = (
         alt.Chart(pl.DataFrame({"x": [bounds["lo"], bounds["hi"]]}))
         .mark_line(strokeDash=[5, 4], color="#777")
-        .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X("x:Q", scale=alt.Scale(type="log")), y=alt.Y("x:Q", scale=alt.Scale(type="log"))
-        )
+        .encode(x=alt.X("x:Q"), y=alt.Y("x:Q"))  # ty: ignore[unresolved-attribute]
     )
     return (diagonal + points).properties(title=_title(title, meta))
 
