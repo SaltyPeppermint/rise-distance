@@ -93,20 +93,13 @@ EQSAT_DONE_RE = re.compile(r"^@EQSAT done\b", re.MULTILINE)
 OOM_RETURNCODES = (-9, 137)
 
 
-def last_success_iter(stderr: str) -> int | None:
-    """Last announced iteration, which is the number of iterations that
-    completed before the child died."""
-    matches = EQSAT_ITER_RE.findall(stderr)
-    return int(matches[-1]) if matches else None
-
-
 class MemoryKilled(RuntimeError):
     """A capped child was SIGKILLed by its cgroup memory limit."""
 
     def __init__(self, what: str, stderr: str, wall_time: float) -> None:
         super().__init__(f"{what} was killed at its RSS cap")
         self.stderr = stderr
-        self.last_iter = last_success_iter(stderr)
+        self.productive_iters = [int(m) for m in EQSAT_ITER_RE.findall(stderr)]
         self.wall_time = wall_time
 
 

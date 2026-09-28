@@ -75,8 +75,9 @@ pub struct EqsatConfig {
     #[arg(long)]
     pub max_memory: Option<u64>,
 
-    /// Print machine-readable progress events (`@EQSAT iter=N`, one per
-    /// completed iteration, then `@EQSAT done ...`) to stderr.
+    /// Print machine-readable progress events to stderr: `@EQSAT iter=N` once
+    /// N iterations have completed and the N-th applied a rewrite, then
+    /// `@EQSAT done ...`.
     #[arg(long, default_value_t = false)]
     pub print_success_iters: bool,
 }
@@ -100,7 +101,13 @@ impl EqsatConfig {
             runner = runner.with_hook(|r| {
                 // Hooks run before iteration `iterations.len()`, so the value
                 // is the count of iterations that completed.
-                eprintln!("{EVENT_PREFIX} iter={}", r.iterations.len());
+                // Only print after an iteration that applied a rewrite.
+                // This skips iterations with all rules banned.
+                if let Some(last_iter) = r.iterations.last()
+                    && !last_iter.applied.is_empty()
+                {
+                    eprintln!("{EVENT_PREFIX} iter={}", r.iterations.len());
+                }
                 Ok(())
             });
         }

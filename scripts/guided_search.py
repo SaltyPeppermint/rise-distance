@@ -5,15 +5,16 @@ This driver reads the start/goal pairs in ``problems.json`` (written by
 chains explored through a work queue.
 
 Example:
-    cargo build --release --bin samples --bin attempt
+    cargo build --release --bin sample --bin attempt
     uv run scripts/guided_search.py data/problems/dusky-cramp \\
-        --stop-memory 4G --n-guides 5 --max-depth 3 --max-attempts 20 \\
-        --max-total-time 300 --exploration-policy width \\
-        --policy count --full-union
+        --stop-iters 50 --max-rss 4G --n-guides 5 --max-depth 3 \\
+        --max-attempts 20 --max-total-time 300 --search-policy width \\
+        --sample-policy count --full-union
 
-Pass ``--max-rss`` to hold each ``samples`` process to a cgroup RSS cap,
-retrying a killed replay at the last iteration that completed and removing one
-more iter off each further retry (``--sampling-backoff``).
+Every ``sample`` and ``attempt`` process is held to the ``--max-rss`` cgroup
+RSS cap. A killed ``sample`` is retried up to ``--sampling-backoff`` times,
+first at the number of iterations that completed, then giving up one more
+rewrite-applying iteration per retry.
 """
 
 import asyncio
@@ -31,7 +32,6 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
 from common import (
-    EQSAT_DONE_RE,
     MeasuredJson,
     MemoryKilled,
     attempt_summary,
@@ -122,17 +122,19 @@ class Args(BaseSettings):
     max_rss: str = Field(
         default="4G",
         description=(
-            "Cap each `samples` process at this cgroup RSS limit, as a human "
-            "size such as `4G`. A process killed during guide replay is retried, "
-            "still capped, with `--max-iters` cut to the iterations that "
-            "completed. Uncapped if omitted."
+            "Cap each `sample`/`attempt` process at this cgroup RSS limit, as a "
+            "human size such as `4G`. A killed `sample` is retried, still "
+            "capped, with `--max-iters` cut to the iterations that completed."
         ),
     )
 
     sampling_backoff: int = Field(
         default=1,
         ge=0,
-        description=("How often a `samples` process killed at `--max-rss` is retried."),
+        description=(
+            "How often a `sample` process killed at `--max-rss` is retried, each "
+            "retry giving up one more rewrite-applying iteration. 0 disables retries."
+        ),
     )
 
     size_search_steps: int = Field(
@@ -397,44 +399,34 @@ def flatten_problems(args: Args) -> list[Problem]:
 async def run_capped(
     args: Args, limit: asyncio.Semaphore, cmd: list[str], what: str
 ) -> tuple[MeasuredJson | None, float]:
-    """Run under the RSS cap, retrying a replay-phase kill up to
-    `--sampling-backoff` times: the first retry replays the iterations that
-    survived, each further one gives up another iteration.
+    """Run under the RSS cap, retrying a killed child up to `--sampling-backoff`
+    times: the first retry replays the iterations that completed, each further
+    one gives up another iteration that applied a rewrite. Gives up early once
+    no such iteration is left.
 
     Also returns the wall time summed over every try, the killed ones included."""
     cmd = [*cmd, "--print-success-iters"]
-    iters: int | None = None
-    attempts = 1
-    post_eqsat_kill = 0
     cap = parse_size(args.max_rss)
-    wall_time = 0.0
+    # Try for the first time, record list of successful productive eqsat iterations
+    try:
+        measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=cap, limit=limit)
+        return measured, measured.wall_time
+    except MemoryKilled as killed:
+        wall_time = killed.wall_time
+        candidates = killed.productive_iters
 
-    for retries_left in range(args.sampling_backoff, -1, -1):
+    for max_iters in itertools.islice(reversed(candidates), args.sampling_backoff):
+        # Set or replace `--max-iters`.
         try:
-            # print(f"CMD: {' '.join(cmd)}")
+            index = cmd.index("--max-iters")
+            cmd[index + 1] = str(max_iters)
+        except ValueError:
+            cmd.extend(["--max-iters", str(max_iters)])
+        try:
             measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=cap, limit=limit)
             return measured, wall_time + measured.wall_time
         except MemoryKilled as killed:
             wall_time += killed.wall_time
-            if EQSAT_DONE_RE.search(killed.stderr) is not None:
-                post_eqsat_kill += 1
-
-            if not retries_left:
-                return None, wall_time
-
-            if iters is None:
-                iters = killed.last_iter
-                assert iters is not None, "How can it be killed with 0 iters"
-
-            iters -= 1
-            attempts += 1
-
-            # Copy `cmd` with its `--max-iters` value replaced.
-            try:
-                index = cmd.index("--max-iters")
-                cmd[index + 1] = str(iters)
-            except ValueError:
-                cmd.extend(["--max-iters", str(iters)])
 
     return None, wall_time
 
