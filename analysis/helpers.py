@@ -58,8 +58,9 @@ def _budget(value: float | None) -> str:
 def _run_label(directory: Path, config: dict) -> str:
     frontier = "frontier" if config["frontier"] else "whole"
     full_union = "full_union" if config["full_union"] else "simple_union"
+    run_name = directory.name.split("_")[0]
     return (
-        f"{directory.name} · {config['search_policy']} · "
+        f"run_{run_name} · {config['search_policy']} · "
         f"depth={config['max_depth']} · branching={config['n_guides']}\n"
         f"{config['sample_policy']} · {frontier} · {full_union} · "
         f"size_steps={config['size_search_steps']}\n"
