@@ -14,7 +14,8 @@ Example:
 Every ``sample`` and ``attempt`` process is held to the ``--max-rss`` cgroup
 RSS cap. A killed ``sample`` is retried up to ``--sampling-backoff`` times,
 first at the number of iterations that completed, then giving up one more
-rewrite-applying iteration per retry.
+rewrite-applying iteration per retry. A process that dies of an uncaught panic
+is recorded as ``binary_panic`` and not retried.
 """
 
 import asyncio
@@ -32,9 +33,11 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
 
 from common import (
+    BinaryPanicked,
     MeasuredJson,
     MemoryKilled,
     attempt_summary,
+    binary_panic_summary,
     cli_flags,
     exit_if_missing,
     fan_out,
@@ -235,7 +238,7 @@ class Expansion:
     """The outcome of one `samples` process: the pool drawn and its cost."""
 
     children: list[tuple[list, str]]
-    status: Literal["ok", "empty_pool", "no_novel_terms", "rss_killed"]
+    status: Literal["ok", "empty_pool", "no_novel_terms", "rss_killed", "binary_panic"]
     meta: dict
     wall_time: float
 
@@ -404,7 +407,8 @@ async def run_capped(
     one gives up another iteration that applied a rewrite. Gives up early once
     no such iteration is left.
 
-    Also returns the wall time summed over every try, the killed ones included."""
+    Also returns the wall time summed over every try, the killed ones included.
+    A `BinaryPanicked` is not retried and carries that same sum."""
     cmd = [*cmd, "--print-success-iters"]
     cap = parse_size(args.max_rss)
     # Try for the first time, record list of successful productive eqsat iterations
@@ -427,6 +431,9 @@ async def run_capped(
             return measured, wall_time + measured.wall_time
         except MemoryKilled as killed:
             wall_time += killed.wall_time
+        except BinaryPanicked as panicked:
+            panicked.wall_time += wall_time
+            raise
 
     return None, wall_time
 
@@ -441,7 +448,11 @@ async def draw_expansion(
         *cli_flags(**args.limits, start_term=s_expr, n_samples=args.n_guides),
     ]
 
-    measured, wall_time = await run_capped(args, limit, cmd, f"sample for term {s_expr!r}")
+    try:
+        measured, wall_time = await run_capped(args, limit, cmd, f"sample for term {s_expr!r}")
+    except BinaryPanicked as panicked:
+        panicked.warn()
+        return Expansion([], "binary_panic", dict(EMPTY_GUIDE_META), panicked.wall_time)
 
     # A capped-out child never printed its `Measured` envelope.
     if measured is None:
@@ -517,9 +528,9 @@ async def run_attempt(
 ) -> AttemptResult:
     """Run one attempt in its own process.
 
-    An attempt killed at the RSS cap comes back as a failed attempt with
-    ``stop_reason="rss_killed"`` rather than an exception, since the search
-    simply moves on to the next node.
+    An attempt killed at the RSS cap or by an uncaught panic comes back as a
+    failed attempt with ``stop_reason="rss_killed"``/``"binary_panic"`` rather
+    than an exception, since the search simply moves on to the next node.
     """
     cmd = [
         str(args.attempt_bin),
@@ -544,6 +555,10 @@ async def run_attempt(
     except MemoryKilled as killed:
         summary, peak_rss_bytes = rss_killed_summary(), None
         wall_time = killed.wall_time
+    except BinaryPanicked as panicked:
+        panicked.warn()
+        summary, peak_rss_bytes = binary_panic_summary(), None
+        wall_time = panicked.wall_time
     return AttemptResult(summary, peak_rss_bytes, wall_time)
 
 
@@ -633,7 +648,8 @@ async def run_unguided_pair(
 ) -> dict:
     """Run the pair-matched single-start baseline.
 
-    A baseline killed at the RSS cap becomes an ``rss_killed`` failure row.
+    A baseline killed at the RSS cap or by an uncaught panic becomes an
+    ``rss_killed``/``binary_panic`` failure row.
     """
     cmd = [
         str(args.attempt_bin),
@@ -649,6 +665,9 @@ async def run_unguided_pair(
         peak_rss_bytes = measured.peak_rss_bytes
     except MemoryKilled:
         summary, peak_rss_bytes = rss_killed_summary(), None
+    except BinaryPanicked as panicked:
+        panicked.warn()
+        summary, peak_rss_bytes = binary_panic_summary(), None
     return {
         "start_term": pair.start,
         "goal_term": pair.goal,

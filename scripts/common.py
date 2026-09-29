@@ -52,7 +52,7 @@ def exit_if_missing(*binaries: Path) -> None:
     """Print an error and exit 2 if any binary is missing."""
     error = check_binaries(*binaries)
     if error is not None:
-        print(error, file=sys.stderr)
+        tqdm.write(error, file=sys.stderr)
         raise SystemExit(2)
 
 
@@ -92,6 +92,13 @@ EQSAT_DONE_RE = re.compile(r"^@EQSAT done\b", re.MULTILINE)
 # 128+SIGKILL, a direct child as -SIGKILL.
 OOM_RETURNCODES = (-9, 137)
 
+# Rust's exit code for a panic
+PANIC_RETURNCODE = 101
+
+# Where a Rust panic message header
+# `thread 'main' (609420) panicked at src/langs/math/mod.rs:97:13:`.
+PANIC_HEADER_RE = re.compile(r"^thread '.*' .*panicked at ", re.MULTILINE)
+
 
 class MemoryKilled(RuntimeError):
     """A capped child was SIGKILLed by its cgroup memory limit."""
@@ -101,6 +108,34 @@ class MemoryKilled(RuntimeError):
         self.stderr = stderr
         self.productive_iters = [int(m) for m in EQSAT_ITER_RE.findall(stderr)]
         self.wall_time = wall_time
+
+
+class BinaryPanicked(RuntimeError):
+    """A child exited with a Rust panic that it did not catch itself."""
+
+    def __init__(self, what: str, stderr: str, wall_time: float) -> None:
+        super().__init__(f"{what} panicked (code {PANIC_RETURNCODE}):\n{stderr}")
+        self.what = what
+        self.stderr = stderr
+        self.wall_time = wall_time
+
+    @property
+    def panic_message(self) -> str:
+        """The panic's own lines from stderr, without the progress output before
+        it or the `RUST_BACKTRACE` hint after it."""
+        header = PANIC_HEADER_RE.search(self.stderr)
+        tail = self.stderr[header.start() :] if header else self.stderr
+        return "\n".join(
+            line for line in tail.strip().splitlines() if not line.startswith("note: run with")
+        )
+
+    def warn(self) -> None:
+        """Log the panic."""
+        message = "\n".join(f"  {line}" for line in self.panic_message.splitlines())
+        tqdm.write(
+            f"WARNING: {self.what} panicked (code {PANIC_RETURNCODE}):\n{message}",
+            file=sys.stderr,
+        )
 
 
 async def run_json_subprocess(
@@ -121,7 +156,8 @@ async def run_json_subprocess(
     With `limit`, the child only spawns once it holds a slot, and its
     `wall_time` starts counting then.
 
-    Raises `MemoryKilled` when `rss_max_bytes` is set and the cap killed it.
+    Raises `MemoryKilled` when `rss_max_bytes` is set and the cap killed it,
+    and `BinaryPanicked` when the child panicked.
     """
     async with contextlib.nullcontext() if limit is None else limit:
         started = time.monotonic()
@@ -152,6 +188,8 @@ async def run_json_subprocess(
 
     if rss_max_bytes is not None and proc.returncode in OOM_RETURNCODES:
         raise MemoryKilled(what, stderr, wall_time)
+    if proc.returncode == PANIC_RETURNCODE:
+        raise BinaryPanicked(what, stderr, wall_time)
     if proc.returncode != 0:
         raise RuntimeError(f"{what} failed (code {proc.returncode}):\n{stderr}")
     try:
@@ -217,6 +255,17 @@ def rss_killed_summary() -> dict[str, Any]:
     """
     empty: dict[str, Any] = dict.fromkeys(ATTEMPT_DTYPES)
     return {**empty, "reached": False, "panic": False, "stop_reason": "rss_killed"}
+
+
+def binary_panic_summary() -> dict[str, Any]:
+    """An `attempt_summary`-shaped row for a child that died of an uncaught panic.
+
+    Unlike a panic caught inside the eqsat run (`stop_reason="panic"`), the
+    child never printed its payload, so everything but the outcome markers
+    stays `None`.
+    """
+    empty: dict[str, Any] = dict.fromkeys(ATTEMPT_DTYPES)
+    return {**empty, "reached": False, "panic": True, "stop_reason": "binary_panic"}
 
 
 def cli_flags(**values: str | float | bool | None) -> list[str]:

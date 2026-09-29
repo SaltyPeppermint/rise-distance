@@ -238,6 +238,8 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
         .then(pl.lit("predictive memory stop"))
         .when(reason == "rss_killed")
         .then(pl.lit("attempts exhausted, all oomed"))
+        .when(reason == "binary_panic")
+        .then(pl.lit("binary panic"))
         .when(reason == "Saturated")
         .then(pl.lit("saturated without goal"))
         # A pair whose search never ran an attempt falls back to the search's
@@ -266,6 +268,8 @@ def _setup_category(status: pl.Expr) -> pl.Expr:
     ``guide menu: empty pool``
         The draw succeeded but returned no samples, or every sample it
         returned had already been attempted on this pair.
+    ``guide menu: binary panic``
+        The `sample` process died of an uncaught panic.
 
     An unrecognized status simply gets passed through.
     """
@@ -276,6 +280,8 @@ def _setup_category(status: pl.Expr) -> pl.Expr:
         .then(pl.lit("guide menu: no novel terms"))
         .when(status == "empty_pool")
         .then(pl.lit("guide menu: empty pool"))
+        .when(status == "binary_panic")
+        .then(pl.lit("guide menu: binary panic"))
         .otherwise(pl.lit("guide menu: ") + status)
     )
 
