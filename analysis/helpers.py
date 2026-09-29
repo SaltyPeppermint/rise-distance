@@ -8,10 +8,10 @@ from pathlib import Path
 
 import polars as pl
 
-BRUTE_COLUMNS = {"peak_rss_bytes": "brute_peak_rss_bytes"}
-
 GUIDED_WORKFLOW_COLUMN = "guided_peak_rss_bytes"
 BRUTE_COLUMN = "brute_peak_rss_bytes"
+
+BRUTE_COLUMNS = {"peak_rss_bytes": BRUTE_COLUMN}
 
 # Guided peaks comparable with brute force
 GUIDED_PEAK_SCOPES = {
@@ -19,13 +19,6 @@ GUIDED_PEAK_SCOPES = {
     "guided workflow": GUIDED_WORKFLOW_COLUMN,
 }
 
-
-# The event table each kind of saturation is counted from, beside the
-# comparison a run writes, and what a saturated event looks like in it.
-SATURATION_EVENTS = {}
-
-# Share of a bin's width left empty, so grouped bars separate into buckets.
-BRUTE_COST_BIN_PAD = 0.14
 # Ordered: the drawing slot of a grouped bar is the position in this tuple.
 BRUTE_COST_OUTCOMES = ("guided failed", "guided proved, at or above", "guided proved, cheaper")
 
@@ -434,7 +427,9 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     width = (high - low) / bins if high > low else 1.0
     # Bars run to the bin edge without it, so neighbouring buckets touch and
     # read as one group; this reserves a gap at each bucket's trailing edge.
-    usable = 1 - BRUTE_COST_BIN_PAD
+
+    # Share of a bin's width left empty, so grouped bars separate into buckets.
+    usable = 1 - 0.14
     # An outcome with no pair anywhere in the frame gives up its slot, so the
     # remaining bars widen to fill the bucket instead of leaving a gap.
     # Presence is measured over the whole frame, not per mode, to keep the slot
