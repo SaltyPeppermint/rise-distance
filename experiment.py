@@ -2,6 +2,7 @@
 import itertools
 import re
 import subprocess
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -14,15 +15,18 @@ MEMRUN = [
     "--property=MemoryAccounting=yes",
 ]
 
-BASE_ARGS = [
-    "--max-rss", "450M",
-    "--sample-policy", "uniform",
-    "--start-terms", "100",
-    "--n-guides", "10",
-    "--max-attempts", "30",
-    "--seed", "42",
-    "--full-union",
-]  # fmt: skip
+PROBLEMS = Path("data/problems/expensive-bird")
+OUTPUT_BASE = Path("data/guided_search")
+
+BASE_FLAGS: dict[str, object] = {
+    "--max-rss": "450M",
+    "--sample-policy": "uniform",
+    "--start-terms": 100,
+    "--n-guides": 10,
+    "--max-attempts": 30,
+    "--seed": 42,
+    "--full-union": True,
+}
 
 GRID = {
     "--sampling-backoff": [5, 20],
@@ -41,6 +45,10 @@ def flag_args(flag: str, value: object) -> list[str]:
     return [flag, str(value)]
 
 
+def flags_to_args(flags: Mapping[str, object]) -> list[str]:
+    return [arg for flag, value in flags.items() for arg in flag_args(flag, value)]
+
+
 def git_short_hash() -> str:
     """Short HEAD hash, suffixed with `-dirty` if there are uncommitted changes"""
     rev = subprocess.run(
@@ -56,80 +64,82 @@ def next_run_number(base: Path) -> int:
     return max(nums, default=0) + 1
 
 
-subprocess.run(["cargo", "build", "--release"], check=True)
+def generate_problems(problems: Path = PROBLEMS) -> None:
+    flags = {
+        "--starts": 1000,
+        "--min-size": 30,
+        "--max-size": 60,
+        "--language": "math",
+        "--seed": 123,
+        "--jobs": 20,
+        "--max-iters": 2000,
+        "--max-nodes": 1000000,
+        "--max-time": 300,
+        "--max-memory": "500M",
+        "--min-rss": "500M",
+        "--rss-max": "1G",
+        "--goals": 2,
+        "--path": problems,
+    }
+    subprocess.run(
+        [*MEMRUN, "uv", "run", "scripts/generate_problems.py", *flags_to_args(flags)], check=True
+    )
 
-# subprocess.run(
-#     [
-#         *MEMRUN,
-#         "uv", "run", "scripts/generate_problems.py",
-#         "--starts", "1000",
-#         "--min-size", "30",
-#         "--max-size", "60",
-#         "--language", "math",
-#         "--seed", "123",
-#         "--jobs", "20",
-#         "--max-iters", "2000",
-#         "--max-nodes", "1000000",
-#         "--max-time", "300",
-#         "--max-memory", "500M",
-#         "--min-rss", "500M",
-#         "--rss-max", "1G",
-#         "--goals", "2",
-#         "--path", "data/problems/expensive-bird",
-#     ],
-#     check=True,
-# )
 
-OUTPUT_BASE = Path("data/guided_search")
-OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
-RUN_SUFFIX = f"{datetime.now().astimezone():%Y-%m-%dT%H:%M}_{git_short_hash()}"
-FIRST_RUN = next_run_number(OUTPUT_BASE)
+def run_guided_search(
+    flags: dict[str, object], suffix: str, problems: Path = PROBLEMS, run: int | None = None
+) -> None:
+    if run is None:
+        run = next_run_number(OUTPUT_BASE)
+    out_dir = OUTPUT_BASE / f"{run}_{suffix}"
+    out_dir.mkdir()
+    print(f"RUN {run} FLAGS: {flags}")
+    proc = subprocess.Popen(
+        [
+            *MEMRUN,
+            "uv",
+            "run",
+            "scripts/guided_search.py",
+            *flags_to_args({**BASE_FLAGS, **flags}),
+            "--output",
+            str(out_dir),
+            str(problems),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    tee = subprocess.Popen(["tee", out_dir / "experiment.log"], stdin=proc.stdout)
+    assert proc.stdout is not None
+    proc.stdout.close()  # so proc gets SIGPIPE if tee exits early
+    tee.wait()
+    proc.wait()
+    if proc.returncode != 0:
+        print(f"WARNING: run {run} exited with code {proc.returncode}")
 
-# for i, values in enumerate(itertools.product(*GRID.values()), start=FIRST_RUN):
-#     out_dir = OUTPUT_BASE / f"{i}_{RUN_SUFFIX}"
-#     out_dir.mkdir()
-#     grid_args = [arg for flag, value in zip(GRID, values) for arg in flag_args(flag, value)]
-#     print(f"GRID ARGS: {grid_args}")
-#     proc = subprocess.Popen(
-#         [
-#             *MEMRUN,
-#             "uv", "run", "scripts/guided_search.py",
-#             *BASE_ARGS,
-#             *grid_args,
-#             "--output", str(out_dir),
-#             "data/problems/expensive-bird",
-#         ],
-#         stdout=subprocess.PIPE,
-#         stderr=subprocess.STDOUT,
-#     )  # fmt: skip
-#     tee = subprocess.Popen(["tee", out_dir / "experiment.log"], stdin=proc.stdout)
-#     assert proc.stdout is not None
-#     proc.stdout.close()  # so proc gets SIGPIPE if tee exits early
-#     tee.wait()
-#     proc.wait()
 
-out_dir = OUTPUT_BASE / f"{33}_{RUN_SUFFIX}"
-out_dir.mkdir()
-proc = subprocess.Popen(
-    [
-        *MEMRUN,
-        "uv",
-        "run",
-        "scripts/guided_search.py",
-        *BASE_ARGS,
-        "--sampling-backoff", "50",
-        "--max-depth", "2",
-        "--search-policy", "width",
-        "--frontier",
-        "--output",
-        str(out_dir),
-        "data/problems/expensive-bird",
-    ],
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-)  # fmt: skip
-tee = subprocess.Popen(["tee", out_dir / "experiment.log"], stdin=proc.stdout)
-assert proc.stdout is not None
-proc.stdout.close()  # so proc gets SIGPIPE if tee exits early
-tee.wait()
-proc.wait()
+def main() -> None:
+    subprocess.run(["cargo", "build", "--release"], check=True)
+    OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
+    suffix = f"{datetime.now().astimezone():%Y-%m-%dT%H:%M}_{git_short_hash()}"
+
+    # PROBLEM GENERATION
+    # generate_problems()
+
+    # GRID SEARCH
+    # for values in itertools.product(*GRID.values()):
+    #     run_guided_search(dict(zip(GRID, values)), suffix)
+
+    # INDIVIDUAL RUN(s)
+    run_guided_search(
+        {
+            "--sampling-backoff": 50,
+            "--max-depth": 2,
+            "--search-policy": "width",
+            "--frontier": True,
+        },
+        suffix,
+    )
+
+
+if __name__ == "__main__":
+    main()
