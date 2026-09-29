@@ -70,7 +70,7 @@ def _run_label(directory: Path, config: dict) -> str:
     )
 
 
-def resolve_runs(patterns: Sequence[str]) -> list[Run]:
+def resolve_runs(patterns: Sequence[str]) -> tuple[list[Run], list[str]]:
     """Resolve run folders under `data/guided_search` by name substring."""
     directories = (
         _run_dirs("", "guided_search")
@@ -84,21 +84,21 @@ def resolve_runs(patterns: Sequence[str]) -> list[Run]:
         raise FileNotFoundError(f"Could not resolve all run patterns; found {sorted(found)}")
 
     runs = []
+    incomplete_runs = []
     for directory in dict.fromkeys(directories):
         comparison = directory / "comparison.parquet"
         config_path = directory / "config.json"
         absent = [path.name for path in (comparison, config_path) if not path.is_file()]
         if absent:
             if patterns:
-                raise ValueError(
-                    f"{directory} is incomplete; missing final artifacts: {', '.join(absent)}"
-                )
+                print(f"{directory} is incomplete; missing final artifacts: {', '.join(absent)}")
+            incomplete_runs.append(str(directory))
             continue
         config = json.loads(config_path.read_text())
         runs.append(Run(directory, _run_label(directory, config), config))
     if not runs:
         raise FileNotFoundError("No completed guided-search runs")
-    return runs
+    return runs, incomplete_runs
 
 
 def _brute_baseline(run: Run) -> pl.DataFrame:

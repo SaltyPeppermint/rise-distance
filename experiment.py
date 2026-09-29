@@ -85,25 +85,51 @@ OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 RUN_SUFFIX = f"{datetime.now().astimezone():%Y-%m-%dT%H:%M}_{git_short_hash()}"
 FIRST_RUN = next_run_number(OUTPUT_BASE)
 
-for i, values in enumerate(itertools.product(*GRID.values()), start=FIRST_RUN):
-    out_dir = OUTPUT_BASE / f"{i}_{RUN_SUFFIX}"
-    out_dir.mkdir()
-    grid_args = [arg for flag, value in zip(GRID, values) for arg in flag_args(flag, value)]
-    print(f"GRID ARGS: {grid_args}")
-    proc = subprocess.Popen(
-        [
-            *MEMRUN,
-            "uv", "run", "scripts/guided_search.py",
-            *BASE_ARGS,
-            *grid_args,
-            "--output", str(out_dir),
-            "data/problems/expensive-bird",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )  # fmt: skip
-    tee = subprocess.Popen(["tee", out_dir / "experiment.log"], stdin=proc.stdout)
-    assert proc.stdout is not None
-    proc.stdout.close()  # so proc gets SIGPIPE if tee exits early
-    tee.wait()
-    proc.wait()
+# for i, values in enumerate(itertools.product(*GRID.values()), start=FIRST_RUN):
+#     out_dir = OUTPUT_BASE / f"{i}_{RUN_SUFFIX}"
+#     out_dir.mkdir()
+#     grid_args = [arg for flag, value in zip(GRID, values) for arg in flag_args(flag, value)]
+#     print(f"GRID ARGS: {grid_args}")
+#     proc = subprocess.Popen(
+#         [
+#             *MEMRUN,
+#             "uv", "run", "scripts/guided_search.py",
+#             *BASE_ARGS,
+#             *grid_args,
+#             "--output", str(out_dir),
+#             "data/problems/expensive-bird",
+#         ],
+#         stdout=subprocess.PIPE,
+#         stderr=subprocess.STDOUT,
+#     )  # fmt: skip
+#     tee = subprocess.Popen(["tee", out_dir / "experiment.log"], stdin=proc.stdout)
+#     assert proc.stdout is not None
+#     proc.stdout.close()  # so proc gets SIGPIPE if tee exits early
+#     tee.wait()
+#     proc.wait()
+
+out_dir = OUTPUT_BASE / f"{33}_{RUN_SUFFIX}"
+out_dir.mkdir()
+proc = subprocess.Popen(
+    [
+        *MEMRUN,
+        "uv",
+        "run",
+        "scripts/guided_search.py",
+        *BASE_ARGS,
+        "--sampling-backoff", "50",
+        "--max-depth", "2",
+        "--search-policy", "width",
+        "--frontier",
+        "--output",
+        str(out_dir),
+        "data/problems/expensive-bird",
+    ],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+)  # fmt: skip
+tee = subprocess.Popen(["tee", out_dir / "experiment.log"], stdin=proc.stdout)
+assert proc.stdout is not None
+proc.stdout.close()  # so proc gets SIGPIPE if tee exits early
+tee.wait()
+proc.wait()
