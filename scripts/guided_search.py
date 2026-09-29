@@ -856,12 +856,9 @@ async def main() -> int:
     sample_flags = args.sample_flags(str(cfg["language"]))
 
     pairs = flatten_problems(args)
+    flags_str = "".join(f"\n  {s}" if s.startswith("--") else f" {s}" for s in sample_flags)
     print(
-        f"Searching {len(pairs)} (start, goal) pair(s) "
-        f"(policy={args.search_policy}, max_depth={args.max_depth}, "
-        f"branching={args.n_guides}, max_attempts={args.max_attempts}, "
-        f"max_total_time={args.max_total_time})",
-        file=sys.stderr,
+        f"Searching {len(pairs)} (start, goal) pair(s)\nSample Flags: {flags_str}", file=sys.stderr
     )
     # Every pair starts at once and only the processes are limited, so a pair
     # waiting on a pool another pair is drawing holds no slot.
