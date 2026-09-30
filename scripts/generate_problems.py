@@ -113,8 +113,10 @@ class Args(BaseSettings):
         ),
     )
 
-    jobs: int | None = Field(
-        default=None, gt=0, description="Concurrent subprocesses. Defaults to `os.cpu_count()`."
+    jobs: int = Field(
+        default_factory=lambda: os.cpu_count() or 1,
+        gt=0,
+        description="Concurrent subprocesses. Defaults to `os.cpu_count()`.",
     )
 
     @model_validator(mode="after")
@@ -249,7 +251,7 @@ async def main(args: Args) -> int:
 
     out = args.path
     out.mkdir(parents=True, exist_ok=True)
-    jobs = args.jobs or os.cpu_count() or 1
+    jobs = args.jobs
     limits = args.limits
     flags = cli_flags(**limits)
     min_rss = parse_size(args.min_rss)

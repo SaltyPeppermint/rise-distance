@@ -24,7 +24,6 @@ is recorded as ``binary_panic`` and not retried.
 import asyncio
 import itertools
 import json
-import os
 import sys
 from collections import deque
 from dataclasses import dataclass, field
@@ -36,25 +35,19 @@ import polars as pl
 from pydantic import Field, model_validator
 from pydantic_settings import CliApp
 
-from baseline import (
-    BaselineArgs,
-    BaselineMismatch,
-    check_baseline,
-)
+from baseline_args import BaselineArgs, BaselineMismatch, check_baseline
 from common import (
+    AttemptResult,
     BinaryPanicked,
     MeasuredJson,
     MemoryKilled,
     Problem,
     SamplePolicy,
-    attempt_summary,
-    binary_panic_summary,
     cli_flags,
     exit_if_missing,
     fan_out,
     flatten_problems,
-    out_of_memory_summary,
-    parse_size,
+    measure_attempt,
     run_json_subprocess,
 )
 from schemes import ATTEMPT_SCHEMA, EMPTY_GUIDE_META, EXPANSION_SCHEMA, PAIR_SCHEMA
@@ -152,10 +145,10 @@ class Args(BaselineArgs):
             raise ValueError("give exactly one of --max-pair-time and --max-attempts")
         return self
 
-    def sample_flags(self, language: str) -> list[str]:
+    def sample_flags(self) -> list[str]:
         """Flags shared by every `sample` process."""
         return cli_flags(
-            language=language,
+            language=self.language,
             seed=self.seed,
             policy=self.sample_policy,
             size_search_steps=self.size_search_steps,
@@ -331,13 +324,6 @@ class PairTrace:
         return self.expansions[0]["status"] if self.expansions else "unstarted"
 
 
-@dataclass(frozen=True)
-class AttemptResult:
-    summary: dict
-    peak_rss_bytes: int | None
-    wall_time: float
-
-
 async def run_capped(
     args: Args, limit: asyncio.Semaphore, cmd: list[str], what: str
 ) -> tuple[MeasuredJson | None, float]:
@@ -349,7 +335,7 @@ async def run_capped(
     Also returns the wall time summed over every try, the killed ones included.
     A `BinaryPanicked` is not retried and carries that same sum."""
     cmd = [*cmd, "--print-success-iters"]
-    cap = parse_size(args.max_rss)
+    cap = args.max_rss_bytes
     # Try for the first time, record list of successful productive eqsat iterations
     try:
         measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=cap, limit=limit)
@@ -482,23 +468,9 @@ async def run_attempt(
         ),
     ]
 
-    try:
-        measured = await run_json_subprocess(
-            cmd,
-            what=f"attempt for goal {goal!r}",
-            rss_max_bytes=parse_size(args.max_rss),
-            limit=limit,
-        )
-        summary, peak_rss_bytes = attempt_summary(measured.payload), measured.peak_rss_bytes
-        wall_time = measured.wall_time
-    except MemoryKilled as killed:
-        summary, peak_rss_bytes = out_of_memory_summary(), None
-        wall_time = killed.wall_time
-    except BinaryPanicked as panicked:
-        panicked.warn()
-        summary, peak_rss_bytes = binary_panic_summary(), None
-        wall_time = panicked.wall_time
-    return AttemptResult(summary, peak_rss_bytes, wall_time)
+    return await measure_attempt(
+        cmd, what=f"attempt for goal {goal!r}", rss_max_bytes=args.max_rss_bytes, limit=limit
+    )
 
 
 async def search_pair(
@@ -730,11 +702,8 @@ def report_results(
 
 async def main(args: Args) -> int:
     exit_if_missing(args.sample_bin, args.attempt_bin)
-    jobs = args.jobs or os.cpu_count() or 1
-
-    cfg = json.loads((args.path / "problem_args.json").read_text())
-    base_flags = args.base_flags(str(cfg["language"]))
-    sample_flags = args.sample_flags(str(cfg["language"]))
+    base_flags = args.base_flags()
+    sample_flags = args.sample_flags()
 
     pairs = flatten_problems(args.path, args.start_terms, args.goal_terms)
     # Checked before the search, so a mismatching baseline fails before any work is spent.
@@ -749,7 +718,7 @@ async def main(args: Args) -> int:
     )
     # Every pair starts at once and only the processes are limited, so a pair
     # waiting on a pool another pair is drawing holds no slot.
-    limit = asyncio.Semaphore(jobs)
+    limit = asyncio.Semaphore(args.jobs)
     # The pools run in this scope rather than in detached tasks,
     # so the first failed pair cancels everything still running instead of
     # leaving orphaned children behind.

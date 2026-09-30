@@ -1,5 +1,5 @@
 """Shared helpers for the driver scripts: size parsing, subprocess-JSON
-plumbing, problem loading, binary checks, the `attempt` payload schema, and eqsat CLI flag
+plumbing, problem loading, binary checks, the `attempt` payload schema, and CLI flag
 building."""
 
 import asyncio
@@ -233,12 +233,10 @@ def attempt_summary(payload: Any) -> dict[str, Any]:
 
     Unreached and panicked runs leave the egraph-shape fields at `None`.
     """
-    empty: dict[str, Any] = dict.fromkeys(ATTEMPT_DTYPES)
     if "Ok" in payload:
         run = payload["Ok"]
         iterations = run["iterations"]
         return {
-            **empty,
             "reached": True,
             "panic": False,
             "stop_reason": "goal_found",
@@ -254,44 +252,73 @@ def attempt_summary(payload: Any) -> dict[str, Any]:
     if isinstance(err, dict) and "Unreached" in err:
         unreached = err["Unreached"]
         return {
-            **empty,
-            "reached": False,
-            "panic": False,
-            "stop_reason": stop_reason_name(unreached["stop_reason"]),
+            **failure_summary(stop_reason_name(unreached["stop_reason"])),
             "memory": unreached["final_allocated"],
             "peak_live_heap": unreached["peak_allocated"],
         }
-    return {**empty, "reached": False, "panic": True, "stop_reason": "panic"}
+    return failure_summary("panic", panic=True)
 
 
-def out_of_memory_summary() -> dict[str, Any]:
-    """An `attempt_summary`-shaped row for a child SIGKILLed at its cgroup RSS cap.
+def failure_summary(stop_reason: str, *, panic: bool = False) -> dict[str, Any]:
+    """An `attempt_summary`-shaped row for a run that did not reach its goal,
+    with every measurement left at `None`.
 
-    A killed child never printed its payload, so everything but the outcome
-    markers stays `None`.
+    Besides the unreached/panicked payloads `attempt` prints itself, this covers
+    a child that never printed one: `out_of_memory` for one SIGKILLed at its
+    cgroup RSS cap, `binary_panic` for one that died of an uncaught panic (unlike
+    a panic caught inside the eqsat run, `stop_reason="panic"`).
     """
     empty: dict[str, Any] = dict.fromkeys(ATTEMPT_DTYPES)
-    return {**empty, "reached": False, "panic": False, "stop_reason": "out_of_memory"}
+    return {**empty, "reached": False, "panic": panic, "stop_reason": stop_reason}
 
 
-def binary_panic_summary() -> dict[str, Any]:
-    """An `attempt_summary`-shaped row for a child that died of an uncaught panic.
+@dataclass(frozen=True)
+class AttemptResult:
+    summary: dict
+    peak_rss_bytes: int | None
+    wall_time: float
 
-    Unlike a panic caught inside the eqsat run (`stop_reason="panic"`), the
-    child never printed its payload, so everything but the outcome markers
-    stays `None`.
+
+async def measure_attempt(
+    cmd: list[str], *, what: str, rss_max_bytes: int, limit: asyncio.Semaphore
+) -> AttemptResult:
+    """Run one `attempt` process under the RSS cap.
+
+    An attempt killed at the cap or by an uncaught panic comes back as a failed
+    attempt with ``stop_reason="out_of_memory"``/``"binary_panic"`` rather than
+    an exception.
     """
-    empty: dict[str, Any] = dict.fromkeys(ATTEMPT_DTYPES)
-    return {**empty, "reached": False, "panic": True, "stop_reason": "binary_panic"}
+    try:
+        measured = await run_json_subprocess(
+            cmd, what=what, rss_max_bytes=rss_max_bytes, limit=limit
+        )
+    except MemoryKilled as killed:
+        return AttemptResult(failure_summary("out_of_memory"), None, killed.wall_time)
+    except BinaryPanicked as panicked:
+        panicked.warn()
+        return AttemptResult(failure_summary("binary_panic", panic=True), None, panicked.wall_time)
+    return AttemptResult(
+        attempt_summary(measured.payload), measured.peak_rss_bytes, measured.wall_time
+    )
 
 
-def cli_flags(**values: str | float | bool | None) -> list[str]:
+def cli_flags(negate_false: bool = False, /, **values: object) -> list[str]:
+    """Turn `snake_case=value` pairs into `--kebab-case value` arguments.
+
+    `True` becomes a bare `--flag` and `None` is dropped. `False` is dropped as
+    well, which is what the Rust binaries expect, or becomes `--no-flag` with
+    `negate_false`, which is what the pydantic drivers expect.
+    """
     flags: list[str] = []
 
     for key, value in values.items():
-        if value is None or value is False:
+        flag = key.replace("_", "-")
+        if value is None or (value is False and not negate_false):
             continue
-        flags.append(f"--{key.replace('_', '-')}")
+        if value is False:
+            flags.append(f"--no-{flag}")
+            continue
+        flags.append(f"--{flag}")
         if value is not True:
             flags.append(str(value))
 

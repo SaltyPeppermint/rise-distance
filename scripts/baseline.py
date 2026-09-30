@@ -15,122 +15,21 @@ pair, and is a hard error otherwise.
 
 import asyncio
 import json
-import os
 import sys
-from pathlib import Path
 
 import polars as pl
-from pydantic import Field
-from pydantic_settings import BaseSettings, CliApp, CliPositionalArg, SettingsConfigDict
+from pydantic_settings import CliApp
 
+from baseline_args import BaselineArgs, BaselineMismatch, check_baseline
 from common import (
-    BinaryPanicked,
-    MemoryKilled,
     Problem,
-    attempt_summary,
-    binary_panic_summary,
     cli_flags,
     exit_if_missing,
     fan_out,
     flatten_problems,
-    out_of_memory_summary,
-    parse_size,
-    run_json_subprocess,
+    measure_attempt,
 )
 from schemes import UNGUIDED_SCHEMA
-
-
-class BaselineArgs(BaseSettings):
-    """The flags the unguided baseline depends on, shared with `guided_search.py`."""
-
-    model_config = SettingsConfigDict(cli_kebab_case=True, cli_implicit_flags=True)
-
-    # I/O
-    path: CliPositionalArg[Path] = Field(
-        description=(
-            "Problem folder with `problems.json` and `problem_args.json` "
-            "(both written by `generate_problems.py`)."
-        )
-    )
-
-    output: Path = Field(description="Baseline folder.")
-
-    attempt_bin: Path = Field(
-        default=Path("target/release/attempt"), description="Path to the attempt binary."
-    )
-
-    # Guide-replay budget
-    #
-    # At least one must be given. Replay ends when the first configured budget
-    # is exhausted; omitted budgets are effectively unlimited.
-    stop_iters: int | None = Field(
-        default=None, gt=0, description=("Guide-replay iteration budget.")
-    )
-
-    stop_nodes: int | None = Field(
-        default=None, gt=0, description=("Guide-replay egraph-node budget.")
-    )
-
-    stop_time: float | None = Field(
-        default=None, gt=0, description=("Guide-replay wall-clock budget in seconds.")
-    )
-
-    max_rss: str = Field(
-        default="4G",
-        description=(
-            "Cap each `attempt` process (and, in `guided_search.py`, each `sample` "
-            "process) at this cgroup RSS limit, as a human size such as `4G`."
-        ),
-    )
-
-    start_terms: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Only process the first N start terms in sorted order. All start terms are processed if omitted."
-        ),
-    )
-
-    goal_terms: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Only use the first N goals per start term in file order. All goals are used if omitted."
-        ),
-    )
-
-    jobs: int | None = Field(
-        default=None,
-        gt=0,
-        description=("Maximum number of concurrent `sample`/`attempt` processes."),
-    )
-
-    @property
-    def limits(self) -> dict[str, int | float]:
-        """The configured guide-replay budgets, without the omitted ones."""
-        budgets = {
-            "max_iters": self.stop_iters,
-            "max_nodes": self.stop_nodes,
-            "max_time": self.stop_time,
-        }
-        return {key: value for key, value in budgets.items() if value is not None}
-
-    def base_flags(self, language: str) -> list[str]:
-        """Flags shared by every `attempt` process."""
-        return cli_flags(language=language, **self.limits)
-
-    def baseline_key(self) -> dict:
-        """Everything a baseline row depends on besides its pair.
-
-        Two runs with the same key can share a baseline.
-        """
-        return {
-            "problems": str(self.path.resolve()),
-            "stop_iters": self.stop_iters,
-            "stop_nodes": self.stop_nodes,
-            "stop_time": self.stop_time,
-            "max_rss": parse_size(self.max_rss),
-        }
 
 
 async def run_unguided_pair(
@@ -146,18 +45,13 @@ async def run_unguided_pair(
         *base_flags,
         *cli_flags(start_term=pair.start, goal_term=pair.goal),
     ]
-    what = f"unguided attempt for goal term {pair.goal!r}"
-    try:
-        measured = await run_json_subprocess(
-            cmd, what=what, rss_max_bytes=parse_size(args.max_rss), limit=limit
-        )
-        summary = attempt_summary(measured.payload)
-        peak_rss_bytes = measured.peak_rss_bytes
-    except MemoryKilled:
-        summary, peak_rss_bytes = out_of_memory_summary(), None
-    except BinaryPanicked as panicked:
-        panicked.warn()
-        summary, peak_rss_bytes = binary_panic_summary(), None
+    attempt = await measure_attempt(
+        cmd,
+        what=f"unguided attempt for goal term {pair.goal!r}",
+        rss_max_bytes=args.max_rss_bytes,
+        limit=limit,
+    )
+    summary = attempt.summary
     return {
         "start_term": pair.start,
         "goal_term": pair.goal,
@@ -166,41 +60,8 @@ async def run_unguided_pair(
         "unguided_panic": summary["panic"],
         "unguided_final_live_heap_bytes": summary["memory"],
         "unguided_peak_live_heap_bytes": summary["peak_live_heap"],
-        "unguided_peak_rss_bytes": peak_rss_bytes,
+        "unguided_peak_rss_bytes": attempt.peak_rss_bytes,
     }
-
-
-class BaselineMismatch(RuntimeError):
-    """A stored baseline that was computed under other flags or misses pairs."""
-
-
-def check_baseline(args: BaselineArgs, directory: Path, pairs: list[Problem]) -> None:
-    """Check that the stored baseline in `directory` fits `args` and `pairs`.
-
-    Raises `BaselineMismatch` if there is no finished baseline in `directory`,
-    or it was computed under a different `baseline_key` or does not cover every pair.
-    """
-    if not (directory / "config.json").is_file():
-        raise BaselineMismatch(f"no finished baseline in {directory}; run `baseline.py` first")
-    config = json.loads((directory / "config.json").read_text())
-    expected = args.baseline_key()
-    stored = config["baseline_key"]
-    if stored != expected:
-        diff = {
-            key: (stored.get(key), value)
-            for key, value in expected.items()
-            if stored.get(key) != value
-        }
-        raise BaselineMismatch(f"baseline in {directory} differs (stored, wanted): {diff}")
-
-    wanted = pl.DataFrame(
-        {"start_term": [p.start for p in pairs], "goal_term": [p.goal for p in pairs]},
-        schema={"start_term": pl.String, "goal_term": pl.String},
-    )
-    rows = pl.read_parquet(directory / "unguided_results.parquet")
-    missing = wanted.join(rows, on=["start_term", "goal_term"], how="anti")
-    if len(missing):
-        raise BaselineMismatch(f"baseline in {directory} misses {len(missing)} pair(s)")
 
 
 async def main(args: BaselineArgs) -> int:
@@ -217,9 +78,8 @@ async def main(args: BaselineArgs) -> int:
         print(f"Baseline in {out} already covers all {len(pairs)} pair(s)", file=sys.stderr)
         return 0
 
-    cfg = json.loads((args.path / "problem_args.json").read_text())
-    base_flags = args.base_flags(str(cfg["language"]))
-    limit = asyncio.Semaphore(args.jobs or os.cpu_count() or 1)
+    base_flags = args.base_flags()
+    limit = asyncio.Semaphore(args.jobs)
     rows = await fan_out(
         None,
         lambda pair: run_unguided_pair(args, base_flags, limit, pair),
