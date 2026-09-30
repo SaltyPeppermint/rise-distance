@@ -302,8 +302,10 @@ async def main(args: Args) -> int:
         )
 
     # Distinct terms only; two slots of one size can sample the same term.
-    seen: set[str] = set()
-    starts = [s for s in starts if not (s["start_term"] in seen or seen.add(s["start_term"]))]
+    unique: dict[str, dict] = {}
+    for s in starts:
+        unique.setdefault(s["start_term"], s)
+    starts = list(unique.values())
 
     enriched = await fan_out(jobs, lambda s: run_samples(args, flags, s), starts, "samples")
     pairs = [
