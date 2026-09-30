@@ -202,9 +202,9 @@ class SearchFrontier:
     """The work queue with the drawing logic once the queue runs empty.
 
     Nodes to descend are remembered via `defer`.
-    `depth` pops the most recently pushed node, so the search follows one chain
+    `dfs` pops the most recently pushed node, so the search follows one chain
     down before trying its siblings, and drains the deferred nodes first so a
-    node's own children are ready before its siblings get a turn; `width` pops
+    node's own children are ready before its siblings get a turn; `bfs` pops
     the oldest, exhausting a depth before descending, so it only draws once the
     frontier is empty.
     Under both policies siblings are tried in the order `sample` returned them.

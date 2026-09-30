@@ -61,29 +61,16 @@ def parse_size(s: str) -> int:
     return int(float(s) * mult)
 
 
-def subprocess_timeout(max_time: float) -> int:
-    """Per-term subprocess timeout: eqsat's `max_time` plus slack for
-    non-eqsat overhead (startup, serialization)."""
-    return max(1, int(max_time * 4) + 5)
-
-
-def check_binaries(*binaries: Path) -> str | None:
-    """Return an error message if any binary is missing, else `None`."""
+def exit_if_missing(*binaries: Path) -> None:
+    """Print an error and exit 2 if any binary is missing."""
     missing = [b for b in binaries if not b.exists()]
     if missing:
         names = " ".join(f"--bin {b.name}" for b in missing)
-        return (
+        tqdm.write(
             f"Binary not found: {', '.join(str(b) for b in missing)}. "
-            f"Build with `cargo build --release {names}`."
+            f"Build with `cargo build --release {names}`.",
+            file=sys.stderr,
         )
-    return None
-
-
-def exit_if_missing(*binaries: Path) -> None:
-    """Print an error and exit 2 if any binary is missing."""
-    error = check_binaries(*binaries)
-    if error is not None:
-        tqdm.write(error, file=sys.stderr)
         raise SystemExit(2)
 
 
@@ -117,7 +104,7 @@ def prefix_rss_cap(argv: list[str], limit_bytes) -> list[str]:
 # Machine-readable eqsat progress events (`EVENT_PREFIX` in src/eqsat.rs),
 # emitted under `--print-success-iters`.
 EQSAT_ITER_RE = re.compile(r"^@EQSAT iter=(\d+)$", re.MULTILINE)
-EQSAT_DONE_RE = re.compile(r"^@EQSAT done\b", re.MULTILINE)
+# EQSAT_DONE_RE = re.compile(r"^@EQSAT done\b", re.MULTILINE)
 
 # The cgroup OOM killer SIGKILLs the child; `systemd-run` reports that as
 # 128+SIGKILL, a direct child as -SIGKILL.
@@ -174,8 +161,6 @@ async def run_json_subprocess(
     *,
     what: str,
     rss_max_bytes: int | None = None,
-    input: str | None = None,
-    timeout: float | None = None,
     limit: asyncio.Semaphore | None = None,
 ) -> MeasuredJson:
     """Run a JSON child and return its payload plus its peak RSS.
@@ -194,16 +179,14 @@ async def run_json_subprocess(
         started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *(prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd),
-            stdin=asyncio.subprocess.DEVNULL if input is None else asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            out, err = await asyncio.wait_for(
-                proc.communicate(None if input is None else input.encode()), timeout
-            )
-        except TimeoutError, asyncio.CancelledError:
-            # Both only unwind the *read*, so the child has to be killed by hand.
+            out, err = await proc.communicate()
+        except asyncio.CancelledError:
+            # Cancelling only unwinds the *read*, so the child has to be killed by hand.
             # `systemd-run --scope` execs the workload in place rather than forking,
             if proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):

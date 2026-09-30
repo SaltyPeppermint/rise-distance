@@ -9,8 +9,8 @@ Three stages, each fanned out over isolated Rust processes:
 Writes `problems.json` (accepted pairs) and `problem_args.json` (config).
 
 Example:
-    cargo build --release --bin start --bin samples --bin attempt
-    uv run scripts/generate_problems.py --starts 10 --min-size 10 --max-size 12 \
+    cargo build --release --bin start --bin sample --bin attempt
+    uv run scripts/generate_problems.py --starts 10 --min-size 10 --max-size 12 \\
       --language math --seed 42 --max-memory 4G --min-rss 3G --rss-max 8G
 """
 

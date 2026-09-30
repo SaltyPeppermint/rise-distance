@@ -47,7 +47,10 @@ class BaselineArgs(BaseSettings):
 
     # I/O
     path: CliPositionalArg[Path] = Field(
-        description=("Problem folder with `the problems (both written by `generate_problems.py`).")
+        description=(
+            "Problem folder with `problems.json` and `problem_args.json` "
+            "(both written by `generate_problems.py`)."
+        )
     )
 
     output: Path | None = Field(
@@ -78,9 +81,8 @@ class BaselineArgs(BaseSettings):
     max_rss: str = Field(
         default="4G",
         description=(
-            "Cap each `sample`/`attempt` process at this cgroup RSS limit, as a "
-            "human size such as `4G`. A killed `sample` is retried, still "
-            "capped, with `--max-iters` cut to the iterations that completed."
+            "Cap each `attempt` process (and, in `guided_search.py`, each `sample` "
+            "process) at this cgroup RSS limit, as a human size such as `4G`."
         ),
     )
 
