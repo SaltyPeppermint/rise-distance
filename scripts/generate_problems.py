@@ -10,20 +10,18 @@ Writes `problems.json` (accepted pairs) and `problem_args.json` (config).
 
 Example:
     cargo build --release --bin start --bin sample --bin attempt
-    uv run scripts/generate_problems.py --starts 10 --min-size 10 --max-size 12 \\
-      --language math --seed 42 --max-memory 4G --min-rss 3G --rss-max 8G
+    uv run scripts/generate_problems.py --path data/problems/example \\
+      --starts 10 --min-size 10 --max-size 12 --language math --seed 42 --max-memory 4G --min-rss 3G --rss-max 8G
 """
 
 import asyncio
 import hashlib
 import json
 import os
-import secrets
 import sys
 from pathlib import Path
 from typing import Any
 
-from diceware.wordlist import WordList, get_wordlists_dir
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, CliApp, SettingsConfigDict
 
@@ -40,31 +38,11 @@ from common import (
 )
 
 
-def _load_wordlist(name: str) -> list[str]:
-    path = os.path.join(get_wordlists_dir(), f"wordlist_{name}.txt")
-    return list(WordList(path))
-
-
-def generate_unique_dir(parent: Path, max_attempts: int = 100) -> Path:
-    parent.mkdir(parents=True, exist_ok=True)
-    adjectives = _load_wordlist("en_adjectives")
-    nouns = _load_wordlist("en_nouns")
-    for _ in range(max_attempts):
-        sample = parent / f"{secrets.choice(adjectives)}-{secrets.choice(nouns)}"
-        if not sample.exists():
-            sample.mkdir()
-            return sample
-    raise RuntimeError(f"Could not find an unused name under {parent}")
-
-
 class Args(BaseSettings):
     model_config = SettingsConfigDict(cli_kebab_case=True)
 
     # I/O
-    path: Path | None = Field(
-        default=None,
-        description="Output directory. A fresh `data/problems` directory is used if omitted.",
-    )
+    path: Path = Field(description="Output directory.")
 
     start_bin: Path = Field(
         default=Path("target/release/start"), description="Start-term generation binary."
@@ -272,7 +250,7 @@ async def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dic
 async def main(args: Args) -> int:
     exit_if_missing(args.start_bin, args.sample_bin, args.attempt_bin)
 
-    out = args.path or generate_unique_dir(Path("data/problems"))
+    out = args.path
     out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
     limits = eqsat_limits(args.model_dump())

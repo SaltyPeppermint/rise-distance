@@ -6,8 +6,10 @@ chains explored through a work queue.
 
 Example:
     cargo build --release --bin sample --bin attempt
-    uv run scripts/baseline.py data/problems/dusky-cramp --stop-iters 50 --max-rss 4G
+    uv run scripts/baseline.py data/problems/dusky-cramp \\
+        --output data/baselines/dusky-cramp --stop-iters 50 --max-rss 4G
     uv run scripts/guided_search.py data/problems/dusky-cramp \\
+        --baseline data/baselines/dusky-cramp --output data/guided_search/1_example \\
         --stop-iters 50 --max-rss 4G --branching 5 \\
         --max-attempts 20 --search-policy bfs \\
         --sample-policy count --full-union
@@ -38,7 +40,6 @@ from baseline import (
     BaselineArgs,
     BaselineMismatch,
     check_baseline,
-    default_baseline_dir,
 )
 from common import (
     BinaryPanicked,
@@ -75,16 +76,14 @@ SATURATED = "Saturated"
 class Args(BaselineArgs):
     """`BaselineArgs` plus the flags of the search itself."""
 
-    output: Path | None = Field(
-        default=None,
-        description=("Run folder for `results.parquet`/`results.json`. Auto-created if omitted."),
+    output: Path = Field(
+        description="Run folder for `results.parquet`/`results.json`, created if missing."
     )
 
-    baseline: Path | None = Field(
-        default=None,
+    baseline: Path = Field(
         description=(
-            "Baseline folder written by `baseline.py`, `data/baselines/<problem folder>` "
-            "if omitted. It must match this run's budget and cover all of its pairs."
+            "Baseline folder written by `baseline.py`. "
+            "It must match this run's budget and cover all of its pairs."
         ),
     )
 
@@ -583,18 +582,6 @@ async def search_pair(
 # -----------
 
 
-def resolve_output_dir(args: Args) -> Path:
-    """Resolve (+ create) folder, auto-numbering `run.N` if unset."""
-    out = args.output
-    if out is None:
-        base = Path("data/guided_search")
-        base.mkdir(parents=True, exist_ok=True)
-        existing = [int(p.suffix[1:]) for p in base.glob("run.*") if p.suffix[1:].isdigit()]
-        out = base / f"run.{max(existing, default=0) + 1}"
-    out.mkdir(parents=True, exist_ok=True)
-    return out
-
-
 def summarize_pair(args: Args, trace: PairTrace) -> dict:
     """Collapse one search into a single guided-workflow row."""
     attempts = trace.attempts
@@ -704,7 +691,8 @@ def report_results(
 
     The baseline stays in its own folder, which `config.json` names under `baseline`.
     """
-    out = resolve_output_dir(args)
+    out = args.output
+    out.mkdir(parents=True, exist_ok=True)
 
     attempt_rows = [row for trace in traces for row in trace.attempts]
     expansion_rows = [row for trace in traces for row in trace.expansions]
@@ -749,8 +737,6 @@ async def main(args: Args) -> int:
     sample_flags = args.sample_flags(str(cfg["language"]))
 
     pairs = flatten_problems(args.path, args.start_terms, args.goal_terms)
-    # Resolved in `args` itself, so `config.json` names the baseline the run was checked against.
-    args.baseline = args.baseline or default_baseline_dir(args.path)
     # Checked before the search, so a mismatching baseline fails before any work is spent.
     try:
         check_baseline(args, args.baseline, pairs)

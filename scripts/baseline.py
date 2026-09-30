@@ -6,11 +6,11 @@ through `--baseline` instead of each re-running it.
 
 Example:
     cargo build --release --bin attempt
-    uv run scripts/baseline.py data/problems/dusky-cramp --stop-iters 50 --max-rss 4G
+    uv run scripts/baseline.py data/problems/dusky-cramp \\
+        --output data/baselines/dusky-cramp --stop-iters 50 --max-rss 4G
 
-The result lands in ``data/baselines/<problem folder>`` unless ``--output`` is
-given. An existing baseline there is kept if it matches and covers every pair,
-and is a hard error otherwise.
+An existing baseline in ``--output`` is kept if it matches and covers every
+pair, and is a hard error otherwise.
 """
 
 import asyncio
@@ -53,10 +53,7 @@ class BaselineArgs(BaseSettings):
         )
     )
 
-    output: Path | None = Field(
-        default=None,
-        description=("Baseline folder. `data/baselines/<problem folder>` if omitted."),
-    )
+    output: Path = Field(description="Baseline folder.")
 
     attempt_bin: Path = Field(
         default=Path("target/release/attempt"), description="Path to the attempt binary."
@@ -206,14 +203,9 @@ def check_baseline(args: BaselineArgs, directory: Path, pairs: list[Problem]) ->
         raise BaselineMismatch(f"baseline in {directory} misses {len(missing)} pair(s)")
 
 
-def default_baseline_dir(problems: Path) -> Path:
-    """Where a problem folder's baseline lives unless told otherwise."""
-    return Path("data/baselines") / problems.name
-
-
 async def main(args: BaselineArgs) -> int:
     exit_if_missing(args.attempt_bin)
-    out = args.output or default_baseline_dir(args.path)
+    out = args.output
     pairs = flatten_problems(args.path, args.start_terms, args.goal_terms)
 
     if (out / "config.json").is_file():
