@@ -25,7 +25,7 @@ from typing import Any
 
 from diceware.wordlist import WordList, get_wordlists_dir
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, CliApp, SettingsConfigDict
 
 from common import (
     MemoryKilled,
@@ -58,7 +58,7 @@ def generate_unique_dir(parent: Path, max_attempts: int = 100) -> Path:
 
 
 class Args(BaseSettings):
-    model_config = SettingsConfigDict(cli_parse_args=True, cli_kebab_case=True)
+    model_config = SettingsConfigDict(cli_kebab_case=True)
 
     # I/O
     path: Path | None = Field(
@@ -269,8 +269,7 @@ async def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dic
     return {**pair, **attempt_summary(measured.payload), "peak_rss_bytes": measured.peak_rss_bytes}
 
 
-async def main() -> int:
-    args = Args()
+async def main(args: Args) -> int:
     exit_if_missing(args.start_bin, args.sample_bin, args.attempt_bin)
 
     out = args.path or generate_unique_dir(Path("data/problems"))
@@ -340,4 +339,5 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    args = CliApp.run(Args)
+    raise SystemExit(asyncio.run(main(args)))

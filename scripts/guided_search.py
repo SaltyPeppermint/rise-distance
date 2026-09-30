@@ -31,7 +31,7 @@ from typing import Literal
 
 import polars as pl
 from pydantic import Field
-from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
+from pydantic_settings import BaseSettings, CliApp, CliPositionalArg, SettingsConfigDict
 
 from common import (
     BinaryPanicked,
@@ -64,9 +64,7 @@ SATURATED = "Saturated"
 
 
 class Args(BaseSettings):
-    model_config = SettingsConfigDict(
-        cli_parse_args=True, cli_kebab_case=True, cli_implicit_flags=True
-    )
+    model_config = SettingsConfigDict(cli_kebab_case=True, cli_implicit_flags=True)
 
     # I/O
     path: CliPositionalArg[Path] = Field(
@@ -140,8 +138,8 @@ class Args(BaseSettings):
         ),
     )
 
-    sampling_backoff: int = Field(
-        default=1,
+    sampling_backoff: int | None = Field(
+        default=None,
         ge=0,
         description=(
             "How often a `sample` process killed at `--max-rss` is retried, each "
@@ -857,9 +855,7 @@ def report_results(
     )
 
 
-async def main() -> int:
-    args = Args()
-
+async def main(args: Args) -> int:
     exit_if_missing(args.sample_bin, args.attempt_bin)
     jobs = args.jobs or os.cpu_count() or 1
 
@@ -906,4 +902,5 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    args = CliApp.run(Args)
+    raise SystemExit(asyncio.run(main(args)))
