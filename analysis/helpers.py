@@ -54,11 +54,11 @@ def _run_label(directory: Path, config: dict) -> str:
     run_name = directory.name.split("_")[0]
     return (
         f"run_{run_name} · {config['search_policy']} · "
-        f"depth={config['max_depth']} · branching={config['n_guides']}\n"
+        f"depth={config['max_depth']} · branching={config['branching']}\n"
         f"{config['sample_policy']} · {frontier} · {full_union} · "
         f"size_steps={config['size_search_steps']}\n"
         f"cap={config['max_rss']} · attempts={_budget(config['max_attempts'])} · "
-        f"time={_budget(config['max_total_time'])} · "
+        f"time={_budget(config['max_pair_time'])} · "
         f"backoff={config['sampling_backoff']} · seed={config['seed']}"
     )
 

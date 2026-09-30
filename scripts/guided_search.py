@@ -7,8 +7,8 @@ chains explored through a work queue.
 Example:
     cargo build --release --bin sample --bin attempt
     uv run scripts/guided_search.py data/problems/dusky-cramp \\
-        --stop-iters 50 --max-rss 4G --n-guides 5 --max-depth 3 \\
-        --max-attempts 20 --max-total-time 300 --search-policy width \\
+        --stop-iters 50 --max-rss 4G --branching 5 --max-depth 3 \\
+        --max-attempts 20 --max-pair-time 300 --search-policy bfs \\
         --sample-policy count --full-union
 
 Every ``sample`` and ``attempt`` process is held to the ``--max-rss`` cgroup
@@ -25,6 +25,7 @@ import os
 import sys
 from collections import deque
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
@@ -47,10 +48,21 @@ from common import (
 )
 from schemes import ATTEMPT_SCHEMA, EMPTY_GUIDE_META, EXPANSION_SCHEMA, PAIR_SCHEMA, UNGUIDED_SCHEMA
 
-# TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
-type SamplePolicy = Literal["count", "uniform"]
 
-type SearchPolicy = Literal["depth", "width"]
+# TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
+class SamplePolicy(StrEnum):
+    Count = "count"
+    Uniform = "uniform"
+
+
+class SearchPolicy(StrEnum):
+    DFS = "dfs"
+    BFS = "bfs"
+
+    @property
+    def lifo(self) -> bool:
+        return self is SearchPolicy.DFS
+
 
 # How egg's `StopReason::Saturated` renders through `{:?}`
 SATURATED = "Saturated"
@@ -96,30 +108,32 @@ class Args(BaseSettings):
     )
 
     # Search budget
-    max_total_time: float | None = Field(
+    max_pair_time: float | None = Field(
         default=None,
         gt=0,
         description=("Budget for one pair's search (wall time of its `sample`/`attempt`)"),
     )
 
-    max_depth: int = Field(default=1, gt=0, description=("Longest guide chain to explore"))
+    max_depth: int = Field(default=1, gt=0, description=("Maximum depth of search tree"))
 
     max_attempts: int | None = Field(
         default=None,
         gt=0,
         description=(
-            "Cap on `attempt` processes per pair. With `--n-guides g` and "
+            "Cap on `attempt` processes per pair. With `--branching g` and "
             "`--max-depth d` the tree grows exponential in size so cap it!"
         ),
     )
 
+    # Search policy
     search_policy: SearchPolicy = Field(
-        default="depth", description=("breadth first vs depth search of the space")
+        default=SearchPolicy.DFS, description=("DFS vs. BFS of the space")
     )
 
-    # Search policy
-    n_guides: int = Field(
-        default=5, gt=0, description=("Guides drawn each time a node is expanded. -> Branching")
+    branching: int = Field(
+        default=5,
+        gt=0,
+        description=("Guides drawn each time a node is expanded. -> Branching factor"),
     )
 
     max_rss: str = Field(
@@ -144,7 +158,9 @@ class Args(BaseSettings):
         default=200, ge=0, description="How many exact-size-search increments to allow."
     )
 
-    sample_policy: SamplePolicy = Field(default="count", description="pool sampling policy.")
+    sample_policy: SamplePolicy = Field(
+        default=SamplePolicy.Count, description="pool sampling policy."
+    )
 
     frontier: bool = Field(
         default=False, description="Sample only the frontier of terms, not the whole egraph"
@@ -281,7 +297,7 @@ class SearchFrontier:
     async def pop(self) -> SearchNode | None:
         """The next node to attempt."""
         while self._pending and not self.budget.expired():
-            if self.policy == "depth":
+            if self.policy.lifo:
                 # Descend into the node eagerly, not just deferred before anything else.
                 await self._expand(self._pending.pop())
             elif self._items:
@@ -291,7 +307,7 @@ class SearchFrontier:
 
         if not self._items:
             return None
-        return self._items.pop() if self.policy == "depth" else self._items.popleft()
+        return self._items.pop() if self.policy.lifo else self._items.popleft()
 
     async def _expand(self, node: SearchNode) -> None:
         """Draw `node`'s pool, record what it cost, and queue the unseen children.
@@ -323,8 +339,8 @@ class SearchFrontier:
                     terminal=expansion.saturated,
                 )
             )
-        # `depth` pops from the right, so push reversed to keep siblings left to right.
-        self._items.extend(reversed(children) if self.policy == "depth" else children)
+        # DFS pops from the right, so push reversed to keep siblings left to right.
+        self._items.extend(reversed(children) if self.policy.lifo else children)
 
         self.trace.expansions.append(
             {
@@ -445,7 +461,7 @@ async def draw_expansion(
     cmd = [
         str(args.sample_bin),
         *sample_flags,
-        *cli_flags(**args.limits, start_term=s_expr, n_samples=args.n_guides),
+        *cli_flags(**args.limits, start_term=s_expr, n_samples=args.branching),
     ]
 
     try:
@@ -579,7 +595,7 @@ async def search_pair(
     mark shared across the pair.
     """
     budget = Budget(
-        max_time=args.max_total_time,
+        max_time=args.max_pair_time,
         max_depth=args.max_depth,
         max_attempts=args.max_attempts,
     )
@@ -748,9 +764,9 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         "policy": args.sample_policy,
         "exploration_policy": args.search_policy,
         "max_depth": args.max_depth,
-        "branching": args.n_guides,
+        "branching": args.branching,
         "attempt_budget": args.max_attempts,
-        "time_budget": args.max_total_time,
+        "time_budget": args.max_pair_time,
         "guided_success": bool(successes),
         "search_stop_reason": trace.stop_reason,
         "success_attempt": successes[0]["attempt"] + 1 if successes else None,

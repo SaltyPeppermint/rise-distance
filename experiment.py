@@ -22,7 +22,7 @@ BASE_FLAGS: dict[str, object] = {
     "--max-rss": "450M",
     "--sample-policy": "uniform",
     "--start-terms": 100,
-    "--n-guides": 10,
+    "--branching": 10,
     "--max-attempts": 30,
     "--seed": 42,
     "--full-union": True,
@@ -31,7 +31,7 @@ BASE_FLAGS: dict[str, object] = {
 GRID = {
     "--sampling-backoff": [5, 20],
     "--max-depth": [1, 2],
-    "--search-policy": ["depth", "width"],
+    "--search-policy": ["dfs", "bfs"],
     "--frontier": [True, False],
 }
 
@@ -134,7 +134,7 @@ def main() -> None:
         {
             "--sampling-backoff": 50,
             "--max-depth": 2,
-            "--search-policy": "width",
+            "--search-policy": "bfs",
             "--frontier": True,
         },
         suffix,
