@@ -1,4 +1,8 @@
-#!/usr/bin/env -S uv run
+"""Run a whole experiment: build, compute the shared baseline, then the guided searches.
+
+uv run scripts/experiment.py
+"""
+
 import itertools
 import re
 import subprocess
