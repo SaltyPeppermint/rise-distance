@@ -177,8 +177,8 @@ class BaselineMismatch(RuntimeError):
     """A stored baseline that was computed under other flags or misses pairs."""
 
 
-def load_baseline(args: BaselineArgs, directory: Path, pairs: list[Problem]) -> pl.DataFrame:
-    """The stored baseline rows for `pairs`, checked against `args`.
+def check_baseline(args: BaselineArgs, directory: Path, pairs: list[Problem]) -> None:
+    """Check that the stored baseline in `directory` fits `args` and `pairs`.
 
     Raises `BaselineMismatch` if there is no finished baseline in `directory`,
     or it was computed under a different `baseline_key` or does not cover every pair.
@@ -203,7 +203,6 @@ def load_baseline(args: BaselineArgs, directory: Path, pairs: list[Problem]) -> 
     missing = wanted.join(rows, on=["start_term", "goal_term"], how="anti")
     if len(missing):
         raise BaselineMismatch(f"baseline in {directory} misses {len(missing)} pair(s)")
-    return wanted.join(rows, on=["start_term", "goal_term"], how="left", validate="1:1")
 
 
 def default_baseline_dir(problems: Path) -> Path:
@@ -218,7 +217,7 @@ async def main(args: BaselineArgs) -> int:
 
     if (out / "config.json").is_file():
         try:
-            load_baseline(args, out, pairs)
+            check_baseline(args, out, pairs)
         except BaselineMismatch as mismatch:
             print(f"{mismatch}; remove it or pass another --output", file=sys.stderr)
             return 1

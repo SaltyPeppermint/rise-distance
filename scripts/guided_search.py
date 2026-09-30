@@ -37,8 +37,8 @@ from pydantic_settings import CliApp
 from baseline import (
     BaselineArgs,
     BaselineMismatch,
+    check_baseline,
     default_baseline_dir,
-    load_baseline,
 )
 from common import (
     BinaryPanicked,
@@ -698,10 +698,12 @@ def write_sample_pools(pools: SamplePools, out: Path) -> None:
 def report_results(
     args: Args,
     traces: list[PairTrace],
-    unguided: pl.DataFrame,
     pools: SamplePools,
 ) -> None:
-    """Write attempt, expansion, pair, baseline, and joined comparison results."""
+    """Write attempt, expansion, and pair results.
+
+    The baseline stays in its own folder, which `config.json` names under `baseline`.
+    """
     out = resolve_output_dir(args)
 
     attempt_rows = [row for trace in traces for row in trace.attempts]
@@ -715,10 +717,7 @@ def report_results(
     expansions.write_parquet(out / "expansions.parquet")
 
     pairs = pl.DataFrame([summarize_pair(args, trace) for trace in traces], schema=PAIR_SCHEMA)
-    comparison = pairs.join(unguided, on=["start_term", "goal_term"], how="left", validate="1:1")
     pairs.write_parquet(out / "pair_results.parquet")
-    unguided.write_parquet(out / "unguided_results.parquet")
-    comparison.write_parquet(out / "comparison.parquet")
 
     write_sample_pools(pools, out / "sample_run")
 
@@ -736,7 +735,7 @@ def report_results(
         f"\nReached {reached_pairs}/{total_pairs} start/goal pairs "
         f"(reach rate {reach_rate:.2f}) in {attempts_run} attempt(s) and "
         f"{len(pools)} distinct sample pool(s). "
-        f"Wrote {out / 'comparison.parquet'}",
+        f"Wrote {out / 'pair_results.parquet'}",
         file=sys.stderr,
     )
 
@@ -750,10 +749,11 @@ async def main(args: Args) -> int:
     sample_flags = args.sample_flags(str(cfg["language"]))
 
     pairs = flatten_problems(args.path, args.start_terms, args.goal_terms)
+    # Resolved in `args` itself, so `config.json` names the baseline the run was checked against.
+    args.baseline = args.baseline or default_baseline_dir(args.path)
     # Checked before the search, so a mismatching baseline fails before any work is spent.
     try:
-        baseline = args.baseline or default_baseline_dir(args.path)
-        unguided = load_baseline(args, baseline, pairs)
+        check_baseline(args, args.baseline, pairs)
     except BaselineMismatch as mismatch:
         print(mismatch, file=sys.stderr)
         return 2
@@ -777,7 +777,7 @@ async def main(args: Args) -> int:
             unit="pair",
         )
 
-    report_results(args, traces, unguided, pools)
+    report_results(args, traces, pools)
     return 0
 
 

@@ -1,7 +1,6 @@
 """Load and summarize guided peak-memory experiments against brute-force proof cost."""
 
 import json
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,9 +81,9 @@ def resolve_runs(patterns: Sequence[str]) -> tuple[list[Run], list[str]]:
     runs = []
     incomplete_runs = []
     for directory in dict.fromkeys(directories):
-        comparison = directory / "comparison.parquet"
+        pair_results = directory / "pair_results.parquet"
         config_path = directory / "config.json"
-        absent = [path.name for path in (comparison, config_path) if not path.is_file()]
+        absent = [path.name for path in (pair_results, config_path) if not path.is_file()]
         if absent:
             if patterns:
                 print(f"{directory} is incomplete; missing final artifacts: {', '.join(absent)}")
@@ -131,11 +130,34 @@ def _brute_baseline(run: Run) -> pl.DataFrame:
     )
 
 
+def _unguided_baseline(run: Run) -> pl.DataFrame:
+    """Per-pair unguided results from the `baseline.py` folder the run was checked against."""
+    directory = Path(__file__).parent / ".." / run.config["baseline"]
+    results = directory / "unguided_results.parquet"
+    if not results.is_file():
+        raise FileNotFoundError(
+            f"{run.directory.name} was checked against {run.config['baseline']}, "
+            "which has no unguided_results.parquet"
+        )
+    return pl.read_parquet(results).with_columns(pl.lit(directory.name).alias("baseline"))
+
+
 def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
-    """Stack one-row-per-pair comparison files, joining each run's brute-force baseline."""
+    """Stack one-row-per-pair results, joining each run's unguided and brute-force baselines."""
     frames = []
     for run in runs:
-        frame = pl.read_parquet(run.directory / "comparison.parquet")
+        frame = pl.read_parquet(run.directory / "pair_results.parquet")
+        # `guided_search.py` checked that the baseline covers every pair, so a
+        # miss here means the baseline changed since.
+        frame = frame.join(
+            _unguided_baseline(run), on=["start_term", "goal_term"], how="left", validate="1:1"
+        )
+        unmatched = frame.filter(pl.col("baseline").is_null()).height
+        if unmatched:
+            raise ValueError(
+                f"{run.directory.name} has {unmatched} pairs absent from {run.config['baseline']}; "
+                "the baseline changed after the run"
+            )
         frame = frame.join(_brute_baseline(run), on=["start_term", "goal_term"], how="left")
         unmatched = frame.filter(pl.col("brute_peak_rss_bytes").is_null()).height
         if unmatched:
@@ -155,19 +177,10 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
         "modes": [run.label for run in runs],
         "n_pairs": data.select("start_term", "goal_term").unique().height,
         "problem_sets": data["problem_set"].unique().sort().to_list(),
+        "baselines": data["baseline"].unique().sort().to_list(),
         "subtitle": [f"{data.height} planned pair observations"],
     }
     return data, meta
-
-
-def _wilson(successes: int, total: int, z: float = 1.959963984540054) -> tuple[float, float]:
-    if total == 0:
-        return math.nan, math.nan
-    p = successes / total
-    denominator = 1 + z**2 / total
-    center = (p + z**2 / (2 * total)) / denominator
-    margin = z * math.sqrt(p * (1 - p) / total + z**2 / (4 * total**2)) / denominator
-    return center - margin, center + margin
 
 
 def _rate_rows(
@@ -180,30 +193,29 @@ def _rate_rows(
         key_values = keys if isinstance(keys, tuple) else (keys,)
         total = len(group)
         successes = int(group[success_column].fill_null(False).sum())
-        lower, upper = _wilson(successes, total)
         rows.append(
             {
                 **dict(zip(group_columns, key_values, strict=True)),
                 "successes": successes,
                 "n": total,
                 "success_rate": successes / total if total else None,
-                "ci_low": lower,
-                "ci_high": upper,
             }
         )
     return rows
 
 
 def success_rates(frame: pl.DataFrame) -> pl.DataFrame:
-    """Guided and unguided success rates with Wilson intervals."""
-    rows = []
-    for method, column in (
-        ("guided", "guided_success"),
-        ("unguided", "unguided_success"),
-    ):
-        for row in _rate_rows(frame, ["mode"], column):
-            rows.append({**row, "method": method})
-    return pl.DataFrame(rows)
+    """Guided success rates per mode and unguided ones per baseline."""
+    guided = [
+        {**row, "method": "guided"}
+        for row in _rate_rows(frame, ["mode", "baseline"], "guided_success")
+    ]
+    pairs = frame.unique(["baseline", "start_term", "goal_term"], maintain_order=True)
+    unguided = [
+        {**row, "mode": None, "method": "unguided"}
+        for row in _rate_rows(pairs, ["baseline"], "unguided_success")
+    ]
+    return pl.DataFrame([*guided, *unguided])
 
 
 def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
@@ -529,13 +541,16 @@ def depth_counts(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
-    """One compact success-only row per mode."""
-    return success_rates(frame).pivot(
-        on="method",
-        index="mode",
-        values=["successes", "n", "success_rate", "ci_low", "ci_high"],
-        separator="_",
+    """One compact success-only row per mode, next to its baseline's unguided rate."""
+    rates = success_rates(frame)
+    values = ["successes", "n", "success_rate"]
+    guided = rates.filter(pl.col("method") == "guided").select(
+        "mode", "baseline", *(pl.col(v).alias(f"guided_{v}") for v in values)
     )
+    unguided = rates.filter(pl.col("method") == "unguided").select(
+        "baseline", *(pl.col(v).alias(f"unguided_{v}") for v in values)
+    )
+    return guided.join(unguided, on="baseline", how="left")
 
 
 def problem_pairs(pattern: str = "") -> pl.DataFrame:

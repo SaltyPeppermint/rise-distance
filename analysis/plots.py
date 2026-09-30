@@ -110,9 +110,28 @@ def _guided_peak_scope(comparison: pl.DataFrame) -> str:
 
 
 def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Success rates with Wilson intervals."""
+    """Guided success rate per mode, the unguided one as a line per baseline."""
+    unguided = rates.filter(pl.col("method") == "unguided")
+    rules = (
+        alt.Chart(unguided)
+        .mark_rule(strokeDash=[4, 3], strokeWidth=1.5)
+        .encode(  # ty: ignore[unresolved-attribute]
+            x=alt.X("success_rate:Q"),
+            color=_method_color(),
+            tooltip=[
+                "baseline:N",
+                "successes:Q",
+                "n:Q",
+                alt.Tooltip("success_rate:Q", format=".1%"),
+            ],
+        )
+    )
+    # With a single baseline the legend already says what the line is.
+    labels = rules.mark_text(
+        align="left", baseline="top", dx=4, fontSize=10, color=UNGUIDED_COLOR
+    ).encode(y=alt.value(2), text="baseline:N")
     points = (
-        alt.Chart(rates)
+        alt.Chart(rates.filter(pl.col("method") == "guided"))
         .mark_point(filled=True, size=75)
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_rate:Q", title="success rate", axis=alt.Axis(format="%")),
@@ -127,10 +146,9 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
     )
-    # intervals = points.mark_rule().encode(x="ci_low:Q", x2="ci_high:Q")
+    background = rules + labels if len(meta["baselines"]) > 1 else rules
     # A two-line label needs the taller step, or Vega drops labels to fit.
-    # return (intervals + points).properties(title=_title("Success rate", meta), height=alt.Step(44))
-    return (points).properties(title=_title("Success rate", meta), height=alt.Step(44))
+    return (background + points).properties(title=_title("Success rate", meta), height=alt.Step(44))
 
 
 def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
