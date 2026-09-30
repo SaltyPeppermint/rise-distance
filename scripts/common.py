@@ -354,7 +354,13 @@ async def fan_out(
     subprocesses through `run_json_subprocess`'s `limit`.
     """
     limit = None if jobs is None else asyncio.Semaphore(jobs)
-    with tqdm(total=len(items), desc=desc, unit=unit) as bar:
+    with tqdm(
+        total=len(items),
+        desc=desc,
+        unit=unit,
+        bar_format="{l_bar}{bar:30}{r_bar}",
+        dynamic_ncols=True,
+    ) as bar:
         # A task group rather than `gather`, so the first failure cancels the
         # items still queued on the semaphore instead of letting them start
         # more processes on the way down.
