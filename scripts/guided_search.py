@@ -145,7 +145,8 @@ class Args(BaseSettings):
         ge=0,
         description=(
             "How often a `sample` process killed at `--max-rss` is retried, each "
-            "retry giving up one more rewrite-applying iteration. 0 disables retries."
+            "retry giving up one more rewrite-applying iteration. 0 disables retries. "
+            "Unlimited if omitted."
         ),
     )
 
