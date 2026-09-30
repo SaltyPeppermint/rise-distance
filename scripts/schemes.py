@@ -86,7 +86,7 @@ PAIR_SCHEMA = {
     "guided_peak_live_heap_bytes": pl.Int64,
 }
 
-# An rss_killed baseline leaves all measurement fields None.
+# An out_of_memory baseline leaves all measurement fields None.
 UNGUIDED_SCHEMA = {
     "start_term": pl.String,
     "goal_term": pl.String,

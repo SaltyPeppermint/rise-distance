@@ -236,7 +236,7 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
         .then(pl.lit("iteration limit"))
         .when(reason.str.starts_with('Other("predicted upcoming-iteration'))
         .then(pl.lit("predictive memory stop"))
-        .when(reason == "rss_killed")
+        .when(reason == "out_of_memory")
         .then(pl.lit("attempts exhausted, all oomed"))
         .when(reason == "binary_panic")
         .then(pl.lit("binary panic"))
@@ -274,7 +274,7 @@ def _setup_category(status: pl.Expr) -> pl.Expr:
     An unrecognized status simply gets passed through.
     """
     return (
-        pl.when(status == "rss_killed")
+        pl.when(status == "out_of_memory")
         .then(pl.lit("guide menu: out of memory"))
         .when(status == "no_novel_terms")
         .then(pl.lit("guide menu: no novel terms"))

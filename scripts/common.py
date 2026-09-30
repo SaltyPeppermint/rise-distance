@@ -247,14 +247,14 @@ def attempt_summary(payload: Any) -> dict[str, Any]:
     return {**empty, "reached": False, "panic": True, "stop_reason": "panic"}
 
 
-def rss_killed_summary() -> dict[str, Any]:
+def out_of_memory_summary() -> dict[str, Any]:
     """An `attempt_summary`-shaped row for a child SIGKILLed at its cgroup RSS cap.
 
     A killed child never printed its payload, so everything but the outcome
     markers stays `None`.
     """
     empty: dict[str, Any] = dict.fromkeys(ATTEMPT_DTYPES)
-    return {**empty, "reached": False, "panic": False, "stop_reason": "rss_killed"}
+    return {**empty, "reached": False, "panic": False, "stop_reason": "out_of_memory"}
 
 
 def binary_panic_summary() -> dict[str, Any]:

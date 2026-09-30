@@ -41,8 +41,8 @@ from common import (
     cli_flags,
     exit_if_missing,
     fan_out,
+    out_of_memory_summary,
     parse_size,
-    rss_killed_summary,
     run_json_subprocess,
 )
 from schemes import ATTEMPT_SCHEMA, EMPTY_GUIDE_META, EXPANSION_SCHEMA, PAIR_SCHEMA, UNGUIDED_SCHEMA
@@ -238,7 +238,7 @@ class Expansion:
     """The outcome of one `samples` process: the pool drawn and its cost."""
 
     children: list[tuple[list, str]]
-    status: Literal["ok", "empty_pool", "no_novel_terms", "rss_killed", "binary_panic"]
+    status: Literal["ok", "empty_pool", "no_novel_terms", "out_of_memory", "binary_panic"]
     meta: dict
     wall_time: float
 
@@ -456,7 +456,7 @@ async def draw_expansion(
 
     # A capped-out child never printed its `Measured` envelope.
     if measured is None:
-        return Expansion([], "rss_killed", dict(EMPTY_GUIDE_META), wall_time)
+        return Expansion([], "out_of_memory", dict(EMPTY_GUIDE_META), wall_time)
 
     # An empty payload is `samples` reporting that construction failed.
     if not measured.payload:
@@ -529,7 +529,7 @@ async def run_attempt(
     """Run one attempt in its own process.
 
     An attempt killed at the RSS cap or by an uncaught panic comes back as a
-    failed attempt with ``stop_reason="rss_killed"``/``"binary_panic"`` rather
+    failed attempt with ``stop_reason="out_of_memory"``/``"binary_panic"`` rather
     than an exception, since the search simply moves on to the next node.
     """
     cmd = [
@@ -553,7 +553,7 @@ async def run_attempt(
         summary, peak_rss_bytes = attempt_summary(measured.payload), measured.peak_rss_bytes
         wall_time = measured.wall_time
     except MemoryKilled as killed:
-        summary, peak_rss_bytes = rss_killed_summary(), None
+        summary, peak_rss_bytes = out_of_memory_summary(), None
         wall_time = killed.wall_time
     except BinaryPanicked as panicked:
         panicked.warn()
@@ -649,7 +649,7 @@ async def run_unguided_pair(
     """Run the pair-matched single-start baseline.
 
     A baseline killed at the RSS cap or by an uncaught panic becomes an
-    ``rss_killed``/``binary_panic`` failure row.
+    ``out_of_memory``/``binary_panic`` failure row.
     """
     cmd = [
         str(args.attempt_bin),
@@ -664,7 +664,7 @@ async def run_unguided_pair(
         summary = attempt_summary(measured.payload)
         peak_rss_bytes = measured.peak_rss_bytes
     except MemoryKilled:
-        summary, peak_rss_bytes = rss_killed_summary(), None
+        summary, peak_rss_bytes = out_of_memory_summary(), None
     except BinaryPanicked as panicked:
         panicked.warn()
         summary, peak_rss_bytes = binary_panic_summary(), None
