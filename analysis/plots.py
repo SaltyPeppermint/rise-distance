@@ -63,23 +63,6 @@ def _title(text: str, meta: dict) -> alt.TitleParams:
     return alt.TitleParams(text, subtitle=meta.get("subtitle", []), subtitleColor="#777")
 
 
-def _mode_color(modes: Sequence[str], stacked: bool = False) -> alt.Color:
-    direction = "vertical" if stacked else "horizontal"
-    columns = 1 if stacked else 2
-    return alt.Color(
-        "mode:N",
-        sort=list(modes),
-        scale=alt.Scale(domain=list(modes), range=PALETTE[: len(modes)]),
-        legend=alt.Legend(
-            title=None,
-            direction=direction,
-            columns=columns,
-            labelLimit=0,
-            labelExpr=MODE_LABEL_SPLIT,
-        ),
-    )
-
-
 def _mode_axis(modes: Sequence[str]) -> alt.Y:
     return alt.Y(
         "mode:N",
@@ -239,7 +222,18 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("brute_peak_mib:Q", title=f"brute-force proof {MEMORY_LABEL} (MiB)"),
             y=alt.Y("guided_peak_mib:Q", title=f"{guided_scope} {MEMORY_LABEL} (MiB)"),
-            color=_mode_color(meta["modes"], stacked=True),
+            color=alt.Color(
+                "mode:N",
+                sort=meta["modes"],
+                scale=alt.Scale(domain=meta["modes"], range=PALETTE[: len(meta["modes"])]),
+                legend=alt.Legend(
+                    title=None,
+                    direction="vertical",
+                    columns=1,
+                    labelLimit=0,
+                    labelExpr=MODE_LABEL_SPLIT,
+                ),
+            ),
             tooltip=[
                 "mode:N",
                 "start_term:N",

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import polars as pl
 
+REPO_ROOT = Path(__file__).parent.parent
+
 GUIDED_WORKFLOW_COLUMN = "guided_peak_rss_bytes"
 BRUTE_COLUMN = "brute_peak_rss_bytes"
 
@@ -32,12 +34,8 @@ class Run:
     config: dict
 
 
-def _data_dir(subdir: str) -> Path:
-    return Path(__file__).parent / ".." / "data" / subdir
-
-
 def _run_dirs(pattern: str, subdir: str) -> list[Path]:
-    base = _data_dir(subdir)
+    base = REPO_ROOT / "data" / subdir
     if not base.is_dir():
         return []
     return sorted(
@@ -132,7 +130,7 @@ def _brute_baseline(run: Run) -> pl.DataFrame:
 
 def _unguided_baseline(run: Run) -> pl.DataFrame:
     """Per-pair unguided results from the `baseline.py` folder the run was checked against."""
-    directory = Path(__file__).parent / ".." / run.config["baseline"]
+    directory = REPO_ROOT / run.config["baseline"]
     results = directory / "unguided_results.parquet"
     if not results.is_file():
         raise FileNotFoundError(
@@ -549,24 +547,3 @@ def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
         "baseline", *(pl.col(v).alias(f"unguided_{v}") for v in values)
     )
     return guided.join(unguided, on="baseline", how="left")
-
-
-def problem_pairs(pattern: str = "") -> pl.DataFrame:
-    """Load the `problems.json` a run was built from, for provenance.
-
-    Carries each pair's brute-force proof measurement (`peak_rss_bytes` above
-    `--min-rss` is why the pair was kept). `load_comparisons` already joins the
-    columns the memory statistics need; this is for inspecting the rest.
-    """
-    base = _data_dir("problems")
-    matches = [
-        directory
-        for directory in _run_dirs(pattern, "problems")
-        if (directory / "problems.json").is_file()
-    ]
-    if not matches:
-        raise FileNotFoundError(f"No problem folder with problems.json under {base}")
-    directory = matches[-1]
-    return pl.DataFrame(json.loads((directory / "problems.json").read_text())).with_columns(
-        pl.lit(directory.name).alias("problem_set")
-    )
