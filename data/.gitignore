@@ -5,4 +5,5 @@ goal_gen/
 guided_search/
 problems/
 guided_search_grid/
+baselines/
 **/*.bak
