@@ -7,8 +7,8 @@ chains explored through a work queue.
 Example:
     cargo build --release --bin sample --bin attempt
     uv run scripts/guided_search.py data/problems/dusky-cramp \\
-        --stop-iters 50 --max-rss 4G --branching 5 --max-depth 3 \\
-        --max-attempts 20 --max-pair-time 300 --search-policy bfs \\
+        --stop-iters 50 --max-rss 4G --branching 5 \\
+        --max-attempts 20 --search-policy bfs \\
         --sample-policy count --full-union
 
 Every ``sample`` and ``attempt`` process is held to the ``--max-rss`` cgroup
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Literal
 
 import polars as pl
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, CliApp, CliPositionalArg, SettingsConfigDict
 
 from common import (
@@ -101,21 +101,19 @@ class Args(BaseSettings):
     )
 
     # Search budget
+    #
+    # Exactly one must be given. It is the only bound on the search tree's
+    # depth: BFS reaches depth ~log_branching(budget), DFS descends one chain
+    # until it dead-ends (saturated, empty pool, no unseen guides) and only then
+    # backs up to the next sibling.
     max_pair_time: float | None = Field(
         default=None,
         gt=0,
         description=("Budget for one pair's search (wall time of its `sample`/`attempt`)"),
     )
 
-    max_depth: int = Field(default=1, gt=0, description=("Maximum depth of search tree"))
-
     max_attempts: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Cap on `attempt` processes per pair. With `--branching g` and "
-            "`--max-depth d` the tree grows exponential in size so cap it!"
-        ),
+        default=None, gt=0, description=("Cap on `attempt` processes per pair.")
     )
 
     # Search policy
@@ -189,6 +187,12 @@ class Args(BaseSettings):
             "Maximum number of concurrent `sample`/`attempt` processes, shared across search and baseline."
         ),
     )
+
+    @model_validator(mode="after")
+    def validate_search_budget(self) -> Args:
+        if (self.max_pair_time is None) == (self.max_attempts is None):
+            raise ValueError("give exactly one of --max-pair-time and --max-attempts")
+        return self
 
     @property
     def limits(self) -> dict[str, int | float]:
@@ -362,7 +366,6 @@ class Budget:
     """
 
     max_time: float | None
-    max_depth: int
     max_attempts: int | None
     spent: float = 0.0
 
@@ -590,7 +593,6 @@ async def search_pair(
     """
     budget = Budget(
         max_time=args.max_pair_time,
-        max_depth=args.max_depth,
         max_attempts=args.max_attempts,
     )
     trace = PairTrace(pair)
@@ -605,7 +607,7 @@ async def search_pair(
             break
         node = await frontier.pop()
         if node is None:
-            # Every node bottomed out at `--max-depth`, hit a saturated egraph,
+            # Every node hit a saturated egraph,
             # was pruned as a dead end, or the pools ran dry; `setup_status`, the
             # expansion rows' `saturated` flag, and the attempt rows'
             # `stop_reason` tell those apart.
@@ -643,11 +645,7 @@ async def search_pair(
         # it sends the search back up to whatever the frontier holds.
         # A saturated attempt is a dead end as well, we wont get past that
         # so we don't even queue it as deferred.
-        if (
-            attempt.summary["stop_reason"] != SATURATED
-            and not node.terminal
-            and node.depth < budget.max_depth
-        ):
+        if attempt.summary["stop_reason"] != SATURATED and not node.terminal:
             frontier.defer(node)
 
     return trace
@@ -757,7 +755,6 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         "goal_term": trace.pair.goal,
         "policy": args.sample_policy,
         "exploration_policy": args.search_policy,
-        "max_depth": args.max_depth,
         "branching": args.branching,
         "attempt_budget": args.max_attempts,
         "time_budget": args.max_pair_time,

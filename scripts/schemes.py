@@ -60,7 +60,6 @@ PAIR_SCHEMA = {
     "goal_term": pl.String,
     "policy": pl.String,
     "exploration_policy": pl.String,
-    "max_depth": pl.Int64,
     "branching": pl.Int64,
     "attempt_budget": pl.Int64,
     "time_budget": pl.Float64,

@@ -19,6 +19,9 @@ GUIDED_PEAK_SCOPES = {
     "guided workflow": GUIDED_WORKFLOW_COLUMN,
 }
 
+# Pair columns describing how deep the search tree went, by display name.
+DEPTH_MEASURES = {"success_depth": "first success", "deepest_attempt": "deepest attempt"}
+
 # Ordered: the drawing slot of a grouped bar is the position in this tuple.
 BRUTE_COST_OUTCOMES = ("guided failed", "guided proved, at or above", "guided proved, cheaper")
 
@@ -54,7 +57,7 @@ def _run_label(directory: Path, config: dict) -> str:
     run_name = directory.name.split("_")[0]
     return (
         f"run_{run_name} · {config['search_policy']} · "
-        f"depth={config['max_depth']} · branching={config['branching']}\n"
+        f"branching={config['branching']}\n"
         f"{config['sample_policy']} · {frontier} · {full_union} · "
         f"size_steps={config['size_search_steps']}\n"
         f"cap={config['max_rss']} · attempts={_budget(config['max_attempts'])} · "
@@ -507,6 +510,27 @@ def pairwise_solved_diff(frame: pl.DataFrame, column: str = "guided_success") ->
     return pl.DataFrame(rows).with_columns(
         (pl.col("only_row") - pl.col("only_col")).alias("net"),
         (pl.col("only_row") / pl.col("n_shared")).alias("share_only_row"),
+    )
+
+
+def depth_counts(frame: pl.DataFrame) -> pl.DataFrame:
+    """Pairs per search-tree depth: where the first success sat, and how deep any attempt went.
+
+    A pair without a success has no `success_depth`, one without any attempt
+    no `deepest_attempt`; neither is counted for that measure.
+    """
+    return (
+        frame.unpivot(
+            index="mode",
+            on=list(DEPTH_MEASURES),
+            variable_name="measure",
+            value_name="depth",
+        )
+        .drop_nulls("depth")
+        .with_columns(pl.col("measure").replace_strict(DEPTH_MEASURES))
+        .group_by("mode", "measure", "depth")
+        .len("count")
+        .sort("mode", "measure", "depth")
     )
 
 

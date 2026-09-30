@@ -35,6 +35,8 @@ WIN_ORDER = ["below brute force", "at or above"]
 WIN_COLORS = [SUCCESS_COLOR, FAILURE_COLOR]
 BRUTE_COST_ORDER = ["guided failed", "guided proved, at or above", "guided proved, cheaper"]
 BRUTE_COST_COLORS = [FAILURE_COLOR, PALETTE[5], SUCCESS_COLOR]
+DEPTH_ORDER = ["first success", "deepest attempt"]
+DEPTH_COLORS = [SUCCESS_COLOR, NEUTRAL_COLOR]
 
 # `helpers` breaks a run label over two lines. Vega stacks a text array into
 # lines but never splits a string itself, so every encoding that draws a mode
@@ -401,4 +403,31 @@ def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:
             tooltip=["mode:N", "success_attempt:O", "count():Q"],
         )
         .properties(title=_title("Attempts to success", meta))
+    )
+
+
+def search_depth(depths: pl.DataFrame, meta: dict) -> alt.Chart:
+    """How deep each run's search went: pairs per depth of first success and deepest attempt."""
+    return (
+        alt.Chart(depths)
+        .mark_bar()
+        .encode(  # ty: ignore[unresolved-attribute]
+            x=alt.X("depth:O", title="search-tree depth"),
+            xOffset=alt.XOffset("measure:N", sort=DEPTH_ORDER),
+            y=alt.Y("count:Q", title="pairs"),
+            color=alt.Color(
+                "measure:N",
+                sort=DEPTH_ORDER,
+                scale=alt.Scale(domain=DEPTH_ORDER, range=DEPTH_COLORS),
+                legend=alt.Legend(title=None),
+            ),
+            column=alt.Column(
+                "mode:N",
+                title=None,
+                sort=list(meta["modes"]),
+                header=_mode_header(orient="top", labelAnchor="middle"),
+            ),
+            tooltip=["mode:N", "measure:N", "depth:O", "count:Q"],
+        )
+        .properties(title=_title("Search depth", meta))
     )
