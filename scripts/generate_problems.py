@@ -136,6 +136,16 @@ class Args(BaseSettings):
             )
         return self
 
+    @property
+    def limits(self) -> dict[str, int | float | None]:
+        """The eqsat limits shared by all three stages."""
+        return {
+            "max_iters": self.max_iters,
+            "max_nodes": self.max_nodes,
+            "max_time": self.max_time,
+            "max_memory": None if self.max_memory is None else parse_size(self.max_memory),
+        }
+
 
 def derive_seed(*fields: int) -> int:
     """Stable 64-bit BLAKE2 seed, independent of scheduling."""
@@ -143,19 +153,6 @@ def derive_seed(*fields: int) -> int:
     for value in fields:
         h.update(int(value).to_bytes(16, "little", signed=True))
     return int.from_bytes(h.digest(), "little")
-
-
-def eqsat_limits(cfg: dict) -> dict:
-    """Extract the eqsat limits from a raw model.dump())."""
-    max_memory = cfg.get("max_memory")
-    if isinstance(max_memory, str):
-        max_memory = parse_size(max_memory)
-    return {
-        "max_iters": cfg["max_iters"],
-        "max_nodes": cfg["max_nodes"],
-        "max_time": cfg["max_time"],
-        "max_memory": max_memory,
-    }
 
 
 async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, Any] | None:
@@ -253,7 +250,7 @@ async def main(args: Args) -> int:
     out = args.path
     out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs or os.cpu_count() or 1
-    limits = eqsat_limits(args.model_dump())
+    limits = args.limits
     flags = cli_flags(**limits)
     min_rss = parse_size(args.min_rss)
 
