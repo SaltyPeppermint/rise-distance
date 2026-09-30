@@ -21,7 +21,7 @@ import os
 import secrets
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from diceware.wordlist import WordList, get_wordlists_dir
 from pydantic import Field, model_validator
@@ -29,6 +29,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from common import (
     MemoryKilled,
+    SamplePolicy,
     attempt_summary,
     cli_flags,
     exit_if_missing,
@@ -93,8 +94,8 @@ class Args(BaseSettings):
     # Goal Samples
     goals: int = Field(default=10, gt=0, description="Goal samples drawn per start term.")
 
-    policy: Literal["count", "uniform"] = Field(
-        default="count", description="Frontier draw policy used by `samples`."
+    policy: SamplePolicy = Field(
+        default=SamplePolicy.Count, description="Frontier draw policy used by `samples`."
     )
 
     size_search_steps: int = Field(

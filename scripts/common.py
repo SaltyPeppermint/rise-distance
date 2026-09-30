@@ -10,12 +10,19 @@ import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from tqdm import tqdm
 
 from schemes import ATTEMPT_DTYPES
+
+
+# TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
+class SamplePolicy(StrEnum):
+    Count = "count"
+    Uniform = "uniform"
 
 
 def parse_size(s: str) -> int:

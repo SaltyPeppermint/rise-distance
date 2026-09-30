@@ -37,6 +37,7 @@ from common import (
     BinaryPanicked,
     MeasuredJson,
     MemoryKilled,
+    SamplePolicy,
     attempt_summary,
     binary_panic_summary,
     cli_flags,
@@ -47,12 +48,6 @@ from common import (
     run_json_subprocess,
 )
 from schemes import ATTEMPT_SCHEMA, EMPTY_GUIDE_META, EXPANSION_SCHEMA, PAIR_SCHEMA, UNGUIDED_SCHEMA
-
-
-# TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
-class SamplePolicy(StrEnum):
-    Count = "count"
-    Uniform = "uniform"
 
 
 class SearchPolicy(StrEnum):
