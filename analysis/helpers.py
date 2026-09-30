@@ -94,6 +94,7 @@ def resolve_runs(patterns: Sequence[str]) -> tuple[list[Run], list[str]]:
         runs.append(Run(directory, _run_label(directory, config), config))
     if not runs:
         raise FileNotFoundError("No completed guided-search runs")
+    runs.sort(key=lambda run: int(run.directory.name.split("_")[0]))
     return runs, incomplete_runs
 
 
@@ -202,7 +203,7 @@ def success_rates(frame: pl.DataFrame) -> pl.DataFrame:
     ):
         for row in _rate_rows(frame, ["mode"], column):
             rows.append({**row, "method": method})
-    return pl.DataFrame(rows).sort("mode", "method")
+    return pl.DataFrame(rows)
 
 
 def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
@@ -218,7 +219,7 @@ def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
             .otherwise(pl.lit("neither"))
             .alias("outcome")
         )
-        .group_by("mode", "outcome")
+        .group_by("mode", "outcome", maintain_order=True)
         .agg(pl.len().alias("count"))
         .with_columns((pl.col("count") / pl.col("count").sum().over("mode")).alias("share"))
     )
@@ -309,10 +310,10 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
     #     .otherwise(_stop_category(pl.col("unguided_stop_reason")))
     #     .alias("failure"),
     # )
-    planned = frame.group_by("mode").agg(pl.len().alias("planned_pairs"))
+    planned = frame.group_by("mode", maintain_order=True).agg(pl.len().alias("planned_pairs"))
     return (
         # pl.concat([guided, unguided])
-        guided.group_by("mode", "method", "failure")
+        guided.group_by("mode", "method", "failure", maintain_order=True)
         .agg(pl.len().alias("count"))
         .with_columns(pl.col("count").sum().over("mode", "method").alias("method_failures"))
         .join(planned, on="mode", how="left")
@@ -320,7 +321,6 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
             (pl.col("count") / pl.col("method_failures")).alias("share_of_failures"),
             (pl.col("count") / pl.col("planned_pairs")).alias("share_of_planned"),
         )
-        .sort("mode", "method", "count", descending=[False, False, True])
     )
 
 
@@ -344,7 +344,7 @@ def saturation_rates(runs: Sequence[Run]) -> pl.DataFrame:
                 "rate": hits / frame.height if frame.height else None,
             }
         )
-    return pl.DataFrame(rows).sort("mode", "kind")
+    return pl.DataFrame(rows)
 
 
 def guided_vs_brute(frame: pl.DataFrame, scope: str) -> pl.DataFrame:
@@ -387,13 +387,9 @@ def peak_win_counts(frame: pl.DataFrame) -> pl.DataFrame:
                 pl.col("peak_ratio").median().alias("median_peak_ratio"),
             )
         )
-    return (
-        pl.concat(counts)
-        .with_columns(
-            (pl.col("n_below") / pl.col("n_guided_successes")).round(3).alias("share_below"),
-            pl.col("median_peak_ratio").round(3),
-        )
-        .sort("mode", "guided_peak_scope")
+    return pl.concat(counts).with_columns(
+        (pl.col("n_below") / pl.col("n_guided_successes")).round(3).alias("share_below"),
+        pl.col("median_peak_ratio").round(3),
     )
 
 
@@ -450,7 +446,7 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     # outcomes present in the bucket, so bars stay aligned across bins where
     # one outcome is empty.
     slot = pl.col("outcome").replace_strict({name: i for i, name in enumerate(ordered)})
-    groups = data.group_by("mode", "outcome").agg(
+    groups = data.group_by("mode", "outcome", maintain_order=True).agg(
         pl.len().alias("group_n"),
         pl.col("brute_peak_mib").median().alias("group_median_mib"),
     )
@@ -462,7 +458,7 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
             .cast(pl.Int32)
             .alias("bin")
         )
-        .group_by("mode", "outcome", "bin")
+        .group_by("mode", "outcome", "bin", maintain_order=True)
         .agg(pl.len().alias("count"))
         .join(groups, on=["mode", "outcome"], how="left")
         .with_columns(
@@ -476,7 +472,6 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
             pl.col("count").sum().over("mode", "bin").alias("bucket_n"),
         )
         .with_columns((pl.col("count") / pl.col("bucket_n")).alias("bucket_share"))
-        .sort("mode", "bin", "outcome")
     )
 
 
@@ -528,23 +523,18 @@ def depth_counts(frame: pl.DataFrame) -> pl.DataFrame:
         )
         .drop_nulls("depth")
         .with_columns(pl.col("measure").replace_strict(DEPTH_MEASURES))
-        .group_by("mode", "measure", "depth")
+        .group_by("mode", "measure", "depth", maintain_order=True)
         .len("count")
-        .sort("mode", "measure", "depth")
     )
 
 
 def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
     """One compact success-only row per mode."""
-    return (
-        success_rates(frame)
-        .pivot(
-            on="method",
-            index="mode",
-            values=["successes", "n", "success_rate", "ci_low", "ci_high"],
-            separator="_",
-        )
-        .sort("mode")
+    return success_rates(frame).pivot(
+        on="method",
+        index="mode",
+        values=["successes", "n", "success_rate", "ci_low", "ci_high"],
+        separator="_",
     )
 
 
