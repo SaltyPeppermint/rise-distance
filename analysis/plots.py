@@ -125,9 +125,10 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
     )
-    intervals = points.mark_rule().encode(x="ci_low:Q", x2="ci_high:Q")
+    # intervals = points.mark_rule().encode(x="ci_low:Q", x2="ci_high:Q")
     # A two-line label needs the taller step, or Vega drops labels to fit.
-    return (intervals + points).properties(title=_title("Success rate", meta), height=alt.Step(44))
+    # return (intervals + points).properties(title=_title("Success rate", meta), height=alt.Step(44))
+    return (points).properties(title=_title("Success rate", meta), height=alt.Step(44))
 
 
 def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:

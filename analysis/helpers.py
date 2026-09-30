@@ -287,7 +287,7 @@ def _setup_category(status: pl.Expr) -> pl.Expr:
 
 
 def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
-    """Pair-level, mutually exclusive failure categories for both methods."""
+    """Pair-level, mutually exclusive failure categories."""
     guided = frame.filter(~pl.col("guided_success").fill_null(False)).select(
         "mode",
         pl.lit("guided").alias("method"),
@@ -298,18 +298,18 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
         .otherwise(_stop_category(pl.col("guided_stop_reason")))
         .alias("failure"),
     )
-    unguided = frame.filter(~pl.col("unguided_success").fill_null(False)).select(
-        "mode",
-        pl.lit("unguided").alias("method"),
-        pl.when(pl.col("unguided_panic").fill_null(False))
-        .then(pl.lit("panic"))
-        .otherwise(_stop_category(pl.col("unguided_stop_reason")))
-        .alias("failure"),
-    )
+    # unguided = frame.filter(~pl.col("unguided_success").fill_null(False)).select(
+    #     "mode",
+    #     pl.lit("unguided").alias("method"),
+    #     pl.when(pl.col("unguided_panic").fill_null(False))
+    #     .then(pl.lit("panic"))
+    #     .otherwise(_stop_category(pl.col("unguided_stop_reason")))
+    #     .alias("failure"),
+    # )
     planned = frame.group_by("mode").agg(pl.len().alias("planned_pairs"))
     return (
-        pl.concat([guided, unguided])
-        .group_by("mode", "method", "failure")
+        # pl.concat([guided, unguided])
+        guided.group_by("mode", "method", "failure")
         .agg(pl.len().alias("count"))
         .with_columns(pl.col("count").sum().over("mode", "method").alias("method_failures"))
         .join(planned, on="mode", how="left")
