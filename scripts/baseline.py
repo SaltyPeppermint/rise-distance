@@ -16,20 +16,31 @@ pair, and is a hard error otherwise.
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 import polars as pl
+from pydantic import Field
 from pydantic_settings import CliApp
 
-from baseline_args import BaselineArgs, BaselineMismatch, check_baseline
 from common import (
+    BaselineMismatch,
     Problem,
+    check_baseline,
     cli_flags,
     exit_if_missing,
     fan_out,
     flatten_problems,
     measure_attempt,
+    problem_language,
 )
+from replay_args import ReplayArgs
 from schemes import UNGUIDED_SCHEMA
+
+
+class BaselineArgs(ReplayArgs):
+    """`ReplayArgs` plus where the baseline goes."""
+
+    output: Path = Field(description="Baseline folder.")
 
 
 async def run_unguided_pair(
@@ -71,14 +82,14 @@ async def main(args: BaselineArgs) -> int:
 
     if (out / "config.json").is_file():
         try:
-            check_baseline(args, out, pairs)
+            check_baseline(out, args.baseline_key(), pairs)
         except BaselineMismatch as mismatch:
             print(f"{mismatch}; remove it or pass another --output", file=sys.stderr)
             return 1
         print(f"Baseline in {out} already covers all {len(pairs)} pair(s)", file=sys.stderr)
         return 0
 
-    base_flags = args.base_flags()
+    base_flags = args.base_flags(problem_language(args.path))
     limit = asyncio.Semaphore(args.jobs)
     rows = await fan_out(
         None,

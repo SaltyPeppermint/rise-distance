@@ -35,21 +35,24 @@ import polars as pl
 from pydantic import Field, model_validator
 from pydantic_settings import CliApp
 
-from baseline_args import BaselineArgs, BaselineMismatch, check_baseline
 from common import (
     AttemptResult,
+    BaselineMismatch,
     BinaryPanicked,
     MeasuredJson,
     MemoryKilled,
     Problem,
     SamplePolicy,
+    check_baseline,
     cli_flags,
     exit_if_missing,
     fan_out,
     flatten_problems,
     measure_attempt,
+    problem_language,
     run_json_subprocess,
 )
+from replay_args import ReplayArgs
 from schemes import ATTEMPT_SCHEMA, EMPTY_GUIDE_META, EXPANSION_SCHEMA, PAIR_SCHEMA
 
 
@@ -66,8 +69,8 @@ class SearchPolicy(StrEnum):
 SATURATED = "Saturated"
 
 
-class Args(BaselineArgs):
-    """`BaselineArgs` plus the flags of the search itself."""
+class Args(ReplayArgs):
+    """`ReplayArgs` plus the flags of the search itself."""
 
     output: Path = Field(
         description="Run folder for `results.parquet`/`results.json`, created if missing."
@@ -145,10 +148,10 @@ class Args(BaselineArgs):
             raise ValueError("give exactly one of --max-pair-time and --max-attempts")
         return self
 
-    def sample_flags(self) -> list[str]:
+    def sample_flags(self, language: str) -> list[str]:
         """Flags shared by every `sample` process."""
         return cli_flags(
-            language=self.language,
+            language=language,
             seed=self.seed,
             policy=self.sample_policy,
             size_search_steps=self.size_search_steps,
@@ -702,13 +705,14 @@ def report_results(
 
 async def main(args: Args) -> int:
     exit_if_missing(args.sample_bin, args.attempt_bin)
-    base_flags = args.base_flags()
-    sample_flags = args.sample_flags()
+    language = problem_language(args.path)
+    base_flags = args.base_flags(language)
+    sample_flags = args.sample_flags(language)
 
     pairs = flatten_problems(args.path, args.start_terms, args.goal_terms)
     # Checked before the search, so a mismatching baseline fails before any work is spent.
     try:
-        check_baseline(args, args.baseline, pairs)
+        check_baseline(args.baseline, args.baseline_key(), pairs)
     except BaselineMismatch as mismatch:
         print(mismatch, file=sys.stderr)
         return 2

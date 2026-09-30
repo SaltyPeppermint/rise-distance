@@ -1,6 +1,6 @@
 """Shared helpers for the driver scripts: size parsing, subprocess-JSON
-plumbing, problem loading, binary checks, the `attempt` payload schema, and CLI flag
-building."""
+plumbing, problem loading, binary checks, the `attempt` payload schema, CLI flag
+building, and the check that a stored baseline fits a run."""
 
 import asyncio
 import contextlib
@@ -14,6 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from tqdm import tqdm
 
 from schemes import ATTEMPT_DTYPES
@@ -50,6 +51,11 @@ def flatten_problems(
         for start in sorted(goals)[:start_terms]
         for goal in goals[start][:goal_terms]
     ]
+
+
+def problem_language(path: Path) -> str:
+    """The language the problems in `path` were generated in."""
+    return str(json.loads((path / "problem_args.json").read_text())["language"])
 
 
 def parse_size(s: str) -> int:
@@ -367,3 +373,36 @@ def uniform_sample_allocation(sizes: list[int], total_samples: int) -> list[tupl
     remainder = total_samples % size_count
 
     return [(size, base + int(i < remainder)) for i, size in enumerate(sizes)]
+
+
+class BaselineMismatch(RuntimeError):
+    """A stored baseline that was computed under other flags or misses pairs."""
+
+
+def check_baseline(directory: Path, expected: dict, pairs: list[Problem]) -> None:
+    """Check that the stored baseline in `directory` was computed under the
+    `baseline_key` `expected` and covers `pairs`.
+
+    Raises `BaselineMismatch` if there is no finished baseline in `directory`,
+    or it was computed under a different `baseline_key` or does not cover every pair.
+    """
+    if not (directory / "config.json").is_file():
+        raise BaselineMismatch(f"no finished baseline in {directory}; run `baseline.py` first")
+    config = json.loads((directory / "config.json").read_text())
+    stored = config["baseline_key"]
+    if stored != expected:
+        diff = {
+            key: (stored.get(key), value)
+            for key, value in expected.items()
+            if stored.get(key) != value
+        }
+        raise BaselineMismatch(f"baseline in {directory} differs (stored, wanted): {diff}")
+
+    wanted = pl.DataFrame(
+        {"start_term": [p.start for p in pairs], "goal_term": [p.goal for p in pairs]},
+        schema={"start_term": pl.String, "goal_term": pl.String},
+    )
+    rows = pl.read_parquet(directory / "unguided_results.parquet")
+    missing = wanted.join(rows, on=["start_term", "goal_term"], how="anti")
+    if len(missing):
+        raise BaselineMismatch(f"baseline in {directory} misses {len(missing)} pair(s)")
