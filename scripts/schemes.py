@@ -99,9 +99,8 @@ UNGUIDED_SCHEMA = {
 
 # What an expansion contributes to a row when its `samples` process never got
 # far enough to report.
-EMPTY_GUIDE_META = {
-    k: None
-    for k in [
+EMPTY_GUIDE_META = dict.fromkeys(
+    [
         "guide_nodes",
         "guide_classes",
         "guide_time",
@@ -110,4 +109,4 @@ EMPTY_GUIDE_META = {
         "guide_stop_reason",
         "sample_peak_rss_bytes",
     ]
-}
+)

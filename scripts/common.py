@@ -45,8 +45,11 @@ def flatten_problems(
     goals: dict[str, list[str]] = {}
     for row in rows:
         goals.setdefault(row["start_term"], []).append(row["goal_term"])
-    specs = [(start, goals[start][:goal_terms]) for start in sorted(goals)]
-    return [Problem(start, goal) for (start, goals) in specs[:start_terms] for goal in goals]
+    return [
+        Problem(start, goal)
+        for start in sorted(goals)[:start_terms]
+        for goal in goals[start][:goal_terms]
+    ]
 
 
 def parse_size(s: str) -> int:

@@ -342,10 +342,8 @@ def saturation_rates(runs: Sequence[Run]) -> pl.DataFrame:
     for run in runs:
         path = run.directory / "results.parquet"
         frame = pl.read_parquet(path)
-        hits = (
-            int(frame.select((pl.col("stop_reason") == "Saturated").fill_null(False).sum()).item())
-            if frame.height
-            else 0
+        hits = int(
+            frame.select((pl.col("stop_reason") == "Saturated").fill_null(False).sum()).item()
         )
         rows.append(
             {

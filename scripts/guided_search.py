@@ -615,14 +615,14 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         for attempt in attempts
         if attempt.get("attempt_peak_rss_bytes") is not None
     ]
-    attempt_peak_max = max(attempt_peaks) if attempt_peaks else None
+    attempt_peak_max = max(attempt_peaks, default=None)
 
     expansion_peaks = [
         exp["sample_peak_rss_bytes"]
         for exp in trace.expansions
         if exp.get("sample_peak_rss_bytes") is not None
     ]
-    sample_peak = max(expansion_peaks) if expansion_peaks else None
+    sample_peak = max(expansion_peaks, default=None)
 
     rss_peaks = [peak for peak in (sample_peak, attempt_peak_max) if peak is not None]
     live_peaks = [
@@ -654,8 +654,8 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         "success_depth": successes[0]["depth"] if successes else None,
         "attempts_run": len(attempts),
         "expansions_run": len(trace.expansions),
-        "expansions_paid": sum(1 for exp in trace.expansions if not exp["cached"]),
-        "saturated_expansions": sum(1 for exp in trace.expansions if exp["saturated"]),
+        "expansions_paid": sum(not exp["cached"] for exp in trace.expansions),
+        "saturated_expansions": sum(exp["saturated"] for exp in trace.expansions),
         # It does not make sense to draw guides from a saturated egraph.
         "root_saturated": bool(trace.expansions and trace.expansions[0]["saturated"]),
         "deepest_attempt": max((attempt["depth"] for attempt in attempts), default=None),
@@ -675,8 +675,8 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         "attempt_peak_rss_bytes": attempt_peak,
         "attempt_peak_rss_bytes_max": attempt_peak_max,
         "sample_peak_rss_bytes": sample_peak,
-        "guided_peak_rss_bytes": max(rss_peaks) if rss_peaks else None,
-        "guided_peak_live_heap_bytes": max(live_peaks) if live_peaks else None,
+        "guided_peak_rss_bytes": max(rss_peaks, default=None),
+        "guided_peak_live_heap_bytes": max(live_peaks, default=None),
     }
 
 

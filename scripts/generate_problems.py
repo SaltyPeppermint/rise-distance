@@ -292,7 +292,7 @@ async def main(args: Args) -> int:
     # slots that came back with nothing were killed past their last reseed (or
     # failed outright, which warns for itself above). Silent when the cap cost
     # nothing.
-    reseeded = sum(1 for s in starts if s["start_retry"])
+    reseeded = sum(s["start_retry"] > 0 for s in starts)
     empty = len(slots) - len(starts)
     if args.rss_max is not None and (reseeded or empty):
         print(
@@ -330,7 +330,7 @@ async def main(args: Args) -> int:
         )
     )
 
-    reached = sum(1 for row in problems if row["reached"])
+    reached = sum(row["reached"] for row in problems)
     print(
         f"\nKept {len(problems)}/{len(measured)} pair(s) at peak RSS >= {min_rss} bytes "
         f"({reached} reached the goal) from {len(starts)} start term(s) "

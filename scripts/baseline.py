@@ -187,11 +187,12 @@ def check_baseline(args: BaselineArgs, directory: Path, pairs: list[Problem]) ->
         raise BaselineMismatch(f"no finished baseline in {directory}; run `baseline.py` first")
     config = json.loads((directory / "config.json").read_text())
     expected = args.baseline_key()
-    if config["baseline_key"] != expected:
+    stored = config["baseline_key"]
+    if stored != expected:
         diff = {
-            key: (config["baseline_key"].get(key), value)
+            key: (stored.get(key), value)
             for key, value in expected.items()
-            if config["baseline_key"].get(key) != value
+            if stored.get(key) != value
         }
         raise BaselineMismatch(f"baseline in {directory} differs (stored, wanted): {diff}")
 
