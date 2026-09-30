@@ -6,6 +6,7 @@ chains explored through a work queue.
 
 Example:
     cargo build --release --bin sample --bin attempt
+    uv run scripts/baseline.py data/problems/dusky-cramp --stop-iters 50 --max-rss 4G
     uv run scripts/guided_search.py data/problems/dusky-cramp \\
         --stop-iters 50 --max-rss 4G --branching 5 \\
         --max-attempts 20 --search-policy bfs \\
@@ -31,23 +32,31 @@ from typing import Literal
 
 import polars as pl
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, CliApp, CliPositionalArg, SettingsConfigDict
+from pydantic_settings import CliApp
 
+from baseline import (
+    BaselineArgs,
+    BaselineMismatch,
+    default_baseline_dir,
+    load_baseline,
+)
 from common import (
     BinaryPanicked,
     MeasuredJson,
     MemoryKilled,
+    Problem,
     SamplePolicy,
     attempt_summary,
     binary_panic_summary,
     cli_flags,
     exit_if_missing,
     fan_out,
+    flatten_problems,
     out_of_memory_summary,
     parse_size,
     run_json_subprocess,
 )
-from schemes import ATTEMPT_SCHEMA, EMPTY_GUIDE_META, EXPANSION_SCHEMA, PAIR_SCHEMA, UNGUIDED_SCHEMA
+from schemes import ATTEMPT_SCHEMA, EMPTY_GUIDE_META, EXPANSION_SCHEMA, PAIR_SCHEMA
 
 
 class SearchPolicy(StrEnum):
@@ -63,41 +72,24 @@ class SearchPolicy(StrEnum):
 SATURATED = "Saturated"
 
 
-class Args(BaseSettings):
-    model_config = SettingsConfigDict(cli_kebab_case=True, cli_implicit_flags=True)
-
-    # I/O
-    path: CliPositionalArg[Path] = Field(
-        description=("Problem folder with `the problems (both written by `generate_problems.py`).")
-    )
+class Args(BaselineArgs):
+    """`BaselineArgs` plus the flags of the search itself."""
 
     output: Path | None = Field(
         default=None,
         description=("Run folder for `results.parquet`/`results.json`. Auto-created if omitted."),
     )
 
+    baseline: Path | None = Field(
+        default=None,
+        description=(
+            "Baseline folder written by `baseline.py`, `data/baselines/<problem folder>` "
+            "if omitted. It must match this run's budget and cover all of its pairs."
+        ),
+    )
+
     sample_bin: Path = Field(
         default=Path("target/release/sample"), description="Path to the sample-construction binary."
-    )
-
-    attempt_bin: Path = Field(
-        default=Path("target/release/attempt"), description="Path to the attempt binary."
-    )
-
-    # Guide-replay budget
-    #
-    # At least one must be given. Replay ends when the first configured budget
-    # is exhausted; omitted budgets are effectively unlimited.
-    stop_iters: int | None = Field(
-        default=None, gt=0, description=("Guide-replay iteration budget.")
-    )
-
-    stop_nodes: int | None = Field(
-        default=None, gt=0, description=("Guide-replay egraph-node budget.")
-    )
-
-    stop_time: float | None = Field(
-        default=None, gt=0, description=("Guide-replay wall-clock budget in seconds.")
     )
 
     # Search budget
@@ -127,15 +119,6 @@ class Args(BaseSettings):
         description=("Guides drawn each time a node is expanded. -> Branching factor"),
     )
 
-    max_rss: str = Field(
-        default="4G",
-        description=(
-            "Cap each `sample`/`attempt` process at this cgroup RSS limit, as a "
-            "human size such as `4G`. A killed `sample` is retried, still "
-            "capped, with `--max-iters` cut to the iterations that completed."
-        ),
-    )
-
     sampling_backoff: int | None = Field(
         default=None,
         ge=0,
@@ -162,51 +145,13 @@ class Args(BaseSettings):
         default=True, description="Use the full-union add for the attempt egraph."
     )
 
-    start_terms: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Only process the first N start terms in sorted order. All start terms are processed if omitted."
-        ),
-    )
-
-    goal_terms: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Only use the first N goals per start term in file order. All goals are used if omitted."
-        ),
-    )
-
     seed: int = Field(default=0, description="RNG seed used in Python and Rust.")
-
-    jobs: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Maximum number of concurrent `sample`/`attempt` processes, shared across search and baseline."
-        ),
-    )
 
     @model_validator(mode="after")
     def validate_search_budget(self) -> Args:
         if (self.max_pair_time is None) == (self.max_attempts is None):
             raise ValueError("give exactly one of --max-pair-time and --max-attempts")
         return self
-
-    @property
-    def limits(self) -> dict[str, int | float]:
-        """The configured guide-replay budgets, without the omitted ones."""
-        budgets = {
-            "max_iters": self.stop_iters,
-            "max_nodes": self.stop_nodes,
-            "max_time": self.stop_time,
-        }
-        return {key: value for key, value in budgets.items() if value is not None}
-
-    def base_flags(self, language: str) -> list[str]:
-        """Flags shared by every `attempt` process."""
-        return cli_flags(language=language, **self.limits)
 
     def sample_flags(self, language: str) -> list[str]:
         """Flags shared by every `sample` process."""
@@ -217,14 +162,6 @@ class Args(BaseSettings):
             size_search_steps=self.size_search_steps,
             frontier=self.frontier,
         )
-
-
-@dataclass(frozen=True)
-class Problem:
-    """One start/goal problem."""
-
-    start: str
-    goal: str
 
 
 @dataclass(frozen=True)
@@ -400,16 +337,6 @@ class AttemptResult:
     summary: dict
     peak_rss_bytes: int | None
     wall_time: float
-
-
-def flatten_problems(args: Args) -> list[Problem]:
-    """Group `problems.json`'s pair rows into Problem Pairs."""
-    rows = json.loads((args.path / "problems.json").read_text())
-    goals: dict[str, list[str]] = {}
-    for row in rows:
-        goals.setdefault(row["start_term"], []).append(row["goal_term"])
-    specs = [(start, goals[start][: args.goal_terms]) for start in sorted(goals)]
-    return [Problem(start, goal) for (start, goals) in specs[: args.start_terms] for goal in goals]
 
 
 async def run_capped(
@@ -651,43 +578,6 @@ async def search_pair(
     return trace
 
 
-async def run_unguided_pair(
-    args: Args, base_flags: list[str], limit: asyncio.Semaphore, pair: Problem
-) -> dict:
-    """Run the pair-matched single-start baseline.
-
-    A baseline killed at the RSS cap or by an uncaught panic becomes an
-    ``out_of_memory``/``binary_panic`` failure row.
-    """
-    cmd = [
-        str(args.attempt_bin),
-        *base_flags,
-        *cli_flags(start_term=pair.start, goal_term=pair.goal),
-    ]
-    what = f"unguided attempt for goal term {pair.goal!r}"
-    try:
-        measured = await run_json_subprocess(
-            cmd, what=what, rss_max_bytes=parse_size(args.max_rss), limit=limit
-        )
-        summary = attempt_summary(measured.payload)
-        peak_rss_bytes = measured.peak_rss_bytes
-    except MemoryKilled:
-        summary, peak_rss_bytes = out_of_memory_summary(), None
-    except BinaryPanicked as panicked:
-        panicked.warn()
-        summary, peak_rss_bytes = binary_panic_summary(), None
-    return {
-        "start_term": pair.start,
-        "goal_term": pair.goal,
-        "unguided_success": summary["reached"],
-        "unguided_stop_reason": summary["stop_reason"],
-        "unguided_panic": summary["panic"],
-        "unguided_final_live_heap_bytes": summary["memory"],
-        "unguided_peak_live_heap_bytes": summary["peak_live_heap"],
-        "unguided_peak_rss_bytes": peak_rss_bytes,
-    }
-
-
 # -----------
 # Reporting
 # -----------
@@ -808,7 +698,7 @@ def write_sample_pools(pools: SamplePools, out: Path) -> None:
 def report_results(
     args: Args,
     traces: list[PairTrace],
-    unguided_rows: list[dict],
+    unguided: pl.DataFrame,
     pools: SamplePools,
 ) -> None:
     """Write attempt, expansion, pair, baseline, and joined comparison results."""
@@ -825,7 +715,6 @@ def report_results(
     expansions.write_parquet(out / "expansions.parquet")
 
     pairs = pl.DataFrame([summarize_pair(args, trace) for trace in traces], schema=PAIR_SCHEMA)
-    unguided = pl.DataFrame(unguided_rows, schema=UNGUIDED_SCHEMA)
     comparison = pairs.join(unguided, on=["start_term", "goal_term"], how="left", validate="1:1")
     pairs.write_parquet(out / "pair_results.parquet")
     unguided.write_parquet(out / "unguided_results.parquet")
@@ -860,7 +749,14 @@ async def main(args: Args) -> int:
     base_flags = args.base_flags(str(cfg["language"]))
     sample_flags = args.sample_flags(str(cfg["language"]))
 
-    pairs = flatten_problems(args)
+    pairs = flatten_problems(args.path, args.start_terms, args.goal_terms)
+    # Checked before the search, so a mismatching baseline fails before any work is spent.
+    try:
+        baseline = args.baseline or default_baseline_dir(args.path)
+        unguided = load_baseline(args, baseline, pairs)
+    except BaselineMismatch as mismatch:
+        print(mismatch, file=sys.stderr)
+        return 2
     flags_str = "".join(f"\n  {s}" if s.startswith("--") else f" {s}" for s in sample_flags)
     print(
         f"Searching {len(pairs)} (start, goal) pair(s)\nSample Flags: {flags_str}", file=sys.stderr
@@ -868,23 +764,11 @@ async def main(args: Args) -> int:
     # Every pair starts at once and only the processes are limited, so a pair
     # waiting on a pool another pair is drawing holds no slot.
     limit = asyncio.Semaphore(jobs)
-    # The pools and baselines run in this scope rather than in detached tasks,
+    # The pools run in this scope rather than in detached tasks,
     # so the first failed pair cancels everything still running instead of
     # leaving orphaned children behind.
     async with asyncio.TaskGroup() as group:
         pools = SamplePools(args, sample_flags, limit, group)
-        # The baseline is re-run here, not reused from `problems.json`: the search
-        # budget is the `--stop-*` one, not the budget generation measured under.
-        # It shares the slots with the searches, so neither waits on the other.
-        baselines = group.create_task(
-            fan_out(
-                None,
-                lambda pair: run_unguided_pair(args, base_flags, limit, pair),
-                pairs,
-                "unguided",
-                unit="pair",
-            )
-        )
         traces = await fan_out(
             None,
             lambda pair: search_pair(args, base_flags, limit, pools, pair),
@@ -892,9 +776,8 @@ async def main(args: Args) -> int:
             "search",
             unit="pair",
         )
-    unguided_rows = baselines.result()
 
-    report_results(args, traces, unguided_rows, pools)
+    report_results(args, traces, unguided, pools)
     return 0
 
 

@@ -17,20 +17,24 @@ MEMRUN = [
 
 PROBLEMS = Path("data/problems/expensive-bird")
 OUTPUT_BASE = Path("data/guided_search")
+BASELINE_BASE = Path("data/baselines")
+
+# Shared by `baseline.py` and `guided_search.py`, so both compute the same baseline.
+BASELINE_FLAGS: dict[str, object] = {
+    "--max-rss": "450M",
+    "--start-terms": 100,
+}
 
 BASE_FLAGS: dict[str, object] = {
-    "--max-rss": "450M",
-    "--sample-policy": "uniform",
-    "--start-terms": 100,
-    "--branching": 10,
+    **BASELINE_FLAGS,
     "--max-attempts": 30,
-    "--seed": 42,
+    "--seed": 123,
     "--full-union": True,
 }
 
 GRID = {
-    "--sampling-backoff": [5, 20],
-    "--max-depth": [1, 2],
+    "--sample-policy": ["uniform", "count"],
+    "--branching": [10, 30],
     "--search-policy": ["dfs", "bfs"],
     "--frontier": [True, False],
 }
@@ -86,8 +90,31 @@ def generate_problems(problems: Path = PROBLEMS) -> None:
     )
 
 
+def run_baseline(problems: Path = PROBLEMS) -> Path:
+    """Compute the unguided baseline once, reusing a matching one that already exists"""
+    out_dir = BASELINE_BASE / problems.name
+    subprocess.run(
+        [
+            *MEMRUN,
+            "uv",
+            "run",
+            "scripts/baseline.py",
+            *flags_to_args(BASELINE_FLAGS),
+            "--output",
+            str(out_dir),
+            str(problems),
+        ],
+        check=True,
+    )
+    return out_dir
+
+
 def run_guided_search(
-    flags: dict[str, object], suffix: str, problems: Path = PROBLEMS, run: int | None = None
+    flags: dict[str, object],
+    suffix: str,
+    baseline: Path,
+    problems: Path = PROBLEMS,
+    run: int | None = None,
 ) -> None:
     if run is None:
         run = next_run_number(OUTPUT_BASE)
@@ -101,6 +128,8 @@ def run_guided_search(
             "run",
             "scripts/guided_search.py",
             *flags_to_args({**BASE_FLAGS, **flags}),
+            "--baseline",
+            str(baseline),
             "--output",
             str(out_dir),
             str(problems),
@@ -125,19 +154,23 @@ def main() -> None:
     # PROBLEM GENERATION
     # generate_problems()
 
+    # BASELINE, shared by every run below
+    baseline = run_baseline()
+
     # GRID SEARCH
-    # for values in itertools.product(*GRID.values()):
-    #     run_guided_search(dict(zip(GRID, values)), suffix)
+    for values in itertools.product(*GRID.values()):
+        run_guided_search(dict(zip(GRID, values)), suffix, baseline)
 
     # INDIVIDUAL RUN(s)
     run_guided_search(
         {
             "--sampling-backoff": 50,
-            "--max-depth": 2,
             "--search-policy": "bfs",
             "--frontier": True,
         },
         suffix,
+        baseline,
+        run=18,
     )
 
 

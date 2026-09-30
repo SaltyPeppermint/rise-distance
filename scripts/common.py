@@ -1,5 +1,5 @@
 """Shared helpers for the driver scripts: size parsing, subprocess-JSON
-plumbing, binary checks, the `attempt` payload schema, and eqsat CLI flag
+plumbing, problem loading, binary checks, the `attempt` payload schema, and eqsat CLI flag
 building."""
 
 import asyncio
@@ -23,6 +23,30 @@ from schemes import ATTEMPT_DTYPES
 class SamplePolicy(StrEnum):
     Count = "count"
     Uniform = "uniform"
+
+
+@dataclass(frozen=True)
+class Problem:
+    """One start/goal problem."""
+
+    start: str
+    goal: str
+
+
+def flatten_problems(
+    path: Path, start_terms: int | None = None, goal_terms: int | None = None
+) -> list[Problem]:
+    """Group `problems.json`'s pair rows into Problem Pairs.
+
+    Keeps the first `start_terms` start terms in sorted order and the first
+    `goal_terms` goals per start term in file order; all of them if omitted.
+    """
+    rows = json.loads((path / "problems.json").read_text())
+    goals: dict[str, list[str]] = {}
+    for row in rows:
+        goals.setdefault(row["start_term"], []).append(row["goal_term"])
+    specs = [(start, goals[start][:goal_terms]) for start in sorted(goals)]
+    return [Problem(start, goal) for (start, goals) in specs[:start_terms] for goal in goals]
 
 
 def parse_size(s: str) -> int:
