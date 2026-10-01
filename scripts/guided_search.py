@@ -520,7 +520,8 @@ async def search_pair(
                 "start": pair.start,
                 "goal": pair.goal,
                 "sample_policy": args.sample_policy,
-                "attempt": len(trace.attempts),
+                # Counted from 1, so the n-th attempt of a pair has `attempt == n`.
+                "attempt": len(trace.attempts) + 1,
                 "node_id": node.node_id,
                 "parent_id": node.parent_id,
                 "depth": node.depth,
@@ -604,7 +605,7 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         "max_pair_time": args.max_pair_time,
         "guided_success": bool(successes),
         "search_stop_reason": trace.stop_reason,
-        "success_attempt": successes[0]["attempt"] + 1 if successes else None,
+        "success_attempt": successes[0]["attempt"] if successes else None,
         "success_depth": successes[0]["depth"] if successes else None,
         "attempts_run": len(attempts),
         "expansions_run": len(trace.expansions),
