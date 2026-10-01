@@ -122,7 +122,7 @@ def run_baseline(problems: Path = PROBLEMS) -> Path:
 
 
 def run_guided_search(
-    flags: dict[str, object],
+    run_specific_flags: dict[str, object],
     suffix: str,
     baseline: Path,
     problems: Path = PROBLEMS,
@@ -132,13 +132,10 @@ def run_guided_search(
         run = next_run_number(OUTPUT_BASE)
     out_dir = OUTPUT_BASE / f"{run}_{suffix}"
     out_dir.mkdir()
-    print(f"RUN {run} FLAGS: {flags}")
+    flags = {**BASE_FLAGS, **run_specific_flags, "baseline": baseline, "output": out_dir}
+    print(f"RUN {run}\n FLAGS: {flags}")
     returncode = run_driver(
-        "guided_search.py",
-        {**BASE_FLAGS, **flags, "baseline": baseline, "output": out_dir},
-        problems,
-        log=out_dir / "experiment.log",
-        check=False,
+        "guided_search.py", flags, problems, log=out_dir / "experiment.log", check=False
     )
     if returncode != 0:
         print(f"WARNING: run {run} exited with code {returncode}")
@@ -159,16 +156,16 @@ def main() -> None:
     for values in itertools.product(*GRID.values()):
         run_guided_search(dict(zip(GRID, values)), suffix, baseline)
 
-    # INDIVIDUAL RUN(s)
-    run_guided_search(
-        {
-            "search_policy": "bfs",
-            "frontier": True,
-        },
-        suffix,
-        baseline,
-        run=18,
-    )
+    # # INDIVIDUAL RUN(s)
+    # run_guided_search(
+    #     {
+    #         "search_policy": "bfs",
+    #         "frontier": True,
+    #     },
+    #     suffix,
+    #     baseline,
+    #     run=18,
+    # )
 
 
 if __name__ == "__main__":
