@@ -45,6 +45,7 @@ EXPANSION_SCHEMA = {
     "pushed": pl.Int64,
     "started_at": pl.Float64,
     "wall_time": pl.Float64,
+    "iters": pl.Int64,
     "nodes": pl.Int64,
     "classes": pl.Int64,
     "total_time": pl.Float64,
@@ -101,6 +102,7 @@ UNGUIDED_SCHEMA = {
 # far enough to report.
 EMPTY_SAMPLE_META = dict.fromkeys(
     [
+        "iters",
         "nodes",
         "classes",
         "total_time",

@@ -395,6 +395,7 @@ async def draw_expansion(
     record = measured.payload[0]
     children = list(zip(record["samples"], record["samples_s_expr"], strict=True))
     meta = {
+        "iters": record["iters"],
         "nodes": record["nodes"],
         "classes": record["classes"],
         "total_time": record["time"],

@@ -246,52 +246,22 @@ async def run_json_subprocess(
     return Measured(envelope["payload"], int(envelope["peak_rss"]), wall_time)
 
 
-def stop_reason_name(raw: Any) -> str:
-    """Render egg's serialized `StopReason` the way Rust's `{:?}` does
-    (`Saturated`, `NodeLimit(1000)`), which is what the analysis matches on."""
-    if isinstance(raw, str):
-        return raw
-    variant, payload = next(iter(raw.items()))
-    return f"{variant}({json.dumps(payload)})"
+def attempt_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    """`attempt`'s `AttemptSummary` payload (`src/bin/attempt.rs`) as an attempt row.
 
-
-def attempt_summary(payload: Any) -> dict[str, Any]:
-    """Flatten `attempt`'s `Result<ReachedRun, GuideError>` stdout payload.
-
-    Unreached and panicked runs leave the egraph-shape fields at `None`.
+    The payload already carries exactly the `ATTEMPT_DTYPES` columns; this only
+    checks that the two still agree.
     """
-    if "Ok" in payload:
-        run = payload["Ok"]
-        iterations = run["iterations"]
-        return {
-            "reached": True,
-            "panic": False,
-            "stop_reason": "goal_found",
-            "iters": len(iterations),
-            "nodes": run["nodes"],
-            "classes": run["classes"],
-            "total_applied": sum(sum(it["applied"].values()) for it in iterations),
-            "total_time": sum(it["total_time"] for it in iterations),
-            "final_live_heap": run["allocated"],
-            "peak_live_heap": run["peak_allocated"],
-        }
-    err = payload["Err"]
-    if isinstance(err, dict) and "Unreached" in err:
-        unreached = err["Unreached"]
-        return {
-            **failure_summary(stop_reason_name(unreached["stop_reason"])),
-            "final_live_heap": unreached["final_allocated"],
-            "peak_live_heap": unreached["peak_allocated"],
-        }
-    return failure_summary("panic", panic=True)
+    if payload.keys() != ATTEMPT_DTYPES.keys():
+        raise ValueError(
+            f"attempt payload keys {sorted(payload)} differ from {sorted(ATTEMPT_DTYPES)}"
+        )
+    return payload
 
 
 def failure_summary(stop_reason: str, *, panic: bool = False) -> dict[str, Any]:
-    """An `attempt_summary`-shaped row for a run that did not reach its goal,
-    with every measurement left at `None`.
-
-    Besides the unreached/panicked payloads `attempt` prints itself, this covers
-    a child that never printed one: `out_of_memory` for one SIGKILLed at its
+    """An `attempt_summary`-shaped row, with every measurement left at `None`,
+    for a child that never printed one: `out_of_memory` for one SIGKILLed at its
     cgroup RSS cap, `binary_panic` for one that died of an uncaught panic (unlike
     a panic caught inside the eqsat run, `stop_reason="panic"`).
     """

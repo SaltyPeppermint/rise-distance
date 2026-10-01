@@ -152,8 +152,6 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
         utils::peak_rss_bytes()
     );
     Ok(Samples {
-        start_term: args.start.clone(),
-        policy: args.policy.to_string(),
         samples: samples.clone().into_iter().map(|e| e.to_vec()).collect(),
         samples_s_expr: samples.into_iter().map(origin::lower).collect(),
         nodes,
@@ -246,9 +244,6 @@ fn build_whole_samples<L: MyLanguage, N: MyAnalysis<L>>(
 #[derive(Serialize, Debug, Clone)]
 #[expect(clippy::struct_field_names)]
 struct Samples<L: MyLanguage> {
-    start_term: String,
-    policy: String,
-
     samples: Vec<Vec<OriginLang<L>>>,
     samples_s_expr: Vec<RecExpr<L>>,
     /// The guide-phase replay's egraph and run, which the samples are drawn from.

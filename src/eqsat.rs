@@ -31,6 +31,9 @@ pub struct EqsatMetadata {
 pub enum GuideError {
     Unreached {
         stop_reason: StopReason,
+        iterations: Vec<Iteration<()>>,
+        nodes: usize,
+        classes: usize,
         final_allocated: u64,
         peak_allocated: u64,
     },
@@ -449,6 +452,9 @@ fn run_until_goal<L: MyLanguage, N: MyAnalysis<L>>(
     } else {
         Err(GuideError::Unreached {
             stop_reason: runner.stop_reason.clone().unwrap(),
+            iterations: runner.iterations,
+            nodes: runner.egraph.total_number_of_nodes(),
+            classes: runner.egraph.classes().len(),
             final_allocated: memory.final_reading,
             peak_allocated: memory.peak_reading,
         })

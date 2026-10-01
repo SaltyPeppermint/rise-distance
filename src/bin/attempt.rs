@@ -6,8 +6,7 @@
 //! the goal via `--goal` and, with `--is-guide`, that attempt's guide as a JSON
 //! array of [`OriginLang`] nodes via `--start`. Without `--is-guide` the same
 //! flag takes a plain s-expression and the run is the unguided baseline. Prints
-//! the run's `Result<ReachedRun, GuideError>` as the `payload` of a
-//! [`Measured`] envelope.
+//! the run's [`AttemptSummary`] as the `payload` of a [`Measured`] envelope.
 //!
 //! One attempt per process is deliberate: the peak RSS reported in the
 //! [`Measured`] envelope is a per-process lifetime high-water mark, so batching
@@ -18,10 +17,11 @@
 //! early stop.
 
 use clap::Parser;
-use egg::{RecExpr, Rewrite};
+use egg::{Iteration, RecExpr, Rewrite};
+use serde::Serialize;
 
 use rise_distance::cli::Measured;
-use rise_distance::eqsat::{self, EqsatConfig, Goal};
+use rise_distance::eqsat::{self, EqsatConfig, Goal, GuideError, ReachedRun};
 use rise_distance::langs::{AvailableLanguages, MyAnalysis, MyLanguage, diospyros, math, prop};
 use rise_distance::origin::OriginLang;
 
@@ -102,6 +102,99 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
         eqsat::unguided_eqsat(&start_expr, &goal, rules, &args.eqsat)
     };
 
-    serde_json::to_writer(std::io::stdout(), &Measured::now(result))
-        .expect("write attempt result JSON");
+    serde_json::to_writer(
+        std::io::stdout(),
+        &Measured::now(AttemptSummary::from(result)),
+    )
+    .expect("write attempt result JSON");
+}
+
+/// One attempt, flattened into the driver's attempt-row columns.
+///
+/// A panicked run leaves every measurement at `None`.
+#[derive(Serialize)]
+struct AttemptSummary {
+    reached: bool,
+    panic: bool,
+    /// `goal_found`, `panic`, or egg's `StopReason` as `{:?}` (`NodeLimit(1000)`).
+    stop_reason: String,
+    iters: Option<usize>,
+    nodes: Option<usize>,
+    classes: Option<usize>,
+    total_applied: Option<usize>,
+    /// Sum of the iterations' `total_time`, in seconds.
+    total_time: Option<f64>,
+    /// Final process live heap.
+    final_live_heap: Option<u64>,
+    /// Peak process live heap.
+    peak_live_heap: Option<u64>,
+}
+
+impl AttemptSummary {
+    fn measured(
+        reached: bool,
+        stop_reason: String,
+        iterations: &[Iteration<()>],
+        nodes: usize,
+        classes: usize,
+        final_live_heap: u64,
+        peak_live_heap: u64,
+    ) -> Self {
+        Self {
+            reached,
+            panic: false,
+            stop_reason,
+            iters: Some(iterations.len()),
+            nodes: Some(nodes),
+            classes: Some(classes),
+            total_applied: Some(iterations.iter().flat_map(|i| i.applied.values()).sum()),
+            total_time: Some(iterations.iter().map(|i| i.total_time).sum()),
+            final_live_heap: Some(final_live_heap),
+            peak_live_heap: Some(peak_live_heap),
+        }
+    }
+}
+
+impl<L: MyLanguage> From<Result<ReachedRun<L>, GuideError>> for AttemptSummary {
+    fn from(result: Result<ReachedRun<L>, GuideError>) -> Self {
+        match result {
+            Ok(run) => Self::measured(
+                true,
+                "goal_found".to_owned(),
+                &run.iterations,
+                run.nodes,
+                run.classes,
+                run.allocated,
+                run.peak_allocated,
+            ),
+            Err(GuideError::Unreached {
+                stop_reason,
+                iterations,
+                nodes,
+                classes,
+                final_allocated,
+                peak_allocated,
+            }) => Self::measured(
+                false,
+                format!("{stop_reason:?}"),
+                &iterations,
+                nodes,
+                classes,
+                final_allocated,
+                peak_allocated,
+            ),
+            Err(GuideError::PanicWhileAttempt) => Self {
+                reached: false,
+                panic: true,
+                stop_reason: "panic".to_owned(),
+                iters: None,
+                nodes: None,
+                classes: None,
+                total_applied: None,
+                total_time: None,
+                final_live_heap: None,
+                peak_live_heap: None,
+            },
+        }
+    }
 }
