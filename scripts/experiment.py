@@ -162,7 +162,6 @@ def main() -> None:
     # INDIVIDUAL RUN(s)
     run_guided_search(
         {
-            "sampling_backoff": 50,
             "search_policy": "bfs",
             "frontier": True,
         },

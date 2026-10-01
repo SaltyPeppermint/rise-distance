@@ -36,7 +36,6 @@ from pydantic import Field, model_validator
 from pydantic_settings import CliApp
 
 from common import (
-    AttemptResult,
     BaselineMismatch,
     BinaryPanicked,
     Measured,
@@ -453,26 +452,6 @@ class SamplePools:
         }
 
 
-async def run_attempt(
-    args: Args, base_flags: list[str], limit: asyncio.Semaphore, goal: str, guide: list
-) -> AttemptResult:
-    """Run one attempt in its own process.
-
-    An attempt killed at the RSS cap or by an uncaught panic comes back as a
-    failed attempt with ``stop_reason="out_of_memory"``/``"binary_panic"`` rather
-    than an exception, since the search simply moves on to the next node.
-    """
-    cmd = [
-        str(args.attempt_bin),
-        *base_flags,
-        *cli_flags(goal=goal, is_guide=True, start=json.dumps(guide), full_union=args.full_union),
-    ]
-
-    return await measure_attempt(
-        cmd, what=f"attempt for goal {goal!r}", max_rss_bytes=args.max_rss_bytes, limit=limit
-    )
-
-
 async def search_pair(
     args: Args,
     base_flags: list[str],
@@ -514,7 +493,24 @@ async def search_pair(
 
         assert node.guide is not None, "the root is a baseline, not an attempt"
         started_at = budget.spent
-        attempt = await run_attempt(args, base_flags, limit, pair.goal, node.guide)
+        cmd = [
+            str(args.attempt_bin),
+            *base_flags,
+            *cli_flags(
+                goal=pair.goal,
+                is_guide=True,
+                start=json.dumps(node.guide),
+                full_union=args.full_union,
+            ),
+        ]
+        # A killed or panicked attempt comes back as a failed one rather than an
+        # exception, since the search simply moves on to the next node.
+        attempt = await measure_attempt(
+            cmd,
+            what=f"attempt for goal {pair.goal!r}",
+            max_rss_bytes=args.max_rss_bytes,
+            limit=limit,
+        )
         budget.charge(attempt.wall_time)
         trace.attempts.append(
             {
@@ -560,24 +556,15 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
     attempts = trace.attempts
     successes = [attempt for attempt in attempts if attempt["reached"]]
 
-    # Each attempt is its own process, so pick which one's peak to report rather
-    # than inheriting a shared high-water mark.
-    #
-    # `attempt_peak_rss` is the *decisive* attempt: the one that reached, or
-    # the last one tried if none did.
-    # `attempt_peak_rss_max` is the max across every attempt run, which is what
-    # the pair cost end to end.
+    # `attempt_peak_rss` is the one that reached the goal, or the last one tried if none did.
+    # `attempt_peak_rss_max` is the max across every attempt run, which is the pair cost end to end.
     decisive = successes[0] if successes else (attempts[-1] if attempts else None)
     attempt_peak = decisive["peak_rss"] if decisive else None
 
-    attempt_peaks = [
-        attempt["peak_rss"] for attempt in attempts if attempt.get("peak_rss") is not None
-    ]
+    attempt_peaks = [attempt["peak_rss"] for attempt in attempts if attempt["peak_rss"] is not None]
     attempt_peak_max = max(attempt_peaks, default=None)
 
-    expansion_peaks = [
-        exp["peak_rss"] for exp in trace.expansions if exp.get("peak_rss") is not None
-    ]
+    expansion_peaks = [exp["peak_rss"] for exp in trace.expansions if exp["peak_rss"] is not None]
     sample_peak = max(expansion_peaks, default=None)
 
     rss_peaks = [peak for peak in (sample_peak, attempt_peak_max) if peak is not None]
@@ -638,7 +625,6 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
 
 def write_sample_pools(pools: SamplePools, out: Path) -> None:
     """Dump every pool the run drew, keyed by the term it was sampled from."""
-    out.mkdir(parents=True, exist_ok=True)
     dumped = {
         s_expr: {
             "status": expansion.status,

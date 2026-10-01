@@ -87,25 +87,6 @@ class Measured:
     wall_time: float
 
 
-def prefix_rss_cap(argv: list[str], limit_bytes) -> list[str]:
-    return [
-        "systemd-run",
-        "--user",
-        "--scope",
-        "--quiet",
-        "-p",
-        f"MemoryMax={limit_bytes}",
-        "-p",
-        "MemorySwapMax=0",
-        # An OOM-killed scope stops in `failed` state and stays loaded, so a run
-        # that caps on purpose leaks one unit per kill until the user manager
-        # goes `degraded`. This lets systemd collect them as they die.
-        "-p",
-        "CollectMode=inactive-or-failed",
-        "--",
-    ] + argv
-
-
 # Machine-readable eqsat progress events (`EVENT_PREFIX` in src/eqsat.rs),
 # emitted under `--print-success-iters`.
 EQSAT_ITER_RE = re.compile(r"^@EQSAT iter=(\d+)$", re.MULTILINE)
@@ -184,6 +165,25 @@ class BinaryPanicked(RuntimeError):
         )
 
 
+def prefix_rss_cap(argv: list[str], limit_bytes) -> list[str]:
+    return [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "-p",
+        f"MemoryMax={limit_bytes}",
+        "-p",
+        "MemorySwapMax=0",
+        # An OOM-killed scope stops in `failed` state and stays loaded, so a run
+        # that caps on purpose leaks one unit per kill until the user manager
+        # goes `degraded`. This lets systemd collect them as they die.
+        "-p",
+        "CollectMode=inactive-or-failed",
+        "--",
+    ] + argv
+
+
 async def run_json_subprocess(
     cmd: list[str],
     *,
@@ -259,13 +259,14 @@ def attempt_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def failure_summary(stop_reason: str, *, panic: bool = False) -> dict[str, Any]:
+def failure_summary(stop_reason: str) -> dict[str, Any]:
     """An `attempt_summary`-shaped row, with every measurement left at `None`,
     for a child that never printed one: `out_of_memory` for one SIGKILLed at its
     cgroup RSS cap, `binary_panic` for one that died of an uncaught panic (unlike
     a panic caught inside the eqsat run, `stop_reason="panic"`).
     """
-    empty: dict[str, Any] = dict.fromkeys(ATTEMPT_DTYPES)
+    empty = dict.fromkeys(ATTEMPT_DTYPES)
+    panic = stop_reason == "binary_panic"
     return {**empty, "reached": False, "panic": panic, "stop_reason": stop_reason}
 
 
@@ -293,7 +294,7 @@ async def measure_attempt(
         return AttemptResult(failure_summary("out_of_memory"), None, killed.wall_time)
     except BinaryPanicked as panicked:
         panicked.warn()
-        return AttemptResult(failure_summary("binary_panic", panic=True), None, panicked.wall_time)
+        return AttemptResult(failure_summary("binary_panic"), None, panicked.wall_time)
     return AttemptResult(attempt_summary(measured.payload), measured.peak_rss, measured.wall_time)
 
 
@@ -357,17 +358,6 @@ async def fan_out(
             tasks = [group.create_task(_run_limited(limit, bar, fn, item)) for item in items]
 
     return [result for task in tasks if (result := task.result()) is not None]
-
-
-def uniform_sample_allocation(sizes: list[int], total_samples: int) -> list[tuple[int, int]]:
-    if not sizes:
-        return []
-
-    size_count = len(sizes)
-    base = total_samples // size_count
-    remainder = total_samples % size_count
-
-    return [(size, base + int(i < remainder)) for i, size in enumerate(sizes)]
 
 
 class BaselineMismatch(RuntimeError):

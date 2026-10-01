@@ -5,6 +5,8 @@ from collections.abc import Sequence
 import altair as alt
 import polars as pl
 
+from helpers import BRUTE_COST_OUTCOMES
+
 PALETTE = [
     "#2a78d6",
     "#eb6834",
@@ -33,7 +35,7 @@ OUTCOME_ORDER = ["both", "guided only", "unguided only", "neither"]
 OUTCOME_COLORS = [PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR]
 WIN_ORDER = ["below brute force", "at or above"]
 WIN_COLORS = [SUCCESS_COLOR, FAILURE_COLOR]
-BRUTE_COST_ORDER = ["guided failed", "guided proved, at or above", "guided proved, cheaper"]
+# In `BRUTE_COST_OUTCOMES` order.
 BRUTE_COST_COLORS = [FAILURE_COLOR, PALETTE[5], SUCCESS_COLOR]
 DEPTH_ORDER = ["first success", "deepest attempt"]
 DEPTH_COLORS = [SUCCESS_COLOR, NEUTRAL_COLOR]
@@ -86,8 +88,6 @@ def _method_color() -> alt.Color:
 
 
 def _guided_peak_scope(comparison: pl.DataFrame) -> str:
-    if "guided_peak_scope" not in comparison.columns:
-        return "guided workflow"
     scopes = comparison["guided_peak_scope"].drop_nulls().unique().to_list()
     return str(scopes[0]) if len(scopes) == 1 else "guided"
 
@@ -156,8 +156,7 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
 
 
 def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Pair-level failure causes, guided against unguided."""
-    # A cause absent from a method carries no row
+    """Pair-level guided failure causes."""
     causes = (
         breakdown.group_by("failure")
         .agg(pl.col("count").sum().alias("total"))
@@ -170,8 +169,7 @@ def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("count:Q", title="failed pairs"),
             y=alt.Y("failure:N", title=None, sort=causes),
-            yOffset=alt.YOffset("method:N", sort=METHOD_ORDER),
-            color=_method_color(),
+            color=alt.value(GUIDED_COLOR),
             row=alt.Row(
                 "mode:N",
                 title=None,
@@ -180,7 +178,6 @@ def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
             ),
             tooltip=[
                 "mode:N",
-                "method:N",
                 "failure:N",
                 "count:Q",
                 alt.Tooltip("share_of_failures:Q", format=".1%", title="share of failures"),
@@ -192,23 +189,22 @@ def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
 
 
 def saturation_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Share of sampling e-graphs and of proof attempts that saturated."""
+    """Share of proof attempts that saturated."""
     return (
         alt.Chart(rates)
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X("rate:Q", title="share of events that saturated", axis=alt.Axis(format="%")),
+            x=alt.X("rate:Q", title="share of attempts that saturated", axis=alt.Axis(format="%")),
             y=_mode_axis(meta["modes"]),
-            yOffset=alt.YOffset("kind:N"),
-            color=alt.Color("kind:N", legend=alt.Legend(title=None)),
+            color=alt.value(GUIDED_COLOR),
             tooltip=[
                 "mode:N",
-                alt.Tooltip("saturated:Q", title="saturated events"),
-                alt.Tooltip("n:Q", title="events"),
+                alt.Tooltip("saturated:Q", title="saturated attempts"),
+                alt.Tooltip("n:Q", title="attempts"),
                 alt.Tooltip("rate:Q", format=".1%", title="share"),
             ],
         )
-        .properties(title=_title("Saturation", meta), height=alt.Step(48))
+        .properties(title=_title("Saturation", meta))  # height=alt.Step(48)
     )
 
 
@@ -261,8 +257,8 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
 def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
     """Success comparison for every pair, bucketed by brute force memory cost"""
     present = set(binned["outcome"].unique().to_list())
-    order = [name for name in BRUTE_COST_ORDER if name in present]
-    colors = [BRUTE_COST_COLORS[BRUTE_COST_ORDER.index(name)] for name in order]
+    order = [name for name in BRUTE_COST_OUTCOMES if name in present]
+    colors = [BRUTE_COST_COLORS[BRUTE_COST_OUTCOMES.index(name)] for name in order]
     return (
         alt.Chart(binned)
         .mark_bar()

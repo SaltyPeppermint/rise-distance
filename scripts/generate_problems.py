@@ -34,7 +34,6 @@ from common import (
     fan_out,
     parse_size,
     run_json_subprocess,
-    uniform_sample_allocation,
 )
 
 
@@ -147,6 +146,17 @@ class Args(BaseSettings):
             "max_time": self.max_time,
             "max_memory": None if self.max_memory is None else parse_size(self.max_memory),
         }
+
+
+def uniform_sample_allocation(sizes: list[int], total_samples: int) -> list[tuple[int, int]]:
+    if not sizes:
+        return []
+
+    size_count = len(sizes)
+    base = total_samples // size_count
+    remainder = total_samples % size_count
+
+    return [(size, base + int(i < remainder)) for i, size in enumerate(sizes)]
 
 
 def derive_seed(*fields: int) -> int:

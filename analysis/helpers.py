@@ -12,8 +12,6 @@ REPO_ROOT = Path(__file__).parent.parent
 GUIDED_WORKFLOW_COLUMN = "guided_peak_rss"
 BRUTE_COLUMN = "brute_peak_rss"
 
-BRUTE_COLUMNS = {"peak_rss": BRUTE_COLUMN}
-
 # Guided peaks comparable with brute force
 GUIDED_PEAK_SCOPES = {
     "guided attempt": "attempt_peak_rss",
@@ -34,8 +32,8 @@ class Run:
     config: dict
 
 
-def _run_dirs(pattern: str, subdir: str) -> list[Path]:
-    base = REPO_ROOT / "data" / subdir
+def _run_dirs(pattern: str) -> list[Path]:
+    base = REPO_ROOT / "data" / "guided_search"
     if not base.is_dir():
         return []
     return sorted(
@@ -66,11 +64,9 @@ def _run_label(directory: Path, config: dict) -> str:
 def resolve_runs(patterns: Sequence[str]) -> tuple[list[Run], list[str]]:
     """Resolve run folders under `data/guided_search` by name substring."""
     directories = (
-        _run_dirs("", "guided_search")
+        _run_dirs("")
         if not patterns
-        else [
-            matches[-1] for pattern in patterns if (matches := _run_dirs(pattern, "guided_search"))
-        ]
+        else [matches[-1] for pattern in patterns if (matches := _run_dirs(pattern))]
     )
     if patterns and len(directories) != len(patterns):
         found = {path.name for path in directories}
@@ -97,14 +93,14 @@ def resolve_runs(patterns: Sequence[str]) -> tuple[list[Run], list[str]]:
 
 def _brute_baseline(run: Run) -> pl.DataFrame:
     """Per-pair brute-force proof cost from the problem set the run was built on."""
-    directory = Path(__file__).parent / ".." / run.config["path"]
+    directory = REPO_ROOT / run.config["path"]
     problems = directory / "problems.json"
     if not problems.is_file():
         raise FileNotFoundError(
             f"{run.directory.name} was built on {run.config['path']}, which has no problems.json"
         )
     frame = pl.DataFrame(json.loads(problems.read_text()))
-    missing = ({"start", "goal", "reached"} | set(BRUTE_COLUMNS)) - set(frame.columns)
+    missing = {"start", "goal", "reached", "peak_rss"} - set(frame.columns)
     if missing:
         raise ValueError(f"{problems} is missing baseline fields: {sorted(missing)}")
 
@@ -120,12 +116,7 @@ def _brute_baseline(run: Run) -> pl.DataFrame:
     if keys.unique().height != keys.height:
         raise ValueError(f"{problems} repeats start/goal pairs; the baseline join would fan out")
 
-    return frame.select(
-        "start",
-        "goal",
-        *(pl.col(source).alias(target) for source, target in BRUTE_COLUMNS.items()),
-        pl.lit(directory.name).alias("problem_set"),
-    )
+    return frame.select("start", "goal", pl.col("peak_rss").alias(BRUTE_COLUMN))
 
 
 def _unguided_baseline(run: Run) -> pl.DataFrame:
@@ -157,7 +148,7 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
                 "the baseline changed after the run"
             )
         frame = frame.join(_brute_baseline(run), on=["start", "goal"], how="left")
-        unmatched = frame.filter(pl.col("brute_peak_rss").is_null()).height
+        unmatched = frame.filter(pl.col(BRUTE_COLUMN).is_null()).height
         if unmatched:
             raise ValueError(
                 f"{run.directory.name} has {unmatched} pairs absent from {run.config['path']}; "
@@ -173,8 +164,6 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     data = pl.concat(frames, how="diagonal_relaxed")
     meta = {
         "modes": [run.label for run in runs],
-        "n_pairs": data.select("start", "goal").unique().height,
-        "problem_sets": data["problem_set"].unique().sort().to_list(),
         "baselines": data["baseline"].unique().sort().to_list(),
         "subtitle": [f"{data.height} planned pair observations"],
     }
@@ -304,7 +293,6 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
     """Pair-level, mutually exclusive failure categories."""
     guided = frame.filter(~pl.col("guided_success").fill_null(False)).select(
         "mode",
-        pl.lit("guided").alias("method"),
         pl.when(pl.col("setup_status") != "ok")
         .then(_setup_category(pl.col("setup_status")))
         .when(pl.col("guided_panic").fill_null(False))
@@ -323,19 +311,19 @@ def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
     planned = frame.group_by("mode", maintain_order=True).agg(pl.len().alias("planned_pairs"))
     return (
         # pl.concat([guided, unguided])
-        guided.group_by("mode", "method", "failure", maintain_order=True)
+        guided.group_by("mode", "failure", maintain_order=True)
         .agg(pl.len().alias("count"))
-        .with_columns(pl.col("count").sum().over("mode", "method").alias("method_failures"))
+        .with_columns(pl.col("count").sum().over("mode").alias("mode_failures"))
         .join(planned, on="mode", how="left")
         .with_columns(
-            (pl.col("count") / pl.col("method_failures")).alias("share_of_failures"),
+            (pl.col("count") / pl.col("mode_failures")).alias("share_of_failures"),
             (pl.col("count") / pl.col("planned_pairs")).alias("share_of_planned"),
         )
     )
 
 
 def saturation_rates(runs: Sequence[Run]) -> pl.DataFrame:
-    """How often each run saturated, as a share of the events that could."""
+    """How often each run's proof attempts saturated."""
     rows = []
     for run in runs:
         path = run.directory / "attempts.parquet"
@@ -346,7 +334,6 @@ def saturation_rates(runs: Sequence[Run]) -> pl.DataFrame:
         rows.append(
             {
                 "mode": run.label,
-                "kind": "proof attempt",
                 "saturated": hits,
                 "n": frame.height,
                 "rate": hits / frame.height if frame.height else None,
@@ -372,7 +359,6 @@ def guided_vs_brute(frame: pl.DataFrame, scope: str) -> pl.DataFrame:
             (pl.col(BRUTE_COLUMN) / 2**20).alias("brute_peak_mib"),
             (pl.col(column) / pl.col(BRUTE_COLUMN)).alias("peak_ratio"),
         )
-        .with_columns(((1 - pl.col("peak_ratio")) * 100).alias("memory_saved_pct"))
     )
 
 
@@ -438,10 +424,8 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     low, high = span["low"], span["high"]
     # A single distinct cost leaves no range to divide; give it one unit bin.
     width = (high - low) / bins if high > low else 1.0
-    # Bars run to the bin edge without it, so neighbouring buckets touch and
-    # read as one group; this reserves a gap at each bucket's trailing edge.
-
-    # Share of a bin's width left empty, so grouped bars separate into buckets.
+    # Share of a bin's width the bars may fill. Without the gap left at each
+    # bucket's trailing edge, neighbouring buckets touch and read as one group.
     usable = 1 - 0.14
     # An outcome with no pair anywhere in the frame gives up its slot, so the
     # remaining bars widen to fill the bucket instead of leaving a gap.
@@ -454,10 +438,7 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     # outcomes present in the bucket, so bars stay aligned across bins where
     # one outcome is empty.
     slot = pl.col("outcome").replace_strict({name: i for i, name in enumerate(ordered)})
-    groups = data.group_by("mode", "outcome", maintain_order=True).agg(
-        pl.len().alias("group_n"),
-        pl.col("brute_peak_mib").median().alias("group_median_mib"),
-    )
+    groups = data.group_by("mode", "outcome", maintain_order=True).agg(pl.len().alias("group_n"))
     return (
         data.with_columns(
             ((pl.col("brute_peak_mib").log10() - low) / width)
@@ -483,15 +464,15 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     )
 
 
-def pairwise_solved_diff(frame: pl.DataFrame, column: str = "guided_success") -> pl.DataFrame:
+def pairwise_solved_diff(frame: pl.DataFrame) -> pl.DataFrame:
     """Per ordered mode pair, how many shared problems the row solves and the column does not.
 
     Restricted to the problems both modes planned, so the two directions of a
     cell share one denominator. The diagonal is dropped.
     """
-    wide = frame.select("pair", "mode", pl.col(column).fill_null(False).alias("solved")).pivot(
-        on="mode", index="pair", values="solved"
-    )
+    wide = frame.select(
+        "pair", "mode", pl.col("guided_success").fill_null(False).alias("solved")
+    ).pivot(on="mode", index="pair", values="solved")
     modes = frame["mode"].unique(maintain_order=True).to_list()
     rows = []
     for a in modes:
