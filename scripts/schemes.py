@@ -9,16 +9,16 @@ ATTEMPT_DTYPES = {
     "classes": pl.Int64,
     "total_applied": pl.Int64,
     "total_time": pl.Float64,
-    "memory": pl.Int64,
+    "final_live_heap": pl.Int64,
     "peak_live_heap": pl.Int64,
 }
 
 
 # One row per `attempt` process.
 ATTEMPT_SCHEMA = {
-    "start_term": pl.String,
-    "goal_term": pl.String,
-    "policy": pl.String,
+    "start": pl.String,
+    "goal": pl.String,
+    "sample_policy": pl.String,
     "attempt": pl.Int64,
     "node_id": pl.Int64,
     "parent_id": pl.Int64,
@@ -28,14 +28,14 @@ ATTEMPT_SCHEMA = {
     "started_at": pl.Float64,
     "wall_time": pl.Float64,
     **ATTEMPT_DTYPES,
-    "attempt_peak_rss_bytes": pl.Int64,
+    "peak_rss": pl.Int64,
 }
 
-# One row per `samples` process the search *used*, so a pool reused from the
+# One row per `sample` process the search *used*, so a pool reused from the
 # cache is charged to every pair that consumed it
 EXPANSION_SCHEMA = {
-    "start_term": pl.String,
-    "goal_term": pl.String,
+    "start": pl.String,
+    "goal": pl.String,
     "node_id": pl.Int64,
     "depth": pl.Int64,
     "status": pl.String,
@@ -45,24 +45,24 @@ EXPANSION_SCHEMA = {
     "pushed": pl.Int64,
     "started_at": pl.Float64,
     "wall_time": pl.Float64,
-    "guide_nodes": pl.Int64,
-    "guide_classes": pl.Int64,
-    "guide_time": pl.Float64,
-    "guide_memory": pl.Int64,
-    "guide_peak_live_heap": pl.Int64,
-    "guide_stop_reason": pl.String,
-    "sample_peak_rss_bytes": pl.Int64,
+    "nodes": pl.Int64,
+    "classes": pl.Int64,
+    "total_time": pl.Float64,
+    "final_live_heap": pl.Int64,
+    "peak_live_heap": pl.Int64,
+    "stop_reason": pl.String,
+    "peak_rss": pl.Int64,
 }
 
 # One row per pair.
 PAIR_SCHEMA = {
-    "start_term": pl.String,
-    "goal_term": pl.String,
-    "policy": pl.String,
-    "exploration_policy": pl.String,
+    "start": pl.String,
+    "goal": pl.String,
+    "sample_policy": pl.String,
+    "search_policy": pl.String,
     "branching": pl.Int64,
-    "attempt_budget": pl.Int64,
-    "time_budget": pl.Float64,
+    "max_attempts": pl.Int64,
+    "max_pair_time": pl.Float64,
     "guided_success": pl.Boolean,
     "search_stop_reason": pl.String,
     "success_attempt": pl.Int64,
@@ -73,40 +73,40 @@ PAIR_SCHEMA = {
     "saturated_expansions": pl.Int64,
     "root_saturated": pl.Boolean,
     "deepest_attempt": pl.Int64,
-    "pair_cost_time": pl.Float64,
+    "wall_time": pl.Float64,
     "guided_stop_reason": pl.String,
     "guided_panic": pl.Boolean,
     "setup_status": pl.String,
-    "sample_status": pl.String,
-    "attempt_peak_rss_bytes": pl.Int64,
-    "attempt_peak_rss_bytes_max": pl.Int64,
-    "sample_peak_rss_bytes": pl.Int64,
-    "guided_peak_rss_bytes": pl.Int64,
-    "guided_peak_live_heap_bytes": pl.Int64,
+    "root_status": pl.String,
+    "attempt_peak_rss": pl.Int64,
+    "attempt_peak_rss_max": pl.Int64,
+    "sample_peak_rss": pl.Int64,
+    "guided_peak_rss": pl.Int64,
+    "guided_peak_live_heap": pl.Int64,
 }
 
 # An out_of_memory baseline leaves all measurement fields None.
 UNGUIDED_SCHEMA = {
-    "start_term": pl.String,
-    "goal_term": pl.String,
+    "start": pl.String,
+    "goal": pl.String,
     "unguided_success": pl.Boolean,
     "unguided_stop_reason": pl.String,
     "unguided_panic": pl.Boolean,
-    "unguided_final_live_heap_bytes": pl.Int64,
-    "unguided_peak_live_heap_bytes": pl.Int64,
-    "unguided_peak_rss_bytes": pl.Int64,
+    "unguided_final_live_heap": pl.Int64,
+    "unguided_peak_live_heap": pl.Int64,
+    "unguided_peak_rss": pl.Int64,
 }
 
-# What an expansion contributes to a row when its `samples` process never got
+# What an expansion contributes to a row when its `sample` process never got
 # far enough to report.
-EMPTY_GUIDE_META = dict.fromkeys(
+EMPTY_SAMPLE_META = dict.fromkeys(
     [
-        "guide_nodes",
-        "guide_classes",
-        "guide_time",
-        "guide_memory",
-        "guide_peak_live_heap",
-        "guide_stop_reason",
-        "sample_peak_rss_bytes",
+        "nodes",
+        "classes",
+        "total_time",
+        "final_live_heap",
+        "peak_live_heap",
+        "stop_reason",
+        "peak_rss",
     ]
 )

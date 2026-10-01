@@ -7,7 +7,7 @@ use crate::utils;
 /// lifetime peak RSS.
 #[derive(Serialize, Debug, Clone)]
 pub struct Measured<T> {
-    pub peak_rss_bytes: u64,
+    pub peak_rss: u64,
     pub payload: T,
 }
 
@@ -19,7 +19,7 @@ impl<T> Measured<T> {
     #[must_use]
     pub fn now(payload: T) -> Self {
         Self {
-            peak_rss_bytes: utils::peak_rss_bytes(),
+            peak_rss: utils::peak_rss_bytes(),
             payload,
         }
     }

@@ -27,29 +27,25 @@ class SamplePolicy(StrEnum):
 
 
 @dataclass(frozen=True)
-class Problem:
+class Pair:
     """One start/goal problem."""
 
     start: str
     goal: str
 
 
-def flatten_problems(
-    path: Path, start_terms: int | None = None, goal_terms: int | None = None
-) -> list[Problem]:
-    """Group `problems.json`'s pair rows into Problem Pairs.
+def load_pairs(path: Path, n_starts: int | None = None, n_goals: int | None = None) -> list[Pair]:
+    """Load `problems.json`'s rows as start/goal pairs.
 
-    Keeps the first `start_terms` start terms in sorted order and the first
-    `goal_terms` goals per start term in file order; all of them if omitted.
+    Keeps the first `n_starts` start terms in sorted order and the first
+    `n_goals` goals per start term in file order; all of them if omitted.
     """
     rows = json.loads((path / "problems.json").read_text())
     goals: dict[str, list[str]] = {}
     for row in rows:
-        goals.setdefault(row["start_term"], []).append(row["goal_term"])
+        goals.setdefault(row["start"], []).append(row["goal"])
     return [
-        Problem(start, goal)
-        for start in sorted(goals)[:start_terms]
-        for goal in goals[start][:goal_terms]
+        Pair(start, goal) for start in sorted(goals)[:n_starts] for goal in goals[start][:n_goals]
     ]
 
 
@@ -84,9 +80,9 @@ def exit_if_missing(*binaries: Path) -> None:
 
 
 @dataclass(frozen=True)
-class MeasuredJson:
+class Measured:
     payload: Any
-    peak_rss_bytes: int
+    peak_rss: int
     # From the child's spawn to its exit, so time queued for a slot is excluded.
     wall_time: float
 
@@ -192,27 +188,27 @@ async def run_json_subprocess(
     cmd: list[str],
     *,
     what: str,
-    rss_max_bytes: int | None = None,
+    max_rss_bytes: int | None = None,
     limit: asyncio.Semaphore | None = None,
-) -> MeasuredJson:
+) -> Measured:
     """Run a JSON child and return its payload plus its peak RSS.
 
     The child prints a `Measured` envelope (`src/cli.rs`): the payload it would
-    otherwise print, under a `peak_rss_bytes` the binary reads from its own
+    otherwise print, under a `peak_rss` the binary reads from its own
     `VmHWM` just before serializing.
 
     With `limit`, the child only spawns once it holds a slot, and its
     `wall_time` starts counting then.
 
     Raises `ArgTooLong` before spawning when an argv entry exceeds the kernel's
-    per-argument limit, `MemoryKilled` when `rss_max_bytes` is set and the cap
+    per-argument limit, `MemoryKilled` when `max_rss_bytes` is set and the cap
     killed it, and `BinaryPanicked` when the child panicked.
     """
     check_arg_sizes(cmd, what)
     async with contextlib.nullcontext() if limit is None else limit:
         started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
-            *(prefix_rss_cap(cmd, rss_max_bytes) if rss_max_bytes else cmd),
+            *(prefix_rss_cap(cmd, max_rss_bytes) if max_rss_bytes else cmd),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -234,7 +230,7 @@ async def run_json_subprocess(
 
     stdout, stderr = out.decode(errors="replace"), err.decode(errors="replace")
 
-    if rss_max_bytes is not None and proc.returncode in OOM_RETURNCODES:
+    if max_rss_bytes is not None and proc.returncode in OOM_RETURNCODES:
         raise MemoryKilled(what, stderr, wall_time)
     if proc.returncode == PANIC_RETURNCODE:
         raise BinaryPanicked(what, stderr, wall_time)
@@ -247,7 +243,7 @@ async def run_json_subprocess(
             f"{what} returned non-JSON stdout: {e}\n"
             f"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
         ) from e
-    return MeasuredJson(envelope["payload"], int(envelope["peak_rss_bytes"]), wall_time)
+    return Measured(envelope["payload"], int(envelope["peak_rss"]), wall_time)
 
 
 def stop_reason_name(raw: Any) -> str:
@@ -276,7 +272,7 @@ def attempt_summary(payload: Any) -> dict[str, Any]:
             "classes": run["classes"],
             "total_applied": sum(sum(it["applied"].values()) for it in iterations),
             "total_time": sum(it["total_time"] for it in iterations),
-            "memory": run["allocated"],
+            "final_live_heap": run["allocated"],
             "peak_live_heap": run["peak_allocated"],
         }
     err = payload["Err"]
@@ -284,7 +280,7 @@ def attempt_summary(payload: Any) -> dict[str, Any]:
         unreached = err["Unreached"]
         return {
             **failure_summary(stop_reason_name(unreached["stop_reason"])),
-            "memory": unreached["final_allocated"],
+            "final_live_heap": unreached["final_allocated"],
             "peak_live_heap": unreached["peak_allocated"],
         }
     return failure_summary("panic", panic=True)
@@ -306,12 +302,12 @@ def failure_summary(stop_reason: str, *, panic: bool = False) -> dict[str, Any]:
 @dataclass(frozen=True)
 class AttemptResult:
     summary: dict
-    peak_rss_bytes: int | None
+    peak_rss: int | None
     wall_time: float
 
 
 async def measure_attempt(
-    cmd: list[str], *, what: str, rss_max_bytes: int, limit: asyncio.Semaphore
+    cmd: list[str], *, what: str, max_rss_bytes: int, limit: asyncio.Semaphore
 ) -> AttemptResult:
     """Run one `attempt` process under the RSS cap.
 
@@ -321,16 +317,14 @@ async def measure_attempt(
     """
     try:
         measured = await run_json_subprocess(
-            cmd, what=what, rss_max_bytes=rss_max_bytes, limit=limit
+            cmd, what=what, max_rss_bytes=max_rss_bytes, limit=limit
         )
     except MemoryKilled as killed:
         return AttemptResult(failure_summary("out_of_memory"), None, killed.wall_time)
     except BinaryPanicked as panicked:
         panicked.warn()
         return AttemptResult(failure_summary("binary_panic", panic=True), None, panicked.wall_time)
-    return AttemptResult(
-        attempt_summary(measured.payload), measured.peak_rss_bytes, measured.wall_time
-    )
+    return AttemptResult(attempt_summary(measured.payload), measured.peak_rss, measured.wall_time)
 
 
 def cli_flags(negate_false: bool = False, /, **values: object) -> list[str]:
@@ -410,7 +404,7 @@ class BaselineMismatch(RuntimeError):
     """A stored baseline that was computed under other flags or misses pairs."""
 
 
-def check_baseline(directory: Path, expected: dict, pairs: list[Problem]) -> None:
+def check_baseline(directory: Path, expected: dict, pairs: list[Pair]) -> None:
     """Check that the stored baseline in `directory` was computed under the
     `baseline_key` `expected` and covers `pairs`.
 
@@ -430,10 +424,10 @@ def check_baseline(directory: Path, expected: dict, pairs: list[Problem]) -> Non
         raise BaselineMismatch(f"baseline in {directory} differs (stored, wanted): {diff}")
 
     wanted = pl.DataFrame(
-        {"start_term": [p.start for p in pairs], "goal_term": [p.goal for p in pairs]},
-        schema={"start_term": pl.String, "goal_term": pl.String},
+        {"start": [p.start for p in pairs], "goal": [p.goal for p in pairs]},
+        schema={"start": pl.String, "goal": pl.String},
     )
-    rows = pl.read_parquet(directory / "unguided_results.parquet")
-    missing = wanted.join(rows, on=["start_term", "goal_term"], how="anti")
+    rows = pl.read_parquet(directory / "unguided.parquet")
+    missing = wanted.join(rows, on=["start", "goal"], how="anti")
     if len(missing):
         raise BaselineMismatch(f"baseline in {directory} misses {len(missing)} pair(s)")

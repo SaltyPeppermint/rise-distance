@@ -131,15 +131,15 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
     eprintln!("Guide replay stop reason: {stop_reason}");
 
     // Absolute process live heap before sample construction allocates more.
-    let guide_memory = result.allocated();
-    let guide_peak_live_heap = result.peak_allocated();
-    let guide_nodes = result.curr().total_number_of_nodes();
-    let guide_classes = result.curr().classes().len();
-    let guide_iters = result.data().len();
-    let guide_time = result.data().iter().map(|i| i.total_time).sum();
+    let final_live_heap = result.allocated();
+    let peak_live_heap = result.peak_allocated();
+    let nodes = result.curr().total_number_of_nodes();
+    let classes = result.curr().classes().len();
+    let iters = result.data().len();
+    let time = result.data().iter().map(|i| i.total_time).sum();
     eprintln!(
-        "Guide egraph (replay): {guide_nodes} nodes, {guide_classes} classes, \
-         {guide_memory} live-heap bytes"
+        "Guide egraph (replay): {nodes} nodes, {classes} classes, \
+         {final_live_heap} live-heap bytes"
     );
 
     let samples = if args.frontier {
@@ -156,12 +156,12 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
         policy: args.policy.to_string(),
         samples: samples.clone().into_iter().map(|e| e.to_vec()).collect(),
         samples_s_expr: samples.into_iter().map(origin::lower).collect(),
-        guide_nodes,
-        guide_classes,
-        guide_iters,
-        guide_time,
-        guide_memory,
-        guide_peak_live_heap,
+        nodes,
+        classes,
+        iters,
+        time,
+        final_live_heap,
+        peak_live_heap,
         stop_reason,
     })
 }
@@ -251,18 +251,19 @@ struct Samples<L: MyLanguage> {
 
     samples: Vec<Vec<OriginLang<L>>>,
     samples_s_expr: Vec<RecExpr<L>>,
-    guide_nodes: usize,
-    guide_classes: usize,
-    guide_iters: usize,
+    /// The guide-phase replay's egraph and run, which the samples are drawn from.
+    nodes: usize,
+    classes: usize,
+    iters: usize,
     /// Total wall-clock time (seconds) of the guide-phase replay, so the driver
     /// can add the guide overhead to each leg's `total_time`.
-    guide_time: f64,
+    time: f64,
     /// Guide-phase replay's absolute live allocation (bytes): jemalloc
     /// `stats.allocated` for the whole process, the same coordinate system the
     /// configured memory ceiling is expressed in. Includes heap the process
     /// already held before this run started.
-    guide_memory: u64,
+    final_live_heap: u64,
     /// Largest observed absolute live heap during guide replay.
-    guide_peak_live_heap: u64,
+    peak_live_heap: u64,
     stop_reason: String,
 }

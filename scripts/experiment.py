@@ -17,7 +17,7 @@ OUTPUT_BASE = Path("data/guided_search")
 BASELINE_BASE = Path("data/baselines")
 
 # Shared by `baseline.py` and `guided_search.py`, so both compute the same baseline.
-BASELINE_FLAGS = {"max_rss": "450M", "start_terms": 100}
+BASELINE_FLAGS = {"max_rss": "450M", "n_starts": 100}
 
 BASE_FLAGS = {
     **BASELINE_FLAGS,
@@ -107,9 +107,9 @@ def generate_problems(problems: Path = PROBLEMS) -> None:
         "max_time": 300,
         "max_memory": "500M",
         "min_rss": "500M",
-        "rss_max": "1G",
+        "max_rss": "1G",
         "goals": 2,
-        "path": problems,
+        "output": problems,
     }
     run_driver("generate_problems.py", flags)
 

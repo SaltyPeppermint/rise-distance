@@ -7,7 +7,7 @@ through `--baseline` instead of each re-running it.
 Example:
     cargo build --release --bin attempt
     uv run scripts/baseline.py data/problems/dusky-cramp \\
-        --output data/baselines/dusky-cramp --stop-iters 50 --max-rss 4G
+        --output data/baselines/dusky-cramp --max-iters 50 --max-rss 4G
 
 An existing baseline in ``--output`` is kept if it matches and covers every
 pair, and is a hard error otherwise.
@@ -24,12 +24,12 @@ from pydantic_settings import CliApp
 
 from common import (
     BaselineMismatch,
-    Problem,
+    Pair,
     check_baseline,
     cli_flags,
     exit_if_missing,
     fan_out,
-    flatten_problems,
+    load_pairs,
     measure_attempt,
     problem_language,
 )
@@ -44,7 +44,7 @@ class BaselineArgs(ReplayArgs):
 
 
 async def run_unguided_pair(
-    args: BaselineArgs, base_flags: list[str], limit: asyncio.Semaphore, pair: Problem
+    args: BaselineArgs, base_flags: list[str], limit: asyncio.Semaphore, pair: Pair
 ) -> dict:
     """Run the pair-matched single-start baseline.
 
@@ -59,26 +59,26 @@ async def run_unguided_pair(
     attempt = await measure_attempt(
         cmd,
         what=f"unguided attempt for goal term {pair.goal!r}",
-        rss_max_bytes=args.max_rss_bytes,
+        max_rss_bytes=args.max_rss_bytes,
         limit=limit,
     )
     summary = attempt.summary
     return {
-        "start_term": pair.start,
-        "goal_term": pair.goal,
+        "start": pair.start,
+        "goal": pair.goal,
         "unguided_success": summary["reached"],
         "unguided_stop_reason": summary["stop_reason"],
         "unguided_panic": summary["panic"],
-        "unguided_final_live_heap_bytes": summary["memory"],
-        "unguided_peak_live_heap_bytes": summary["peak_live_heap"],
-        "unguided_peak_rss_bytes": attempt.peak_rss_bytes,
+        "unguided_final_live_heap": summary["final_live_heap"],
+        "unguided_peak_live_heap": summary["peak_live_heap"],
+        "unguided_peak_rss": attempt.peak_rss,
     }
 
 
 async def main(args: BaselineArgs) -> int:
     exit_if_missing(args.attempt_bin)
     out = args.output
-    pairs = flatten_problems(args.path, args.start_terms, args.goal_terms)
+    pairs = load_pairs(args.path, args.n_starts, args.n_goals)
 
     if (out / "config.json").is_file():
         try:
@@ -100,7 +100,7 @@ async def main(args: BaselineArgs) -> int:
     )
 
     out.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(rows, schema=UNGUIDED_SCHEMA).write_parquet(out / "unguided_results.parquet")
+    pl.DataFrame(rows, schema=UNGUIDED_SCHEMA).write_parquet(out / "unguided.parquet")
     # Written last, so a baseline killed halfway is not mistaken for a finished one.
     config = {**args.model_dump(), "baseline_key": args.baseline_key()}
     (out / "config.json").write_text(json.dumps(config, indent=2, default=str))

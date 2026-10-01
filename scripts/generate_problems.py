@@ -10,8 +10,8 @@ Writes `problems.json` (accepted pairs) and `problem_args.json` (config).
 
 Example:
     cargo build --release --bin start --bin sample --bin attempt
-    uv run scripts/generate_problems.py --path data/problems/example \\
-      --starts 10 --min-size 10 --max-size 12 --language math --seed 42 --max-memory 4G --min-rss 3G --rss-max 8G
+    uv run scripts/generate_problems.py --output data/problems/example \\
+      --starts 10 --min-size 10 --max-size 12 --language math --seed 42 --max-memory 4G --min-rss 3G --max-rss 8G
 """
 
 import asyncio
@@ -42,7 +42,7 @@ class Args(BaseSettings):
     model_config = SettingsConfigDict(cli_kebab_case=True)
 
     # I/O
-    path: Path = Field(description="Output directory.")
+    output: Path = Field(description="Output directory.")
 
     start_bin: Path = Field(
         default=Path("target/release/start"), description="Start-term generation binary."
@@ -73,7 +73,7 @@ class Args(BaseSettings):
     goals: int = Field(default=10, gt=0, description="Goal samples drawn per start term.")
 
     policy: SamplePolicy = Field(
-        default=SamplePolicy.Count, description="Frontier draw policy used by `samples`."
+        default=SamplePolicy.Count, description="Frontier draw policy used by `sample`."
     )
 
     size_search_steps: int = Field(
@@ -100,7 +100,7 @@ class Args(BaseSettings):
         ),
     )
 
-    rss_max: str | None = Field(
+    max_rss: str | None = Field(
         default=None,
         description=("Cap each `start` process at this cgroup RSS limit, as a human size"),
     )
@@ -109,7 +109,7 @@ class Args(BaseSettings):
         default=10,
         ge=0,
         description=(
-            "How often a `start` slot killed at `--rss-max` is redrawn under a bumped seed"
+            "How often a `start` slot killed at `--max-rss` is redrawn under a bumped seed"
         ),
     )
 
@@ -128,12 +128,12 @@ class Args(BaseSettings):
     @model_validator(mode="after")
     def validate_memory(self) -> Args:
         if (
-            self.rss_max is not None
+            self.max_rss is not None
             and self.max_memory is not None
-            and parse_size(self.rss_max) < parse_size(self.max_memory)
+            and parse_size(self.max_rss) < parse_size(self.max_memory)
         ):
             raise ValueError(
-                f"rss_max ({self.rss_max}) is below max_memory ({self.max_memory}); "
+                f"max_rss ({self.max_rss}) is below max_memory ({self.max_memory}); "
                 "every run would be killed before its live-heap ceiling trips"
             )
         return self
@@ -170,7 +170,7 @@ async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict
     They are also what the caller counts the cap's cost from.
     """
     size, index = slot
-    rss_max = parse_size(args.rss_max) if args.rss_max is not None else None
+    max_rss = parse_size(args.max_rss) if args.max_rss is not None else None
     for retry in range(args.start_retries + 1):
         fields = (args.seed, size, index) if retry == 0 else (args.seed, size, index, retry)
         seed = derive_seed(*fields)
@@ -183,7 +183,7 @@ async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict
         if retry:
             what += f" (reseed {retry})"
         try:
-            measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=rss_max)
+            measured = await run_json_subprocess(cmd, what=what, max_rss_bytes=max_rss)
         except MemoryKilled as killed:
             print(f"WARNING: {killed!s}", file=sys.stderr)
             continue
@@ -191,9 +191,9 @@ async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict
             print(f"WARNING: {e!s}", file=sys.stderr)
             return None
         return {
-            "start_term": measured.payload["term"],
+            "start": measured.payload["term"],
             "start_size": size,
-            "attempts": measured.payload["attempt"],
+            "start_draws": measured.payload["draws"],
             "start_seed": seed,
             "start_retry": retry,
         }
@@ -205,13 +205,13 @@ async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict
     return None
 
 
-async def run_samples(args: Args, flags: list[str], start: dict[str, Any]) -> dict[str, Any] | None:
+async def run_samples(args: Args, flags: list[str], row: dict[str, Any]) -> dict[str, Any] | None:
     """Draw goal samples from one start term's novel frontier."""
     cmd = [
         str(args.sample_bin),
         *cli_flags(
             language=args.language,
-            start=start["start_term"],
+            start=row["start"],
             n_samples=args.goals,
             seed=args.seed,
             policy=args.policy,
@@ -220,34 +220,32 @@ async def run_samples(args: Args, flags: list[str], start: dict[str, Any]) -> di
         ),
         *flags,
     ]
-    measured = await run_json_subprocess(
-        cmd, what=f"samples for start term {start['start_term']!r}"
-    )
+    measured = await run_json_subprocess(cmd, what=f"samples for start term {row['start']!r}")
     records = measured.payload
     if not records:
         print(
-            f"WARNING: samples found nothing for start term {start['start_term']!r}",
+            f"WARNING: samples found nothing for start term {row['start']!r}",
             file=sys.stderr,
         )
         return None
-    return {**start, "goal_terms": records[0]["samples_s_expr"]}
+    return {**row, "goals": records[0]["samples_s_expr"]}
 
 
 async def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, Any]:
     """Measure what the unguided start->goal search actually costs."""
     cmd = [
         str(args.attempt_bin),
-        *cli_flags(language=args.language, start=pair["start_term"], goal=pair["goal_term"]),
+        *cli_flags(language=args.language, start=pair["start"], goal=pair["goal"]),
         *flags,
     ]
-    measured = await run_json_subprocess(cmd, what=f"attempt for goal {pair['goal_term']!r}")
-    return {**pair, **attempt_summary(measured.payload), "peak_rss_bytes": measured.peak_rss_bytes}
+    measured = await run_json_subprocess(cmd, what=f"attempt for goal {pair['goal']!r}")
+    return {**pair, **attempt_summary(measured.payload), "peak_rss": measured.peak_rss}
 
 
 async def main(args: Args) -> int:
     exit_if_missing(args.start_bin, args.sample_bin, args.attempt_bin)
 
-    out = args.path
+    out = args.output
     out.mkdir(parents=True, exist_ok=True)
     jobs = args.jobs
     limits = args.limits
@@ -269,9 +267,9 @@ async def main(args: Args) -> int:
     # nothing.
     reseeded = sum(s["start_retry"] > 0 for s in starts)
     empty = len(slots) - len(starts)
-    if args.rss_max is not None and (reseeded or empty):
+    if args.max_rss is not None and (reseeded or empty):
         print(
-            f"\nRSS cap {args.rss_max}: {reseeded}/{len(starts)} kept slot(s) needed a "
+            f"\nRSS cap {args.max_rss}: {reseeded}/{len(starts)} kept slot(s) needed a "
             f"reseed, {empty} slot(s) produced nothing",
             file=sys.stderr,
         )
@@ -279,18 +277,18 @@ async def main(args: Args) -> int:
     # Distinct terms only; two slots of one size can sample the same term.
     unique: dict[str, dict] = {}
     for s in starts:
-        unique.setdefault(s["start_term"], s)
+        unique.setdefault(s["start"], s)
     starts = list(unique.values())
 
     enriched = await fan_out(jobs, lambda s: run_samples(args, flags, s), starts, "samples")
     pairs = [
-        {**{k: v for k, v in start.items() if k != "goal_terms"}, "goal_term": goal}
-        for start in enriched
-        for goal in start["goal_terms"]
+        {**{k: v for k, v in row.items() if k != "goals"}, "goal": goal}
+        for row in enriched
+        for goal in row["goals"]
     ]
 
     measured = await fan_out(jobs, lambda p: run_attempt(args, flags, p), pairs, "attempt")
-    problems = [row for row in measured if (row["peak_rss_bytes"] or 0) >= min_rss]
+    problems = [row for row in measured if (row["peak_rss"] or 0) >= min_rss]
 
     (out / "problems.json").write_text(json.dumps(problems, indent=2))
     (out / "problem_args.json").write_text(

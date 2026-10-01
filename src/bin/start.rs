@@ -58,15 +58,15 @@ fn run_one<L: Samplable, N: MyAnalysis<L>>(
     args: &Args,
     validity_config: &EqsatConfig,
     rules: &[Rewrite<L, N>],
-) -> GoalTerm {
+) -> StartTerm {
     let sampler = SizeUniformSampler::<L>::new(args.size, None);
     let mut rng = ChaCha12Rng::seed_from_u64(args.seed);
-    for attempts in 1..=args.retry_limit {
+    for draws in 1..=args.retry_limit {
         let sample = sampler.sample(&mut rng);
         if let Some(measurement) = validity_check(&sample, validity_config, rules) {
-            return GoalTerm {
+            return StartTerm {
                 term: sample.to_string(),
-                attempt: attempts,
+                draws,
                 payload: measurement,
             };
         }
@@ -78,9 +78,10 @@ fn run_one<L: Samplable, N: MyAnalysis<L>>(
 }
 
 #[derive(Serialize)]
-struct GoalTerm {
+struct StartTerm {
     term: String,
-    attempt: usize,
+    /// How many were drawn until one passed
+    draws: usize,
     payload: Measurement,
 }
 

@@ -7,10 +7,10 @@ chains explored through a work queue.
 Example:
     cargo build --release --bin sample --bin attempt
     uv run scripts/baseline.py data/problems/dusky-cramp \\
-        --output data/baselines/dusky-cramp --stop-iters 50 --max-rss 4G
+        --output data/baselines/dusky-cramp --max-iters 50 --max-rss 4G
     uv run scripts/guided_search.py data/problems/dusky-cramp \\
         --baseline data/baselines/dusky-cramp --output data/guided_search/1_example \\
-        --stop-iters 50 --max-rss 4G --branching 5 \\
+        --max-iters 50 --max-rss 4G --branching 5 \\
         --max-attempts 20 --search-policy bfs \\
         --sample-policy count --full-union
 
@@ -39,21 +39,21 @@ from common import (
     AttemptResult,
     BaselineMismatch,
     BinaryPanicked,
-    MeasuredJson,
+    Measured,
     MemoryKilled,
-    Problem,
+    Pair,
     SamplePolicy,
     check_baseline,
     cli_flags,
     exit_if_missing,
     fan_out,
-    flatten_problems,
+    load_pairs,
     measure_attempt,
     problem_language,
     run_json_subprocess,
 )
 from replay_args import ReplayArgs
-from schemes import ATTEMPT_SCHEMA, EMPTY_GUIDE_META, EXPANSION_SCHEMA, PAIR_SCHEMA
+from schemes import ATTEMPT_SCHEMA, EMPTY_SAMPLE_META, EXPANSION_SCHEMA, PAIR_SCHEMA
 
 
 class SearchPolicy(StrEnum):
@@ -73,7 +73,7 @@ class Args(ReplayArgs):
     """`ReplayArgs` plus the flags of the search itself."""
 
     output: Path = Field(
-        description="Run folder for `results.parquet`/`results.json`, created if missing."
+        description="Run folder for `attempts.parquet`/`attempts.json`, created if missing."
     )
 
     baseline: Path = Field(
@@ -181,7 +181,7 @@ class SearchNode:
 
 @dataclass(frozen=True)
 class Expansion:
-    """The outcome of one `samples` process: the pool drawn and its cost."""
+    """The outcome of one `sample` process: the pool drawn and its cost."""
 
     children: list[tuple[list, str]]
     status: Literal["ok", "empty_pool", "no_novel_terms", "out_of_memory", "binary_panic"]
@@ -190,15 +190,15 @@ class Expansion:
 
     @property
     def saturated(self) -> bool:
-        return self.meta.get("guide_stop_reason") == SATURATED
+        return self.meta.get("stop_reason") == SATURATED
 
 
 class SearchFrontier:
     """The work queue with the drawing logic once the queue runs empty.
 
-    Nodes to descend are remembered via `defer`.
+    Nodes to descend are remembered via `queue_expansion`.
     `dfs` pops the most recently pushed node, so the search follows one chain
-    down before trying its siblings, and drains the deferred nodes first so a
+    down before trying its siblings, and expands the queued nodes first so a
     node's own children are ready before its siblings get a turn; `bfs` pops
     the oldest, exhausting a depth before descending, so it only draws once the
     frontier is empty.
@@ -212,32 +212,33 @@ class SearchFrontier:
         self.pools = pools
         self.trace = trace
         self.budget = budget
-        self._items: deque[SearchNode] = deque()
-        # The first `pop` draws the roots pool.
-        self._pending: deque[SearchNode] = deque(
+        # Nodes ready to attempt.
+        self._ready: deque[SearchNode] = deque()
+        # Nodes whose pool is still to be drawn; the first `pop` draws the root's.
+        self._to_expand: deque[SearchNode] = deque(
             [SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=root)]
         )
         self._ids = itertools.count(1)
         self._seen: set[str] = set()
 
-    def defer(self, node: SearchNode) -> None:
-        """Place later to expand node in queue"""
-        self._pending.append(node)
+    def queue_expansion(self, node: SearchNode) -> None:
+        """Queue `node` to have its pool drawn later."""
+        self._to_expand.append(node)
 
     async def pop(self) -> SearchNode | None:
         """The next node to attempt."""
-        while self._pending and not self.budget.expired():
+        while self._to_expand and not self.budget.expired():
             if self.policy.lifo:
-                # Descend into the node eagerly, not just deferred before anything else.
-                await self._expand(self._pending.pop())
-            elif self._items:
+                # Descend into the node eagerly, not just queued before anything else.
+                await self._expand(self._to_expand.pop())
+            elif self._ready:
                 break
             else:
-                await self._expand(self._pending.popleft())
+                await self._expand(self._to_expand.popleft())
 
-        if not self._items:
+        if not self._ready:
             return None
-        return self._items.pop() if self.policy.lifo else self._items.popleft()
+        return self._ready.pop() if self.policy.lifo else self._ready.popleft()
 
     async def _expand(self, node: SearchNode) -> None:
         """Draw `node`'s pool, record what it cost, and queue the unseen children.
@@ -270,12 +271,12 @@ class SearchFrontier:
                 )
             )
         # DFS pops from the right, so push reversed to keep siblings left to right.
-        self._items.extend(reversed(children) if self.policy.lifo else children)
+        self._ready.extend(reversed(children) if self.policy.lifo else children)
 
         self.trace.expansions.append(
             {
-                "start_term": self.trace.pair.start,
-                "goal_term": self.trace.pair.goal,
+                "start": self.trace.pair.start,
+                "goal": self.trace.pair.goal,
                 "node_id": node.node_id,
                 "depth": node.depth,
                 "status": expansion.status,
@@ -315,21 +316,21 @@ class Budget:
 class PairTrace:
     """Everything one pair's search did, flattened into rows at report time."""
 
-    pair: Problem
+    pair: Pair
     attempts: list[dict] = field(default_factory=list)
     expansions: list[dict] = field(default_factory=list)
     drawn: set[str] = field(default_factory=set)
     stop_reason: str = "unstarted"
 
     @property
-    def setup_status(self) -> str:
+    def root_status(self) -> str:
         """The root expansion's status: whether the pair got a pool at all."""
         return self.expansions[0]["status"] if self.expansions else "unstarted"
 
 
 async def run_capped(
     args: Args, limit: asyncio.Semaphore, cmd: list[str], what: str
-) -> tuple[MeasuredJson | None, float]:
+) -> tuple[Measured | None, float]:
     """Run under the RSS cap, retrying a killed child up to `--sampling-backoff`
     times: the first retry replays the iterations that completed, each further
     one gives up another iteration that applied a rewrite. Gives up early once
@@ -341,7 +342,7 @@ async def run_capped(
     cap = args.max_rss_bytes
     # Try for the first time, record list of successful productive eqsat iterations
     try:
-        measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=cap, limit=limit)
+        measured = await run_json_subprocess(cmd, what=what, max_rss_bytes=cap, limit=limit)
         return measured, measured.wall_time
     except MemoryKilled as killed:
         wall_time = killed.wall_time
@@ -355,7 +356,7 @@ async def run_capped(
         except ValueError:
             cmd.extend(["--max-iters", str(max_iters)])
         try:
-            measured = await run_json_subprocess(cmd, what=what, rss_max_bytes=cap, limit=limit)
+            measured = await run_json_subprocess(cmd, what=what, max_rss_bytes=cap, limit=limit)
             return measured, wall_time + measured.wall_time
         except MemoryKilled as killed:
             wall_time += killed.wall_time
@@ -380,27 +381,27 @@ async def draw_expansion(
         measured, wall_time = await run_capped(args, limit, cmd, f"sample for term {s_expr!r}")
     except BinaryPanicked as panicked:
         panicked.warn()
-        return Expansion([], "binary_panic", dict(EMPTY_GUIDE_META), panicked.wall_time)
+        return Expansion([], "binary_panic", dict(EMPTY_SAMPLE_META), panicked.wall_time)
 
     # A capped-out child never printed its `Measured` envelope.
     if measured is None:
-        return Expansion([], "out_of_memory", dict(EMPTY_GUIDE_META), wall_time)
+        return Expansion([], "out_of_memory", dict(EMPTY_SAMPLE_META), wall_time)
 
-    # An empty payload is `samples` reporting that construction failed.
+    # An empty payload is `sample` reporting that construction failed.
     if not measured.payload:
-        meta = {**EMPTY_GUIDE_META, "sample_peak_rss_bytes": measured.peak_rss_bytes}
+        meta = {**EMPTY_SAMPLE_META, "peak_rss": measured.peak_rss}
         return Expansion([], "no_novel_terms", meta, wall_time)
 
     record = measured.payload[0]
     children = list(zip(record["samples"], record["samples_s_expr"], strict=True))
     meta = {
-        "guide_nodes": record["guide_nodes"],
-        "guide_classes": record["guide_classes"],
-        "guide_time": record["guide_time"],
-        "guide_memory": record["guide_memory"],
-        "guide_peak_live_heap": record["guide_peak_live_heap"],
-        "guide_stop_reason": record["stop_reason"],
-        "sample_peak_rss_bytes": measured.peak_rss_bytes,
+        "nodes": record["nodes"],
+        "classes": record["classes"],
+        "total_time": record["time"],
+        "final_live_heap": record["final_live_heap"],
+        "peak_live_heap": record["peak_live_heap"],
+        "stop_reason": record["stop_reason"],
+        "peak_rss": measured.peak_rss,
     }
     return Expansion(children, "ok" if children else "empty_pool", meta, wall_time)
 
@@ -467,7 +468,7 @@ async def run_attempt(
     ]
 
     return await measure_attempt(
-        cmd, what=f"attempt for goal {goal!r}", rss_max_bytes=args.max_rss_bytes, limit=limit
+        cmd, what=f"attempt for goal {goal!r}", max_rss_bytes=args.max_rss_bytes, limit=limit
     )
 
 
@@ -476,7 +477,7 @@ async def search_pair(
     base_flags: list[str],
     limit: asyncio.Semaphore,
     pools: SamplePools,
-    pair: Problem,
+    pair: Pair,
 ) -> PairTrace:
     """Run one pair's sampling/attempt search and return its trace.
 
@@ -484,7 +485,7 @@ async def search_pair(
     frontier, which draws its pool once it needs the children. A node whose
     attempt saturated is never handed back, since its subtree cannot hold the
     goal. Each attempt is a separate `attempt` process, so its
-    `attempt_peak_rss_bytes` is that attempt's own peak rather than a high-water
+    `peak_rss` is that attempt's own peak rather than a high-water
     mark shared across the pair.
     """
     budget = Budget(
@@ -516,9 +517,9 @@ async def search_pair(
         budget.charge(attempt.wall_time)
         trace.attempts.append(
             {
-                "start_term": pair.start,
-                "goal_term": pair.goal,
-                "policy": args.sample_policy,
+                "start": pair.start,
+                "goal": pair.goal,
+                "sample_policy": args.sample_policy,
                 "attempt": len(trace.attempts),
                 "node_id": node.node_id,
                 "parent_id": node.parent_id,
@@ -527,7 +528,7 @@ async def search_pair(
                 "terminal": node.terminal,
                 "started_at": started_at,
                 "wall_time": attempt.wall_time,
-                "attempt_peak_rss_bytes": attempt.peak_rss_bytes,
+                "peak_rss": attempt.peak_rss,
                 **attempt.summary,
             }
         )
@@ -537,12 +538,12 @@ async def search_pair(
             break
 
         # A terminal node came out of a saturated egraph, so sampling from it
-        # would rebuild that same egraph and redraw that same pool. Not deferring
+        # would rebuild that same egraph and redraw that same pool. Not queueing
         # it sends the search back up to whatever the frontier holds.
         # A saturated attempt is a dead end as well, we wont get past that
-        # so we don't even queue it as deferred.
+        # so we don't even queue it for expansion.
         if attempt.summary["stop_reason"] != SATURATED and not node.terminal:
-            frontier.defer(node)
+            frontier.queue_expansion(node)
 
     return trace
 
@@ -560,24 +561,20 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
     # Each attempt is its own process, so pick which one's peak to report rather
     # than inheriting a shared high-water mark.
     #
-    # `attempt_peak_rss_bytes` is the *decisive* attempt: the one that reached, or
+    # `attempt_peak_rss` is the *decisive* attempt: the one that reached, or
     # the last one tried if none did.
-    # `attempt_peak_rss_bytes_max` is the max across every attempt run, which is what
+    # `attempt_peak_rss_max` is the max across every attempt run, which is what
     # the pair cost end to end.
     decisive = successes[0] if successes else (attempts[-1] if attempts else None)
-    attempt_peak = decisive["attempt_peak_rss_bytes"] if decisive else None
+    attempt_peak = decisive["peak_rss"] if decisive else None
 
     attempt_peaks = [
-        attempt["attempt_peak_rss_bytes"]
-        for attempt in attempts
-        if attempt.get("attempt_peak_rss_bytes") is not None
+        attempt["peak_rss"] for attempt in attempts if attempt.get("peak_rss") is not None
     ]
     attempt_peak_max = max(attempt_peaks, default=None)
 
     expansion_peaks = [
-        exp["sample_peak_rss_bytes"]
-        for exp in trace.expansions
-        if exp.get("sample_peak_rss_bytes") is not None
+        exp["peak_rss"] for exp in trace.expansions if exp.get("peak_rss") is not None
     ]
     sample_peak = max(expansion_peaks, default=None)
 
@@ -585,7 +582,7 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
     live_peaks = [
         peak
         for peak in (
-            *(exp.get("guide_peak_live_heap") for exp in trace.expansions),
+            *(exp.get("peak_live_heap") for exp in trace.expansions),
             *(attempt.get("peak_live_heap") for attempt in attempts),
         )
         if peak is not None
@@ -593,18 +590,18 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
 
     # A pool that drew nothing usable is a setup failure; a pool that queued
     # nodes the search never got to is not — that is `search_stop_reason`'s job.
-    setup_status = trace.setup_status
+    setup_status = trace.root_status
     if setup_status == "ok" and not trace.expansions[0]["pushed"]:
         setup_status = "empty_pool"
 
     return {
-        "start_term": trace.pair.start,
-        "goal_term": trace.pair.goal,
-        "policy": args.sample_policy,
-        "exploration_policy": args.search_policy,
+        "start": trace.pair.start,
+        "goal": trace.pair.goal,
+        "sample_policy": args.sample_policy,
+        "search_policy": args.search_policy,
         "branching": args.branching,
-        "attempt_budget": args.max_attempts,
-        "time_budget": args.max_pair_time,
+        "max_attempts": args.max_attempts,
+        "max_pair_time": args.max_pair_time,
         "guided_success": bool(successes),
         "search_stop_reason": trace.stop_reason,
         "success_attempt": successes[0]["attempt"] + 1 if successes else None,
@@ -616,7 +613,7 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         # It does not make sense to draw guides from a saturated egraph.
         "root_saturated": bool(trace.expansions and trace.expansions[0]["saturated"]),
         "deepest_attempt": max((attempt["depth"] for attempt in attempts), default=None),
-        "pair_cost_time": sum(exp["wall_time"] for exp in trace.expansions)
+        "wall_time": sum(exp["wall_time"] for exp in trace.expansions)
         + sum(attempt["wall_time"] for attempt in attempts),
         # The last attempt's reason when one ran, otherwise why none did.
         "guided_stop_reason": None
@@ -628,12 +625,12 @@ def summarize_pair(args: Args, trace: PairTrace) -> dict:
         ),
         "guided_panic": any(attempt["panic"] for attempt in attempts),
         "setup_status": setup_status,
-        "sample_status": trace.setup_status,
-        "attempt_peak_rss_bytes": attempt_peak,
-        "attempt_peak_rss_bytes_max": attempt_peak_max,
-        "sample_peak_rss_bytes": sample_peak,
-        "guided_peak_rss_bytes": max(rss_peaks, default=None),
-        "guided_peak_live_heap_bytes": max(live_peaks, default=None),
+        "root_status": trace.root_status,
+        "attempt_peak_rss": attempt_peak,
+        "attempt_peak_rss_max": attempt_peak_max,
+        "sample_peak_rss": sample_peak,
+        "guided_peak_rss": max(rss_peaks, default=None),
+        "guided_peak_live_heap": max(live_peaks, default=None),
     }
 
 
@@ -644,12 +641,12 @@ def write_sample_pools(pools: SamplePools, out: Path) -> None:
         s_expr: {
             "status": expansion.status,
             "samples": [guide for guide, _ in expansion.children],
-            "sample_s_expr": [child for _, child in expansion.children],
+            "samples_s_expr": [child for _, child in expansion.children],
             **expansion.meta,
         }
         for s_expr, expansion in pools.drawn().items()
     }
-    (out / "samples.json").write_text(json.dumps(dumped))
+    (out / "pools.json").write_text(json.dumps(dumped))
 
 
 def report_results(
@@ -668,16 +665,16 @@ def report_results(
     expansion_rows = [row for trace in traces for row in trace.expansions]
 
     attempts = pl.DataFrame(attempt_rows, schema=ATTEMPT_SCHEMA)
-    attempts.write_parquet(out / "results.parquet")
-    (out / "results.json").write_text(json.dumps(attempt_rows, indent=2))
+    attempts.write_parquet(out / "attempts.parquet")
+    (out / "attempts.json").write_text(json.dumps(attempt_rows, indent=2))
 
     expansions = pl.DataFrame(expansion_rows, schema=EXPANSION_SCHEMA)
     expansions.write_parquet(out / "expansions.parquet")
 
     pairs = pl.DataFrame([summarize_pair(args, trace) for trace in traces], schema=PAIR_SCHEMA)
-    pairs.write_parquet(out / "pair_results.parquet")
+    pairs.write_parquet(out / "pairs.parquet")
 
-    write_sample_pools(pools, out / "sample_run")
+    write_sample_pools(pools, out)
 
     config = {
         **args.model_dump(),
@@ -693,7 +690,7 @@ def report_results(
         f"\nReached {reached_pairs}/{total_pairs} start/goal pairs "
         f"(reach rate {reach_rate:.2f}) in {attempts_run} attempt(s) and "
         f"{len(pools)} distinct sample pool(s). "
-        f"Wrote {out / 'pair_results.parquet'}",
+        f"Wrote {out / 'pairs.parquet'}",
         file=sys.stderr,
     )
 
@@ -704,7 +701,7 @@ async def main(args: Args) -> int:
     base_flags = args.base_flags(language)
     sample_flags = args.sample_flags(language)
 
-    pairs = flatten_problems(args.path, args.start_terms, args.goal_terms)
+    pairs = load_pairs(args.path, args.n_starts, args.n_goals)
     # Checked before the search, so a mismatching baseline fails before any work is spent.
     try:
         check_baseline(args.baseline, args.baseline_key(), pairs)

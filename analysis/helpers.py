@@ -9,14 +9,14 @@ import polars as pl
 
 REPO_ROOT = Path(__file__).parent.parent
 
-GUIDED_WORKFLOW_COLUMN = "guided_peak_rss_bytes"
-BRUTE_COLUMN = "brute_peak_rss_bytes"
+GUIDED_WORKFLOW_COLUMN = "guided_peak_rss"
+BRUTE_COLUMN = "brute_peak_rss"
 
-BRUTE_COLUMNS = {"peak_rss_bytes": BRUTE_COLUMN}
+BRUTE_COLUMNS = {"peak_rss": BRUTE_COLUMN}
 
 # Guided peaks comparable with brute force
 GUIDED_PEAK_SCOPES = {
-    "guided attempt": "attempt_peak_rss_bytes",
+    "guided attempt": "attempt_peak_rss",
     "guided workflow": GUIDED_WORKFLOW_COLUMN,
 }
 
@@ -79,9 +79,9 @@ def resolve_runs(patterns: Sequence[str]) -> tuple[list[Run], list[str]]:
     runs = []
     incomplete_runs = []
     for directory in dict.fromkeys(directories):
-        pair_results = directory / "pair_results.parquet"
+        pairs = directory / "pairs.parquet"
         config_path = directory / "config.json"
-        absent = [path.name for path in (pair_results, config_path) if not path.is_file()]
+        absent = [path.name for path in (pairs, config_path) if not path.is_file()]
         if absent:
             if patterns:
                 print(f"{directory} is incomplete; missing final artifacts: {', '.join(absent)}")
@@ -104,7 +104,7 @@ def _brute_baseline(run: Run) -> pl.DataFrame:
             f"{run.directory.name} was built on {run.config['path']}, which has no problems.json"
         )
     frame = pl.DataFrame(json.loads(problems.read_text()))
-    missing = ({"start_term", "goal_term", "reached"} | set(BRUTE_COLUMNS)) - set(frame.columns)
+    missing = ({"start", "goal", "reached"} | set(BRUTE_COLUMNS)) - set(frame.columns)
     if missing:
         raise ValueError(f"{problems} is missing baseline fields: {sorted(missing)}")
 
@@ -116,13 +116,13 @@ def _brute_baseline(run: Run) -> pl.DataFrame:
             f"{problems} has {unreached} pairs that never reached the goal; "
             "the brute-force baseline is only defined for proven pairs"
         )
-    keys = frame.select("start_term", "goal_term")
+    keys = frame.select("start", "goal")
     if keys.unique().height != keys.height:
         raise ValueError(f"{problems} repeats start/goal pairs; the baseline join would fan out")
 
     return frame.select(
-        "start_term",
-        "goal_term",
+        "start",
+        "goal",
         *(pl.col(source).alias(target) for source, target in BRUTE_COLUMNS.items()),
         pl.lit(directory.name).alias("problem_set"),
     )
@@ -131,11 +131,11 @@ def _brute_baseline(run: Run) -> pl.DataFrame:
 def _unguided_baseline(run: Run) -> pl.DataFrame:
     """Per-pair unguided results from the `baseline.py` folder the run was checked against."""
     directory = REPO_ROOT / run.config["baseline"]
-    results = directory / "unguided_results.parquet"
+    results = directory / "unguided.parquet"
     if not results.is_file():
         raise FileNotFoundError(
             f"{run.directory.name} was checked against {run.config['baseline']}, "
-            "which has no unguided_results.parquet"
+            "which has no unguided.parquet"
         )
     return pl.read_parquet(results).with_columns(pl.lit(directory.name).alias("baseline"))
 
@@ -144,11 +144,11 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     """Stack one-row-per-pair results, joining each run's unguided and brute-force baselines."""
     frames = []
     for run in runs:
-        frame = pl.read_parquet(run.directory / "pair_results.parquet")
+        frame = pl.read_parquet(run.directory / "pairs.parquet")
         # `guided_search.py` checked that the baseline covers every pair, so a
         # miss here means the baseline changed since.
         frame = frame.join(
-            _unguided_baseline(run), on=["start_term", "goal_term"], how="left", validate="1:1"
+            _unguided_baseline(run), on=["start", "goal"], how="left", validate="1:1"
         )
         unmatched = frame.filter(pl.col("baseline").is_null()).height
         if unmatched:
@@ -156,8 +156,8 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
                 f"{run.directory.name} has {unmatched} pairs absent from {run.config['baseline']}; "
                 "the baseline changed after the run"
             )
-        frame = frame.join(_brute_baseline(run), on=["start_term", "goal_term"], how="left")
-        unmatched = frame.filter(pl.col("brute_peak_rss_bytes").is_null()).height
+        frame = frame.join(_brute_baseline(run), on=["start", "goal"], how="left")
+        unmatched = frame.filter(pl.col("brute_peak_rss").is_null()).height
         if unmatched:
             raise ValueError(
                 f"{run.directory.name} has {unmatched} pairs absent from {run.config['path']}; "
@@ -167,13 +167,13 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
             frame.with_columns(
                 pl.lit(run.label).alias("mode"),
                 pl.lit(run.directory.name).alias("run"),
-                pl.concat_str(["start_term", "goal_term"], separator="│").alias("pair"),
+                pl.concat_str(["start", "goal"], separator="│").alias("pair"),
             )
         )
     data = pl.concat(frames, how="diagonal_relaxed")
     meta = {
         "modes": [run.label for run in runs],
-        "n_pairs": data.select("start_term", "goal_term").unique().height,
+        "n_pairs": data.select("start", "goal").unique().height,
         "problem_sets": data["problem_set"].unique().sort().to_list(),
         "baselines": data["baseline"].unique().sort().to_list(),
         "subtitle": [f"{data.height} planned pair observations"],
@@ -208,7 +208,7 @@ def success_rates(frame: pl.DataFrame) -> pl.DataFrame:
         {**row, "method": "guided"}
         for row in _rate_rows(frame, ["mode", "baseline"], "guided_success")
     ]
-    pairs = frame.unique(["baseline", "start_term", "goal_term"], maintain_order=True)
+    pairs = frame.unique(["baseline", "start", "goal"], maintain_order=True)
     unguided = [
         {**row, "mode": None, "method": "unguided"}
         for row in _rate_rows(pairs, ["baseline"], "unguided_success")
@@ -338,7 +338,7 @@ def saturation_rates(runs: Sequence[Run]) -> pl.DataFrame:
     """How often each run saturated, as a share of the events that could."""
     rows = []
     for run in runs:
-        path = run.directory / "results.parquet"
+        path = run.directory / "attempts.parquet"
         frame = pl.read_parquet(path)
         hits = int(
             frame.select((pl.col("stop_reason") == "Saturated").fill_null(False).sum()).item()

@@ -236,8 +236,8 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
             ),
             tooltip=[
                 "mode:N",
-                "start_term:N",
-                "goal_term:N",
+                "start:N",
+                "goal:N",
                 alt.Tooltip("guided_peak_mib:Q", format=".1f"),
                 alt.Tooltip("brute_peak_mib:Q", format=".1f"),
                 alt.Tooltip("peak_ratio:Q", format=".3f"),

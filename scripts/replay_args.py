@@ -31,15 +31,15 @@ class ReplayArgs(BaseSettings):
     #
     # At least one must be given. Replay ends when the first configured budget
     # is exhausted; omitted budgets are effectively unlimited.
-    stop_iters: int | None = Field(
+    max_iters: int | None = Field(
         default=None, gt=0, description=("Guide-replay iteration budget.")
     )
 
-    stop_nodes: int | None = Field(
+    max_nodes: int | None = Field(
         default=None, gt=0, description=("Guide-replay egraph-node budget.")
     )
 
-    stop_time: float | None = Field(
+    max_time: float | None = Field(
         default=None, gt=0, description=("Guide-replay wall-clock budget in seconds.")
     )
 
@@ -51,7 +51,7 @@ class ReplayArgs(BaseSettings):
         ),
     )
 
-    start_terms: int | None = Field(
+    n_starts: int | None = Field(
         default=None,
         gt=0,
         description=(
@@ -59,7 +59,7 @@ class ReplayArgs(BaseSettings):
         ),
     )
 
-    goal_terms: int | None = Field(
+    n_goals: int | None = Field(
         default=None,
         gt=0,
         description=(
@@ -83,9 +83,9 @@ class ReplayArgs(BaseSettings):
     def limits(self) -> dict[str, int | float]:
         """The configured guide-replay budgets, without the omitted ones."""
         budgets = {
-            "max_iters": self.stop_iters,
-            "max_nodes": self.stop_nodes,
-            "max_time": self.stop_time,
+            "max_iters": self.max_iters,
+            "max_nodes": self.max_nodes,
+            "max_time": self.max_time,
         }
         return {key: value for key, value in budgets.items() if value is not None}
 
@@ -100,8 +100,8 @@ class ReplayArgs(BaseSettings):
         """
         return {
             "problems": str(self.path.resolve()),
-            "stop_iters": self.stop_iters,
-            "stop_nodes": self.stop_nodes,
-            "stop_time": self.stop_time,
+            "max_iters": self.max_iters,
+            "max_nodes": self.max_nodes,
+            "max_time": self.max_time,
             "max_rss": self.max_rss_bytes,
         }
