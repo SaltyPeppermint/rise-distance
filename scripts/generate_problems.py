@@ -211,7 +211,7 @@ async def run_samples(args: Args, flags: list[str], start: dict[str, Any]) -> di
         str(args.sample_bin),
         *cli_flags(
             language=args.language,
-            start_term=start["start_term"],
+            start=start["start_term"],
             n_samples=args.goals,
             seed=args.seed,
             policy=args.policy,
@@ -237,9 +237,7 @@ async def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dic
     """Measure what the unguided start->goal search actually costs."""
     cmd = [
         str(args.attempt_bin),
-        *cli_flags(
-            language=args.language, start_term=pair["start_term"], goal_term=pair["goal_term"]
-        ),
+        *cli_flags(language=args.language, start=pair["start_term"], goal=pair["goal_term"]),
         *flags,
     ]
     measured = await run_json_subprocess(cmd, what=f"attempt for goal {pair['goal_term']!r}")

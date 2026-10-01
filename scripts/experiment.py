@@ -24,6 +24,7 @@ BASE_FLAGS = {
     "max_attempts": 30,
     "seed": 123,
     "full_union": True,
+    "sampling_backoff": 50,
 }
 
 GRID = {

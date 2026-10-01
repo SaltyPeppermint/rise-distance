@@ -122,9 +122,32 @@ OOM_RETURNCODES = (-9, 137)
 # Rust's exit code for a panic
 PANIC_RETURNCODE = 101
 
+# Linux's `MAX_ARG_STRLEN`: the most bytes, including the trailing NUL, that a
+# single argv entry may have, else `exec` fails with `E2BIG`.
+MAX_ARG_STRLEN = 32 * 4096
+
 # Where a Rust panic message header
 # `thread 'main' (609420) panicked at src/langs/math/mod.rs:97:13:`.
 PANIC_HEADER_RE = re.compile(r"^thread '.*' .*panicked at ", re.MULTILINE)
+
+
+class ArgTooLong(ValueError):
+    """An argv entry exceeds the kernel's per-argument limit."""
+
+    def __init__(self, what: str, flag: str, size: int) -> None:
+        super().__init__(
+            f"{what}: argument of {flag} is {size} bytes, "
+            f"over the kernel's per-argument limit of {MAX_ARG_STRLEN - 1}"
+        )
+
+
+def check_arg_sizes(cmd: list[str], what: str) -> None:
+    """Raise `ArgTooLong` if any entry of `cmd` would not fit through `exec`."""
+    for i, arg in enumerate(cmd):
+        size = len(arg.encode())
+        if size >= MAX_ARG_STRLEN:
+            flag = cmd[i - 1] if i > 0 and cmd[i - 1].startswith("--") else f"argv[{i}]"
+            raise ArgTooLong(what, flag, size)
 
 
 class MemoryKilled(RuntimeError):
@@ -181,9 +204,11 @@ async def run_json_subprocess(
     With `limit`, the child only spawns once it holds a slot, and its
     `wall_time` starts counting then.
 
-    Raises `MemoryKilled` when `rss_max_bytes` is set and the cap killed it,
-    and `BinaryPanicked` when the child panicked.
+    Raises `ArgTooLong` before spawning when an argv entry exceeds the kernel's
+    per-argument limit, `MemoryKilled` when `rss_max_bytes` is set and the cap
+    killed it, and `BinaryPanicked` when the child panicked.
     """
+    check_arg_sizes(cmd, what)
     async with contextlib.nullcontext() if limit is None else limit:
         started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(

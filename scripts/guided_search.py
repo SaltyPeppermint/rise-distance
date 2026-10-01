@@ -164,7 +164,7 @@ class SearchNode:
     """Node in the search tree
 
     `guide` is the node array of the guide as origin_lang; `s_expr` is the same
-    term lowered, which is what `samples --start-term` samples from next.
+    term lowered, which is what `sample` samples from next.
     The root carries the start term and no guide, since it is the unguided
     baseline rather than an attempt.
 
@@ -373,7 +373,7 @@ async def draw_expansion(
     cmd = [
         str(args.sample_bin),
         *sample_flags,
-        *cli_flags(**args.limits, start_term=s_expr, n_samples=args.branching),
+        *cli_flags(**args.limits, start=s_expr, n_samples=args.branching),
     ]
 
     try:
@@ -463,12 +463,7 @@ async def run_attempt(
     cmd = [
         str(args.attempt_bin),
         *base_flags,
-        *cli_flags(
-            goal_term=goal,
-            is_guide=True,
-            start_term=json.dumps(guide),
-            full_union=args.full_union,
-        ),
+        *cli_flags(goal=goal, is_guide=True, start=json.dumps(guide), full_union=args.full_union),
     ]
 
     return await measure_attempt(

@@ -23,7 +23,7 @@ use rise_distance::utils;
 Prints a one-element `[Samples]` array to stdout (empty
 on failure); logs go to stderr.
 Example:
-  sample --language math --start-term '(+ x 0)' \\
+  sample --language math --start '(+ x 0)' \\
     --max-iters 38 --max-nodes 1000000 --max-time 10 \\
     --max-memory 2000000000 \\
     --policy count
@@ -36,7 +36,7 @@ struct Args {
 
     /// Start-term s-expression whose guide phase gets replayed.
     #[arg(long)]
-    start_term: String,
+    start: String,
 
     /// Guide replay limits.
     #[command(flatten)]
@@ -72,7 +72,7 @@ fn main() {
 
     eprintln!("Starting at {}", OffsetDateTime::now_local().unwrap());
     eprintln!("Language: {:?}", args.language);
-    eprintln!("Start Term: {}", args.start_term);
+    eprintln!("Start Term: {}", args.start);
 
     match args.language {
         AvailableLanguages::Diospyros => {
@@ -93,7 +93,7 @@ fn main() {
 fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
     eprintln!(
         "\n=== Start Term: {} (max-iters={}) ===",
-        args.start_term, args.eqsat.max_iters
+        args.start, args.eqsat.max_iters
     );
 
     let out = match build_sample_record(args, rules) {
@@ -117,14 +117,14 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
     args: &Args,
     rules: &[Rewrite<L, N>],
 ) -> Result<Samples<L>, String> {
-    let seed_expr = args
-        .start_term
+    let start = args
+        .start
         .parse::<RecExpr<L>>()
-        .unwrap_or_else(|e| panic!("Failed to parse start term '{}': {e}", args.start_term));
+        .unwrap_or_else(|e| panic!("Failed to parse start term '{}': {e}", args.start));
 
     // Replay the guide phase under the effective limits the driver computed;
     // the replay ends at whichever limit trips first.
-    let result = eqsat::run_eqsat(&seed_expr, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
+    let result = eqsat::run_eqsat(&start, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
 
     eprintln!("DEBUG: PEAK RSS AFTER EQSAT: {}", utils::peak_rss_bytes());
     let stop_reason = format!("{:?}", result.stop_reason());
@@ -143,16 +143,16 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
     );
 
     let samples = if args.frontier {
-        build_frontier_samples(args, result, args.policy, &seed_expr)?
+        build_frontier_samples(args, result, args.policy, &start)?
     } else {
-        build_whole_samples(args, result, args.policy, &seed_expr)?
+        build_whole_samples(args, result, args.policy, &start)?
     };
     eprintln!(
         "DEBUG: PEAK RSS AFTER SAMPLING: {}",
         utils::peak_rss_bytes()
     );
     Ok(Samples {
-        start_term: args.start_term.clone(),
+        start_term: args.start.clone(),
         policy: args.policy.to_string(),
         samples: samples.clone().into_iter().map(|e| e.to_vec()).collect(),
         samples_s_expr: samples.into_iter().map(origin::lower).collect(),

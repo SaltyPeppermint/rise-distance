@@ -54,7 +54,7 @@ async def run_unguided_pair(
     cmd = [
         str(args.attempt_bin),
         *base_flags,
-        *cli_flags(start_term=pair.start, goal_term=pair.goal),
+        *cli_flags(start=pair.start, goal=pair.goal),
     ]
     attempt = await measure_attempt(
         cmd,
