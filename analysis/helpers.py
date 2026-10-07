@@ -53,12 +53,21 @@ def _run_label(directory: Path, config: dict) -> str:
     return (
         f"run_{run_name} · {config['search_policy']} · "
         f"branching={config['branching']}\n"
-        f"{config['sample_policy']} · {frontier} · {full_union} · "
-        f"size_steps={config['size_search_steps']}\n"
-        f"cap={config['max_rss']} · attempts={_budget(config['max_attempts'])} · "
+        f"{config['sample_policy']} · {frontier} · {full_union}\n"
+        f"attempts={_budget(config['max_attempts'])} · "
         f"time={_budget(config['max_pair_time'])} · "
-        f"backoff={config['sampling_backoff']} · seed={config['seed']}"
+        f"seed={config['seed']}"
     )
+
+    # return (
+    #     f"run_{run_name} · {config['search_policy']} · "
+    #     f"branching={config['branching']}\n"
+    #     f"{config['sample_policy']} · {frontier} · {full_union} · "
+    #     f"size_steps={config['size_search_steps']}\n"
+    #     f"cap={config['max_rss']} · attempts={_budget(config['max_attempts'])} · "
+    #     f"time={_budget(config['max_pair_time'])} · "
+    #     f"backoff={config['sampling_backoff']} · seed={config['seed']}"
+    # )
 
 
 def resolve_runs(patterns: Sequence[str]) -> tuple[list[Run], list[str]]:
