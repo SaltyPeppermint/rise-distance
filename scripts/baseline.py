@@ -48,8 +48,9 @@ async def run_unguided_pair(
 ) -> dict:
     """Run the pair-matched single-start baseline.
 
-    A baseline killed at the RSS cap or by an uncaught panic becomes an
-    ``out_of_memory``/``binary_panic`` failure row.
+    A baseline killed at the RSS cap, by an uncaught panic, or with a too-long
+    argument becomes an ``out_of_memory``/``binary_panic``/``arg_too_long``
+    failure row.
     """
     cmd = [
         str(args.attempt_bin),

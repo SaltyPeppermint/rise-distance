@@ -252,6 +252,8 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
         .then(pl.lit("attempts exhausted, all oomed"))
         .when(reason == "binary_panic")
         .then(pl.lit("binary panic"))
+        .when(reason == "arg_too_long")
+        .then(pl.lit("guide too long for argv"))
         .when(reason == "Saturated")
         .then(pl.lit("saturated without goal"))
         # A pair whose search never ran an attempt falls back to the search's
@@ -282,6 +284,9 @@ def _setup_category(status: pl.Expr) -> pl.Expr:
         returned had already been attempted on this pair.
     ``guide menu: binary panic``
         The `sample` process died of an uncaught panic.
+    ``guide menu: start too long for argv``
+        The start term exceeds the kernel's per-argument limit, so `sample`
+        was never spawned.
 
     An unrecognized status simply gets passed through.
     """
@@ -294,6 +299,8 @@ def _setup_category(status: pl.Expr) -> pl.Expr:
         .then(pl.lit("guide menu: empty pool"))
         .when(status == "binary_panic")
         .then(pl.lit("guide menu: binary panic"))
+        .when(status == "arg_too_long")
+        .then(pl.lit("guide menu: start too long for argv"))
         .otherwise(pl.lit("guide menu: ") + status)
     )
 

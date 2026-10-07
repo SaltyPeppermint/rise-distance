@@ -263,7 +263,8 @@ def failure_summary(stop_reason: str) -> dict[str, Any]:
     """An `attempt_summary`-shaped row, with every measurement left at `None`,
     for a child that never printed one: `out_of_memory` for one SIGKILLed at its
     cgroup RSS cap, `binary_panic` for one that died of an uncaught panic (unlike
-    a panic caught inside the eqsat run, `stop_reason="panic"`).
+    a panic caught inside the eqsat run, `stop_reason="panic"`), `arg_too_long`
+    for one never spawned since an argument would not fit through `exec`.
     """
     empty = dict.fromkeys(ATTEMPT_DTYPES)
     panic = stop_reason == "binary_panic"
@@ -282,14 +283,18 @@ async def measure_attempt(
 ) -> AttemptResult:
     """Run one `attempt` process under the RSS cap.
 
-    An attempt killed at the cap or by an uncaught panic comes back as a failed
-    attempt with ``stop_reason="out_of_memory"``/``"binary_panic"`` rather than
-    an exception.
+    An attempt killed at the cap, by an uncaught panic, or never spawned since
+    an argument exceeds the kernel's limit comes back as a failed attempt with
+    ``stop_reason="out_of_memory"``/``"binary_panic"``/``"arg_too_long"``
+    rather than an exception.
     """
     try:
         measured = await run_json_subprocess(
             cmd, what=what, max_rss_bytes=max_rss_bytes, limit=limit
         )
+    except ArgTooLong as too_long:
+        tqdm.write(f"WARNING: {too_long}", file=sys.stderr)
+        return AttemptResult(failure_summary("arg_too_long"), None, 0.0)
     except MemoryKilled as killed:
         return AttemptResult(failure_summary("out_of_memory"), None, killed.wall_time)
     except BinaryPanicked as panicked:

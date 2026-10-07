@@ -18,7 +18,9 @@ Every ``sample`` and ``attempt`` process is held to the ``--max-rss`` cgroup
 RSS cap. A killed ``sample`` is retried up to ``--sampling-backoff`` times,
 first at the number of iterations that completed, then giving up one more
 rewrite-applying iteration per retry. A process that dies of an uncaught panic
-is recorded as ``binary_panic`` and not retried.
+is recorded as ``binary_panic`` and not retried. A process whose arguments
+exceed the kernel's per-argument limit is never spawned and recorded as
+``arg_too_long``; like a saturated attempt, its node is not expanded further.
 """
 
 import asyncio
@@ -34,8 +36,10 @@ from typing import Literal
 import polars as pl
 from pydantic import Field, model_validator
 from pydantic_settings import CliApp
+from tqdm import tqdm
 
 from common import (
+    ArgTooLong,
     BaselineMismatch,
     BinaryPanicked,
     Measured,
@@ -66,6 +70,9 @@ class SearchPolicy(StrEnum):
 
 # How egg's `StopReason::Saturated` renders through `{:?}`
 SATURATED = "Saturated"
+
+# Attempt stop reasons whose node is never expanded.
+DEAD_ENDS = (SATURATED, "arg_too_long")
 
 
 class Args(ReplayArgs):
@@ -183,7 +190,9 @@ class Expansion:
     """The outcome of one `sample` process: the pool drawn and its cost."""
 
     children: list[tuple[list, str]]
-    status: Literal["ok", "empty_pool", "no_novel_terms", "out_of_memory", "binary_panic"]
+    status: Literal[
+        "ok", "empty_pool", "no_novel_terms", "out_of_memory", "binary_panic", "arg_too_long"
+    ]
     meta: dict
     wall_time: float
 
@@ -378,6 +387,9 @@ async def draw_expansion(
 
     try:
         measured, wall_time = await run_capped(args, limit, cmd, f"sample for term {s_expr!r}")
+    except ArgTooLong as too_long:
+        tqdm.write(f"WARNING: {too_long}", file=sys.stderr)
+        return Expansion([], "arg_too_long", dict(EMPTY_SAMPLE_META), 0.0)
     except BinaryPanicked as panicked:
         panicked.warn()
         return Expansion([], "binary_panic", dict(EMPTY_SAMPLE_META), panicked.wall_time)
@@ -539,8 +551,9 @@ async def search_pair(
         # would rebuild that same egraph and redraw that same pool. Not queueing
         # it sends the search back up to whatever the frontier holds.
         # A saturated attempt is a dead end as well, we wont get past that
-        # so we don't even queue it for expansion.
-        if attempt.summary["stop_reason"] != SATURATED and not node.terminal:
+        # so we don't even queue it for expansion. Same for a guide too long
+        # to pass to `attempt` at all.
+        if attempt.summary["stop_reason"] not in DEAD_ENDS and not node.terminal:
             frontier.queue_expansion(node)
 
     return trace
