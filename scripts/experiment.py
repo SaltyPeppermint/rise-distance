@@ -33,13 +33,15 @@ BASELINE_FLAGS = {"max_rss": "450M", "n_starts": 100}
 
 BASE_FLAGS = {
     **BASELINE_FLAGS,
-    "max_attempts": 30,
-    "seed": 456,
     "full_union": True,
     "sampling_backoff": 50,
 }
 
+# Mutually exclusive
+BUDGETS = [{"max_attempts": 30}, {"max_pair_time": 60}]
+
 GRID = {
+    "seed": [123, 456],
     "sample_policy": ["uniform", "count"],
     "branching": [10, 30],
     "search_policy": ["dfs", "bfs"],
@@ -211,14 +213,16 @@ def main() -> None:
     baseline = run_baseline()
 
     # GRID SEARCH
-    for values in itertools.product(*GRID.values()):
-        flags = {**BASE_FLAGS, **dict(zip(GRID, values)), "baseline": baseline}
+    for budget, values in itertools.product(BUDGETS, itertools.product(*GRID.values())):
+        flags = {**BASE_FLAGS, **budget, **dict(zip(GRID, values)), "baseline": baseline}
         run_guided_search(flags, new_run_dir(suffix))
 
     # # INDIVIDUAL RUN(s)
     # run_guided_search(
     #     {
     #         **BASE_FLAGS,
+    #         **BUDGETS[0],
+    #         "seed": 456,
     #         "search_policy": "bfs",
     #         "frontier": True,
     #         "baseline": baseline,
