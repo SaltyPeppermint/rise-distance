@@ -660,7 +660,6 @@ def report_results(
     The baseline stays in its own folder, which `config.json` names under `baseline`.
     """
     out = args.output
-    out.mkdir(parents=True, exist_ok=True)
 
     attempt_rows = [row for trace in traces for row in trace.attempts]
     expansion_rows = [row for trace in traces for row in trace.expansions]
@@ -677,12 +676,6 @@ def report_results(
 
     write_sample_pools(pools, out)
 
-    config = {
-        **args.model_dump(),
-        "effective_limits": args.limits,
-    }
-    (out / "config.json").write_text(json.dumps(config, indent=2, default=str))
-
     reached_pairs = int(pairs["guided_success"].sum())
     total_pairs = len(pairs)
     reach_rate = reached_pairs / total_pairs if total_pairs else 0.0
@@ -694,6 +687,15 @@ def report_results(
         f"Wrote {out / 'pairs.parquet'}",
         file=sys.stderr,
     )
+
+
+def save_config(args: Args) -> None:
+    """Write `config.json` so it can be rerun in case the search fails."""
+    config = {
+        **args.model_dump(),
+        "effective_limits": args.limits,
+    }
+    (args.output / "config.json").write_text(json.dumps(config, indent=2, default=str))
 
 
 async def main(args: Args) -> int:
@@ -709,6 +711,10 @@ async def main(args: Args) -> int:
     except BaselineMismatch as mismatch:
         print(mismatch, file=sys.stderr)
         return 2
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    save_config(args)
+
     flags_str = "".join(f"\n  {s}" if s.startswith("--") else f" {s}" for s in sample_flags)
     print(
         f"Searching {len(pairs)} (start, goal) pair(s)\nSample Flags: {flags_str}", file=sys.stderr

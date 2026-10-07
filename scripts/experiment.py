@@ -1,9 +1,12 @@
 """Run a whole experiment: build, compute the shared baseline, then the guided searches.
 
 uv run scripts/experiment.py
+uv run scripts/experiment.py --rerun-aborted [data/guided_search]
 """
 
+import argparse
 import itertools
+import json
 import re
 import subprocess
 from collections.abc import Mapping
@@ -16,13 +19,22 @@ PROBLEMS = Path("data/problems/expensive-bird")
 OUTPUT_BASE = Path("data/guided_search")
 BASELINE_BASE = Path("data/baselines")
 
+# What `guided_search.py` writes once the search finished.
+RESULT_FILES = (
+    "attempts.parquet",
+    "attempts.json",
+    "expansions.parquet",
+    "pairs.parquet",
+    "pools.json",
+)
+
 # Shared by `baseline.py` and `guided_search.py`, so both compute the same baseline.
 BASELINE_FLAGS = {"max_rss": "450M", "n_starts": 100}
 
 BASE_FLAGS = {
     **BASELINE_FLAGS,
     "max_attempts": 30,
-    "seed": 123,
+    "seed": 456,
     "full_union": True,
     "sampling_backoff": 50,
 }
@@ -121,28 +133,74 @@ def run_baseline(problems: Path = PROBLEMS) -> Path:
     return out_dir
 
 
-def run_guided_search(
-    run_specific_flags: dict[str, object],
-    suffix: str,
-    baseline: Path,
-    problems: Path = PROBLEMS,
-    run: int | None = None,
-) -> None:
+def new_run_dir(suffix: str, run: int | None = None) -> Path:
+    """Create the folder `<run>_<suffix>` in `OUTPUT_BASE`, numbered after the last run by default."""
     if run is None:
         run = next_run_number(OUTPUT_BASE)
     out_dir = OUTPUT_BASE / f"{run}_{suffix}"
     out_dir.mkdir()
-    flags = {**BASE_FLAGS, **run_specific_flags, "baseline": baseline, "output": out_dir}
-    print(f"RUN {run}\n FLAGS: {flags}")
+    return out_dir
+
+
+def run_guided_search(
+    flags: Mapping[str, object], out_dir: Path, problems: Path = PROBLEMS
+) -> None:
+    """Print the flags and run `guided_search.py` into `out_dir`, logging there as well."""
+    flags = {**flags, "output": out_dir}
+    print(f"RUN: {out_dir.name}\nFLAGS:")
+    width = max(map(len, flags))
+    for k, v in flags.items():
+        print(f"    {k:<{width}} : {v}")
+
     returncode = run_driver(
         "guided_search.py", flags, problems, log=out_dir / "experiment.log", check=False
     )
     if returncode != 0:
-        print(f"WARNING: run {run} exited with code {returncode}")
+        print(f"WARNING: run {out_dir.name} exited with code {returncode}")
+
+
+def rerun_aborted(base: Path) -> None:
+    """Re-run every aborted run in `base` in place, with the flags its `config.json` holds.
+
+    A run is aborted if it started (wrote `config.json`) but did not write all its results.
+    """
+    run_dirs = sorted(
+        (
+            p
+            for p in base.iterdir()
+            if (p / "config.json").is_file()
+            and not all((p / name).is_file() for name in RESULT_FILES)
+        ),
+        key=lambda p: int(m.group()) if (m := re.match(r"\d+", p.name)) else 0,
+    )
+    print(f"Re-running {len(run_dirs)} aborted run(s) in {base}")
+
+    for run_dir in run_dirs:
+        config = json.loads((run_dir / "config.json").read_text())
+        problems = Path(config.pop("path"))
+        config.pop("effective_limits", None)
+        # Its `output` is replaced by the folder it lives in now, in case it was moved since.
+        run_guided_search(config, run_dir, problems)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--rerun-aborted",
+        type=Path,
+        nargs="?",
+        const=OUTPUT_BASE,
+        metavar="DIR",
+        help=f"Only re-run the aborted runs in DIR (default: {OUTPUT_BASE}), then exit.",
+    )
+    cli = parser.parse_args()
+
     subprocess.run(["cargo", "build", "--release"], check=True)
+
+    if cli.rerun_aborted is not None:
+        rerun_aborted(cli.rerun_aborted)
+        return
+
     OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
     suffix = f"{datetime.now().astimezone():%Y-%m-%dT%H:%M}_{git_short_hash()}"
 
@@ -154,17 +212,18 @@ def main() -> None:
 
     # GRID SEARCH
     for values in itertools.product(*GRID.values()):
-        run_guided_search(dict(zip(GRID, values)), suffix, baseline)
+        flags = {**BASE_FLAGS, **dict(zip(GRID, values)), "baseline": baseline}
+        run_guided_search(flags, new_run_dir(suffix))
 
     # # INDIVIDUAL RUN(s)
     # run_guided_search(
     #     {
+    #         **BASE_FLAGS,
     #         "search_policy": "bfs",
     #         "frontier": True,
+    #         "baseline": baseline,
     #     },
-    #     suffix,
-    #     baseline,
-    #     run=18,
+    #     new_run_dir(suffix, run=18),
     # )
 
 
