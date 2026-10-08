@@ -249,25 +249,26 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
         .when(reason.str.starts_with('Other("predicted upcoming-iteration'))
         .then(pl.lit("predictive memory stop"))
         .when(reason == "out_of_memory")
-        .then(pl.lit("attempts exhausted, all oomed"))
+        .then(pl.lit("killed at RSS cap"))
         .when(reason == "binary_panic")
         .then(pl.lit("binary panic"))
+        .when(reason == "panic")
+        .then(pl.lit("panic in eqsat"))
         .when(reason == "arg_too_long")
         .then(pl.lit("guide too long for argv"))
         .when(reason == "Saturated")
         .then(pl.lit("saturated without goal"))
-        # A pair whose search never ran an attempt falls back to the search's
-        # own stop reason, so those land here too.
-        .when(reason == "time_exhausted")
-        .then(pl.lit("pair time budget"))
-        .when(reason == "attempt_budget_exhausted")
-        .then(pl.lit("attempt budget"))
-        .when(reason == "frontier_exhausted")
-        .then(pl.lit("frontier exhausted"))
-        .when(reason == "unstarted")
-        .then(pl.lit("search never started"))
         .otherwise(pl.lit("other"))
     )
+
+
+# Display names of `search_stop_reason`; `reached` and unknown reasons pass through.
+SEARCH_LABELS = {
+    "time_exhausted": "pair time budget",
+    "attempt_budget_exhausted": "attempt budget",
+    "frontier_exhausted": "frontier exhausted",
+    "unstarted": "search never started",
+}
 
 
 def _setup_category(status: pl.Expr) -> pl.Expr:
@@ -305,35 +306,54 @@ def _setup_category(status: pl.Expr) -> pl.Expr:
     )
 
 
-def failure_breakdown(frame: pl.DataFrame) -> pl.DataFrame:
-    """Pair-level, mutually exclusive failure categories."""
-    guided = frame.filter(~pl.col("guided_success").fill_null(False)).select(
-        "mode",
-        pl.when(pl.col("setup_status") != "ok")
-        .then(_setup_category(pl.col("setup_status")))
-        .when(pl.col("guided_panic").fill_null(False))
-        .then(pl.lit("panic"))
-        .otherwise(_stop_category(pl.col("guided_stop_reason")))
-        .alias("failure"),
-    )
-    # unguided = frame.filter(~pl.col("unguided_success").fill_null(False)).select(
-    #     "mode",
-    #     pl.lit("unguided").alias("method"),
-    #     pl.when(pl.col("unguided_panic").fill_null(False))
-    #     .then(pl.lit("panic"))
-    #     .otherwise(_stop_category(pl.col("unguided_stop_reason")))
-    #     .alias("failure"),
-    # )
-    planned = frame.group_by("mode", maintain_order=True).agg(pl.len().alias("planned_pairs"))
+def search_outcomes(frame: pl.DataFrame) -> pl.DataFrame:
+    """How every pair's search ended, one mutually exclusive category per pair.
+
+    A missing guide menu takes precedence; its search ends `frontier_exhausted`
+    without ever running an attempt.
+    """
     return (
-        # pl.concat([guided, unguided])
-        guided.group_by("mode", "failure", maintain_order=True)
+        frame.select(
+            "mode",
+            pl.when(pl.col("setup_status") != "ok")
+            .then(_setup_category(pl.col("setup_status")))
+            .otherwise(pl.col("search_stop_reason").replace(SEARCH_LABELS))
+            .alias("outcome"),
+        )
+        .group_by("mode", "outcome", maintain_order=True)
         .agg(pl.len().alias("count"))
-        .with_columns(pl.col("count").sum().over("mode").alias("mode_failures"))
-        .join(planned, on="mode", how="left")
+        .with_columns((pl.col("count") / pl.col("count").sum().over("mode")).alias("share"))
+    )
+
+
+def attempt_failures(runs: Sequence[Run]) -> pl.DataFrame:
+    """Why each run's failed attempts stopped, split by whether their pair was eventually proved."""
+    attempts = pl.concat(
+        [
+            pl.read_parquet(run.directory / "attempts.parquet").with_columns(
+                pl.lit(run.label).alias("mode")
+            )
+            for run in runs
+        ]
+    )
+    reached = pl.col("reached").fill_null(False)
+    return (
+        attempts.with_columns(
+            pl.when(reached.any().over("mode", "start", "goal"))
+            .then(pl.lit("eventually proved"))
+            .otherwise(pl.lit("never proved"))
+            .alias("pair_outcome"),
+        )
+        .filter(~reached)
+        .group_by(
+            "mode",
+            "pair_outcome",
+            _stop_category(pl.col("stop_reason")).alias("failure"),
+            maintain_order=True,
+        )
+        .agg(pl.len().alias("count"))
         .with_columns(
-            (pl.col("count") / pl.col("mode_failures")).alias("share_of_failures"),
-            (pl.col("count") / pl.col("planned_pairs")).alias("share_of_planned"),
+            (pl.col("count") / pl.col("count").sum().over("mode", "pair_outcome")).alias("share")
         )
     )
 

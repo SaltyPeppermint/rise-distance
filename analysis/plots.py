@@ -87,11 +87,6 @@ def _method_color() -> alt.Color:
     )
 
 
-def _guided_peak_scope(comparison: pl.DataFrame) -> str:
-    scopes = comparison["guided_peak_scope"].drop_nulls().unique().to_list()
-    return str(scopes[0]) if len(scopes) == 1 else "guided"
-
-
 def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
     """Guided success rate per mode, the unguided one as a line per baseline."""
     unguided = rates.filter(pl.col("method") == "unguided")
@@ -155,36 +150,62 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
     )
 
 
-def failure_causes(breakdown: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Pair-level guided failure causes."""
-    causes = (
-        breakdown.group_by("failure")
-        .agg(pl.col("count").sum().alias("total"))
-        .sort("total", "failure", descending=[True, False])["failure"]
-        .to_list()
+def _mode_row(modes: Sequence[str]) -> alt.Row:
+    """Facet one row per run, labelled above it."""
+    return alt.Row(
+        "mode:N",
+        title=None,
+        sort=list(modes),
+        header=_mode_header(orient="top", labelAnchor="middle", labelPadding=0),
     )
+
+
+def search_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
+    """How every pair's search ended."""
     return (
-        alt.Chart(breakdown)
+        alt.Chart(outcomes)
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X("count:Q", title="failed pairs"),
-            y=alt.Y("failure:N", title=None, sort=causes),
-            color=alt.value(GUIDED_COLOR),
-            row=alt.Row(
-                "mode:N",
-                title=None,
-                sort=list(meta["modes"]),
-                header=_mode_header(orient="top", labelAnchor="middle", labelPadding=0),
+            x=alt.X("count:Q", title="pairs"),
+            y=alt.Y("outcome:N", title=None),
+            color=alt.condition(
+                alt.datum.outcome == "reached",
+                alt.value(SUCCESS_COLOR),
+                alt.value(FAILURE_COLOR),
             ),
+            row=_mode_row(meta["modes"]),
             tooltip=[
                 "mode:N",
-                "failure:N",
+                "outcome:N",
                 "count:Q",
-                alt.Tooltip("share_of_failures:Q", format=".1%", title="share of failures"),
-                alt.Tooltip("share_of_planned:Q", format=".1%", title="share of planned pairs"),
+                alt.Tooltip("share:Q", format=".1%", title="share of planned pairs"),
             ],
         )
-        .properties(title=_title("Failure causes", meta))  # .  width=420, height=alt.Step(34))
+        .properties(title=_title("How the search ended", meta))
+    )
+
+
+def attempt_failures(failures: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Failed attempts by stop reason, split by whether their pair was eventually proved."""
+    return (
+        alt.Chart(failures)
+        .mark_bar()
+        .encode(  # ty: ignore[unresolved-attribute]
+            x=alt.X("count:Q", title="failed attempts"),
+            y=alt.Y("failure:N", title=None),
+            color=alt.value(GUIDED_COLOR),
+            row=_mode_row(meta["modes"]),
+            # "eventually proved" sorts before "never proved".
+            column=alt.Column("pair_outcome:N", title=None, header=alt.Header(labelFontSize=11)),
+            tooltip=[
+                "mode:N",
+                alt.Tooltip("pair_outcome:N", title="pair"),
+                "failure:N",
+                "count:Q",
+                alt.Tooltip("share:Q", format=".1%", title="share of the pair group's failures"),
+            ],
+        )
+        .properties(title=_title("Failed attempts", meta))
     )
 
 
@@ -210,7 +231,8 @@ def saturation_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
 
 def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
     """Guided peaks vs. brute-force memory cost."""
-    guided_scope = _guided_peak_scope(comparison)
+    scopes = comparison["guided_peak_scope"].drop_nulls().unique().to_list()
+    guided_scope = str(scopes[0]) if len(scopes) == 1 else "guided"
     title = f"{guided_scope.title()} vs brute-force proof"
     points = (
         alt.Chart(comparison)
