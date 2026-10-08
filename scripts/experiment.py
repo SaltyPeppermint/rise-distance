@@ -37,8 +37,12 @@ BASE_FLAGS = {
     "sampling_backoff": 50,
 }
 
-# Mutually exclusive
-BUDGETS = [{"max_attempts": 30}, {"max_pair_time": 60}]
+# Search stops at whatever is hit earlier
+BUDGETS = [
+    {"max_attempts": 30},
+    {"max_pair_time": 60},
+    {"max_attempts": 30, "max_pair_time": 60},
+]
 
 GRID = {
     "seed": [123, 456],

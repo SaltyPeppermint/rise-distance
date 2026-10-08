@@ -95,10 +95,11 @@ class Args(ReplayArgs):
 
     # Search budget
     #
-    # Exactly one must be given. It is the only bound on the search tree's
-    # depth: BFS reaches depth ~log_branching(budget), DFS descends one chain
-    # until it dead-ends (saturated, empty pool, no unseen guides) and only then
-    # backs up to the next sibling.
+    # At least one must be given; with both, the search stops at whichever runs
+    # out first. The budget is the only bound on the search tree's depth: BFS
+    # reaches depth ~log_branching(budget), DFS descends one chain until it
+    # dead-ends (saturated, empty pool, no unseen guides) and only then backs up
+    # to the next sibling.
     max_pair_time: float | None = Field(
         default=None,
         gt=0,
@@ -150,8 +151,8 @@ class Args(ReplayArgs):
 
     @model_validator(mode="after")
     def validate_search_budget(self) -> Args:
-        if (self.max_pair_time is None) == (self.max_attempts is None):
-            raise ValueError("give exactly one of --max-pair-time and --max-attempts")
+        if self.max_pair_time is None and self.max_attempts is None:
+            raise ValueError("give at least one of --max-pair-time and --max-attempts")
         return self
 
     def sample_flags(self, language: str) -> list[str]:
@@ -488,6 +489,7 @@ async def search_pair(
     frontier = SearchFrontier(args.search_policy, pair.start, pools, trace, budget)
 
     while True:
+        # Time is checked first, so a pair out of both budgets counts as `time_exhausted`.
         if budget.expired():
             trace.stop_reason = "time_exhausted"
             break
