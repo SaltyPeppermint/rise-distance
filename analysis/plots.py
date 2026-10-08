@@ -35,8 +35,9 @@ OUTCOME_ORDER = ["both", "guided only", "unguided only", "neither"]
 OUTCOME_COLORS = [PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR]
 WIN_ORDER = ["below brute force", "at or above"]
 WIN_COLORS = [SUCCESS_COLOR, FAILURE_COLOR]
-# In `BRUTE_COST_OUTCOMES` order.
-BRUTE_COST_COLORS = [FAILURE_COLOR, PALETTE[5], SUCCESS_COLOR]
+BRUTE_COST_COLORS = dict(
+    zip(BRUTE_COST_OUTCOMES, [FAILURE_COLOR, PALETTE[5], SUCCESS_COLOR], strict=True)
+)
 DEPTH_ORDER = ["first success", "deepest attempt"]
 DEPTH_COLORS = [SUCCESS_COLOR, NEUTRAL_COLOR]
 
@@ -44,6 +45,8 @@ DEPTH_COLORS = [SUCCESS_COLOR, NEUTRAL_COLOR]
 # lines but never splits a string itself, so every encoding that draws a mode
 # label has to ask for the split.
 MODE_LABEL_SPLIT = "split(datum.label, '\\n')"
+# Facet header placing each run's label centred above its panel.
+TOP_LABEL = {"orient": "top", "labelAnchor": "middle"}
 
 THEME: alt.theme.ThemeConfig = {
     "config": {
@@ -74,16 +77,25 @@ def _mode_axis(modes: Sequence[str]) -> alt.Y:
     )
 
 
-def _mode_header(**kwargs) -> alt.Header:
-    return alt.Header(labelFontSize=11, labelExpr=MODE_LABEL_SPLIT, **kwargs)
-
-
-def _method_color() -> alt.Color:
+def _ordered_color(field: str, order: Sequence[str], colors: Sequence[str], **legend) -> alt.Color:
+    """Color `field` with `colors`, in `order` for both the scale and the untitled legend."""
     return alt.Color(
-        "method:N",
-        sort=METHOD_ORDER,
-        scale=alt.Scale(domain=METHOD_ORDER, range=METHOD_COLORS),
-        legend=alt.Legend(title=None),
+        field,
+        sort=list(order),
+        scale=alt.Scale(domain=list(order), range=list(colors)),
+        legend=alt.Legend(title=None, **legend),
+    )
+
+
+def _mode_facet(
+    channel: type[alt.Row | alt.Column], modes: Sequence[str], **header
+) -> alt.Row | alt.Column:
+    """Facet one row or column per run, in run order."""
+    return channel(
+        "mode:N",
+        title=None,
+        sort=list(modes),
+        header=alt.Header(labelFontSize=11, labelExpr=MODE_LABEL_SPLIT, **header),
     )
 
 
@@ -95,7 +107,7 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_rule(strokeDash=[4, 3], strokeWidth=1.5)
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_rate:Q"),
-            color=_method_color(),
+            color=_ordered_color("method:N", METHOD_ORDER, METHOD_COLORS),
             tooltip=[
                 "baseline:N",
                 "successes:Q",
@@ -114,7 +126,7 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_rate:Q", title="success rate", axis=alt.Axis(format="%")),
             y=_mode_axis(meta["modes"]),
-            color=_method_color(),
+            color=_ordered_color("method:N", METHOD_ORDER, METHOD_COLORS),
             tooltip=[
                 "mode:N",
                 "method:N",
@@ -137,26 +149,11 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
             y=_mode_axis(meta["modes"]),
-            color=alt.Color(
-                "outcome:N",
-                sort=OUTCOME_ORDER,
-                scale=alt.Scale(domain=OUTCOME_ORDER, range=OUTCOME_COLORS),
-                legend=alt.Legend(title=None, labelLimit=0),
-            ),
+            color=_ordered_color("outcome:N", OUTCOME_ORDER, OUTCOME_COLORS, labelLimit=0),
             order=alt.Order("outcome:N", sort="ascending"),
             tooltip=["mode:N", "outcome:N", "count:Q", alt.Tooltip("share:Q", format=".1%")],
         )
         .properties(title=_title("Paired outcomes", meta), height=alt.Step(42))
-    )
-
-
-def _mode_row(modes: Sequence[str]) -> alt.Row:
-    """Facet one row per run, labelled above it."""
-    return alt.Row(
-        "mode:N",
-        title=None,
-        sort=list(modes),
-        header=_mode_header(orient="top", labelAnchor="middle", labelPadding=0),
     )
 
 
@@ -173,7 +170,7 @@ def search_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
                 alt.value(SUCCESS_COLOR),
                 alt.value(FAILURE_COLOR),
             ),
-            row=_mode_row(meta["modes"]),
+            row=_mode_facet(alt.Row, meta["modes"], **TOP_LABEL, labelPadding=0),
             tooltip=[
                 "mode:N",
                 "outcome:N",
@@ -194,7 +191,7 @@ def attempt_failures(failures: pl.DataFrame, meta: dict) -> alt.Chart:
             x=alt.X("count:Q", title="failed attempts"),
             y=alt.Y("failure:N", title=None),
             color=alt.value(GUIDED_COLOR),
-            row=_mode_row(meta["modes"]),
+            row=_mode_facet(alt.Row, meta["modes"], **TOP_LABEL, labelPadding=0),
             # "eventually proved" sorts before "never proved".
             column=alt.Column("pair_outcome:N", title=None, header=alt.Header(labelFontSize=11)),
             tooltip=[
@@ -280,7 +277,6 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
     """Success comparison for every pair, bucketed by brute force memory cost"""
     present = set(binned["outcome"].unique().to_list())
     order = [name for name in BRUTE_COST_OUTCOMES if name in present]
-    colors = [BRUTE_COST_COLORS[BRUTE_COST_OUTCOMES.index(name)] for name in order]
     return (
         alt.Chart(binned)
         .mark_bar()
@@ -295,17 +291,9 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
             # A bar given both x and x2 spans a range rather than resting on the
             # axis, so the baseline has to be named.
             y2=alt.datum(0),
-            column=alt.Column(
-                "mode:N",
-                title=None,
-                sort=list(meta["modes"]),
-                header=_mode_header(orient="top", labelAnchor="middle"),
-            ),
-            color=alt.Color(
-                "outcome:N",
-                sort=order,
-                scale=alt.Scale(domain=order, range=colors),
-                legend=alt.Legend(title=None, columns=1),
+            column=_mode_facet(alt.Column, meta["modes"], **TOP_LABEL),
+            color=_ordered_color(
+                "outcome:N", order, [BRUTE_COST_COLORS[name] for name in order], columns=1
             ),
             tooltip=[
                 "mode:N",
@@ -340,19 +328,9 @@ def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("count:Q", title="guided successes"),
             y=alt.Y("guided_peak_scope:N", title=None, axis=alt.Axis(labelLimit=0)),
-            color=alt.Color(
-                "side:N",
-                sort=WIN_ORDER,
-                scale=alt.Scale(domain=WIN_ORDER, range=WIN_COLORS),
-                legend=alt.Legend(title=None),
-            ),
+            color=_ordered_color("side:N", WIN_ORDER, WIN_COLORS),
             order=alt.Order("side_order:Q", sort="ascending"),
-            row=alt.Row(
-                "mode:N",
-                title=None,
-                sort=list(meta["modes"]),
-                header=_mode_header(labelAngle=0, labelAlign="left"),
-            ),
+            row=_mode_facet(alt.Row, meta["modes"], labelAngle=0, labelAlign="left"),
             tooltip=["mode:N", "guided_peak_scope:N", "side:N", "count:Q"],
         )
         .properties(title=_title(f"Guided {MEMORY_LABEL} versus brute-force proof", meta))
@@ -424,12 +402,7 @@ def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:
             #     sort=list(meta["modes"]),
             #     header=alt.Header(orient="top", labelAnchor="start", labelFontSize=11),
             # ),
-            column=alt.Column(
-                "mode:N",
-                title=None,
-                sort=list(meta["modes"]),
-                header=_mode_header(orient="top", labelAnchor="middle"),
-            ),
+            column=_mode_facet(alt.Column, meta["modes"], **TOP_LABEL),
             tooltip=["mode:N", "success_attempt:O", "count():Q"],
         )
         .properties(title=_title("Attempts to success", meta))
@@ -445,18 +418,8 @@ def search_depth(depths: pl.DataFrame, meta: dict) -> alt.Chart:
             x=alt.X("depth:O", title="search-tree depth"),
             xOffset=alt.XOffset("measure:N", sort=DEPTH_ORDER),
             y=alt.Y("count:Q", title="pairs"),
-            color=alt.Color(
-                "measure:N",
-                sort=DEPTH_ORDER,
-                scale=alt.Scale(domain=DEPTH_ORDER, range=DEPTH_COLORS),
-                legend=alt.Legend(title=None),
-            ),
-            column=alt.Column(
-                "mode:N",
-                title=None,
-                sort=list(meta["modes"]),
-                header=_mode_header(orient="top", labelAnchor="middle"),
-            ),
+            color=_ordered_color("measure:N", DEPTH_ORDER, DEPTH_COLORS),
+            column=_mode_facet(alt.Column, meta["modes"], **TOP_LABEL),
             tooltip=["mode:N", "measure:N", "depth:O", "count:Q"],
         )
         .properties(title=_title("Search depth", meta))

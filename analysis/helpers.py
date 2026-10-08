@@ -42,20 +42,20 @@ def _run_dirs(pattern: str) -> list[Path]:
     )
 
 
-def _budget(value: float | None) -> str:
-    return "∞" if value is None else f"{value:g}"
-
-
 def _run_label(directory: Path, config: dict) -> str:
     frontier = "frontier" if config["frontier"] else "whole"
     full_union = "full_union" if config["full_union"] else "simple_union"
     run_name = directory.name.split("_")[0]
+    budget = {
+        key: "∞" if config[key] is None else f"{config[key]:g}"
+        for key in ("max_attempts", "max_pair_time")
+    }
     return (
         f"run_{run_name} · {config['search_policy']} · "
         f"branching={config['branching']}\n"
         f"{config['sample_policy']} · {frontier} · {full_union}\n"
-        f"attempts={_budget(config['max_attempts'])} · "
-        f"time={_budget(config['max_pair_time'])} · "
+        f"attempts={budget['max_attempts']} · "
+        f"time={budget['max_pair_time']} · "
         f"seed={config['seed']}"
     )
 
@@ -64,8 +64,8 @@ def _run_label(directory: Path, config: dict) -> str:
     #     f"branching={config['branching']}\n"
     #     f"{config['sample_policy']} · {frontier} · {full_union} · "
     #     f"size_steps={config['size_search_steps']}\n"
-    #     f"cap={config['max_rss']} · attempts={_budget(config['max_attempts'])} · "
-    #     f"time={_budget(config['max_pair_time'])} · "
+    #     f"cap={config['max_rss']} · attempts={budget['max_attempts']} · "
+    #     f"time={budget['max_pair_time']} · "
     #     f"backoff={config['sampling_backoff']} · seed={config['seed']}"
     # )
 
@@ -179,39 +179,25 @@ def load_comparisons(runs: Sequence[Run]) -> tuple[pl.DataFrame, dict]:
     return data, meta
 
 
-def _rate_rows(
-    frame: pl.DataFrame,
-    group_columns: Sequence[str],
-    success_column: str,
-) -> list[dict]:
-    rows = []
-    for keys, group in frame.group_by(*group_columns, maintain_order=True):
-        key_values = keys if isinstance(keys, tuple) else (keys,)
-        total = len(group)
-        successes = int(group[success_column].fill_null(False).sum())
-        rows.append(
-            {
-                **dict(zip(group_columns, key_values, strict=True)),
-                "successes": successes,
-                "n": total,
-                "success_rate": successes / total if total else None,
-            }
-        )
-    return rows
-
-
 def success_rates(frame: pl.DataFrame) -> pl.DataFrame:
     """Guided success rates per mode and unguided ones per baseline."""
-    guided = [
-        {**row, "method": "guided"}
-        for row in _rate_rows(frame, ["mode", "baseline"], "guided_success")
-    ]
-    pairs = frame.unique(["baseline", "start", "goal"], maintain_order=True)
-    unguided = [
-        {**row, "mode": None, "method": "unguided"}
-        for row in _rate_rows(pairs, ["baseline"], "unguided_success")
-    ]
-    return pl.DataFrame([*guided, *unguided])
+
+    def rates(method: str) -> list[pl.Expr]:
+        return [
+            pl.col(f"{method}_success").fill_null(False).sum().alias("successes"),
+            pl.len().alias("n"),
+            pl.lit(method).alias("method"),
+        ]
+
+    guided = frame.group_by("mode", "baseline", maintain_order=True).agg(rates("guided"))
+    unguided = (
+        frame.unique(["baseline", "start", "goal"], maintain_order=True)
+        .group_by("baseline", maintain_order=True)
+        .agg(rates("unguided"))
+    )
+    return pl.concat([guided, unguided], how="diagonal").with_columns(
+        (pl.col("successes") / pl.col("n")).alias("success_rate")
+    )
 
 
 def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
@@ -233,32 +219,31 @@ def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+# Display names of an attempt's `stop_reason`, keyed by egg's variant name; unknown ones are "other".
+STOP_LABELS = {
+    "unknown": "unknown",
+    "NodeLimit": "node limit",
+    "MemoryLimit": "memory limit",
+    "TimeLimit": "time limit",
+    "IterationLimit": "iteration limit",
+    "Saturated": "saturated without goal",
+    "out_of_memory": "out of memory",
+    "binary_panic": "binary panic",
+    "panic": "panic in eqsat",
+    "arg_too_long": "guide too long for argv",
+}
+
+
 def _stop_category(reason: pl.Expr) -> pl.Expr:
-    """Collapse detailed egg stop strings into stable analysis categories."""
+    """Collapse detailed egg stop strings into stable analysis categories.
+
+    egg's limits render with their value, e.g. `TimeLimit(300.08)`, so only the
+    variant name before the parenthesis is looked up.
+    """
     return (
-        pl.when(reason.is_null())
-        .then(pl.lit("unknown"))
-        .when(reason.str.starts_with("NodeLimit"))
-        .then(pl.lit("node limit"))
-        .when(reason.str.starts_with("MemoryLimit"))
-        .then(pl.lit("memory limit"))
-        .when(reason.str.starts_with("TimeLimit"))
-        .then(pl.lit("time limit"))
-        .when(reason.str.starts_with("IterationLimit"))
-        .then(pl.lit("iteration limit"))
-        .when(reason.str.starts_with('Other("predicted upcoming-iteration'))
-        .then(pl.lit("predictive memory stop"))
-        .when(reason == "out_of_memory")
-        .then(pl.lit("killed at RSS cap"))
-        .when(reason == "binary_panic")
-        .then(pl.lit("binary panic"))
-        .when(reason == "panic")
-        .then(pl.lit("panic in eqsat"))
-        .when(reason == "arg_too_long")
-        .then(pl.lit("guide too long for argv"))
-        .when(reason == "Saturated")
-        .then(pl.lit("saturated without goal"))
-        .otherwise(pl.lit("other"))
+        reason.fill_null("unknown")
+        .str.extract(r"^(\w+)")
+        .replace_strict(STOP_LABELS, default="other")
     )
 
 
@@ -271,39 +256,21 @@ SEARCH_LABELS = {
 }
 
 
-def _setup_category(status: pl.Expr) -> pl.Expr:
-    """Name why a pair never got a guide menu, from its non-ok ``setup_status``.
-
-    ``guide menu: out of memory``
-        Every `sample` try, `--sampling-backoff` retries included, died at the
-        RSS cap.
-    ``guide menu: no novel terms``
-        The child survived the cap and still printed an empty payload: no
-        novel root terms below the size cap, so there was nothing to draw.
-    ``guide menu: empty pool``
-        The draw succeeded but returned no samples, or every sample it
-        returned had already been attempted on this pair.
-    ``guide menu: binary panic``
-        The `sample` process died of an uncaught panic.
-    ``guide menu: start too long for argv``
-        The start term exceeds the kernel's per-argument limit, so `sample`
-        was never spawned.
-
-    An unrecognized status simply gets passed through.
-    """
-    return (
-        pl.when(status == "out_of_memory")
-        .then(pl.lit("guide menu: out of memory"))
-        .when(status == "no_novel_terms")
-        .then(pl.lit("guide menu: no novel terms"))
-        .when(status == "empty_pool")
-        .then(pl.lit("guide menu: empty pool"))
-        .when(status == "binary_panic")
-        .then(pl.lit("guide menu: binary panic"))
-        .when(status == "arg_too_long")
-        .then(pl.lit("guide menu: start too long for argv"))
-        .otherwise(pl.lit("guide menu: ") + status)
-    )
+# Why a pair never got a guide menu, by its non-ok `setup_status`; unknown ones pass through.
+SETUP_LABELS = {
+    # Every `sample` try, `--sampling-backoff` retries included, died at the RSS cap.
+    "out_of_memory": "out of memory",
+    # The child survived the cap and still printed an empty payload: no novel
+    # root terms below the size cap, so there was nothing to draw.
+    "no_novel_terms": "no novel terms",
+    # The draw succeeded but returned no samples, or every sample it returned
+    # had already been attempted on this pair.
+    "empty_pool": "empty pool",
+    # The `sample` process died of an uncaught panic.
+    "binary_panic": "binary panic",
+    # The start term exceeds the kernel's per-argument limit, so `sample` was never spawned.
+    "arg_too_long": "start too long for argv",
+}
 
 
 def search_outcomes(frame: pl.DataFrame) -> pl.DataFrame:
@@ -316,7 +283,7 @@ def search_outcomes(frame: pl.DataFrame) -> pl.DataFrame:
         frame.select(
             "mode",
             pl.when(pl.col("setup_status") != "ok")
-            .then(_setup_category(pl.col("setup_status")))
+            .then("guide menu: " + pl.col("setup_status").replace(SETUP_LABELS))
             .otherwise(pl.col("search_stop_reason").replace(SEARCH_LABELS))
             .alias("outcome"),
         )
@@ -326,9 +293,9 @@ def search_outcomes(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def attempt_failures(runs: Sequence[Run]) -> pl.DataFrame:
-    """Why each run's failed attempts stopped, split by whether their pair was eventually proved."""
-    attempts = pl.concat(
+def _load_attempts(runs: Sequence[Run]) -> pl.DataFrame:
+    """Every run's `attempts.parquet`, stacked and tagged with its `mode`."""
+    return pl.concat(
         [
             pl.read_parquet(run.directory / "attempts.parquet").with_columns(
                 pl.lit(run.label).alias("mode")
@@ -336,9 +303,14 @@ def attempt_failures(runs: Sequence[Run]) -> pl.DataFrame:
             for run in runs
         ]
     )
+
+
+def attempt_failures(runs: Sequence[Run]) -> pl.DataFrame:
+    """Why each run's failed attempts stopped, split by whether their pair was eventually proved."""
     reached = pl.col("reached").fill_null(False)
     return (
-        attempts.with_columns(
+        _load_attempts(runs)
+        .with_columns(
             pl.when(reached.any().over("mode", "start", "goal"))
             .then(pl.lit("eventually proved"))
             .otherwise(pl.lit("never proved"))
@@ -360,22 +332,15 @@ def attempt_failures(runs: Sequence[Run]) -> pl.DataFrame:
 
 def saturation_rates(runs: Sequence[Run]) -> pl.DataFrame:
     """How often each run's proof attempts saturated."""
-    rows = []
-    for run in runs:
-        path = run.directory / "attempts.parquet"
-        frame = pl.read_parquet(path)
-        hits = int(
-            frame.select((pl.col("stop_reason") == "Saturated").fill_null(False).sum()).item()
+    return (
+        _load_attempts(runs)
+        .group_by("mode", maintain_order=True)
+        .agg(
+            (pl.col("stop_reason") == "Saturated").fill_null(False).sum().alias("saturated"),
+            pl.len().alias("n"),
         )
-        rows.append(
-            {
-                "mode": run.label,
-                "saturated": hits,
-                "n": frame.height,
-                "rate": hits / frame.height if frame.height else None,
-            }
-        )
-    return pl.DataFrame(rows)
+        .with_columns((pl.col("saturated") / pl.col("n")).alias("rate"))
+    )
 
 
 def guided_vs_brute(frame: pl.DataFrame, scope: str) -> pl.DataFrame:
