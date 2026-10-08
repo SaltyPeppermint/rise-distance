@@ -9,20 +9,19 @@ import polars as pl
 
 REPO_ROOT = Path(__file__).parent.parent
 
-GUIDED_WORKFLOW_COLUMN = "guided_peak_rss"
 BRUTE_COLUMN = "brute_peak_rss"
 
 # Guided peaks comparable with brute force
 GUIDED_PEAK_SCOPES = {
     "guided attempt": "attempt_peak_rss",
-    "guided workflow": GUIDED_WORKFLOW_COLUMN,
+    "guided workflow": "guided_peak_rss",
 }
 
 # Pair columns describing how deep the search tree went, by display name.
 DEPTH_MEASURES = {"success_depth": "first success", "deepest_attempt": "deepest attempt"}
 
 # Ordered: the drawing slot of a grouped bar is the position in this tuple.
-BRUTE_COST_OUTCOMES = ("guided failed", "guided proved, at or above", "guided proved, cheaper")
+BRUTE_COST_OUTCOMES = ("guided failed", "guided proved")
 
 
 @dataclass(frozen=True)
@@ -363,55 +362,20 @@ def guided_vs_brute(frame: pl.DataFrame, scope: str) -> pl.DataFrame:
     )
 
 
-def peak_win_counts(frame: pl.DataFrame) -> pl.DataFrame:
-    """How many guided successes peak below the brute-force proof, per guided scope.
-
-    A ratio of exactly 1 is counted as `n_at_or_above`, so the two counts
-    partition `n_guided_successes`.
-    """
-    counts = []
-    for scope in GUIDED_PEAK_SCOPES:
-        comparison = guided_vs_brute(frame, scope)
-        if comparison.is_empty():
-            continue
-        counts.append(
-            comparison.group_by("mode", "guided_peak_scope", maintain_order=True).agg(
-                pl.len().alias("n_guided_successes"),
-                (pl.col("peak_ratio") < 1).sum().alias("n_below"),
-                (pl.col("peak_ratio") >= 1).sum().alias("n_at_or_above"),
-                pl.col("peak_ratio").median().alias("median_peak_ratio"),
-            )
-        )
-    return pl.concat(counts).with_columns(
-        (pl.col("n_below") / pl.col("n_guided_successes")).round(3).alias("share_below"),
-        pl.col("median_peak_ratio").round(3),
-    )
-
-
 def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     """Brute-force proof cost of every planned pair, binned and split by guided outcome.
+
     Brute force is the brute force measurement taken from `problems.json`, with
     no memory limit at all.
-    Up to three outcomes exist for each bucket:
-    - Not proven
-    - Proven but more expensive
-    - Proven and cheaper
-    An outcome no pair reaches is left out entirely rather than carrying an
-    empty slot in every bucket.
-    A success whose workflow peak was not recorded counts as at or above.
     """
-    guided = pl.col(GUIDED_WORKFLOW_COLUMN)
-    cheaper = (guided > 0) & (guided < pl.col(BRUTE_COLUMN))
     data = (
         frame.drop_nulls(BRUTE_COLUMN)
         .filter(pl.col(BRUTE_COLUMN) > 0)
         .select(
             "mode",
-            pl.when(~pl.col("guided_success").fill_null(False))
-            .then(pl.lit(BRUTE_COST_OUTCOMES[0]))
-            .when(cheaper)
-            .then(pl.lit(BRUTE_COST_OUTCOMES[2]))
-            .otherwise(pl.lit(BRUTE_COST_OUTCOMES[1]))
+            pl.when(pl.col("guided_success").fill_null(False))
+            .then(pl.lit(BRUTE_COST_OUTCOMES[1]))
+            .otherwise(pl.lit(BRUTE_COST_OUTCOMES[0]))
             .alias("outcome"),
             (pl.col(BRUTE_COLUMN) / 2**20).alias("brute_peak_mib"),
         )
@@ -428,17 +392,11 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     # Share of a bin's width the bars may fill. Without the gap left at each
     # bucket's trailing edge, neighbouring buckets touch and read as one group.
     usable = 1 - 0.14
-    # An outcome with no pair anywhere in the frame gives up its slot, so the
-    # remaining bars widen to fill the bucket instead of leaving a gap.
-    # Presence is measured over the whole frame, not per mode, to keep the slot
-    # widths the same in every row of the facet.
-    present = set(data["outcome"].unique().to_list())
-    ordered = [name for name in BRUTE_COST_OUTCOMES if name in present]
-    slots = len(ordered)
-    # The slot is the fixed position in `ordered` rather than a rank among the
-    # outcomes present in the bucket, so bars stay aligned across bins where
-    # one outcome is empty.
-    slot = pl.col("outcome").replace_strict({name: i for i, name in enumerate(ordered)})
+    slots = len(BRUTE_COST_OUTCOMES)
+    # The slot is the fixed position in `BRUTE_COST_OUTCOMES` rather than a rank
+    # among the outcomes present in the bucket, so bars stay aligned across bins
+    # where one outcome is empty.
+    slot = pl.col("outcome").replace_strict({name: i for i, name in enumerate(BRUTE_COST_OUTCOMES)})
     groups = data.group_by("mode", "outcome", maintain_order=True).agg(pl.len().alias("group_n"))
     return (
         data.with_columns(
@@ -519,7 +477,11 @@ def depth_counts(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
-    """One compact success-only row per mode, next to its baseline's unguided rate."""
+    """One compact success row per mode, next to its baseline's unguided rate.
+
+    Also the median ratio of guided to brute-force peak over the mode's
+    successes, per `GUIDED_PEAK_SCOPES` scope.
+    """
     rates = success_rates(frame)
     values = ["successes", "n", "success_rate"]
     guided = rates.filter(pl.col("method") == "guided").select(
@@ -528,4 +490,17 @@ def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
     unguided = rates.filter(pl.col("method") == "unguided").select(
         "baseline", *(pl.col(v).alias(f"unguided_{v}") for v in values)
     )
-    return guided.join(unguided, on="baseline", how="left")
+    summary = guided.join(unguided, on="baseline", how="left")
+    for scope in GUIDED_PEAK_SCOPES:
+        ratio = (
+            guided_vs_brute(frame, scope)
+            .group_by("mode")
+            .agg(
+                pl.col("peak_ratio")
+                .median()
+                .round(3)
+                .alias(f"median_{scope.split()[-1]}_peak_ratio")
+            )
+        )
+        summary = summary.join(ratio, on="mode", how="left")
+    return summary

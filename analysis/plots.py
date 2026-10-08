@@ -33,11 +33,8 @@ METHOD_ORDER = ["guided", "unguided"]
 METHOD_COLORS = [GUIDED_COLOR, UNGUIDED_COLOR]
 OUTCOME_ORDER = ["both", "guided only", "unguided only", "neither"]
 OUTCOME_COLORS = [PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR]
-WIN_ORDER = ["below brute force", "at or above"]
-WIN_COLORS = [SUCCESS_COLOR, FAILURE_COLOR]
-BRUTE_COST_COLORS = dict(
-    zip(BRUTE_COST_OUTCOMES, [FAILURE_COLOR, PALETTE[5], SUCCESS_COLOR], strict=True)
-)
+# In `BRUTE_COST_OUTCOMES` order.
+BRUTE_COST_COLORS = [FAILURE_COLOR, SUCCESS_COLOR]
 DEPTH_ORDER = ["first success", "deepest attempt"]
 DEPTH_COLORS = [SUCCESS_COLOR, NEUTRAL_COLOR]
 
@@ -190,7 +187,11 @@ def attempt_failures(failures: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("count:Q", title="failed attempts"),
             y=alt.Y("failure:N", title=None),
-            color=alt.value(GUIDED_COLOR),
+            color=alt.condition(
+                alt.datum.pair_outcome == "eventually proved",
+                alt.value(NEUTRAL_COLOR),
+                alt.value(FAILURE_COLOR),
+            ),
             row=_mode_facet(alt.Row, meta["modes"], **TOP_LABEL, labelPadding=0),
             # "eventually proved" sorts before "never proved".
             column=alt.Column("pair_outcome:N", title=None, header=alt.Header(labelFontSize=11)),
@@ -275,8 +276,6 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.Chart:
 
 def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
     """Success comparison for every pair, bucketed by brute force memory cost"""
-    present = set(binned["outcome"].unique().to_list())
-    order = [name for name in BRUTE_COST_OUTCOMES if name in present]
     return (
         alt.Chart(binned)
         .mark_bar()
@@ -292,9 +291,7 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
             # axis, so the baseline has to be named.
             y2=alt.datum(0),
             column=_mode_facet(alt.Column, meta["modes"], **TOP_LABEL),
-            color=_ordered_color(
-                "outcome:N", order, [BRUTE_COST_COLORS[name] for name in order], columns=1
-            ),
+            color=_ordered_color("outcome:N", BRUTE_COST_OUTCOMES, BRUTE_COST_COLORS),
             tooltip=[
                 "mode:N",
                 "outcome:N",
@@ -307,33 +304,6 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
         .properties(title=_title(f"Brute-force proof {MEMORY_LABEL} by guided outcome", meta))
-    )
-
-
-def peak_win_bars(counts: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Guided successes below versus at or above the brute-force proof peak."""
-    data = counts.unpivot(
-        index=["mode", "guided_peak_scope"],
-        on=["n_below", "n_at_or_above"],
-        variable_name="side",
-        value_name="count",
-    ).with_columns(
-        pl.col("side").replace_strict({"n_below": WIN_ORDER[0], "n_at_or_above": WIN_ORDER[1]}),
-        # Stack in WIN_ORDER rather than alphabetically by label.
-        pl.col("side").replace_strict({"n_below": 0, "n_at_or_above": 1}).alias("side_order"),
-    )
-    return (
-        alt.Chart(data)
-        .mark_bar()
-        .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X("count:Q", title="guided successes"),
-            y=alt.Y("guided_peak_scope:N", title=None, axis=alt.Axis(labelLimit=0)),
-            color=_ordered_color("side:N", WIN_ORDER, WIN_COLORS),
-            order=alt.Order("side_order:Q", sort="ascending"),
-            row=_mode_facet(alt.Row, meta["modes"], labelAngle=0, labelAlign="left"),
-            tooltip=["mode:N", "guided_peak_scope:N", "side:N", "count:Q"],
-        )
-        .properties(title=_title(f"Guided {MEMORY_LABEL} versus brute-force proof", meta))
     )
 
 
