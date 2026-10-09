@@ -376,7 +376,7 @@ fn count_terms<L: Samplable>(
 }
 
 #[cfg(test)]
-#[expect(clippy::cast_precision_loss, clippy::float_cmp)]
+#[expect(clippy::cast_precision_loss)]
 mod tests {
     use egg::{Id, RecExpr, define_language};
     use rand::SeedableRng;

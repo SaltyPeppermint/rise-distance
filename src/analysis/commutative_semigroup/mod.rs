@@ -89,7 +89,7 @@ fn resolve_pending_analysis<L, N, B>(
                 data.insert(eclass.id, computed_data);
             }
         } else {
-            assert!(!eclass.nodes.is_empty());
+            assert_ne!(eclass.nodes, [] as [L; 0]);
             analysis_pending.insert(canonical_id);
         }
     }

@@ -231,7 +231,10 @@ mod tests {
     #[test]
     fn free_var_indices_empty_for_constant_terms() {
         let grammar = Math::grammar(None);
-        assert!(Math::free_var_indices(&grammar, &parse("(+ 1 2)")).is_empty());
+        assert_eq!(
+            Math::free_var_indices(&grammar, &parse("(+ 1 2)")),
+            [] as [usize; 0]
+        );
     }
 
     #[test]
