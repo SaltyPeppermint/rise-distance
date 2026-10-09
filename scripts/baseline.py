@@ -2,29 +2,22 @@
 
 The baseline only depends on the problems and the guide-replay budget, not on
 any of the search flags, so a grid of `guided_search.py` runs can share one
-through `--baseline` instead of each re-running it.
+through `baseline` instead of each re-running it. `experiment.py` drives it.
 
-Example:
-    cargo build --release --bin attempt
-    uv run scripts/baseline.py data/problems/dusky-cramp \\
-        --output data/baselines/dusky-cramp --max-iters 50 --max-rss 4G
-
-An existing baseline in ``--output`` is kept if it matches and covers every
+An existing baseline in `output` is kept if it matches and covers every
 pair, and is a hard error otherwise.
 """
 
-import asyncio
 import json
-import sys
 from pathlib import Path
 
 import polars as pl
 from pydantic import Field
-from pydantic_settings import CliApp
 
 from common import (
     BaselineMismatch,
     Pair,
+    PrioritySlot,
     check_baseline,
     cli_flags,
     exit_if_missing,
@@ -44,7 +37,7 @@ class BaselineArgs(ReplayArgs):
 
 
 async def run_unguided_pair(
-    args: BaselineArgs, base_flags: list[str], limit: asyncio.Semaphore, pair: Pair
+    args: BaselineArgs, base_flags: list[str], limit: PrioritySlot, pair: Pair
 ) -> dict:
     """Run the pair-matched single-start baseline.
 
@@ -76,7 +69,11 @@ async def run_unguided_pair(
     }
 
 
-async def main(args: BaselineArgs) -> int:
+async def compute_baseline(args: BaselineArgs, limit: PrioritySlot) -> str:
+    """Compute the baseline into `output` and return a one-line summary.
+
+    Raises `BaselineMismatch` if `output` holds a baseline that does not fit.
+    """
     exit_if_missing(args.attempt_bin)
     out = args.output
     pairs = load_pairs(args.path, args.n_starts, args.n_goals)
@@ -85,15 +82,11 @@ async def main(args: BaselineArgs) -> int:
         try:
             check_baseline(out, args.baseline_key(), pairs)
         except BaselineMismatch as mismatch:
-            print(f"{mismatch}; remove it or pass another --output", file=sys.stderr)
-            return 1
-        print(f"Baseline in {out} already covers all {len(pairs)} pair(s)", file=sys.stderr)
-        return 0
+            raise BaselineMismatch(f"{mismatch}; remove it or pick another output") from None
+        return f"Baseline in {out} already covers all {len(pairs)} pair(s)"
 
     base_flags = args.base_flags(problem_language(args.path))
-    limit = asyncio.Semaphore(args.jobs)
     rows = await fan_out(
-        None,
         lambda pair: run_unguided_pair(args, base_flags, limit, pair),
         pairs,
         "unguided",
@@ -107,10 +100,4 @@ async def main(args: BaselineArgs) -> int:
     (out / "config.json").write_text(json.dumps(config, indent=2, default=str))
 
     reached = sum(row["unguided_success"] for row in rows)
-    print(f"\nUnguided reached {reached}/{len(rows)} pair(s). Wrote {out}", file=sys.stderr)
-    return 0
-
-
-if __name__ == "__main__":
-    args = CliApp.run(BaselineArgs)
-    raise SystemExit(asyncio.run(main(args)))
+    return f"Unguided reached {reached}/{len(rows)} pair(s). Wrote {out}"

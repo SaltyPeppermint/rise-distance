@@ -4,15 +4,17 @@ building, and the check that a stored baseline fits a run."""
 
 import asyncio
 import contextlib
+import heapq
 import json
 import re
 import sys
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import polars as pl
 from tqdm import tqdm
@@ -24,6 +26,68 @@ from schemes import ATTEMPT_DTYPES
 class SamplePolicy(StrEnum):
     Count = "count"
     Uniform = "uniform"
+
+
+# Where `log` writes; `experiment.py` sets it per run.
+LOG_FILE: ContextVar[TextIO | None] = ContextVar("LOG_FILE", default=None)
+
+
+def log(message: str) -> None:
+    """Write `message` to the current run's log file, or above the progress bars on stderr."""
+    tqdm.write(message, file=LOG_FILE.get() or sys.stderr)
+
+
+class PrioritySemaphore:
+    """A semaphore that hands a freed slot to the waiter of the lowest priority,
+    first come first served among equals."""
+
+    def __init__(self, value: int) -> None:
+        self._free = value
+        # A cancelled waiter stays in the heap until `release` skips it.
+        self._waiters: list[tuple[int, int, asyncio.Future[None]]] = []
+        self._arrivals = 0
+
+    def at(self, priority: int) -> PrioritySlot:
+        """This semaphore as seen by the waiters of `priority`."""
+        return PrioritySlot(self, priority)
+
+    async def acquire(self, priority: int) -> None:
+        # A free slot means no one is waiting, since `release` only frees one then.
+        if self._free > 0:
+            self._free -= 1
+            return
+        waiter = asyncio.get_running_loop().create_future()
+        self._arrivals += 1
+        heapq.heappush(self._waiters, (priority, self._arrivals, waiter))
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            # Handed a slot just before it was cancelled, so pass that slot on.
+            if not waiter.cancelled():
+                self.release()
+            raise
+
+    def release(self) -> None:
+        while self._waiters:
+            _, _, waiter = heapq.heappop(self._waiters)
+            if not waiter.done():
+                waiter.set_result(None)
+                return
+        self._free += 1
+
+
+@dataclass(frozen=True)
+class PrioritySlot:
+    """One priority's view of a `PrioritySemaphore`, used like a semaphore."""
+
+    semaphore: PrioritySemaphore
+    priority: int
+
+    async def __aenter__(self) -> None:
+        await self.semaphore.acquire(self.priority)
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.semaphore.release()
 
 
 @dataclass(frozen=True)
@@ -71,10 +135,9 @@ def exit_if_missing(*binaries: Path) -> None:
     missing = [b for b in binaries if not b.exists()]
     if missing:
         names = " ".join(f"--bin {b.name}" for b in missing)
-        tqdm.write(
+        log(
             f"Binary not found: {', '.join(str(b) for b in missing)}. "
-            f"Build with `cargo build --release {names}`.",
-            file=sys.stderr,
+            f"Build with `cargo build --release {names}`."
         )
         raise SystemExit(2)
 
@@ -159,10 +222,7 @@ class BinaryPanicked(RuntimeError):
     def warn(self) -> None:
         """Log the panic."""
         message = "\n".join(f"  {line}" for line in self.panic_message.splitlines())
-        tqdm.write(
-            f"WARNING: {self.what} panicked (code {PANIC_RETURNCODE}):\n{message}",
-            file=sys.stderr,
-        )
+        log(f"WARNING: {self.what} panicked (code {PANIC_RETURNCODE}):\n{message}")
 
 
 def prefix_rss_cap(argv: list[str], limit_bytes) -> list[str]:
@@ -188,8 +248,8 @@ async def run_json_subprocess(
     cmd: list[str],
     *,
     what: str,
+    limit: PrioritySlot,
     max_rss_bytes: int | None = None,
-    limit: asyncio.Semaphore | None = None,
 ) -> Measured:
     """Run a JSON child and return its payload plus its peak RSS.
 
@@ -197,7 +257,7 @@ async def run_json_subprocess(
     otherwise print, under a `peak_rss` the binary reads from its own
     `VmHWM` just before serializing.
 
-    With `limit`, the child only spawns once it holds a slot, and its
+    The child only spawns once it holds a slot of `limit`, and its
     `wall_time` starts counting then.
 
     Raises `ArgTooLong` before spawning when an argv entry exceeds the kernel's
@@ -205,7 +265,7 @@ async def run_json_subprocess(
     killed it, and `BinaryPanicked` when the child panicked.
     """
     check_arg_sizes(cmd, what)
-    async with contextlib.nullcontext() if limit is None else limit:
+    async with limit:
         started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *(prefix_rss_cap(cmd, max_rss_bytes) if max_rss_bytes else cmd),
@@ -279,7 +339,7 @@ class AttemptResult:
 
 
 async def measure_attempt(
-    cmd: list[str], *, what: str, max_rss_bytes: int, limit: asyncio.Semaphore
+    cmd: list[str], *, what: str, max_rss_bytes: int, limit: PrioritySlot
 ) -> AttemptResult:
     """Run one `attempt` process under the RSS cap.
 
@@ -293,7 +353,7 @@ async def measure_attempt(
             cmd, what=what, max_rss_bytes=max_rss_bytes, limit=limit
         )
     except ArgTooLong as too_long:
-        tqdm.write(f"WARNING: {too_long}", file=sys.stderr)
+        log(f"WARNING: {too_long}")
         return AttemptResult(failure_summary("arg_too_long"), None, 0.0)
     except MemoryKilled as killed:
         return AttemptResult(failure_summary("out_of_memory"), None, killed.wall_time)
@@ -303,21 +363,16 @@ async def measure_attempt(
     return AttemptResult(attempt_summary(measured.payload), measured.peak_rss, measured.wall_time)
 
 
-def cli_flags(negate_false: bool = False, /, **values: object) -> list[str]:
-    """Turn `snake_case=value` pairs into `--kebab-case value` arguments.
+def cli_flags(**values: object) -> list[str]:
+    """Turn `snake_case=value` pairs into the Rust binaries' `--kebab-case value` arguments.
 
-    `True` becomes a bare `--flag` and `None` is dropped. `False` is dropped as
-    well, which is what the Rust binaries expect, or becomes `--no-flag` with
-    `negate_false`, which is what the pydantic drivers expect.
+    `True` becomes a bare `--flag`, and `False` and `None` are dropped.
     """
     flags: list[str] = []
 
     for key, value in values.items():
         flag = key.replace("_", "-")
-        if value is None or (value is False and not negate_false):
-            continue
-        if value is False:
-            flags.append(f"--no-{flag}")
+        if value is None or value is False:
             continue
         flags.append(f"--{flag}")
         if value is not True:
@@ -326,41 +381,38 @@ def cli_flags(negate_false: bool = False, /, **values: object) -> list[str]:
     return flags
 
 
-async def _run_limited(
-    limit: asyncio.Semaphore | None, bar: tqdm, fn: Callable[[Any], Awaitable[Any]], item: Any
-) -> Any:
-    """Run if a slot is free and tick the bar."""
-    async with contextlib.nullcontext() if limit is None else limit:
-        result = await fn(item)
+async def _run_ticking(bar: tqdm, fn: Callable[[Any], Awaitable[Any]], item: Any) -> Any:
+    """Run and tick the bar."""
+    result = await fn(item)
     bar.update(1)
     return result
 
 
 async def fan_out(
-    jobs: int | None, fn: Callable[[Any], Awaitable[Any]], items: list, desc: str, unit: str = "job"
+    fn: Callable[[Any], Awaitable[Any]],
+    items: list,
+    desc: str,
+    unit: str = "job",
+    leave: bool = True,
 ) -> list:
-    """Run `fn` over `items`, `jobs` at a time, dropping the ones that returned None.
+    """Run `fn` over all `items` at once, dropping the ones that returned None.
 
-    Each item is its own task behind a semaphore, so a slow item holds up only
-    itself. Results come back in `items` order rather than completion order, so
-    a run's output does not depend on which item finished first.
-
-    `jobs=None` starts every item at once, for an `fn` that limits its own
-    subprocesses through `run_json_subprocess`'s `limit`.
+    Only the subprocesses are limited, through `run_json_subprocess`'s `limit`.
+    Results come back in `items` order. Without `leave`, the bar is cleared once done.
     """
-    limit = None if jobs is None else asyncio.Semaphore(jobs)
     with tqdm(
         total=len(items),
         desc=desc,
         unit=unit,
         bar_format="{l_bar}{bar:30}{r_bar}",
         dynamic_ncols=True,
+        leave=leave,
     ) as bar:
         # A task group rather than `gather`, so the first failure cancels the
-        # items still queued on the semaphore instead of letting them start
-        # more processes on the way down.
+        # items still waiting for a slot instead of letting them start more
+        # processes on the way down.
         async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(_run_limited(limit, bar, fn, item)) for item in items]
+            tasks = [group.create_task(_run_ticking(bar, fn, item)) for item in items]
 
     return [result for task in tasks if (result := task.result()) is not None]
 

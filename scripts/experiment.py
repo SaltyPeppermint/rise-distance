@@ -5,15 +5,24 @@ uv run scripts/experiment.py --rerun-aborted [data/guided_search]
 """
 
 import argparse
+import asyncio
 import itertools
 import json
+import os
 import re
 import subprocess
-from collections.abc import Mapping
+import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from common import cli_flags
+from tqdm import tqdm
+
+from baseline import BaselineArgs, compute_baseline
+from common import LOG_FILE, PrioritySemaphore, PrioritySlot, log
+from generate_problems import GenerateArgs, generate
+from guided_search import SearchArgs, search
 
 PROBLEMS = Path("data/problems/expensive-bird")
 OUTPUT_BASE = Path("data/guided_search")
@@ -28,40 +37,30 @@ RESULT_FILES = (
     "pools.json",
 )
 
-# Shared by `baseline.py` and `guided_search.py`, so both compute the same baseline.
-BASELINE_FLAGS = {"max_rss": "450M", "n_starts": 100}
+# Concurrent `sample`/`attempt` processes over all runs together.
+JOBS = os.cpu_count() or 1
 
-BASE_FLAGS = {
+# Shared by `baseline.py` and `guided_search.py`, so both compute the same baseline.
+BASELINE_FLAGS: dict[str, Any] = {"max_rss": "450M", "n_starts": 100}
+
+BASE_FLAGS: dict[str, Any] = {
     **BASELINE_FLAGS,
     "full_union": True,
     "sampling_backoff": 50,
 }
 
 # Search stops at whatever is hit earlier
-BUDGETS = [
-    {"max_attempts": 30},
-    {"max_pair_time": 60},
+BUDGETS: list[dict[str, Any]] = [
     {"max_attempts": 30, "max_pair_time": 60},
 ]
 
-GRID = {
+GRID: dict[str, list[Any]] = {
     "seed": [123, 456],
     "sample_policy": ["uniform", "count"],
     "branching": [10, 30],
     "search_policy": ["dfs", "bfs"],
     "frontier": [True, False],
 }
-
-
-# Runs a whole driver as a transient service, so its memory is accounted for as one unit.
-MEMRUN = [
-    "systemd-run",
-    "--user",
-    "--wait",
-    "--pipe",
-    "--same-dir",
-    "--property=MemoryAccounting=yes",
-]
 
 
 def git_short_hash() -> str:
@@ -73,99 +72,69 @@ def git_short_hash() -> str:
     return f"{rev}-dirty" if dirty else rev
 
 
-def next_run_number(base: Path) -> int:
-    """One past the highest leading number of any entry in `base`"""
-    nums = [int(m.group()) for p in base.glob("*") if (m := re.match(r"\d+", p.name))]
-    return max(nums, default=0) + 1
-
-
-def run_driver(
-    script: str,
-    flags: Mapping[str, object],
-    *positional: Path,
-    log: Path | None = None,
-    check: bool = True,
-) -> int:
-    """Run the driver `script` next to this file under `MEMRUN` and return its exit code.
-
-    With `log`, its combined stdout/stderr is also teed into that file.
-    """
-    cmd = [
-        *MEMRUN,
-        "uv",
-        "run",
-        str(Path(__file__).with_name(script)),
-        *cli_flags(True, **flags),  # `--no-flag`, as pydantic expects
-        *map(str, positional),
-    ]
-    if log is None:
-        return subprocess.run(cmd, check=check).returncode
-
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    tee = subprocess.Popen(["tee", log], stdin=proc.stdout)
-    assert proc.stdout is not None
-    proc.stdout.close()  # so proc gets SIGPIPE if tee exits early
-    tee.wait()
-    proc.wait()
-    if check and proc.returncode != 0:
-        raise subprocess.CalledProcessError(proc.returncode, cmd)
-    return proc.returncode
-
-
-def generate_problems(problems: Path = PROBLEMS) -> None:
-    flags = {
-        "starts": 1000,
-        "min_size": 30,
-        "max_size": 60,
-        "language": "math",
-        "seed": 123,
-        "jobs": 20,
-        "max_iters": 2000,
-        "max_nodes": 1000000,
-        "max_time": 300,
-        "max_memory": "500M",
-        "min_rss": "500M",
-        "max_rss": "1G",
-        "goals": 2,
-        "output": problems,
-    }
-    run_driver("generate_problems.py", flags)
-
-
-def run_baseline(problems: Path = PROBLEMS) -> Path:
-    """Compute the unguided baseline once, reusing a matching one that already exists"""
-    out_dir = BASELINE_BASE / problems.name
-    run_driver("baseline.py", {**BASELINE_FLAGS, "output": out_dir}, problems)
-    return out_dir
+async def generate_problems(problems: Path = PROBLEMS) -> None:
+    args = GenerateArgs(
+        starts=1000,
+        min_size=30,
+        max_size=60,
+        language="math",
+        seed=123,
+        max_iters=2000,
+        max_nodes=1000000,
+        max_time=300,
+        max_memory="500M",
+        min_rss="500M",
+        max_rss="1G",
+        goals=2,
+        output=problems,
+    )
+    print(await generate(args, PrioritySemaphore(20).at(0)), file=sys.stderr)
 
 
 def new_run_dir(suffix: str, run: int | None = None) -> Path:
     """Create the folder `<run>_<suffix>` in `OUTPUT_BASE`, numbered after the last run by default."""
     if run is None:
-        run = next_run_number(OUTPUT_BASE)
+        nums = [int(m.group()) for p in OUTPUT_BASE.glob("*") if (m := re.match(r"\d+", p.name))]
+        run = max(nums, default=0) + 1
     out_dir = OUTPUT_BASE / f"{run}_{suffix}"
     out_dir.mkdir()
     return out_dir
 
 
-def run_guided_search(
-    flags: Mapping[str, object], out_dir: Path, problems: Path = PROBLEMS
-) -> None:
-    """Print the flags and run `guided_search.py` into `out_dir`, logging there as well."""
-    flags = {**flags, "output": out_dir}
-    print(f"RUN: {out_dir.name}\nFLAGS:")
-    width = max(map(len, flags))
-    for k, v in flags.items():
-        print(f"    {k:<{width}} : {v}")
+async def run_guided_search(args: SearchArgs, limit: PrioritySlot, label: str) -> None:
+    """Run one guided search, logging to `experiment.log` in its folder.
 
-    returncode = run_driver(
-        "guided_search.py", flags, problems, log=out_dir / "experiment.log", check=False
-    )
-    if returncode != 0:
-        print(f"WARNING: run {out_dir.name} exited with code {returncode}")
+    A failed run is only warned about, so it does not cancel the others.
+    """
+    with (args.output / "experiment.log").open("w", buffering=1) as log_file:
+        # Scoped to this run's task and its subtasks.
+        LOG_FILE.set(log_file)
+        flags = args.model_dump()
+        width = max(map(len, flags))
+        log("FLAGS:\n" + "\n".join(f"    {k:<{width}} : {v}" for k, v in flags.items()))
+        try:
+            summary = await search(args, limit, desc=label, leave=False)
+        except Exception as e:  # noqa: BLE001
+            log(traceback.format_exc())
+            tqdm.write(f"WARNING: run {label} failed: {e!r}", file=sys.stderr)
+            return
+    tqdm.write(f"{label}: {summary}", file=sys.stderr)
 
 
-def rerun_aborted(base: Path) -> None:
+async def run_all(runs: list[SearchArgs], slots: PrioritySemaphore) -> None:
+    """Run every guided search at once, earlier runs taking precedence for `slots`."""
+    print(f"Running {len(runs)} guided search(es) on {JOBS} process slots", file=sys.stderr)
+    # Each run is labelled by its number plus the flags that differ between runs.
+    dumps = [args.model_dump(exclude={"output"}) for args in runs]
+    distinct = [key for key in dumps[0] if len({repr(dump[key]) for dump in dumps}) > 1]
+    async with asyncio.TaskGroup() as group:
+        for priority, (args, dump) in enumerate(zip(runs, dumps, strict=True)):
+            number = args.output.name.split("_", 1)[0]
+            label = " ".join([number, *(f"{key}={dump[key]}" for key in distinct)])
+            group.create_task(run_guided_search(args, slots.at(priority), label))
+
+
+async def rerun_aborted(base: Path, slots: PrioritySemaphore) -> None:
     """Re-run every aborted run in `base` in place, with the flags its `config.json` holds.
 
     A run is aborted if it started (wrote `config.json`) but did not write all its results.
@@ -180,13 +149,19 @@ def rerun_aborted(base: Path) -> None:
         key=lambda p: int(m.group()) if (m := re.match(r"\d+", p.name)) else 0,
     )
     print(f"Re-running {len(run_dirs)} aborted run(s) in {base}")
+    if not run_dirs:
+        return
 
+    runs = []
     for run_dir in run_dirs:
         config = json.loads((run_dir / "config.json").read_text())
-        problems = Path(config.pop("path"))
+        # Not fields of `SearchArgs` (any more).
         config.pop("effective_limits", None)
-        # Its `output` is replaced by the folder it lives in now, in case it was moved since.
-        run_guided_search(config, run_dir, problems)
+        config.pop("jobs", None)
+        # In case the run was moved since.
+        config["output"] = run_dir
+        runs.append(SearchArgs(**config))
+    await run_all(runs, slots)
 
 
 def main() -> None:
@@ -202,37 +177,52 @@ def main() -> None:
     cli = parser.parse_args()
 
     subprocess.run(["cargo", "build", "--release"], check=True)
+    slots = PrioritySemaphore(JOBS)
 
     if cli.rerun_aborted is not None:
-        rerun_aborted(cli.rerun_aborted)
-        return
+        asyncio.run(rerun_aborted(cli.rerun_aborted, slots))
+    else:
+        asyncio.run(experiment(slots))
 
+
+async def experiment(slots: PrioritySemaphore) -> None:
+    """Generate the problems if asked to, compute the baseline, then run the grid."""
     OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
     suffix = f"{datetime.now().astimezone():%Y-%m-%dT%H:%M}_{git_short_hash()}"
 
     # PROBLEM GENERATION
-    # generate_problems()
+    # await generate_problems()
 
     # BASELINE, shared by every run below
-    baseline = run_baseline()
+    baseline = BASELINE_BASE / PROBLEMS.name
+    baseline_args = BaselineArgs(path=PROBLEMS, output=baseline, **BASELINE_FLAGS)
+    print(await compute_baseline(baseline_args, slots.at(0)), file=sys.stderr)
 
     # GRID SEARCH
-    for budget, values in itertools.product(BUDGETS, itertools.product(*GRID.values())):
-        flags = {**BASE_FLAGS, **budget, **dict(zip(GRID, values)), "baseline": baseline}
-        run_guided_search(flags, new_run_dir(suffix))
+    # Validated before any run folder is created.
+    grid: list[dict[str, Any]] = [
+        {**BASE_FLAGS, **budget, **dict(zip(GRID, values)), "path": PROBLEMS, "baseline": baseline}
+        for budget, values in itertools.product(BUDGETS, itertools.product(*GRID.values()))
+    ]
+    for flags in grid:
+        SearchArgs.model_validate({**flags, "output": OUTPUT_BASE})
+    runs = [SearchArgs(**flags, output=new_run_dir(suffix)) for flags in grid]
 
     # # INDIVIDUAL RUN(s)
-    # run_guided_search(
-    #     {
+    # runs = [
+    #     SearchArgs(
     #         **BASE_FLAGS,
     #         **BUDGETS[0],
-    #         "seed": 456,
-    #         "search_policy": "bfs",
-    #         "frontier": True,
-    #         "baseline": baseline,
-    #     },
-    #     new_run_dir(suffix, run=18),
-    # )
+    #         seed=456,
+    #         search_policy="bfs",
+    #         frontier=True,
+    #         path=PROBLEMS,
+    #         baseline=baseline,
+    #         output=new_run_dir(suffix, run=18),
+    #     )
+    # ]
+
+    await run_all(runs, slots)
 
 
 if __name__ == "__main__":

@@ -7,38 +7,33 @@ Three stages, each fanned out over isolated Rust processes:
    only memory number to trust here) decides whether the pair is kept.
 
 Writes `problems.json` (accepted pairs) and `problem_args.json` (config).
-
-Example:
-    cargo build --release --bin start --bin sample --bin attempt
-    uv run scripts/generate_problems.py --output data/problems/example \\
-      --starts 10 --min-size 10 --max-size 12 --language math --seed 42 --max-memory 4G --min-rss 3G --max-rss 8G
+`experiment.py` drives it.
 """
 
-import asyncio
 import hashlib
 import json
-import os
-import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, CliApp, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from common import (
     MemoryKilled,
+    PrioritySlot,
     SamplePolicy,
     attempt_summary,
     cli_flags,
     exit_if_missing,
     fan_out,
+    log,
     parse_size,
     run_json_subprocess,
 )
 
 
-class Args(BaseSettings):
-    model_config = SettingsConfigDict(cli_kebab_case=True)
+class GenerateArgs(BaseModel):
+    # So a misspelled key in `experiment.py` fails instead of being dropped.
+    model_config = ConfigDict(extra="forbid")
 
     # I/O
     output: Path = Field(description="Output directory.")
@@ -107,25 +102,17 @@ class Args(BaseSettings):
     start_retries: int = Field(
         default=10,
         ge=0,
-        description=(
-            "How often a `start` slot killed at `--max-rss` is redrawn under a bumped seed"
-        ),
-    )
-
-    jobs: int = Field(
-        default_factory=lambda: os.cpu_count() or 1,
-        gt=0,
-        description="Concurrent subprocesses. Defaults to `os.cpu_count()`.",
+        description=("How often a `start` slot killed at `max_rss` is redrawn under a bumped seed"),
     )
 
     @model_validator(mode="after")
-    def validate_sizes(self) -> Args:
+    def validate_sizes(self) -> GenerateArgs:
         if self.min_size > self.max_size:
             raise ValueError(f"min_size ({self.min_size}) must be <= max_size ({self.max_size})")
         return self
 
     @model_validator(mode="after")
-    def validate_memory(self) -> Args:
+    def validate_memory(self) -> GenerateArgs:
         if (
             self.max_rss is not None
             and self.max_memory is not None
@@ -167,7 +154,9 @@ def derive_seed(*fields: int) -> int:
     return int.from_bytes(h.digest(), "little")
 
 
-async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict[str, Any] | None:
+async def run_start(
+    args: GenerateArgs, limit: PrioritySlot, flags: list[str], slot: tuple[int, int]
+) -> dict[str, Any] | None:
     """Sample one validated start term of the slot's size, under the RSS cap.
 
     A slot killed at the cap is redrawn under a bumped seed. `start` seeds its
@@ -176,7 +165,7 @@ async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict
     seed gives the slot a different term to spend its budget on.
 
     The seed and reseed count are recorded on the returned row, since a
-    reseeded slot is no longer reproducible from `--seed` and the slot alone.
+    reseeded slot is no longer reproducible from `seed` and the slot alone.
     They are also what the caller counts the cap's cost from.
     """
     size, index = slot
@@ -193,12 +182,12 @@ async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict
         if retry:
             what += f" (reseed {retry})"
         try:
-            measured = await run_json_subprocess(cmd, what=what, max_rss_bytes=max_rss)
+            measured = await run_json_subprocess(cmd, what=what, limit=limit, max_rss_bytes=max_rss)
         except MemoryKilled as killed:
-            print(f"WARNING: {killed!s}", file=sys.stderr)
+            log(f"WARNING: {killed!s}")
             continue
         except RuntimeError as e:
-            print(f"WARNING: {e!s}", file=sys.stderr)
+            log(f"WARNING: {e!s}")
             return None
         return {
             "start": measured.payload["term"],
@@ -208,14 +197,13 @@ async def run_start(args: Args, flags: list[str], slot: tuple[int, int]) -> dict
             "start_retry": retry,
         }
 
-    print(
-        f"WARNING: start for size {size} slot {index}: killed at the RSS cap, no reseeds left",
-        file=sys.stderr,
-    )
+    log(f"WARNING: start for size {size} slot {index}: killed at the RSS cap, no reseeds left")
     return None
 
 
-async def run_samples(args: Args, flags: list[str], row: dict[str, Any]) -> dict[str, Any] | None:
+async def run_samples(
+    args: GenerateArgs, limit: PrioritySlot, flags: list[str], row: dict[str, Any]
+) -> dict[str, Any] | None:
     """Draw goal samples from one start term's novel frontier."""
     cmd = [
         str(args.sample_bin),
@@ -230,34 +218,37 @@ async def run_samples(args: Args, flags: list[str], row: dict[str, Any]) -> dict
         ),
         *flags,
     ]
-    measured = await run_json_subprocess(cmd, what=f"samples for start term {row['start']!r}")
+    measured = await run_json_subprocess(
+        cmd, what=f"samples for start term {row['start']!r}", limit=limit
+    )
     records = measured.payload
     if not records:
-        print(
-            f"WARNING: samples found nothing for start term {row['start']!r}",
-            file=sys.stderr,
-        )
+        log(f"WARNING: samples found nothing for start term {row['start']!r}")
         return None
     return {**row, "goals": records[0]["samples_s_expr"]}
 
 
-async def run_attempt(args: Args, flags: list[str], pair: dict[str, Any]) -> dict[str, Any]:
+async def run_attempt(
+    args: GenerateArgs, limit: PrioritySlot, flags: list[str], pair: dict[str, Any]
+) -> dict[str, Any]:
     """Measure what the unguided start->goal search actually costs."""
     cmd = [
         str(args.attempt_bin),
         *cli_flags(language=args.language, start=pair["start"], goal=pair["goal"]),
         *flags,
     ]
-    measured = await run_json_subprocess(cmd, what=f"attempt for goal {pair['goal']!r}")
+    measured = await run_json_subprocess(
+        cmd, what=f"attempt for goal {pair['goal']!r}", limit=limit
+    )
     return {**pair, **attempt_summary(measured.payload), "peak_rss": measured.peak_rss}
 
 
-async def main(args: Args) -> int:
+async def generate(args: GenerateArgs, limit: PrioritySlot) -> str:
+    """Generate the problems into `output` and return a one-line summary."""
     exit_if_missing(args.start_bin, args.sample_bin, args.attempt_bin)
 
     out = args.output
     out.mkdir(parents=True, exist_ok=True)
-    jobs = args.jobs
     limits = args.limits
     flags = cli_flags(**limits)
     min_rss = parse_size(args.min_rss)
@@ -269,8 +260,8 @@ async def main(args: Args) -> int:
         )
         for index in range(count)
     ]
-    print(f"Generating {len(slots)} start term(s) -> {out} ({jobs} workers)", file=sys.stderr)
-    starts = await fan_out(jobs, lambda slot: run_start(args, flags, slot), slots, "starts")
+    log(f"Generating {len(slots)} start term(s) -> {out}")
+    starts = await fan_out(lambda slot: run_start(args, limit, flags, slot), slots, "starts")
     # A kept slot's `start_retry` is how many kills it was redrawn past; the
     # slots that came back with nothing were killed past their last reseed (or
     # failed outright, which warns for itself above). Silent when the cap cost
@@ -278,10 +269,9 @@ async def main(args: Args) -> int:
     reseeded = sum(s["start_retry"] > 0 for s in starts)
     empty = len(slots) - len(starts)
     if args.max_rss is not None and (reseeded or empty):
-        print(
-            f"\nRSS cap {args.max_rss}: {reseeded}/{len(starts)} kept slot(s) needed a "
-            f"reseed, {empty} slot(s) produced nothing",
-            file=sys.stderr,
+        log(
+            f"RSS cap {args.max_rss}: {reseeded}/{len(starts)} kept slot(s) needed a "
+            f"reseed, {empty} slot(s) produced nothing"
         )
 
     # Distinct terms only; two slots of one size can sample the same term.
@@ -290,14 +280,14 @@ async def main(args: Args) -> int:
         unique.setdefault(s["start"], s)
     starts = list(unique.values())
 
-    enriched = await fan_out(jobs, lambda s: run_samples(args, flags, s), starts, "samples")
+    enriched = await fan_out(lambda s: run_samples(args, limit, flags, s), starts, "samples")
     pairs = [
         {**{k: v for k, v in row.items() if k != "goals"}, "goal": goal}
         for row in enriched
         for goal in row["goals"]
     ]
 
-    measured = await fan_out(jobs, lambda p: run_attempt(args, flags, p), pairs, "attempt")
+    measured = await fan_out(lambda p: run_attempt(args, limit, flags, p), pairs, "attempt")
     problems = [row for row in measured if (row["peak_rss"] or 0) >= min_rss]
 
     (out / "problems.json").write_text(json.dumps(problems, indent=2))
@@ -314,15 +304,8 @@ async def main(args: Args) -> int:
     )
 
     reached = sum(row["reached"] for row in problems)
-    print(
-        f"\nKept {len(problems)}/{len(measured)} pair(s) at peak RSS >= {min_rss} bytes "
+    return (
+        f"Kept {len(problems)}/{len(measured)} pair(s) at peak RSS >= {min_rss} bytes "
         f"({reached} reached the goal) from {len(starts)} start term(s) "
-        f"-> {out / 'problems.json'}",
-        file=sys.stderr,
+        f"-> {out / 'problems.json'}"
     )
-    return 0
-
-
-if __name__ == "__main__":
-    args = CliApp.run(Args)
-    raise SystemExit(asyncio.run(main(args)))

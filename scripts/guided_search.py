@@ -2,20 +2,10 @@
 
 This driver reads the start/goal pairs in ``problems.json`` (written by
 ``generate_problems.py``) and runs one guide *search* per pair: a tree of guide
-chains explored through a work queue.
+chains explored through a work queue. `experiment.py` drives it.
 
-Example:
-    cargo build --release --bin sample --bin attempt
-    uv run scripts/baseline.py data/problems/dusky-cramp \\
-        --output data/baselines/dusky-cramp --max-iters 50 --max-rss 4G
-    uv run scripts/guided_search.py data/problems/dusky-cramp \\
-        --baseline data/baselines/dusky-cramp --output data/guided_search/1_example \\
-        --max-iters 50 --max-rss 4G --branching 5 \\
-        --max-attempts 20 --search-policy bfs \\
-        --sample-policy count --full-union
-
-Every ``sample`` and ``attempt`` process is held to the ``--max-rss`` cgroup
-RSS cap. A killed ``sample`` is retried up to ``--sampling-backoff`` times,
+Every ``sample`` and ``attempt`` process is held to the ``max_rss`` cgroup
+RSS cap. A killed ``sample`` is retried up to ``sampling_backoff`` times,
 first at the number of iterations that completed, then giving up one more
 rewrite-applying iteration per retry. A process that dies of an uncaught panic
 is recorded as ``binary_panic`` and not retried. A process whose arguments
@@ -26,31 +16,31 @@ exceed the kernel's per-argument limit is never spawned and recorded as
 import asyncio
 import itertools
 import json
-import sys
+import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
 import polars as pl
 from pydantic import Field, model_validator
-from pydantic_settings import CliApp
-from tqdm import tqdm
 
 from common import (
     ArgTooLong,
-    BaselineMismatch,
     BinaryPanicked,
     Measured,
     MemoryKilled,
     Pair,
+    PrioritySlot,
     SamplePolicy,
     check_baseline,
     cli_flags,
     exit_if_missing,
     fan_out,
     load_pairs,
+    log,
     measure_attempt,
     problem_language,
     run_json_subprocess,
@@ -75,7 +65,7 @@ SATURATED = "Saturated"
 DEAD_ENDS = (SATURATED, "arg_too_long")
 
 
-class Args(ReplayArgs):
+class SearchArgs(ReplayArgs):
     """`ReplayArgs` plus the flags of the search itself."""
 
     output: Path = Field(
@@ -86,7 +76,7 @@ class Args(ReplayArgs):
         description=(
             "Baseline folder written by `baseline.py`. "
             "It must match this run's budget and cover all of its pairs."
-        ),
+        )
     )
 
     sample_bin: Path = Field(
@@ -125,7 +115,7 @@ class Args(ReplayArgs):
         default=None,
         ge=0,
         description=(
-            "How often a `sample` process killed at `--max-rss` is retried, each "
+            "How often a `sample` process killed at `max_rss` is retried, each "
             "retry giving up one more rewrite-applying iteration. 0 disables retries. "
             "Unlimited if omitted."
         ),
@@ -150,9 +140,9 @@ class Args(ReplayArgs):
     seed: int = Field(default=0, description="RNG seed used in Python and Rust.")
 
     @model_validator(mode="after")
-    def validate_search_budget(self) -> Args:
+    def validate_search_budget(self) -> SearchArgs:
         if self.max_pair_time is None and self.max_attempts is None:
-            raise ValueError("give at least one of --max-pair-time and --max-attempts")
+            raise ValueError("give at least one of max_pair_time and max_attempts")
         return self
 
     def sample_flags(self, language: str) -> list[str]:
@@ -317,9 +307,6 @@ class Budget:
     def expired(self) -> bool:
         return self.max_time is not None and self.spent >= self.max_time
 
-    def attempts_left(self, attempts_run: int) -> bool:
-        return self.max_attempts is None or attempts_run < self.max_attempts
-
 
 @dataclass
 class PairTrace:
@@ -338,9 +325,9 @@ class PairTrace:
 
 
 async def run_capped(
-    args: Args, limit: asyncio.Semaphore, cmd: list[str], what: str
+    args: SearchArgs, limit: PrioritySlot, cmd: list[str], what: str
 ) -> tuple[Measured | None, float]:
-    """Run under the RSS cap, retrying a killed child up to `--sampling-backoff`
+    """Run under the RSS cap, retrying a killed child up to `sampling_backoff`
     times: the first retry replays the iterations that completed, each further
     one gives up another iteration that applied a rewrite. Gives up early once
     no such iteration is left.
@@ -377,7 +364,7 @@ async def run_capped(
 
 
 async def draw_expansion(
-    args: Args, sample_flags: list[str], limit: asyncio.Semaphore, s_expr: str
+    args: SearchArgs, sample_flags: list[str], limit: PrioritySlot, s_expr: str
 ) -> Expansion:
     """Run one `sample` process from `s_expr`. This is called recursively at every depth"""
     cmd = [
@@ -389,7 +376,7 @@ async def draw_expansion(
     try:
         measured, wall_time = await run_capped(args, limit, cmd, f"sample for term {s_expr!r}")
     except ArgTooLong as too_long:
-        tqdm.write(f"WARNING: {too_long}", file=sys.stderr)
+        log(f"WARNING: {too_long}")
         return Expansion([], "arg_too_long", dict(EMPTY_SAMPLE_META), 0.0)
     except BinaryPanicked as panicked:
         panicked.warn()
@@ -430,9 +417,9 @@ class SamplePools:
 
     def __init__(
         self,
-        args: Args,
+        args: SearchArgs,
         sample_flags: list[str],
-        limit: asyncio.Semaphore,
+        limit: PrioritySlot,
         group: asyncio.TaskGroup,
     ) -> None:
         self.args = args
@@ -466,11 +453,7 @@ class SamplePools:
 
 
 async def search_pair(
-    args: Args,
-    base_flags: list[str],
-    limit: asyncio.Semaphore,
-    pools: SamplePools,
-    pair: Pair,
+    args: SearchArgs, base_flags: list[str], limit: PrioritySlot, pools: SamplePools, pair: Pair
 ) -> PairTrace:
     """Run one pair's sampling/attempt search and return its trace.
 
@@ -481,10 +464,7 @@ async def search_pair(
     `peak_rss` is that attempt's own peak rather than a high-water
     mark shared across the pair.
     """
-    budget = Budget(
-        max_time=args.max_pair_time,
-        max_attempts=args.max_attempts,
-    )
+    budget = Budget(max_time=args.max_pair_time, max_attempts=args.max_attempts)
     trace = PairTrace(pair)
     frontier = SearchFrontier(args.search_policy, pair.start, pools, trace, budget)
 
@@ -493,7 +473,7 @@ async def search_pair(
         if budget.expired():
             trace.stop_reason = "time_exhausted"
             break
-        if not budget.attempts_left(len(trace.attempts)):
+        if budget.max_attempts is not None and len(trace.attempts) >= budget.max_attempts:
             trace.stop_reason = "attempt_budget_exhausted"
             break
         node = await frontier.pop()
@@ -566,7 +546,7 @@ async def search_pair(
 # -----------
 
 
-def summarize_pair(args: Args, trace: PairTrace) -> dict:
+def summarize_pair(args: SearchArgs, trace: PairTrace) -> dict:
     """Collapse one search into a single guided-workflow row."""
     attempts = trace.attempts
     successes = [attempt for attempt in attempts if attempt["reached"]]
@@ -653,11 +633,12 @@ def write_sample_pools(pools: SamplePools, out: Path) -> None:
 
 
 def report_results(
-    args: Args,
+    args: SearchArgs,
     traces: list[PairTrace],
     pools: SamplePools,
-) -> None:
-    """Write attempt, expansion, and pair results.
+    elapsed: float,
+) -> str:
+    """Write attempt, expansion, and pair results, and return a one-line summary.
 
     The baseline stays in its own folder, which `config.json` names under `baseline`.
     """
@@ -682,65 +663,48 @@ def report_results(
     total_pairs = len(pairs)
     reach_rate = reached_pairs / total_pairs if total_pairs else 0.0
     attempts_run = int(pairs["attempts_run"].sum())
-    print(
-        f"\nReached {reached_pairs}/{total_pairs} start/goal pairs "
-        f"(reach rate {reach_rate:.2f}) in {attempts_run} attempt(s) and "
-        f"{len(pools)} distinct sample pool(s). "
-        f"Wrote {out / 'pairs.parquet'}",
-        file=sys.stderr,
+    return (
+        f"Reached {reached_pairs}/{total_pairs} start/goal pairs "
+        f"(reach rate {reach_rate:.2f}) in {attempts_run} attempt(s), "
+        f"{len(pools)} distinct sample pool(s) and {timedelta(seconds=round(elapsed))}. "
+        f"Wrote {out / 'pairs.parquet'}"
     )
 
 
-def save_config(args: Args) -> None:
-    """Write `config.json` so it can be rerun in case the search fails."""
-    config = {
-        **args.model_dump(),
-        "effective_limits": args.limits,
-    }
-    (args.output / "config.json").write_text(json.dumps(config, indent=2, default=str))
+async def search(
+    args: SearchArgs, limit: PrioritySlot, desc: str = "search", leave: bool = True
+) -> str:
+    """Run the whole search, write its results, and return their one-line summary.
 
-
-async def main(args: Args) -> int:
+    Raises `BaselineMismatch` before any work is spent if the baseline does not fit.
+    """
+    started = time.monotonic()
     exit_if_missing(args.sample_bin, args.attempt_bin)
     language = problem_language(args.path)
     base_flags = args.base_flags(language)
     sample_flags = args.sample_flags(language)
 
     pairs = load_pairs(args.path, args.n_starts, args.n_goals)
-    # Checked before the search, so a mismatching baseline fails before any work is spent.
-    try:
-        check_baseline(args.baseline, args.baseline_key(), pairs)
-    except BaselineMismatch as mismatch:
-        print(mismatch, file=sys.stderr)
-        return 2
+    check_baseline(args.baseline, args.baseline_key(), pairs)
 
     args.output.mkdir(parents=True, exist_ok=True)
-    save_config(args)
+    # Written first, so `experiment.py --rerun-aborted` can rerun a failed search.
+    config = {**args.model_dump(), "effective_limits": args.limits}
+    (args.output / "config.json").write_text(json.dumps(config, indent=2, default=str))
 
-    flags_str = "".join(f"\n  {s}" if s.startswith("--") else f" {s}" for s in sample_flags)
-    print(
-        f"Searching {len(pairs)} (start, goal) pair(s)\nSample Flags: {flags_str}", file=sys.stderr
-    )
-    # Every pair starts at once and only the processes are limited, so a pair
-    # waiting on a pool another pair is drawing holds no slot.
-    limit = asyncio.Semaphore(args.jobs)
-    # The pools run in this scope rather than in detached tasks,
-    # so the first failed pair cancels everything still running instead of
-    # leaving orphaned children behind.
+    log(f"Searching {len(pairs)} (start, goal) pair(s)")
+    # Only the processes hold slots, so a pair waiting on another pair's pool holds none.
+    # The pools run in this task group, so a failed pair cancels them too.
     async with asyncio.TaskGroup() as group:
         pools = SamplePools(args, sample_flags, limit, group)
         traces = await fan_out(
-            None,
             lambda pair: search_pair(args, base_flags, limit, pools, pair),
             pairs,
-            "search",
+            desc,
             unit="pair",
+            leave=leave,
         )
 
-    report_results(args, traces, pools)
-    return 0
-
-
-if __name__ == "__main__":
-    args = CliApp.run(Args)
-    raise SystemExit(asyncio.run(main(args)))
+    summary = report_results(args, traces, pools, time.monotonic() - started)
+    log(summary)
+    return summary

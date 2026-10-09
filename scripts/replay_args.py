@@ -1,22 +1,21 @@
-"""The flags shared by `baseline.py` and `guided_search.py`."""
+"""The arguments shared by `baseline.py` and `guided_search.py`."""
 
-import os
 from pathlib import Path
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, CliPositionalArg, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from common import cli_flags, parse_size
 
 
-class ReplayArgs(BaseSettings):
-    """The flags `baseline.py` and `guided_search.py` share: the problems, and the
+class ReplayArgs(BaseModel):
+    """The arguments `baseline.py` and `guided_search.py` share: the problems, and the
     guide-replay budget and RSS cap every `attempt` process runs under."""
 
-    model_config = SettingsConfigDict(cli_kebab_case=True, cli_implicit_flags=True)
+    # So a misspelled key in `experiment.py` fails instead of being dropped.
+    model_config = ConfigDict(extra="forbid")
 
     # I/O
-    path: CliPositionalArg[Path] = Field(
+    path: Path = Field(
         description=(
             "Problem folder with `problems.json` and `problem_args.json` "
             "(both written by `generate_problems.py`)."
@@ -64,14 +63,6 @@ class ReplayArgs(BaseSettings):
         gt=0,
         description=(
             "Only use the first N goals per start term in file order. All goals are used if omitted."
-        ),
-    )
-
-    jobs: int = Field(
-        default_factory=lambda: os.cpu_count() or 1,
-        gt=0,
-        description=(
-            "Maximum number of concurrent `sample`/`attempt` processes. Defaults to `os.cpu_count()`."
         ),
     )
 
