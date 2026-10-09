@@ -20,7 +20,7 @@ from typing import Any
 from tqdm import tqdm
 
 from baseline import BaselineArgs, compute_baseline
-from common import LOG_FILE, PrioritySemaphore, PrioritySlot, log
+from common import LOG_FILE, PrioritySemaphore, PrioritySlot, load_pairs, log
 from generate_problems import GenerateArgs, generate
 from guided_search import SearchArgs, search
 
@@ -127,10 +127,19 @@ async def run_guided_search(args: SearchArgs, limit: PrioritySlot, label: str) -
 
 async def run_all(runs: list[SearchArgs], slots: PrioritySemaphore) -> None:
     """Run every guided search at once, earlier runs taking precedence for `slots`."""
-    print(f"Running {len(runs)} guided search(es) on {JOBS} process slots", file=sys.stderr)
     # Each run is labelled by its number plus the flags that differ between runs.
     dumps = [args.model_dump(exclude={"output"}) for args in runs]
     distinct = [key for key in dumps[0] if len({repr(dump[key]) for dump in dumps}) > 1]
+
+    problems = {(args.path, args.n_starts, args.n_goals) for args in runs}
+    counts = {len(load_pairs(*problem)) for problem in problems}
+    pairs = str(min(counts)) if len(counts) == 1 else f"{min(counts)}-{max(counts)}"
+    varying = f", varying {', '.join(distinct)}" if distinct else ""
+    print(
+        f"Running {len(runs)} guided search(es) over {pairs} pair(s) "
+        f"on {JOBS} process slots{varying}",
+        file=sys.stderr,
+    )
     async with asyncio.TaskGroup() as group:
         for priority, (args, dump) in enumerate(zip(runs, dumps, strict=True)):
             label = " ".join(
@@ -160,34 +169,12 @@ async def rerun_aborted(base: Path, slots: PrioritySemaphore) -> None:
     runs = []
     for run_dir in run_dirs:
         config = json.loads((run_dir / "config.json").read_text())
-        # Not fields of `SearchArgs` (any more).
+        # Derived from the other fields.
         config.pop("effective_limits", None)
-        config.pop("jobs", None)
         # In case the run was moved since.
         config["output"] = run_dir
         runs.append(SearchArgs(**config))
     await run_all(runs, slots)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--rerun-aborted",
-        type=Path,
-        nargs="?",
-        const=OUTPUT_BASE,
-        metavar="DIR",
-        help=f"Only re-run the aborted runs in DIR (default: {OUTPUT_BASE}), then exit.",
-    )
-    cli = parser.parse_args()
-
-    subprocess.run(["cargo", "build", "--release"], check=True)
-    slots = PrioritySemaphore(JOBS)
-
-    if cli.rerun_aborted is not None:
-        asyncio.run(rerun_aborted(cli.rerun_aborted, slots))
-    else:
-        asyncio.run(experiment(slots))
 
 
 async def experiment(slots: PrioritySemaphore) -> None:
@@ -231,6 +218,27 @@ async def experiment(slots: PrioritySemaphore) -> None:
     # ]
 
     await run_all(runs, slots)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--rerun-aborted",
+        type=Path,
+        nargs="?",
+        const=OUTPUT_BASE,
+        metavar="DIR",
+        help=f"Only re-run the aborted runs in DIR (default: {OUTPUT_BASE}), then exit.",
+    )
+    cli = parser.parse_args()
+
+    subprocess.run(["cargo", "build", "--release"], check=True)
+    slots = PrioritySemaphore(JOBS)
+
+    if cli.rerun_aborted is not None:
+        asyncio.run(rerun_aborted(cli.rerun_aborted, slots))
+    else:
+        asyncio.run(experiment(slots))
 
 
 if __name__ == "__main__":
