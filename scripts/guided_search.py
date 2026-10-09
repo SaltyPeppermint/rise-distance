@@ -28,8 +28,8 @@ from typing import Literal
 import polars as pl
 from pydantic import Field, model_validator
 
+from baseline import check_baseline
 from common import (
-    TIMEOUT_GRACE,
     ArgTooLong,
     BinaryPanicked,
     Measured,
@@ -38,7 +38,6 @@ from common import (
     PrioritySlot,
     SamplePolicy,
     TimeoutKilled,
-    check_baseline,
     cli_flags,
     exit_if_missing,
     fan_out,
@@ -51,6 +50,24 @@ from common import (
 from replay_args import ReplayArgs
 from schemes import ATTEMPT_SCHEMA, EMPTY_SAMPLE_META, EXPANSION_SCHEMA, PAIR_SCHEMA
 
+# How egg's `StopReason::Saturated` renders through `{:?}`
+SATURATED = "Saturated"
+
+# Attempt stop reasons whose node is never expanded.
+DEAD_ENDS = (SATURATED, "arg_too_long")
+
+# How many seconds past `max_pair_time` a child may run before it is killed.
+TIMEOUT_GRACE = 5.0
+
+# What `report_results` writes once the search finished.
+RESULT_FILES = (
+    "attempts.parquet",
+    "attempts.json",
+    "expansions.parquet",
+    "pairs.parquet",
+    "pools.json",
+)
+
 
 class SearchPolicy(StrEnum):
     DFS = "dfs"
@@ -59,13 +76,6 @@ class SearchPolicy(StrEnum):
     @property
     def lifo(self) -> bool:
         return self is SearchPolicy.DFS
-
-
-# How egg's `StopReason::Saturated` renders through `{:?}`
-SATURATED = "Saturated"
-
-# Attempt stop reasons whose node is never expanded.
-DEAD_ENDS = (SATURATED, "arg_too_long")
 
 
 class SearchArgs(ReplayArgs):
@@ -200,104 +210,6 @@ class Expansion:
         return self.meta.get("stop_reason") == SATURATED
 
 
-class SearchFrontier:
-    """The work queue with the drawing logic once the queue runs empty.
-
-    Nodes to descend are remembered via `queue_expansion`.
-    `dfs` pops the most recently pushed node, so the search follows one chain
-    down before trying its siblings, and expands the queued nodes first so a
-    node's own children are ready before its siblings get a turn; `bfs` pops
-    the oldest, exhausting a depth before descending, so it only draws once the
-    frontier is empty.
-    Under both policies siblings are tried in the order `sample` returned them.
-    """
-
-    def __init__(
-        self, policy: SearchPolicy, root: str, pools: SamplePools, trace: PairTrace, budget: Budget
-    ) -> None:
-        self.policy = policy
-        self.pools = pools
-        self.trace = trace
-        self.budget = budget
-        # Nodes ready to attempt.
-        self._ready: deque[SearchNode] = deque()
-        # Nodes whose pool is still to be drawn; the first `pop` draws the root's.
-        self._to_expand: deque[SearchNode] = deque(
-            [SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=root)]
-        )
-        self._ids = itertools.count(1)
-        self._seen: set[str] = set()
-
-    def queue_expansion(self, node: SearchNode) -> None:
-        """Queue `node` to have its pool drawn later."""
-        self._to_expand.append(node)
-
-    async def pop(self) -> SearchNode | None:
-        """The next node to attempt."""
-        while self._to_expand and not self.budget.expired():
-            if self.policy.lifo:
-                # Descend into the node eagerly, not just queued before anything else.
-                await self._expand(self._to_expand.pop())
-            elif self._ready:
-                break
-            else:
-                await self._expand(self._to_expand.popleft())
-
-        if not self._ready:
-            return None
-        return self._ready.pop() if self.policy.lifo else self._ready.popleft()
-
-    async def _expand(self, node: SearchNode) -> None:
-        """Draw `node`'s pool, record what it cost, and queue the unseen children.
-
-        A saturated replay marks its children terminal, so the search attempts them
-        but never samples past them.
-        """
-        started_at = self.budget.spent
-        cached = node.s_expr in self.trace.drawn
-        self.trace.drawn.add(node.s_expr)
-        expansion = await self.pools.draw(node.s_expr)
-        # A pool this pair already drew cost it nothing but the lookup.
-        wall_time = 0.0 if cached else expansion.wall_time
-        self.budget.charge(wall_time)
-
-        children = []
-        for guide, s_expr in expansion.children:
-            key = json.dumps(guide)
-            if key in self._seen:
-                continue
-            self._seen.add(key)
-            children.append(
-                SearchNode(
-                    next(self._ids),
-                    node.node_id,
-                    node.depth + 1,
-                    guide,
-                    s_expr,
-                    terminal=expansion.saturated,
-                )
-            )
-        # DFS pops from the right, so push reversed to keep siblings left to right.
-        self._ready.extend(reversed(children) if self.policy.lifo else children)
-
-        self.trace.expansions.append(
-            {
-                "start": self.trace.pair.start,
-                "goal": self.trace.pair.goal,
-                "node_id": node.node_id,
-                "depth": node.depth,
-                "status": expansion.status,
-                "cached": cached,
-                "saturated": expansion.saturated,
-                "drawn": len(expansion.children),
-                "pushed": len(children),
-                "started_at": started_at,
-                "wall_time": wall_time,
-                **expansion.meta,
-            }
-        )
-
-
 @dataclass
 class Budget:
     """A pair's stop conditions, all charged lazily as the search runs.
@@ -330,6 +242,11 @@ class PairTrace:
     def root_status(self) -> str:
         """The root expansion's status: whether the pair got a pool at all."""
         return self.expansions[0]["status"] if self.expansions else "unstarted"
+
+
+# --------
+# Sampling
+# --------
 
 
 async def run_capped(
@@ -468,6 +385,109 @@ class SamplePools:
         }
 
 
+# ------
+# Search
+# ------
+
+
+class SearchFrontier:
+    """The work queue with the drawing logic once the queue runs empty.
+
+    Nodes to descend are remembered via `queue_expansion`.
+    `dfs` pops the most recently pushed node, so the search follows one chain
+    down before trying its siblings, and expands the queued nodes first so a
+    node's own children are ready before its siblings get a turn; `bfs` pops
+    the oldest, exhausting a depth before descending, so it only draws once the
+    frontier is empty.
+    Under both policies siblings are tried in the order `sample` returned them.
+    """
+
+    def __init__(
+        self, policy: SearchPolicy, root: str, pools: SamplePools, trace: PairTrace, budget: Budget
+    ) -> None:
+        self.policy = policy
+        self.pools = pools
+        self.trace = trace
+        self.budget = budget
+        # Nodes ready to attempt.
+        self._ready: deque[SearchNode] = deque()
+        # Nodes whose pool is still to be drawn; the first `pop` draws the root's.
+        self._to_expand: deque[SearchNode] = deque(
+            [SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=root)]
+        )
+        self._ids = itertools.count(1)
+        self._seen: set[str] = set()
+
+    def queue_expansion(self, node: SearchNode) -> None:
+        """Queue `node` to have its pool drawn later."""
+        self._to_expand.append(node)
+
+    async def pop(self) -> SearchNode | None:
+        """The next node to attempt."""
+        while self._to_expand and not self.budget.expired():
+            if self.policy.lifo:
+                # Descend into the node eagerly, not just queued before anything else.
+                await self._expand(self._to_expand.pop())
+            elif self._ready:
+                break
+            else:
+                await self._expand(self._to_expand.popleft())
+
+        if not self._ready:
+            return None
+        return self._ready.pop() if self.policy.lifo else self._ready.popleft()
+
+    async def _expand(self, node: SearchNode) -> None:
+        """Draw `node`'s pool, record what it cost, and queue the unseen children.
+
+        A saturated replay marks its children terminal, so the search attempts them
+        but never samples past them.
+        """
+        started_at = self.budget.spent
+        cached = node.s_expr in self.trace.drawn
+        self.trace.drawn.add(node.s_expr)
+        expansion = await self.pools.draw(node.s_expr)
+        # A pool this pair already drew cost it nothing but the lookup.
+        wall_time = 0.0 if cached else expansion.wall_time
+        self.budget.charge(wall_time)
+
+        children = []
+        for guide, s_expr in expansion.children:
+            key = json.dumps(guide)
+            if key in self._seen:
+                continue
+            self._seen.add(key)
+            children.append(
+                SearchNode(
+                    next(self._ids),
+                    node.node_id,
+                    node.depth + 1,
+                    guide,
+                    s_expr,
+                    terminal=expansion.saturated,
+                )
+            )
+        # DFS pops from the right, so push reversed to keep siblings left to right.
+        self._ready.extend(reversed(children) if self.policy.lifo else children)
+
+        self.trace.expansions.append(
+            {
+                "start": self.trace.pair.start,
+                "goal": self.trace.pair.goal,
+                "node_id": node.node_id,
+                "depth": node.depth,
+                "status": expansion.status,
+                "cached": cached,
+                "saturated": expansion.saturated,
+                "drawn": len(expansion.children),
+                "pushed": len(children),
+                "started_at": started_at,
+                "wall_time": wall_time,
+                **expansion.meta,
+            }
+        )
+
+
 async def search_pair(
     args: SearchArgs, base_flags: list[str], limit: PrioritySlot, pools: SamplePools, pair: Pair
 ) -> PairTrace:
@@ -558,9 +578,9 @@ async def search_pair(
     return trace
 
 
-# -----------
+# ---------
 # Reporting
-# -----------
+# ---------
 
 
 def summarize_pair(args: SearchArgs, trace: PairTrace) -> dict:

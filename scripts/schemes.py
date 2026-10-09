@@ -14,6 +14,19 @@ ATTEMPT_DTYPES = {
 }
 
 
+# An out_of_memory baseline leaves all measurement fields None.
+UNGUIDED_SCHEMA = {
+    "start": pl.String,
+    "goal": pl.String,
+    "unguided_success": pl.Boolean,
+    "unguided_stop_reason": pl.String,
+    "unguided_panic": pl.Boolean,
+    "unguided_final_live_heap": pl.Int64,
+    "unguided_peak_live_heap": pl.Int64,
+    "unguided_peak_rss": pl.Int64,
+}
+
+
 # One row per `attempt` process.
 ATTEMPT_SCHEMA = {
     "start": pl.String,
@@ -55,6 +68,21 @@ EXPANSION_SCHEMA = {
     "peak_rss": pl.Int64,
 }
 
+# What an expansion contributes to a row when its `sample` process never got
+# far enough to report.
+EMPTY_SAMPLE_META = dict.fromkeys(
+    [
+        "iters",
+        "nodes",
+        "classes",
+        "total_time",
+        "final_live_heap",
+        "peak_live_heap",
+        "stop_reason",
+        "peak_rss",
+    ]
+)
+
 # One row per pair.
 PAIR_SCHEMA = {
     "start": pl.String,
@@ -85,30 +113,3 @@ PAIR_SCHEMA = {
     "guided_peak_rss": pl.Int64,
     "guided_peak_live_heap": pl.Int64,
 }
-
-# An out_of_memory baseline leaves all measurement fields None.
-UNGUIDED_SCHEMA = {
-    "start": pl.String,
-    "goal": pl.String,
-    "unguided_success": pl.Boolean,
-    "unguided_stop_reason": pl.String,
-    "unguided_panic": pl.Boolean,
-    "unguided_final_live_heap": pl.Int64,
-    "unguided_peak_live_heap": pl.Int64,
-    "unguided_peak_rss": pl.Int64,
-}
-
-# What an expansion contributes to a row when its `sample` process never got
-# far enough to report.
-EMPTY_SAMPLE_META = dict.fromkeys(
-    [
-        "iters",
-        "nodes",
-        "classes",
-        "total_time",
-        "final_live_heap",
-        "peak_live_heap",
-        "stop_reason",
-        "peak_rss",
-    ]
-)

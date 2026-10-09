@@ -1,6 +1,6 @@
-"""Shared helpers for the driver scripts: size parsing, subprocess-JSON
-plumbing, problem loading, binary checks, the `attempt` payload schema, CLI flag
-building, and the check that a stored baseline fits a run."""
+"""Shared helpers for the driver scripts: logging, size parsing, CLI flag
+building, binary checks, problem loading, the priority semaphore and `fan_out`,
+subprocess-JSON plumbing, and running a single `attempt` process."""
 
 import asyncio
 import contextlib
@@ -16,16 +16,29 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, TextIO
 
-import polars as pl
 from tqdm import tqdm
 
 from schemes import ATTEMPT_DTYPES
 
+# Machine-readable eqsat progress events (`EVENT_PREFIX` in src/eqsat.rs),
+# emitted under `--print-success-iters`.
+EQSAT_ITER_RE = re.compile(r"^@EQSAT iter=(\d+)$", re.MULTILINE)
+# EQSAT_DONE_RE = re.compile(r"^@EQSAT done\b", re.MULTILINE)
 
-# TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
-class SamplePolicy(StrEnum):
-    Count = "count"
-    Uniform = "uniform"
+# The cgroup OOM killer SIGKILLs the child; `systemd-run` reports that as
+# 128+SIGKILL, a direct child as -SIGKILL.
+OOM_RETURNCODES = (-9, 137)
+
+# Rust's exit code for a panic
+PANIC_RETURNCODE = 101
+
+# Linux's `MAX_ARG_STRLEN`: the most bytes, including the trailing NUL, that a
+# single argv entry may have, else `exec` fails with `E2BIG`.
+MAX_ARG_STRLEN = 32 * 4096
+
+# Where a Rust panic message header
+# `thread 'main' (609420) panicked at src/langs/math/mod.rs:97:13:`.
+PANIC_HEADER_RE = re.compile(r"^thread '.*' .*panicked at ", re.MULTILINE)
 
 
 # Where `log` writes; `experiment.py` sets it per run.
@@ -35,6 +48,82 @@ LOG_FILE: ContextVar[TextIO | None] = ContextVar("LOG_FILE", default=None)
 def log(message: str) -> None:
     """Write `message` to the current run's log file, or above the progress bars on stderr."""
     tqdm.write(message, file=LOG_FILE.get() or sys.stderr)
+
+
+def parse_size(s: str) -> int:
+    """Parse a human byte size like `4G` into bytes."""
+    s = s.strip().upper()
+    mult = 1
+    for suf, m in (("K", 1024), ("M", 1024**2), ("G", 1024**3), ("T", 1024**4)):
+        if s.endswith(suf):
+            mult = m
+            s = s[:-1]
+            break
+    return int(float(s) * mult)
+
+
+def cli_flags(**values: object) -> list[str]:
+    """Turn `snake_case=value` pairs into the Rust binaries' `--kebab-case value` arguments.
+
+    `True` becomes a bare `--flag`, and `False` and `None` are dropped.
+    """
+    flags: list[str] = []
+
+    for key, value in values.items():
+        flag = key.replace("_", "-")
+        if value is None or value is False:
+            continue
+        flags.append(f"--{flag}")
+        if value is not True:
+            flags.append(str(value))
+
+    return flags
+
+
+def exit_if_missing(*binaries: Path) -> None:
+    """Print an error and exit 2 if any binary is missing."""
+    missing = [b for b in binaries if not b.exists()]
+    if missing:
+        names = " ".join(f"--bin {b.name}" for b in missing)
+        log(
+            f"Binary not found: {', '.join(str(b) for b in missing)}. "
+            f"Build with `cargo build --release {names}`."
+        )
+        raise SystemExit(2)
+
+
+# TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
+class SamplePolicy(StrEnum):
+    Count = "count"
+    Uniform = "uniform"
+
+
+@dataclass(frozen=True)
+class Pair:
+    """One start/goal problem."""
+
+    start: str
+    goal: str
+
+
+def load_pairs(path: Path, n_starts: int | None = None, n_goals: int | None = None) -> list[Pair]:
+    """Load `problems.json`'s rows as start/goal pairs.
+
+    Keeps the first `n_starts` start terms in sorted order and the first
+    `n_goals` goals per start term in file order; all of them if omitted.
+    """
+    rows = json.loads((path / "problems.json").read_text())
+    goals: dict[str, list[str]] = {}
+    for row in rows:
+        goals.setdefault(row["start"], []).append(row["goal"])
+    return [
+        Pair(start, goal) for start in sorted(goals)[:n_starts] for goal in goals[start][:n_goals]
+    ]
+
+
+def problem_language(path: Path) -> str:
+    """The language the problems in `path` were generated in."""
+    return str(json.loads((path / "problem_args.json").read_text())["language"])
 
 
 class PrioritySemaphore:
@@ -90,56 +179,35 @@ class PrioritySlot:
         self.semaphore.release()
 
 
-@dataclass(frozen=True)
-class Pair:
-    """One start/goal problem."""
+async def fan_out(
+    fn: Callable[[Any], Coroutine[Any, Any, Any]],
+    items: list,
+    desc: str,
+    unit: str = "job",
+    leave: bool = True,
+) -> list:
+    """Run `fn` over all `items` at once, dropping the ones that returned None.
 
-    start: str
-    goal: str
-
-
-def load_pairs(path: Path, n_starts: int | None = None, n_goals: int | None = None) -> list[Pair]:
-    """Load `problems.json`'s rows as start/goal pairs.
-
-    Keeps the first `n_starts` start terms in sorted order and the first
-    `n_goals` goals per start term in file order; all of them if omitted.
+    Only the subprocesses are limited, through `run_json_subprocess`'s `limit`.
+    Results come back in `items` order. Without `leave`, the bar is cleared once done.
     """
-    rows = json.loads((path / "problems.json").read_text())
-    goals: dict[str, list[str]] = {}
-    for row in rows:
-        goals.setdefault(row["start"], []).append(row["goal"])
-    return [
-        Pair(start, goal) for start in sorted(goals)[:n_starts] for goal in goals[start][:n_goals]
-    ]
+    with tqdm(
+        total=len(items),
+        desc=desc,
+        unit=unit,
+        bar_format="{l_bar}{bar:30}{r_bar}",
+        dynamic_ncols=True,
+        leave=leave,
+    ) as bar:
+        # A task group rather than `gather`, so the first failure cancels the
+        # items still waiting for a slot instead of letting them start more
+        # processes on the way down.
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(fn(item)) for item in items]
+            for task in tasks:
+                task.add_done_callback(lambda _: bar.update(1))
 
-
-def problem_language(path: Path) -> str:
-    """The language the problems in `path` were generated in."""
-    return str(json.loads((path / "problem_args.json").read_text())["language"])
-
-
-def parse_size(s: str) -> int:
-    """Parse a human byte size like `4G` into bytes."""
-    s = s.strip().upper()
-    mult = 1
-    for suf, m in (("K", 1024), ("M", 1024**2), ("G", 1024**3), ("T", 1024**4)):
-        if s.endswith(suf):
-            mult = m
-            s = s[:-1]
-            break
-    return int(float(s) * mult)
-
-
-def exit_if_missing(*binaries: Path) -> None:
-    """Print an error and exit 2 if any binary is missing."""
-    missing = [b for b in binaries if not b.exists()]
-    if missing:
-        names = " ".join(f"--bin {b.name}" for b in missing)
-        log(
-            f"Binary not found: {', '.join(str(b) for b in missing)}. "
-            f"Build with `cargo build --release {names}`."
-        )
-        raise SystemExit(2)
+    return [result for task in tasks if (result := task.result()) is not None]
 
 
 @dataclass(frozen=True)
@@ -150,30 +218,6 @@ class Measured:
     wall_time: float
 
 
-# Machine-readable eqsat progress events (`EVENT_PREFIX` in src/eqsat.rs),
-# emitted under `--print-success-iters`.
-EQSAT_ITER_RE = re.compile(r"^@EQSAT iter=(\d+)$", re.MULTILINE)
-# EQSAT_DONE_RE = re.compile(r"^@EQSAT done\b", re.MULTILINE)
-
-# The cgroup OOM killer SIGKILLs the child; `systemd-run` reports that as
-# 128+SIGKILL, a direct child as -SIGKILL.
-OOM_RETURNCODES = (-9, 137)
-
-# Rust's exit code for a panic
-PANIC_RETURNCODE = 101
-
-# How many seconds past `max_pair_time` a guided-search child may run before it is killed.
-TIMEOUT_GRACE = 5.0
-
-# Linux's `MAX_ARG_STRLEN`: the most bytes, including the trailing NUL, that a
-# single argv entry may have, else `exec` fails with `E2BIG`.
-MAX_ARG_STRLEN = 32 * 4096
-
-# Where a Rust panic message header
-# `thread 'main' (609420) panicked at src/langs/math/mod.rs:97:13:`.
-PANIC_HEADER_RE = re.compile(r"^thread '.*' .*panicked at ", re.MULTILINE)
-
-
 class ArgTooLong(ValueError):
     """An argv entry exceeds the kernel's per-argument limit."""
 
@@ -182,15 +226,6 @@ class ArgTooLong(ValueError):
             f"{what}: argument of {flag} is {size} bytes, "
             f"over the kernel's per-argument limit of {MAX_ARG_STRLEN - 1}"
         )
-
-
-def check_arg_sizes(cmd: list[str], what: str) -> None:
-    """Raise `ArgTooLong` if any entry of `cmd` would not fit through `exec`."""
-    for i, arg in enumerate(cmd):
-        size = len(arg.encode())
-        if size >= MAX_ARG_STRLEN:
-            flag = cmd[i - 1] if i > 0 and cmd[i - 1].startswith("--") else f"argv[{i}]"
-            raise ArgTooLong(what, flag, size)
 
 
 class MemoryKilled(RuntimeError):
@@ -235,6 +270,15 @@ class BinaryPanicked(RuntimeError):
         """Log the panic."""
         message = "\n".join(f"  {line}" for line in self.panic_message.splitlines())
         log(f"WARNING: {self.what} panicked (code {PANIC_RETURNCODE}):\n{message}")
+
+
+def check_arg_sizes(cmd: list[str], what: str) -> None:
+    """Raise `ArgTooLong` if any entry of `cmd` would not fit through `exec`."""
+    for i, arg in enumerate(cmd):
+        size = len(arg.encode())
+        if size >= MAX_ARG_STRLEN:
+            flag = cmd[i - 1] if i > 0 and cmd[i - 1].startswith("--") else f"argv[{i}]"
+            raise ArgTooLong(what, flag, size)
 
 
 def prefix_rss_cap(argv: list[str], limit_bytes: int) -> list[str]:
@@ -324,6 +368,13 @@ async def run_json_subprocess(
     return Measured(envelope["payload"], int(envelope["peak_rss"]), wall_time)
 
 
+@dataclass(frozen=True)
+class AttemptResult:
+    summary: dict
+    peak_rss: int | None
+    wall_time: float
+
+
 def attempt_summary(payload: dict[str, Any]) -> dict[str, Any]:
     """`attempt`'s `AttemptSummary` payload (`src/bin/attempt.rs`) as an attempt row.
 
@@ -349,13 +400,6 @@ def failure_summary(stop_reason: str) -> dict[str, Any]:
     empty = dict.fromkeys(ATTEMPT_DTYPES)
     panic = stop_reason == "binary_panic"
     return {**empty, "reached": False, "panic": panic, "stop_reason": stop_reason}
-
-
-@dataclass(frozen=True)
-class AttemptResult:
-    summary: dict
-    peak_rss: int | None
-    wall_time: float
 
 
 async def measure_attempt(
@@ -389,85 +433,3 @@ async def measure_attempt(
         panicked.warn()
         return AttemptResult(failure_summary("binary_panic"), None, panicked.wall_time)
     return AttemptResult(attempt_summary(measured.payload), measured.peak_rss, measured.wall_time)
-
-
-def cli_flags(**values: object) -> list[str]:
-    """Turn `snake_case=value` pairs into the Rust binaries' `--kebab-case value` arguments.
-
-    `True` becomes a bare `--flag`, and `False` and `None` are dropped.
-    """
-    flags: list[str] = []
-
-    for key, value in values.items():
-        flag = key.replace("_", "-")
-        if value is None or value is False:
-            continue
-        flags.append(f"--{flag}")
-        if value is not True:
-            flags.append(str(value))
-
-    return flags
-
-
-async def fan_out(
-    fn: Callable[[Any], Coroutine[Any, Any, Any]],
-    items: list,
-    desc: str,
-    unit: str = "job",
-    leave: bool = True,
-) -> list:
-    """Run `fn` over all `items` at once, dropping the ones that returned None.
-
-    Only the subprocesses are limited, through `run_json_subprocess`'s `limit`.
-    Results come back in `items` order. Without `leave`, the bar is cleared once done.
-    """
-    with tqdm(
-        total=len(items),
-        desc=desc,
-        unit=unit,
-        bar_format="{l_bar}{bar:30}{r_bar}",
-        dynamic_ncols=True,
-        leave=leave,
-    ) as bar:
-        # A task group rather than `gather`, so the first failure cancels the
-        # items still waiting for a slot instead of letting them start more
-        # processes on the way down.
-        async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(fn(item)) for item in items]
-            for task in tasks:
-                task.add_done_callback(lambda _: bar.update(1))
-
-    return [result for task in tasks if (result := task.result()) is not None]
-
-
-class BaselineMismatch(RuntimeError):
-    """A stored baseline that was computed under other flags or misses pairs."""
-
-
-def check_baseline(directory: Path, expected: dict, pairs: list[Pair]) -> None:
-    """Check that the stored baseline in `directory` was computed under the
-    `baseline_key` `expected` and covers `pairs`.
-
-    Raises `BaselineMismatch` if there is no finished baseline in `directory`,
-    or it was computed under a different `baseline_key` or does not cover every pair.
-    """
-    if not (directory / "config.json").is_file():
-        raise BaselineMismatch(f"no finished baseline in {directory}; run `baseline.py` first")
-    config = json.loads((directory / "config.json").read_text())
-    stored = config["baseline_key"]
-    if stored != expected:
-        diff = {
-            key: (stored.get(key), value)
-            for key, value in expected.items()
-            if stored.get(key) != value
-        }
-        raise BaselineMismatch(f"baseline in {directory} differs (stored, wanted): {diff}")
-
-    wanted = pl.DataFrame(
-        {"start": [p.start for p in pairs], "goal": [p.goal for p in pairs]},
-        schema={"start": pl.String, "goal": pl.String},
-    )
-    rows = pl.read_parquet(directory / "unguided.parquet")
-    missing = wanted.join(rows, on=["start", "goal"], how="anti")
-    if len(missing):
-        raise BaselineMismatch(f"baseline in {directory} misses {len(missing)} pair(s)")

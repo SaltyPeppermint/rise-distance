@@ -17,7 +17,6 @@ from pydantic import Field
 from common import (
     Pair,
     PrioritySlot,
-    check_baseline,
     cli_flags,
     exit_if_missing,
     fan_out,
@@ -66,6 +65,39 @@ async def run_unguided_pair(
         "unguided_peak_live_heap": summary["peak_live_heap"],
         "unguided_peak_rss": attempt.peak_rss,
     }
+
+
+class BaselineMismatch(RuntimeError):
+    """A stored baseline that was computed under other flags or misses pairs."""
+
+
+def check_baseline(directory: Path, expected: dict, pairs: list[Pair]) -> None:
+    """Check that the stored baseline in `directory` was computed under the
+    `baseline_key` `expected` and covers `pairs`.
+
+    Raises `BaselineMismatch` if there is no finished baseline in `directory`,
+    or it was computed under a different `baseline_key` or does not cover every pair.
+    """
+    if not (directory / "config.json").is_file():
+        raise BaselineMismatch(f"no finished baseline in {directory}; run `baseline.py` first")
+    config = json.loads((directory / "config.json").read_text())
+    stored = config["baseline_key"]
+    if stored != expected:
+        diff = {
+            key: (stored.get(key), value)
+            for key, value in expected.items()
+            if stored.get(key) != value
+        }
+        raise BaselineMismatch(f"baseline in {directory} differs (stored, wanted): {diff}")
+
+    wanted = pl.DataFrame(
+        {"start": [p.start for p in pairs], "goal": [p.goal for p in pairs]},
+        schema={"start": pl.String, "goal": pl.String},
+    )
+    rows = pl.read_parquet(directory / "unguided.parquet")
+    missing = wanted.join(rows, on=["start", "goal"], how="anti")
+    if len(missing):
+        raise BaselineMismatch(f"baseline in {directory} misses {len(missing)} pair(s)")
 
 
 async def compute_baseline(args: BaselineArgs, limit: PrioritySlot) -> str:

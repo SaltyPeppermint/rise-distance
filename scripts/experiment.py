@@ -22,23 +22,10 @@ from tqdm import tqdm
 from baseline import BaselineArgs, compute_baseline
 from common import LOG_FILE, PrioritySemaphore, PrioritySlot, load_pairs, log
 from generate_problems import GenerateArgs, generate
-from guided_search import SearchArgs, search
+from guided_search import RESULT_FILES, SearchArgs, search
 
+# The experiment
 PROBLEMS = Path("data/problems/expensive-bird")
-OUTPUT_BASE = Path("data/guided_search")
-BASELINE_BASE = Path("data/baselines")
-
-# What `guided_search.py` writes once the search finished.
-RESULT_FILES = (
-    "attempts.parquet",
-    "attempts.json",
-    "expansions.parquet",
-    "pairs.parquet",
-    "pools.json",
-)
-
-# Concurrent `sample`/`attempt` processes over all runs together.
-JOBS = os.cpu_count() or 1
 
 # Shared by `baseline.py` and `guided_search.py`, so both compute the same baseline.
 BASELINE_FLAGS: dict[str, Any] = {"max_rss": "450M", "n_starts": 100}
@@ -63,6 +50,14 @@ GRID: dict[str, list[Any]] = {
 }
 
 
+# Where results go
+OUTPUT_BASE = Path("data/guided_search")
+BASELINE_BASE = Path("data/baselines")
+
+# Concurrency
+JOBS = os.cpu_count() or 1
+
+
 def git_short_hash() -> str:
     """Short HEAD hash, suffixed with `-dirty` if there are uncommitted changes"""
     rev = subprocess.run(
@@ -70,25 +65,6 @@ def git_short_hash() -> str:
     ).stdout.strip()
     dirty = subprocess.run(["git", "diff", "--quiet", "HEAD"], check=False).returncode != 0
     return f"{rev}-dirty" if dirty else rev
-
-
-async def generate_problems(problems: Path = PROBLEMS) -> None:
-    args = GenerateArgs(
-        starts=1000,
-        min_size=30,
-        max_size=60,
-        language="math",
-        seed=123,
-        max_iters=2000,
-        max_nodes=1000000,
-        max_time=300,
-        max_memory="500M",
-        min_rss="500M",
-        max_rss="1G",
-        goals=2,
-        output=problems,
-    )
-    print(await generate(args, PrioritySemaphore(20).at(0)), file=sys.stderr)
 
 
 def run_number(path: Path) -> int:
@@ -182,6 +158,25 @@ async def rerun_aborted(base: Path, slots: PrioritySemaphore) -> None:
         config["output"] = run_dir
         runs.append(SearchArgs(**config))
     await run_all(runs, slots)
+
+
+async def generate_problems(problems: Path = PROBLEMS) -> None:
+    args = GenerateArgs(
+        starts=1000,
+        min_size=30,
+        max_size=60,
+        language="math",
+        seed=123,
+        max_iters=2000,
+        max_nodes=1000000,
+        max_time=300,
+        max_memory="500M",
+        min_rss="500M",
+        max_rss="1G",
+        goals=2,
+        output=problems,
+    )
+    print(await generate(args, PrioritySemaphore(20).at(0)), file=sys.stderr)
 
 
 async def experiment(slots: PrioritySemaphore) -> None:
