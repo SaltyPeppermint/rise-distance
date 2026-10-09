@@ -140,11 +140,18 @@ async def run_all(runs: list[SearchArgs], slots: PrioritySemaphore) -> None:
         f"on {JOBS} process slots{varying}",
         file=sys.stderr,
     )
+    # Padded per column, so the labels (and with them the bars) line up.
+    cells = [
+        [str(run_number(args.output)), *(f"{key}={dump[key]}" for key in distinct)]
+        for args, dump in zip(runs, dumps, strict=True)
+    ]
+    widths = [max(map(len, column)) for column in zip(*cells, strict=True)]
+    labels = [
+        " ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True))
+        for row in cells
+    ]
     async with asyncio.TaskGroup() as group:
-        for priority, (args, dump) in enumerate(zip(runs, dumps, strict=True)):
-            label = " ".join(
-                [str(run_number(args.output)), *(f"{key}={dump[key]}" for key in distinct)]
-            )
+        for priority, (args, label) in enumerate(zip(runs, labels, strict=True)):
             group.create_task(run_guided_search(args, slots.at(priority), label))
 
 
