@@ -276,6 +276,7 @@ STOP_LABELS = {
     "Saturated": "saturated without goal",
     "out_of_memory": "out of memory",
     "binary_panic": "binary panic",
+    "timeout": "hard timeout",
     "panic": "panic in eqsat",
     "arg_too_long": "guide too long for argv",
 }
@@ -315,6 +316,8 @@ SETUP_LABELS = {
     "empty_pool": "empty pool",
     # The `sample` process died of an uncaught panic.
     "binary_panic": "binary panic",
+    # The `sample` process outran `max_pair_time` plus the grace and was killed.
+    "timeout": "hard timeout",
     # The start term exceeds the kernel's per-argument limit, so `sample` was never spawned.
     "arg_too_long": "start too long for argv",
 }

@@ -162,6 +162,9 @@ OOM_RETURNCODES = (-9, 137)
 # Rust's exit code for a panic
 PANIC_RETURNCODE = 101
 
+# How many seconds past `max_pair_time` a guided-search child may run before it is killed.
+TIMEOUT_GRACE = 5.0
+
 # Linux's `MAX_ARG_STRLEN`: the most bytes, including the trailing NUL, that a
 # single argv entry may have, else `exec` fails with `E2BIG`.
 MAX_ARG_STRLEN = 32 * 4096
@@ -200,6 +203,15 @@ class MemoryKilled(RuntimeError):
         self.wall_time = wall_time
 
 
+class TimeoutKilled(RuntimeError):
+    """A child that outran its hard timeout and was killed by hand."""
+
+    def __init__(self, what: str, timeout: float, wall_time: float) -> None:
+        super().__init__(f"{what} was killed at its hard timeout of {timeout:g}s")
+        self.what = what
+        self.wall_time = wall_time
+
+
 class BinaryPanicked(RuntimeError):
     """A child exited with a Rust panic that it did not catch itself."""
 
@@ -225,7 +237,7 @@ class BinaryPanicked(RuntimeError):
         log(f"WARNING: {self.what} panicked (code {PANIC_RETURNCODE}):\n{message}")
 
 
-def prefix_rss_cap(argv: list[str], limit_bytes) -> list[str]:
+def prefix_rss_cap(argv: list[str], limit_bytes: int) -> list[str]:
     return [
         "systemd-run",
         "--user",
@@ -250,6 +262,7 @@ async def run_json_subprocess(
     what: str,
     limit: PrioritySlot,
     max_rss_bytes: int | None = None,
+    timeout: float | None = None,
 ) -> Measured:
     """Run a JSON child and return its payload plus its peak RSS.
 
@@ -262,7 +275,8 @@ async def run_json_subprocess(
 
     Raises `ArgTooLong` before spawning when an argv entry exceeds the kernel's
     per-argument limit, `MemoryKilled` when `max_rss_bytes` is set and the cap
-    killed it, and `BinaryPanicked` when the child panicked.
+    killed it, `TimeoutKilled` when `timeout` is set and the child outran it,
+    and `BinaryPanicked` when the child panicked.
     """
     check_arg_sizes(cmd, what)
     async with limit:
@@ -274,9 +288,10 @@ async def run_json_subprocess(
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            out, err = await proc.communicate()
-        except asyncio.CancelledError:
-            # Cancelling only unwinds the *read*, so the child has to be killed by hand.
+            async with asyncio.timeout(timeout):
+                out, err = await proc.communicate()
+        except (asyncio.CancelledError, TimeoutError) as stopped:
+            # Cancelling or timing out only unwinds the *read*, so the child has to be killed by hand.
             # `systemd-run --scope` execs the workload in place rather than forking,
             if proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
@@ -285,6 +300,9 @@ async def run_json_subprocess(
                 # The child watcher reaps the child either way.
                 with contextlib.suppress(asyncio.CancelledError):
                     await proc.wait()
+            if isinstance(stopped, TimeoutError):
+                assert timeout is not None
+                raise TimeoutKilled(what, timeout, time.monotonic() - started) from None
             raise
         wall_time = time.monotonic() - started
 
@@ -324,7 +342,9 @@ def failure_summary(stop_reason: str) -> dict[str, Any]:
     for a child that never printed one: `out_of_memory` for one SIGKILLed at its
     cgroup RSS cap, `binary_panic` for one that died of an uncaught panic (unlike
     a panic caught inside the eqsat run, `stop_reason="panic"`), `arg_too_long`
-    for one never spawned since an argument would not fit through `exec`.
+    for one never spawned since an argument would not fit through `exec`,
+    `timeout` for one killed at its hard timeout (unlike egg's `TimeLimit`,
+    which the eqsat run reports itself).
     """
     empty = dict.fromkeys(ATTEMPT_DTYPES)
     panic = stop_reason == "binary_panic"
@@ -339,24 +359,32 @@ class AttemptResult:
 
 
 async def measure_attempt(
-    cmd: list[str], *, what: str, max_rss_bytes: int, limit: PrioritySlot
+    cmd: list[str],
+    *,
+    what: str,
+    max_rss_bytes: int,
+    limit: PrioritySlot,
+    timeout: float | None = None,
 ) -> AttemptResult:
-    """Run one `attempt` process under the RSS cap.
+    """Run one `attempt` process under the RSS cap and the hard timeout.
 
-    An attempt killed at the cap, by an uncaught panic, or never spawned since
-    an argument exceeds the kernel's limit comes back as a failed attempt with
-    ``stop_reason="out_of_memory"``/``"binary_panic"``/``"arg_too_long"``
-    rather than an exception.
+    An attempt killed at the cap, by an uncaught panic, at its hard timeout, or
+    never spawned since an argument exceeds the kernel's limit comes back as a
+    failed attempt with ``stop_reason="out_of_memory"``/``"binary_panic"``/
+    ``"timeout"``/``"arg_too_long"`` rather than an exception.
     """
     try:
         measured = await run_json_subprocess(
-            cmd, what=what, max_rss_bytes=max_rss_bytes, limit=limit
+            cmd, what=what, max_rss_bytes=max_rss_bytes, limit=limit, timeout=timeout
         )
     except ArgTooLong as too_long:
         log(f"WARNING: {too_long}")
         return AttemptResult(failure_summary("arg_too_long"), None, 0.0)
     except MemoryKilled as killed:
         return AttemptResult(failure_summary("out_of_memory"), None, killed.wall_time)
+    except TimeoutKilled as timed_out:
+        log(f"WARNING: {timed_out}")
+        return AttemptResult(failure_summary("timeout"), None, timed_out.wall_time)
     except BinaryPanicked as panicked:
         panicked.warn()
         return AttemptResult(failure_summary("binary_panic"), None, panicked.wall_time)

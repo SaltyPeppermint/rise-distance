@@ -8,7 +8,8 @@ Every ``sample`` and ``attempt`` process is held to the ``max_rss`` cgroup
 RSS cap. A killed ``sample`` is retried up to ``sampling_backoff`` times,
 first at the number of iterations that completed, then giving up one more
 rewrite-applying iteration per retry. A process that dies of an uncaught panic
-is recorded as ``binary_panic`` and not retried. A process whose arguments
+is recorded as ``binary_panic``, one that outruns its hard timeout (``max_pair_time``
+plus a fixed grace) as ``timeout``; neither is retried. A process whose arguments
 exceed the kernel's per-argument limit is never spawned and recorded as
 ``arg_too_long``; like a saturated attempt, its node is not expanded further.
 """
@@ -28,6 +29,7 @@ import polars as pl
 from pydantic import Field, model_validator
 
 from common import (
+    TIMEOUT_GRACE,
     ArgTooLong,
     BinaryPanicked,
     Measured,
@@ -35,6 +37,7 @@ from common import (
     Pair,
     PrioritySlot,
     SamplePolicy,
+    TimeoutKilled,
     check_baseline,
     cli_flags,
     exit_if_missing,
@@ -84,12 +87,6 @@ class SearchArgs(ReplayArgs):
     )
 
     # Search budget
-    #
-    # At least one must be given; with both, the search stops at whichever runs
-    # out first. The budget is the only bound on the search tree's depth: BFS
-    # reaches depth ~log_branching(budget), DFS descends one chain until it
-    # dead-ends (saturated, empty pool, no unseen guides) and only then backs up
-    # to the next sibling.
     max_pair_time: float | None = Field(
         default=None,
         gt=0,
@@ -145,6 +142,11 @@ class SearchArgs(ReplayArgs):
             raise ValueError("give at least one of max_pair_time and max_attempts")
         return self
 
+    @property
+    def timeout(self) -> float | None:
+        """Hard timeout of every `sample` and `attempt` process"""
+        return None if self.max_pair_time is None else self.max_pair_time + TIMEOUT_GRACE
+
     def sample_flags(self, language: str) -> list[str]:
         """Flags shared by every `sample` process."""
         return cli_flags(
@@ -182,7 +184,13 @@ class Expansion:
 
     children: list[tuple[list, str]]
     status: Literal[
-        "ok", "empty_pool", "no_novel_terms", "out_of_memory", "binary_panic", "arg_too_long"
+        "ok",
+        "empty_pool",
+        "no_novel_terms",
+        "out_of_memory",
+        "binary_panic",
+        "timeout",
+        "arg_too_long",
     ]
     meta: dict
     wall_time: float
@@ -333,12 +341,15 @@ async def run_capped(
     no such iteration is left.
 
     Also returns the wall time summed over every try, the killed ones included.
-    A `BinaryPanicked` is not retried and carries that same sum."""
+    A `BinaryPanicked` or `TimeoutKilled` is not retried and carries that same sum."""
     cmd = [*cmd, "--print-success-iters"]
     cap = args.max_rss_bytes
+    timeout = args.timeout
     # Try for the first time, record list of successful productive eqsat iterations
     try:
-        measured = await run_json_subprocess(cmd, what=what, max_rss_bytes=cap, limit=limit)
+        measured = await run_json_subprocess(
+            cmd, what=what, max_rss_bytes=cap, limit=limit, timeout=timeout
+        )
         return measured, measured.wall_time
     except MemoryKilled as killed:
         wall_time = killed.wall_time
@@ -352,12 +363,14 @@ async def run_capped(
         except ValueError:
             cmd.extend(["--max-iters", str(max_iters)])
         try:
-            measured = await run_json_subprocess(cmd, what=what, max_rss_bytes=cap, limit=limit)
+            measured = await run_json_subprocess(
+                cmd, what=what, max_rss_bytes=cap, limit=limit, timeout=timeout
+            )
             return measured, wall_time + measured.wall_time
         except MemoryKilled as killed:
             wall_time += killed.wall_time
-        except BinaryPanicked as panicked:
-            panicked.wall_time += wall_time
+        except (BinaryPanicked, TimeoutKilled) as failed:
+            failed.wall_time += wall_time
             raise
 
     return None, wall_time
@@ -381,6 +394,9 @@ async def draw_expansion(
     except BinaryPanicked as panicked:
         panicked.warn()
         return Expansion([], "binary_panic", dict(EMPTY_SAMPLE_META), panicked.wall_time)
+    except TimeoutKilled as timed_out:
+        log(f"WARNING: {timed_out}")
+        return Expansion([], "timeout", dict(EMPTY_SAMPLE_META), timed_out.wall_time)
 
     # A capped-out child never printed its `Measured` envelope.
     if measured is None:
@@ -504,6 +520,7 @@ async def search_pair(
             what=f"attempt for goal {pair.goal!r}",
             max_rss_bytes=args.max_rss_bytes,
             limit=limit,
+            timeout=args.timeout,
         )
         budget.charge(attempt.wall_time)
         trace.attempts.append(
