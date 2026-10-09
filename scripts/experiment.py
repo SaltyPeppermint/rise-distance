@@ -91,11 +91,15 @@ async def generate_problems(problems: Path = PROBLEMS) -> None:
     print(await generate(args, PrioritySemaphore(20).at(0)), file=sys.stderr)
 
 
+def run_number(path: Path) -> int:
+    """The leading number of a run folder's name, or 0 if it has none."""
+    return int(m.group()) if (m := re.match(r"\d+", path.name)) else 0
+
+
 def new_run_dir(suffix: str, run: int | None = None) -> Path:
     """Create the folder `<run>_<suffix>` in `OUTPUT_BASE`, numbered after the last run by default."""
     if run is None:
-        nums = [int(m.group()) for p in OUTPUT_BASE.glob("*") if (m := re.match(r"\d+", p.name))]
-        run = max(nums, default=0) + 1
+        run = max(map(run_number, OUTPUT_BASE.iterdir()), default=0) + 1
     out_dir = OUTPUT_BASE / f"{run}_{suffix}"
     out_dir.mkdir()
     return out_dir
@@ -129,8 +133,9 @@ async def run_all(runs: list[SearchArgs], slots: PrioritySemaphore) -> None:
     distinct = [key for key in dumps[0] if len({repr(dump[key]) for dump in dumps}) > 1]
     async with asyncio.TaskGroup() as group:
         for priority, (args, dump) in enumerate(zip(runs, dumps, strict=True)):
-            number = args.output.name.split("_", 1)[0]
-            label = " ".join([number, *(f"{key}={dump[key]}" for key in distinct)])
+            label = " ".join(
+                [str(run_number(args.output)), *(f"{key}={dump[key]}" for key in distinct)]
+            )
             group.create_task(run_guided_search(args, slots.at(priority), label))
 
 
@@ -146,7 +151,7 @@ async def rerun_aborted(base: Path, slots: PrioritySemaphore) -> None:
             if (p / "config.json").is_file()
             and not all((p / name).is_file() for name in RESULT_FILES)
         ),
-        key=lambda p: int(m.group()) if (m := re.match(r"\d+", p.name)) else 0,
+        key=run_number,
     )
     print(f"Re-running {len(run_dirs)} aborted run(s) in {base}")
     if not run_dirs:
@@ -200,16 +205,19 @@ async def experiment(slots: PrioritySemaphore) -> None:
 
     # GRID SEARCH
     # Validated before any run folder is created.
-    grid: list[dict[str, Any]] = [
-        {**BASE_FLAGS, **budget, **dict(zip(GRID, values)), "path": PROBLEMS, "baseline": baseline}
+    runs = [
+        SearchArgs(
+            **{**BASE_FLAGS, **budget, **dict(zip(GRID, values))},
+            path=PROBLEMS,
+            baseline=baseline,
+            output=OUTPUT_BASE,
+        )
         for budget, values in itertools.product(BUDGETS, itertools.product(*GRID.values()))
     ]
-    for flags in grid:
-        SearchArgs.model_validate({**flags, "output": OUTPUT_BASE})
-    runs = [SearchArgs(**flags, output=new_run_dir(suffix)) for flags in grid]
+    runs = [args.model_copy(update={"output": new_run_dir(suffix)}) for args in runs]
 
     # # INDIVIDUAL RUN(s)
-    # runs = [
+    # runs += [
     #     SearchArgs(
     #         **BASE_FLAGS,
     #         **BUDGETS[0],

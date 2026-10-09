@@ -15,7 +15,6 @@ import polars as pl
 from pydantic import Field
 
 from common import (
-    BaselineMismatch,
     Pair,
     PrioritySlot,
     check_baseline,
@@ -79,10 +78,7 @@ async def compute_baseline(args: BaselineArgs, limit: PrioritySlot) -> str:
     pairs = load_pairs(args.path, args.n_starts, args.n_goals)
 
     if (out / "config.json").is_file():
-        try:
-            check_baseline(out, args.baseline_key(), pairs)
-        except BaselineMismatch as mismatch:
-            raise BaselineMismatch(f"{mismatch}; remove it or pick another output") from None
+        check_baseline(out, args.baseline_key(), pairs)
         return f"Baseline in {out} already covers all {len(pairs)} pair(s)"
 
     base_flags = args.base_flags(problem_language(args.path))

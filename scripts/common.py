@@ -9,7 +9,7 @@ import json
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -381,15 +381,8 @@ def cli_flags(**values: object) -> list[str]:
     return flags
 
 
-async def _run_ticking(bar: tqdm, fn: Callable[[Any], Awaitable[Any]], item: Any) -> Any:
-    """Run and tick the bar."""
-    result = await fn(item)
-    bar.update(1)
-    return result
-
-
 async def fan_out(
-    fn: Callable[[Any], Awaitable[Any]],
+    fn: Callable[[Any], Coroutine[Any, Any, Any]],
     items: list,
     desc: str,
     unit: str = "job",
@@ -412,7 +405,9 @@ async def fan_out(
         # items still waiting for a slot instead of letting them start more
         # processes on the way down.
         async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(_run_ticking(bar, fn, item)) for item in items]
+            tasks = [group.create_task(fn(item)) for item in items]
+            for task in tasks:
+                task.add_done_callback(lambda _: bar.update(1))
 
     return [result for task in tasks if (result := task.result()) is not None]
 
