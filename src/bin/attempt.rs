@@ -1,12 +1,12 @@
-//! Run one attempt: union a single guide subset, saturate, and report goal
+//! Run one attempt: union a set of guides, saturate, and report goal
 //! reachability.
 //!
 //! Stateless — no guide egraph replay or samples construction.
 //! `guided_search.py` spawns this once per attempt, passing everything on argv:
-//! the goal via `--goal` and, with `--is-guide`, that attempt's guide as a JSON
-//! array of [`OriginLang`] nodes via `--start`. Without `--is-guide` the same
-//! flag takes a plain s-expression and the run is the unguided baseline. Prints
-//! the run's [`AttemptSummary`] as the `payload` of a [`Measured`] envelope.
+//! the goal via `--goal` and, with `--is-guide`, that attempt's guides as a JSON
+//! array of [`OriginLang`] node arrays via `--start`. Without `--is-guide` the
+//! same flag takes a plain s-expression and the run is the unguided baseline.
+//! Prints the run's [`AttemptSummary`] as the `payload` of a [`Measured`] envelope.
 //!
 //! One attempt per process is deliberate: the peak RSS reported in the
 //! [`Measured`] envelope is a per-process lifetime high-water mark, so batching
@@ -27,11 +27,11 @@ use rise_distance::origin::OriginLang;
 
 #[derive(Parser)]
 #[command(
-    about = "Run one attempt: union a single guide subset, saturate, report reachability",
+    about = "Run one attempt: union a set of guides, saturate, report reachability",
     after_help = "\
-With `--is-guide`, `--start` is one attempt's guide as a JSON array of guide
-nodes. Otherwise `--start` is a plain s-expression. The result is printed as a
-JSON object.
+With `--is-guide`, `--start` is one attempt's guides as a JSON array of guide
+node arrays. Otherwise `--start` is a plain s-expression. The result is printed
+as a JSON object.
 
 Example:
   attempt --language math --goal '(+ x 0)' --start 'x' \\
@@ -47,7 +47,7 @@ struct Args {
     #[arg(long)]
     goal: String,
 
-    /// The start of the run: a JSON array of guide nodes with `--is-guide`,
+    /// The start of the run: a JSON array of guides with `--is-guide`,
     /// otherwise a plain s-expression for the unguided baseline.
     #[arg(long)]
     start: String,
@@ -85,15 +85,10 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
     let goal = Goal::Expr(goal);
 
     let result = if args.is_guide {
-        let guide: Vec<OriginLang<L>> = serde_json::from_str(&args.start)
-            .unwrap_or_else(|e| panic!("Failed to parse start term '{}': {e}", args.start));
-        eqsat::guided_eqsat(
-            &[RecExpr::from(guide)],
-            &goal,
-            rules,
-            &args.eqsat,
-            args.full_union,
-        )
+        let guides: Vec<Vec<OriginLang<L>>> = serde_json::from_str(&args.start)
+            .unwrap_or_else(|e| panic!("Failed to parse start guides '{}': {e}", args.start));
+        let guides: Vec<RecExpr<OriginLang<L>>> = guides.into_iter().map(RecExpr::from).collect();
+        eqsat::guided_eqsat(&guides, &goal, rules, &args.eqsat, args.full_union)
     } else {
         let start_expr = args
             .start

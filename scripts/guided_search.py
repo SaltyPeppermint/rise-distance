@@ -18,6 +18,7 @@ import asyncio
 import itertools
 import json
 import time
+from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -74,8 +75,8 @@ class SearchPolicy(StrEnum):
     BFS = "bfs"
 
     @property
-    def lifo(self) -> bool:
-        return self is SearchPolicy.DFS
+    def frontier(self) -> type[SearchFrontier]:
+        return DfsFrontier if self is SearchPolicy.DFS else BfsFrontier
 
 
 class SearchArgs(ReplayArgs):
@@ -110,6 +111,10 @@ class SearchArgs(ReplayArgs):
     # Search policy
     search_policy: SearchPolicy = Field(
         default=SearchPolicy.DFS, description=("DFS vs. BFS of the space")
+    )
+
+    guides_per_attempt: int = Field(
+        default=1, gt=0, description=("Sibling guides unioned per eqsat.")
     )
 
     branching: int = Field(
@@ -152,6 +157,12 @@ class SearchArgs(ReplayArgs):
             raise ValueError("give at least one of max_pair_time and max_attempts")
         return self
 
+    @model_validator(mode="after")
+    def validate_guides_branching(self) -> SearchArgs:
+        if self.branching % self.guides_per_attempt != 0:
+            raise ValueError("branching must be a multiple of guides_per_attempt")
+        return self
+
     @property
     def timeout(self) -> float | None:
         """Hard timeout of every `sample` and `attempt` process"""
@@ -192,7 +203,7 @@ class SearchNode:
 class Expansion:
     """The outcome of one `sample` process: the pool drawn and its cost."""
 
-    children: list[tuple[list, str]]
+    children: tuple[tuple[list, str], ...]
     status: Literal[
         "ok",
         "empty_pool",
@@ -307,25 +318,25 @@ async def draw_expansion(
         measured, wall_time = await run_capped(args, limit, cmd, f"sample for term {s_expr!r}")
     except ArgTooLong as too_long:
         log(f"WARNING: {too_long}")
-        return Expansion([], "arg_too_long", dict(EMPTY_SAMPLE_META), 0.0)
+        return Expansion((), "arg_too_long", dict(EMPTY_SAMPLE_META), 0.0)
     except BinaryPanicked as panicked:
         panicked.warn()
-        return Expansion([], "binary_panic", dict(EMPTY_SAMPLE_META), panicked.wall_time)
+        return Expansion((), "binary_panic", dict(EMPTY_SAMPLE_META), panicked.wall_time)
     except TimeoutKilled as timed_out:
         log(f"WARNING: {timed_out}")
-        return Expansion([], "timeout", dict(EMPTY_SAMPLE_META), timed_out.wall_time)
+        return Expansion((), "timeout", dict(EMPTY_SAMPLE_META), timed_out.wall_time)
 
     # A capped-out child never printed its `Measured` envelope.
     if measured is None:
-        return Expansion([], "out_of_memory", dict(EMPTY_SAMPLE_META), wall_time)
+        return Expansion((), "out_of_memory", dict(EMPTY_SAMPLE_META), wall_time)
 
     # An empty payload is `sample` reporting that construction failed.
     if not measured.payload:
         meta = {**EMPTY_SAMPLE_META, "peak_rss": measured.peak_rss}
-        return Expansion([], "no_novel_terms", meta, wall_time)
+        return Expansion((), "no_novel_terms", meta, wall_time)
 
     record = measured.payload[0]
-    children = list(zip(record["samples"], record["samples_s_expr"], strict=True))
+    children = tuple(zip(record["samples"], record["samples_s_expr"], strict=True))
     meta = {
         "iters": record["iters"],
         "nodes": record["nodes"],
@@ -390,55 +401,41 @@ class SamplePools:
 # ------
 
 
-class SearchFrontier:
+class SearchFrontier(ABC):
     """The work queue with the drawing logic once the queue runs empty.
 
+    Children are attempted in batches of `guides_per_attempt` siblings, in the
+    order `sample` returned them; a trailing partial batch is dropped.
     Nodes to descend are remembered via `queue_expansion`.
-    `dfs` pops the most recently pushed node, so the search follows one chain
-    down before trying its siblings, and expands the queued nodes first so a
-    node's own children are ready before its siblings get a turn; `bfs` pops
-    the oldest, exhausting a depth before descending, so it only draws once the
-    frontier is empty.
-    Under both policies siblings are tried in the order `sample` returned them.
     """
 
     def __init__(
-        self, policy: SearchPolicy, root: str, pools: SamplePools, trace: PairTrace, budget: Budget
+        self,
+        guides_per_attempt: int,
+        root: str,
+        pools: SamplePools,
+        trace: PairTrace,
+        budget: Budget,
     ) -> None:
-        self.policy = policy
+        self.guides_per_attempt = guides_per_attempt
         self.pools = pools
         self.trace = trace
         self.budget = budget
-        # Nodes ready to attempt.
-        self._ready: deque[SearchNode] = deque()
-        # Nodes whose pool is still to be drawn; the first `pop` draws the root's.
-        self._to_expand: deque[SearchNode] = deque(
-            [SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=root)]
-        )
+        # The first `pop` draws the root's pool.
+        self.root = SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=root)
         self._ids = itertools.count(1)
         self._seen: set[str] = set()
 
-    def queue_expansion(self, node: SearchNode) -> None:
-        """Queue `node` to have its pool drawn later."""
-        self._to_expand.append(node)
+    @abstractmethod
+    def queue_expansion(self, batch: tuple[SearchNode, ...]) -> None:
+        """Queue `batch`'s nodes to have their pools drawn later."""
 
-    async def pop(self) -> SearchNode | None:
-        """The next node to attempt."""
-        while self._to_expand and not self.budget.expired():
-            if self.policy.lifo:
-                # Descend into the node eagerly, not just queued before anything else.
-                await self._expand(self._to_expand.pop())
-            elif self._ready:
-                break
-            else:
-                await self._expand(self._to_expand.popleft())
+    @abstractmethod
+    async def pop(self) -> tuple[SearchNode, ...] | None:
+        """The next batch to attempt, or `None` once the frontier or budget ran out."""
 
-        if not self._ready:
-            return None
-        return self._ready.pop() if self.policy.lifo else self._ready.popleft()
-
-    async def _expand(self, node: SearchNode) -> None:
-        """Draw `node`'s pool, record what it cost, and queue the unseen children.
+    async def _expand(self, node: SearchNode) -> list[tuple[SearchNode, ...]]:
+        """Draw `node`'s pool, record what it cost, and return the unseen children batched.
 
         A saturated replay marks its children terminal, so the search attempts them
         but never samples past them.
@@ -467,8 +464,8 @@ class SearchFrontier:
                     terminal=expansion.saturated,
                 )
             )
-        # DFS pops from the right, so push reversed to keep siblings left to right.
-        self._ready.extend(reversed(children) if self.policy.lifo else children)
+        k = self.guides_per_attempt
+        batches = [tuple(children[i : i + k]) for i in range(0, len(children) - k + 1, k)]
 
         self.trace.expansions.append(
             {
@@ -480,12 +477,70 @@ class SearchFrontier:
                 "cached": cached,
                 "saturated": expansion.saturated,
                 "drawn": len(expansion.children),
-                "pushed": len(children),
+                "pushed": len(batches) * k,
                 "started_at": started_at,
                 "wall_time": wall_time,
                 **expansion.meta,
             }
         )
+        return batches
+
+
+class DfsFrontier(SearchFrontier):
+    """Follows one chain down before trying its siblings.
+
+    The stack holds undrawn nodes and ready batches; a node is drawn only once
+    it reaches the top, and its batches replace it.
+    """
+
+    def __init__(
+        self,
+        guides_per_attempt: int,
+        root: str,
+        pools: SamplePools,
+        trace: PairTrace,
+        budget: Budget,
+    ) -> None:
+        super().__init__(guides_per_attempt, root, pools, trace, budget)
+        self._stack: deque[SearchNode | tuple[SearchNode, ...]] = deque([self.root])
+
+    def queue_expansion(self, batch: tuple[SearchNode, ...]) -> None:
+        # Reversed, so the first sibling ends up on top.
+        self._stack.extend(reversed(batch))
+
+    async def pop(self) -> tuple[SearchNode, ...] | None:
+        while self._stack and not self.budget.expired():
+            top = self._stack.pop()
+            if isinstance(top, tuple):
+                return top
+            # Loop again, so a draw that used up the budget hands out nothing.
+            self._stack.extend(reversed(await self._expand(top)))
+        return None
+
+
+class BfsFrontier(SearchFrontier):
+    """Exhausts a depth before descending, so it only draws once no batch is ready."""
+
+    def __init__(
+        self,
+        guides_per_attempt: int,
+        root: str,
+        pools: SamplePools,
+        trace: PairTrace,
+        budget: Budget,
+    ) -> None:
+        super().__init__(guides_per_attempt, root, pools, trace, budget)
+        # Nodes whose pool is still to be drawn.
+        self._to_expand: deque[SearchNode] = deque([self.root])
+        self._ready: deque[tuple[SearchNode, ...]] = deque()
+
+    def queue_expansion(self, batch: tuple[SearchNode, ...]) -> None:
+        self._to_expand.extend(batch)
+
+    async def pop(self) -> tuple[SearchNode, ...] | None:
+        while self._to_expand and not self._ready and not self.budget.expired():
+            self._ready.extend(await self._expand(self._to_expand.popleft()))
+        return self._ready.popleft() if self._ready else None
 
 
 async def search_pair(
@@ -493,16 +548,18 @@ async def search_pair(
 ) -> PairTrace:
     """Run one pair's sampling/attempt search and return its trace.
 
-    The loop is: pop a node, attempt it, and on failure hand it back to the
-    frontier, which draws its pool once it needs the children. A node whose
-    attempt saturated is never handed back, since its subtree cannot hold the
-    goal. Each attempt is a separate `attempt` process, so its
-    `peak_rss` is that attempt's own peak rather than a high-water
-    mark shared across the pair.
+    The loop is: pop a batch of siblings, attempt them together, and on failure
+    hand them back to the frontier, which draws their pools once it needs the
+    children. A batch whose attempt saturated is never handed back, since its
+    subtrees cannot hold the goal. Each attempt is a separate `attempt` process,
+    so its `peak_rss` is that attempt's own peak rather than a high-water mark
+    shared across the pair.
     """
     budget = Budget(max_time=args.max_pair_time, max_attempts=args.max_attempts)
     trace = PairTrace(pair)
-    frontier = SearchFrontier(args.search_policy, pair.start, pools, trace, budget)
+    frontier = args.search_policy.frontier(
+        args.guides_per_attempt, pair.start, pools, trace, budget
+    )
 
     while True:
         # Time is checked first, so a pair out of both budgets counts as `time_exhausted`.
@@ -512,8 +569,8 @@ async def search_pair(
         if budget.max_attempts is not None and len(trace.attempts) >= budget.max_attempts:
             trace.stop_reason = "attempt_budget_exhausted"
             break
-        node = await frontier.pop()
-        if node is None:
+        batch = await frontier.pop()
+        if batch is None:
             # Every node hit a saturated egraph,
             # was pruned as a dead end, or the pools ran dry; `setup_status`, the
             # expansion rows' `saturated` flag, and the attempt rows'
@@ -521,7 +578,10 @@ async def search_pair(
             trace.stop_reason = "time_exhausted" if budget.expired() else "frontier_exhausted"
             break
 
-        assert node.guide is not None, "the root is a baseline, not an attempt"
+        assert all(node.guide is not None for node in batch), (
+            "the root is a baseline, not an attempt"
+        )
+        first = batch[0]
         started_at = budget.spent
         cmd = [
             str(args.attempt_bin),
@@ -529,7 +589,7 @@ async def search_pair(
             *cli_flags(
                 goal=pair.goal,
                 is_guide=True,
-                start=json.dumps(node.guide),
+                start=json.dumps([node.guide for node in batch]),
                 full_union=args.full_union,
             ),
         ]
@@ -550,11 +610,11 @@ async def search_pair(
                 "sample_policy": args.sample_policy,
                 # Counted from 1, so the n-th attempt of a pair has `attempt == n`.
                 "attempt": len(trace.attempts) + 1,
-                "node_id": node.node_id,
-                "parent_id": node.parent_id,
-                "depth": node.depth,
-                "guide_s_expr": node.s_expr,
-                "terminal": node.terminal,
+                "node_ids": [node.node_id for node in batch],
+                "parent_id": first.parent_id,
+                "depth": first.depth,
+                "guide_s_exprs": [node.s_expr for node in batch],
+                "terminal": first.terminal,
                 "started_at": started_at,
                 "wall_time": attempt.wall_time,
                 "peak_rss": attempt.peak_rss,
@@ -566,14 +626,14 @@ async def search_pair(
             trace.stop_reason = "reached"
             break
 
-        # A terminal node came out of a saturated egraph, so sampling from it
+        # A terminal batch came out of a saturated egraph, so sampling from it
         # would rebuild that same egraph and redraw that same pool. Not queueing
         # it sends the search back up to whatever the frontier holds.
         # A saturated attempt is a dead end as well, we wont get past that
-        # so we don't even queue it for expansion. Same for a guide too long
+        # so we don't even queue it for expansion. Same for guides too long
         # to pass to `attempt` at all.
-        if attempt.summary["stop_reason"] not in DEAD_ENDS and not node.terminal:
-            frontier.queue_expansion(node)
+        if attempt.summary["stop_reason"] not in DEAD_ENDS and not first.terminal:
+            frontier.queue_expansion(batch)
 
     return trace
 
@@ -621,6 +681,7 @@ def summarize_pair(args: SearchArgs, trace: PairTrace) -> dict:
         "sample_policy": args.sample_policy,
         "search_policy": args.search_policy,
         "branching": args.branching,
+        "guides_per_attempt": args.guides_per_attempt,
         "max_attempts": args.max_attempts,
         "max_pair_time": args.max_pair_time,
         "guided_success": bool(successes),
