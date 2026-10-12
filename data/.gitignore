@@ -7,3 +7,4 @@ problems/
 guided_search_grid/
 baselines/
 **/*.bak
+guided_search*/
