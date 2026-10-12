@@ -34,19 +34,23 @@ BASE_FLAGS: dict[str, Any] = {
     **BASELINE_FLAGS,
     "full_union": True,
     "sampling_backoff": 50,
+    "frontier": True,
+    "sample_policy": "count",
 }
 
 # Search stops at whatever is hit earlier
 BUDGETS: list[dict[str, Any]] = [
-    {"max_attempts": 30, "max_pair_time": 60},
+    {"max_pair_time": 120, "max_attempt_time": 10},
+    # {"max_attempts": 60},
 ]
 
 GRID: dict[str, list[Any]] = {
     "seed": [123, 456],
-    "sample_policy": ["uniform", "count"],
+    # "sample_policy": ["uniform", "count"],
     "branching": [10, 30],
     "search_policy": ["dfs", "bfs"],
-    "frontier": [True, False],
+    "guides_per_attempt": [1, 2, 5],
+    # "frontier": [True, False],
 }
 
 

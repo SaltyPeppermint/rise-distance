@@ -92,6 +92,7 @@ PAIR_SCHEMA = {
     "guides_per_attempt": pl.Int64,
     "max_attempts": pl.Int64,
     "max_pair_time": pl.Float64,
+    "max_attempt_time": pl.Float64,
     "guided_success": pl.Boolean,
     "search_stop_reason": pl.String,
     "success_attempt": pl.Int64,

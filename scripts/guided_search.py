@@ -97,6 +97,14 @@ class SearchArgs(ReplayArgs):
         default=None, gt=0, description=("Cap on `attempt` processes per pair.")
     )
 
+    max_attempt_time: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Hard timeout of one `attempt` process, so fruitless attempts don't use up `max_pair_time`."
+        ),
+    )
+
     # Search policy
     search_policy: SearchPolicy = Field(
         default=SearchPolicy.DFS, description=("DFS vs. BFS of the space")
@@ -155,6 +163,12 @@ class SearchArgs(ReplayArgs):
     def timeout(self) -> float | None:
         """Hard timeout of every `sample` and `attempt` process"""
         return None if self.max_pair_time is None else self.max_pair_time + TIMEOUT_GRACE
+
+    @property
+    def attempt_timeout(self) -> float | None:
+        """Hard timeout of every `attempt` process: `max_attempt_time` capped by `timeout`."""
+        timeouts = [t for t in (self.max_attempt_time, self.timeout) if t is not None]
+        return min(timeouts, default=None)
 
     def sample_flags(self, language: str) -> list[str]:
         """Flags shared by every `sample` process."""
@@ -576,7 +590,7 @@ async def search_pair(
             what=f"attempt for goal {pair.goal!r}",
             max_rss_bytes=args.max_rss_bytes,
             limit=limit,
-            timeout=args.timeout,
+            timeout=args.attempt_timeout,
         )
         budget.charge(attempt.wall_time)
         trace.attempts.append(
@@ -655,6 +669,7 @@ def summarize_pair(args: SearchArgs, trace: PairTrace) -> dict:
         "guides_per_attempt": args.guides_per_attempt,
         "max_attempts": args.max_attempts,
         "max_pair_time": args.max_pair_time,
+        "max_attempt_time": args.max_attempt_time,
         "guided_success": bool(successes),
         "search_stop_reason": trace.stop_reason,
         "success_attempt": successes[0]["attempt"] if successes else None,

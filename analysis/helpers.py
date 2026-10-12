@@ -65,7 +65,7 @@ def _settings(config: dict) -> dict[str, str]:
     """Display value of every setting a run can differ in, the strategy first and the seed last."""
     budget = {
         key: "∞" if config[key] is None else f"{config[key]:g}"
-        for key in ("max_attempts", "max_pair_time")
+        for key in ("max_attempts", "max_pair_time", "max_attempt_time")
     }
     frontier = "frontier" if config["frontier"] else "whole"
     return {
@@ -75,6 +75,7 @@ def _settings(config: dict) -> dict[str, str]:
         "union": "full_union" if config["full_union"] else "simple_union",
         "attempts": f"attempts={budget['max_attempts']}",
         "time": f"time={budget['max_pair_time']}",
+        "attempt_time": f"attempt_time={budget['max_attempt_time']}",
         SEED: f"seed={config['seed']}",
     }
 
