@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import altair as alt
 import polars as pl
 
-from helpers import BRUTE_COST_OUTCOMES, PAIR_OUTCOMES
+from helpers import BRUTE_COST_OUTCOMES, PAIR_OUTCOMES, attempt_bucket_label
 
 PALETTE = [
     "#2a78d6",
@@ -37,6 +37,8 @@ OUTCOME_COLORS = [PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR]
 BRUTE_COST_COLORS = [FAILURE_COLOR, SUCCESS_COLOR]
 DEPTH_ORDER = ["first success", "deepest attempt"]
 DEPTH_COLORS = [SUCCESS_COLOR, NEUTRAL_COLOR]
+ATTEMPT_ORDER = ["first success", "attempts run"]
+ATTEMPT_COLORS = DEPTH_COLORS
 # In `PAIR_OUTCOMES` order.
 PAIR_OUTCOME_COLORS = [NEUTRAL_COLOR, FAILURE_COLOR]
 
@@ -73,6 +75,11 @@ def _title(text: str, meta: dict, pooled: bool = True) -> alt.TitleParams:
     if pooled and meta.get("pooled") and subtitle:
         subtitle[-1] += f" · {meta['pooled']}"
     return alt.TitleParams(text, subtitle=subtitle)
+
+
+def _pairs(meta: dict) -> str:
+    """Unit of a pair count: pooled seeds count every pair once per seed."""
+    return "pairs × seeds" if meta.get("pooled") else "pairs"
 
 
 def _ordered_color(field: str, order: Sequence[str], colors: Sequence[str]) -> alt.Color:
@@ -135,12 +142,14 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
     """Distribution of paired success outcomes."""
     return (
         alt.Chart(outcomes)
+        .transform_calculate(outcome_rank=f"indexof({OUTCOME_ORDER}, datum.outcome)")
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
             y=_setting_axis(meta),
             color=_ordered_color("outcome:N", OUTCOME_ORDER, OUTCOME_COLORS),
-            order=alt.Order("outcome:N", sort="ascending"),
+            # Stacked in legend order rather than alphabetically.
+            order=alt.Order("outcome_rank:Q", sort="ascending"),
             row=_strategy_row(meta),
             tooltip=[*GRID_TOOLTIP, "outcome:N", "count:Q", alt.Tooltip("share:Q", format=".1%")],
         )
@@ -154,7 +163,7 @@ def search_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
         alt.Chart(outcomes)
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X("count:Q", title="pairs"),
+            x=alt.X("count:Q", title=_pairs(meta)),
             y=alt.Y("outcome:N"),
             color=alt.condition(
                 alt.datum.outcome == "reached",
@@ -252,7 +261,7 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
                 axis=alt.Axis(grid=False, tickCount=3),
             ),
             x2="slot_end_mib:Q",
-            y=alt.Y("count:Q", title="pairs"),
+            y=alt.Y("count:Q", title=_pairs(meta)),
             # A bar given both x and x2 spans a range rather than resting on the
             # axis, so the baseline has to be named.
             y2=alt.datum(0),
@@ -264,7 +273,7 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
                 "count:Q",
                 alt.Tooltip("share:Q", format=".1%", title="share of outcome"),
                 alt.Tooltip("bucket_share:Q", format=".1%", title="share of bucket"),
-                alt.Tooltip("bucket_n:Q", title="pairs in bucket"),
+                alt.Tooltip("bucket_n:Q", title=f"{_pairs(meta)} in bucket"),
                 alt.Tooltip("bin_start_mib:Q", format=".0f", title="bucket from (MiB)"),
                 alt.Tooltip("bin_end_mib:Q", format=".0f", title="bucket to (MiB)"),
             ],
@@ -367,20 +376,32 @@ def _sparse_ordinal(field: str, title: str, last: int, every: int = 5) -> alt.X:
     )
 
 
-def attempts_to_success(frame: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Distribution of the successful guided attempt."""
-    data = frame.filter(pl.col("guided_success"))
-    max_attempt = int(data["success_attempt"].max())  # ty: ignore[invalid-argument-type]
+def attempts_to_success(attempts: pl.DataFrame, meta: dict) -> alt.Chart:
+    """How many attempts each run's search took: pairs per bucket of first success and attempts run."""
+    # Every bucket up to the largest gets a column, so an empty one shows as a gap.
+    ranges = [attempt_bucket_label(b) for b in range(int(attempts["bucket"].max() or 0) + 1)]  # ty: ignore[invalid-argument-type]
     return (
-        alt.Chart(data)
-        .mark_bar(color=GUIDED_COLOR)
+        alt.Chart(attempts)
+        .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
-            x=_sparse_ordinal("success_attempt:O", "attempt of first success", max_attempt),
-            y=alt.Y("count():Q", title="successful pairs"),
+            x=alt.X(
+                "range:O",
+                title="attempts",
+                scale=alt.Scale(domain=ranges),
+                axis=alt.Axis(labelAngle=-45, grid=False),
+            ),
+            xOffset=alt.XOffset("measure:N", sort=ATTEMPT_ORDER),
+            y=alt.Y("count:Q", title=_pairs(meta)),
+            color=_ordered_color("measure:N", ATTEMPT_ORDER, ATTEMPT_COLORS),
             **_grid(meta),
-            tooltip=[*GRID_TOOLTIP, "success_attempt:O", "count():Q"],
+            tooltip=[
+                *GRID_TOOLTIP,
+                "measure:N",
+                alt.Tooltip("range:O", title="attempts"),
+                alt.Tooltip("count:Q", title=_pairs(meta)),
+            ],
         )
-        .properties(title=_title("Attempts to success", meta), width=CELL_WIDTH, height=CELL_HEIGHT)
+        .properties(title=_title("Attempts", meta), width=CELL_WIDTH, height=CELL_HEIGHT)
     )
 
 
@@ -393,7 +414,7 @@ def search_depth(depths: pl.DataFrame, meta: dict) -> alt.Chart:
         .encode(  # ty: ignore[unresolved-attribute]
             x=_sparse_ordinal("depth:O", "search-tree depth", max_depth),
             xOffset=alt.XOffset("measure:N", sort=DEPTH_ORDER),
-            y=alt.Y("count:Q", title="pairs"),
+            y=alt.Y("count:Q", title=_pairs(meta)),
             color=_ordered_color("measure:N", DEPTH_ORDER, DEPTH_COLORS),
             **_grid(meta),
             tooltip=[*GRID_TOOLTIP, "measure:N", "depth:O", "count:Q"],

@@ -20,6 +20,9 @@ GUIDED_PEAK_SCOPES = {
 # Pair columns describing how deep the search tree went, by display name.
 DEPTH_MEASURES = {"success_depth": "first success", "deepest_attempt": "deepest attempt"}
 
+# Pair columns counting attempts, by display name.
+ATTEMPT_MEASURES = {"success_attempt": "first success", "attempts_run": "attempts run"}
+
 # Ordered: the drawing slot of a grouped bar is the position in this tuple.
 BRUTE_COST_OUTCOMES = ("guided failed", "guided proved")
 
@@ -496,6 +499,41 @@ def depth_counts(frame: pl.DataFrame) -> pl.DataFrame:
         .with_columns(pl.col("measure").replace_strict(DEPTH_MEASURES))
         .group_by(*GROUP, "measure", "depth", maintain_order=True)
         .len("count")
+    )
+
+
+def attempt_bucket_label(bucket: int) -> str:
+    """Attempt range of a power-of-two bucket: 1, 2, 3–4, 5–8, …"""
+    if bucket < 2:
+        return str(bucket + 1)
+    return f"{2 ** (bucket - 1) + 1}–{2**bucket}"
+
+
+def attempt_counts(frame: pl.DataFrame) -> pl.DataFrame:
+    """Pairs per power-of-two attempt bucket: the attempt of the first success, and attempts run.
+
+    Bucket `k` holds the attempts in (2^(k-1), 2^k]. A pair without a success
+    has no `success_attempt`, one without any attempt runs 0; neither is
+    counted for that measure.
+    """
+    attempts = frame.unpivot(
+        index=GROUP, on=list(ATTEMPT_MEASURES), variable_name="measure", value_name="attempts"
+    ).filter(pl.col("attempts") > 0)
+    top = int(attempts["attempts"].max() or 1)  # ty: ignore[invalid-argument-type]
+    # The number of powers of two below n is ceil(log2 n), without float rounding.
+    bucket = pl.sum_horizontal(pl.col("attempts") > 2**j for j in range(top.bit_length()))
+    return (
+        attempts.with_columns(
+            pl.col("measure").replace_strict(ATTEMPT_MEASURES),
+            bucket.cast(pl.Int64).alias("bucket"),
+        )
+        .group_by(*GROUP, "measure", "bucket", maintain_order=True)
+        .len("count")
+        .with_columns(
+            pl.col("bucket")
+            .map_elements(attempt_bucket_label, return_dtype=pl.String)
+            .alias("range")
+        )
     )
 
 
