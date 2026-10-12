@@ -9,7 +9,7 @@ import json
 import re
 import sys
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -181,7 +181,7 @@ class PrioritySlot:
 
 async def fan_out(
     fn: Callable[[Any], Coroutine[Any, Any, Any]],
-    items: list,
+    items: Sequence[Any],
     desc: str,
     unit: str = "job",
     leave: bool = True,

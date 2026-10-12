@@ -37,7 +37,7 @@ SEED = "seed"
 
 # Grid cell of a run: seeds are replicates of one configuration, so every
 # aggregate pools them and only `pairwise_solved_diff` keeps runs apart.
-GROUP = [STRATEGY, "setting"]
+GROUP = (STRATEGY, "setting")
 
 
 @dataclass(frozen=True)

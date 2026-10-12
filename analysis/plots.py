@@ -7,7 +7,7 @@ import polars as pl
 
 from helpers import BRUTE_COST_OUTCOMES, PAIR_OUTCOMES, pow2_bucket_label
 
-PALETTE = [
+PALETTE = (
     "#2a78d6",
     "#eb6834",
     "#008300",
@@ -18,7 +18,7 @@ PALETTE = [
     "#e34948",
     "#7f6d5f",
     "#5e9ed6",
-]
+)
 # Peak RSS is the only memory metric reported; it names every memory axis.
 MEMORY_LABEL = "peak RSS"
 # Success green, failure orange, and neutral gray
@@ -29,25 +29,25 @@ NEUTRAL_COLOR = "#b8b8b4"
 GUIDED_COLOR = PALETTE[0]
 UNGUIDED_COLOR = PALETTE[1]
 
-METHOD_ORDER = ["guided", "unguided"]
-METHOD_COLORS = [GUIDED_COLOR, UNGUIDED_COLOR]
-OUTCOME_ORDER = ["both", "guided only", "unguided only", "neither"]
-OUTCOME_COLORS = [PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR]
+METHOD_ORDER = ("guided", "unguided")
+METHOD_COLORS = (GUIDED_COLOR, UNGUIDED_COLOR)
+OUTCOME_ORDER = ("both", "guided only", "unguided only", "neither")
+OUTCOME_COLORS = (PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR)
 # In `BRUTE_COST_OUTCOMES` order.
-BRUTE_COST_COLORS = [FAILURE_COLOR, SUCCESS_COLOR]
-DEPTH_ORDER = ["first success", "deepest attempt"]
-DEPTH_COLORS = [SUCCESS_COLOR, NEUTRAL_COLOR]
-ATTEMPT_ORDER = ["first success", "attempts run"]
+BRUTE_COST_COLORS = (FAILURE_COLOR, SUCCESS_COLOR)
+DEPTH_ORDER = ("first success", "deepest attempt")
+DEPTH_COLORS = (SUCCESS_COLOR, NEUTRAL_COLOR)
+ATTEMPT_ORDER = ("first success", "attempts run")
 ATTEMPT_COLORS = DEPTH_COLORS
 # In `PAIR_OUTCOMES` order.
-PAIR_OUTCOME_COLORS = [NEUTRAL_COLOR, FAILURE_COLOR]
+PAIR_OUTCOME_COLORS = (NEUTRAL_COLOR, FAILURE_COLOR)
 
 # Size of one small multiple in the strategy × setting grid.
 # Used as the multiple baseline for all others
 CELL_WIDTH = 150
 CELL_HEIGHT = 90
 
-GRID_TOOLTIP = ["strategy:N", "setting:N"]
+GRID_TOOLTIP = ("strategy:N", "setting:N")
 
 THEME: alt.theme.ThemeConfig = {
     "config": {
@@ -110,11 +110,6 @@ def _grid(meta: dict) -> dict:
     }
 
 
-def _setting_axis(meta: dict) -> alt.Y:
-    """Settings along y, for the one-value-per-cell charts faceted only by strategy."""
-    return alt.Y("setting:N", sort=list(meta["settings"]))
-
-
 def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
     """Guided and unguided success rate per grid cell."""
     return (
@@ -122,7 +117,7 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_point(filled=True, size=75)
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_rate:Q", title="success rate", axis=alt.Axis(format="%")),
-            y=_setting_axis(meta),
+            y=alt.Y("setting:N", sort=list(meta["settings"])),
             color=_ordered_color("method:N", METHOD_ORDER, METHOD_COLORS),
             row=_strategy_row(meta),
             tooltip=[
@@ -146,7 +141,7 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
-            y=_setting_axis(meta),
+            y=alt.Y("setting:N", sort=list(meta["settings"])),
             color=_ordered_color("outcome:N", OUTCOME_ORDER, OUTCOME_COLORS),
             # Stacked in legend order rather than alphabetically.
             order=alt.Order("outcome_rank:Q", sort="ascending"),
@@ -380,8 +375,8 @@ def _measure_bars(
     counts: pl.DataFrame,
     value: str,
     axis_title: str,
-    order: list[str],
-    colors: list[str],
+    order: Sequence[str],
+    colors: Sequence[str],
     title: str,
     meta: dict,
     every: int,
