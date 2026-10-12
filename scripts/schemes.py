@@ -14,7 +14,7 @@ ATTEMPT_DTYPES = {
 }
 
 
-# An out_of_memory baseline leaves all measurement fields None.
+# out_of_memory baselines leave measurements None.
 UNGUIDED_SCHEMA = {
     "start": pl.String,
     "goal": pl.String,
@@ -45,8 +45,7 @@ ATTEMPT_SCHEMA = {
     "peak_rss": pl.Int64,
 }
 
-# One row per `sample` process the search *used*, so a pool reused from the
-# cache is charged to every pair that consumed it
+# One row per `sample` used; a cached pool appears for every pair using it.
 EXPANSION_SCHEMA = {
     "start": pl.String,
     "goal": pl.String,
@@ -69,8 +68,7 @@ EXPANSION_SCHEMA = {
     "peak_rss": pl.Int64,
 }
 
-# What an expansion contributes to a row when its `sample` process never got
-# far enough to report.
+# Meta of a `sample` that never reported.
 EMPTY_SAMPLE_META = dict.fromkeys(
     [
         "iters",

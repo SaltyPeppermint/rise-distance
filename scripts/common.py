@@ -389,13 +389,11 @@ def attempt_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def failure_summary(stop_reason: str) -> dict[str, Any]:
-    """An `attempt_summary`-shaped row, with every measurement left at `None`,
-    for a child that never printed one: `out_of_memory` for one SIGKILLed at its
-    cgroup RSS cap, `binary_panic` for one that died of an uncaught panic (unlike
-    a panic caught inside the eqsat run, `stop_reason="panic"`), `arg_too_long`
-    for one never spawned since an argument would not fit through `exec`,
-    `timeout` for one killed at its hard timeout (unlike egg's `TimeLimit`,
-    which the eqsat run reports itself).
+    """An `attempt_summary`-shaped row with all measurements `None`, for a child
+    that never printed one (`out_of_memory`, `binary_panic`, `arg_too_long`, `timeout`).
+
+    `binary_panic` is an uncaught panic, unlike eqsat's `panic`; `timeout` is the
+    hard timeout, unlike egg's `TimeLimit`.
     """
     empty = dict.fromkeys(ATTEMPT_DTYPES)
     panic = stop_reason == "binary_panic"

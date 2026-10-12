@@ -1,17 +1,9 @@
-"""Drive the guide search from Python.
+"""Guide search over the pairs in ``problems.json``, driven by `experiment.py`.
 
-This driver reads the start/goal pairs in ``problems.json`` (written by
-``generate_problems.py``) and runs one guide *search* per pair: a tree of guide
-chains explored through a work queue. `experiment.py` drives it.
-
-Every ``sample`` and ``attempt`` process is held to the ``max_rss`` cgroup
-RSS cap. A killed ``sample`` is retried up to ``sampling_backoff`` times,
-first at the number of iterations that completed, then giving up one more
-rewrite-applying iteration per retry. A process that dies of an uncaught panic
-is recorded as ``binary_panic``, one that outruns its hard timeout (``max_pair_time``
-plus a fixed grace) as ``timeout``; neither is retried. A process whose arguments
-exceed the kernel's per-argument limit is never spawned and recorded as
-``arg_too_long``; like a saturated attempt, its node is not expanded further.
+Each pair gets a tree of guide chains explored through a work queue. All
+processes are capped at ``max_rss``; a ``sample`` killed there is retried with
+fewer iterations (see `run_capped`). Panics (``binary_panic``), hard timeouts
+(``timeout``) and over-long arguments (``arg_too_long``) are recorded, not retried.
 """
 
 import asyncio
@@ -51,16 +43,16 @@ from common import (
 from replay_args import ReplayArgs
 from schemes import ATTEMPT_SCHEMA, EMPTY_SAMPLE_META, EXPANSION_SCHEMA, PAIR_SCHEMA
 
-# How egg's `StopReason::Saturated` renders through `{:?}`
+# egg's `StopReason::Saturated` via `{:?}`
 SATURATED = "Saturated"
 
 # Attempt stop reasons whose node is never expanded.
 DEAD_ENDS = (SATURATED, "arg_too_long")
 
-# How many seconds past `max_pair_time` a child may run before it is killed.
+# Seconds past `max_pair_time` before a child is killed.
 TIMEOUT_GRACE = 5.0
 
-# What `report_results` writes once the search finished.
+# Written by `report_results`.
 RESULT_FILES = (
     "attempts.parquet",
     "attempts.json",
@@ -87,10 +79,7 @@ class SearchArgs(ReplayArgs):
     )
 
     baseline: Path = Field(
-        description=(
-            "Baseline folder written by `baseline.py`. "
-            "It must match this run's budget and cover all of its pairs."
-        )
+        description="Baseline folder from `baseline.py`, matching this run's budget and pairs."
     )
 
     sample_bin: Path = Field(
@@ -127,9 +116,8 @@ class SearchArgs(ReplayArgs):
         default=None,
         ge=0,
         description=(
-            "How often a `sample` process killed at `max_rss` is retried, each "
-            "retry giving up one more rewrite-applying iteration. 0 disables retries. "
-            "Unlimited if omitted."
+            "Retries of a `sample` killed at `max_rss`, each with one fewer productive "
+            "iteration. 0 disables, unlimited if omitted."
         ),
     )
 
@@ -181,14 +169,11 @@ class SearchArgs(ReplayArgs):
 
 @dataclass(frozen=True)
 class SearchNode:
-    """Node in the search tree
+    """Node in the search tree.
 
-    `guide` is the node array of the guide as origin_lang; `s_expr` is the same
-    term lowered, which is what `sample` samples from next.
-    The root carries the start term and no guide, since it is the unguided
-    baseline rather than an attempt.
-
-    `terminal` marks a node drawn from a saturated egraph
+    `guide` is the guide's node array, `s_expr` its lowered term that `sample`
+    draws from next. The root has the start term and no guide. `terminal` marks
+    a node drawn from a saturated egraph.
     """
 
     node_id: int
@@ -201,7 +186,7 @@ class SearchNode:
 
 @dataclass(frozen=True)
 class Expansion:
-    """The outcome of one `sample` process: the pool drawn and its cost."""
+    """A `sample` process's pool and cost."""
 
     children: tuple[tuple[list, str], ...]
     status: Literal[
@@ -223,10 +208,7 @@ class Expansion:
 
 @dataclass
 class Budget:
-    """A pair's stop conditions, all charged lazily as the search runs.
-
-    A pool drawn by another pair is charged in full as if this pair had drawn it itself.
-    """
+    """A pair's stop conditions. Pools drawn by other pairs are countet as if they had to be sampled."""
 
     max_time: float | None
     max_attempts: int | None
@@ -241,7 +223,7 @@ class Budget:
 
 @dataclass
 class PairTrace:
-    """Everything one pair's search did, flattened into rows at report time."""
+    """Everything one pair's search did."""
 
     pair: Pair
     attempts: list[dict] = field(default_factory=list)
@@ -251,7 +233,7 @@ class PairTrace:
 
     @property
     def root_status(self) -> str:
-        """The root expansion's status: whether the pair got a pool at all."""
+        """Status of the root expansion."""
         return self.expansions[0]["status"] if self.expansions else "unstarted"
 
 
@@ -264,16 +246,14 @@ async def run_capped(
     args: SearchArgs, limit: PrioritySlot, cmd: list[str], what: str
 ) -> tuple[Measured | None, float]:
     """Run under the RSS cap, retrying a killed child up to `sampling_backoff`
-    times: the first retry replays the iterations that completed, each further
-    one gives up another iteration that applied a rewrite. Gives up early once
-    no such iteration is left.
+    times, each with one fewer productive iteration.
 
-    Also returns the wall time summed over every try, the killed ones included.
-    A `BinaryPanicked` or `TimeoutKilled` is not retried and carries that same sum."""
+    Returns `None` if every try was killed, plus the wall time summed over all
+    tries. A `BinaryPanicked`/`TimeoutKilled` is not retried and carries that sum."""
     cmd = [*cmd, "--print-success-iters"]
     cap = args.max_rss_bytes
     timeout = args.timeout
-    # Try for the first time, record list of successful productive eqsat iterations
+    # First try, recording the productive eqsat iterations
     try:
         measured = await run_json_subprocess(
             cmd, what=what, max_rss_bytes=cap, limit=limit, timeout=timeout
@@ -307,7 +287,7 @@ async def run_capped(
 async def draw_expansion(
     args: SearchArgs, sample_flags: list[str], limit: PrioritySlot, s_expr: str
 ) -> Expansion:
-    """Run one `sample` process from `s_expr`. This is called recursively at every depth"""
+    """Run one `sample` process from `s_expr`."""
     cmd = [
         str(args.sample_bin),
         *sample_flags,
@@ -326,11 +306,11 @@ async def draw_expansion(
         log(f"WARNING: {timed_out}")
         return Expansion((), "timeout", dict(EMPTY_SAMPLE_META), timed_out.wall_time)
 
-    # A capped-out child never printed its `Measured` envelope.
+    # Every try was killed at the cap.
     if measured is None:
         return Expansion((), "out_of_memory", dict(EMPTY_SAMPLE_META), wall_time)
 
-    # An empty payload is `sample` reporting that construction failed.
+    # Empty payload: construction failed.
     if not measured.payload:
         meta = {**EMPTY_SAMPLE_META, "peak_rss": measured.peak_rss}
         return Expansion((), "no_novel_terms", meta, wall_time)
@@ -404,9 +384,8 @@ class SamplePools:
 class SearchFrontier(ABC):
     """The work queue with the drawing logic once the queue runs empty.
 
-    Children are attempted in batches of `guides_per_attempt` siblings, in the
-    order `sample` returned them; a trailing partial batch is dropped.
-    Nodes to descend are remembered via `queue_expansion`.
+    Children are attempted in batches of `guides_per_attempt` siblings in
+    `sample` order. A trailing partial batch is dropped.
     """
 
     def __init__(
@@ -428,14 +407,14 @@ class SearchFrontier(ABC):
 
     @abstractmethod
     def queue_expansion(self, batch: tuple[SearchNode, ...]) -> None:
-        """Queue `batch`'s nodes to have their pools drawn later."""
+        """Queue `batch`'s nodes for expansion."""
 
     @abstractmethod
     async def pop(self) -> tuple[SearchNode, ...] | None:
-        """The next batch to attempt, or `None` once the frontier or budget ran out."""
+        """The next batch, or `None` once the frontier or budget ran out."""
 
     async def _expand(self, node: SearchNode) -> list[tuple[SearchNode, ...]]:
-        """Draw `node`'s pool, record what it cost, and return the unseen children batched.
+        """Draw `node`'s pool, record its cost, and return the unseen children batched.
 
         A saturated replay marks its children terminal, so the search attempts them
         but never samples past them.
@@ -519,7 +498,7 @@ class DfsFrontier(SearchFrontier):
 
 
 class BfsFrontier(SearchFrontier):
-    """Exhausts a depth before descending, so it only draws once no batch is ready."""
+    """Exhausts a depth before descending; draws only when no batch is ready."""
 
     def __init__(
         self,
@@ -571,10 +550,7 @@ async def search_pair(
             break
         batch = await frontier.pop()
         if batch is None:
-            # Every node hit a saturated egraph,
-            # was pruned as a dead end, or the pools ran dry; `setup_status`, the
-            # expansion rows' `saturated` flag, and the attempt rows'
-            # `stop_reason` tell those apart.
+            # Nodes were all terminal or dead ends, or the pools ran empty.
             trace.stop_reason = "time_exhausted" if budget.expired() else "frontier_exhausted"
             break
 
@@ -608,7 +584,7 @@ async def search_pair(
                 "start": pair.start,
                 "goal": pair.goal,
                 "sample_policy": args.sample_policy,
-                # Counted from 1, so the n-th attempt of a pair has `attempt == n`.
+                # Count starts at 1
                 "attempt": len(trace.attempts) + 1,
                 "node_ids": [node.node_id for node in batch],
                 "parent_id": first.parent_id,
@@ -626,12 +602,8 @@ async def search_pair(
             trace.stop_reason = "reached"
             break
 
-        # A terminal batch came out of a saturated egraph, so sampling from it
-        # would rebuild that same egraph and redraw that same pool. Not queueing
-        # it sends the search back up to whatever the frontier holds.
-        # A saturated attempt is a dead end as well, we wont get past that
-        # so we don't even queue it for expansion. Same for guides too long
-        # to pass to `attempt` at all.
+        # Terminal batches would just redraw their saturated parent's pool and
+        # dead ends (saturated attempt, guides too long) can't get further.
         if attempt.summary["stop_reason"] not in DEAD_ENDS and not first.terminal:
             frontier.queue_expansion(batch)
 
@@ -669,8 +641,7 @@ def summarize_pair(args: SearchArgs, trace: PairTrace) -> dict:
         if peak is not None
     ]
 
-    # A pool that drew nothing usable is a setup failure; a pool that queued
-    # nodes the search never got to is not — that is `search_stop_reason`'s job.
+    # A root pool with nothing usable is a setup failure.
     setup_status = trace.root_status
     if setup_status == "ok" and not trace.expansions[0]["pushed"]:
         setup_status = "empty_pool"
@@ -692,7 +663,7 @@ def summarize_pair(args: SearchArgs, trace: PairTrace) -> dict:
         "expansions_run": len(trace.expansions),
         "expansions_paid": sum(not exp["cached"] for exp in trace.expansions),
         "saturated_expansions": sum(exp["saturated"] for exp in trace.expansions),
-        # It does not make sense to draw guides from a saturated egraph.
+        # Guides from a saturated egraph are useless.
         "root_saturated": bool(trace.expansions and trace.expansions[0]["saturated"]),
         "deepest_attempt": max((attempt["depth"] for attempt in attempts), default=None),
         "wall_time": sum(exp["wall_time"] for exp in trace.expansions)
