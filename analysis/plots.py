@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import altair as alt
 import polars as pl
 
-from helpers import BRUTE_COST_OUTCOMES, PAIR_OUTCOMES, attempt_bucket_label
+from helpers import BRUTE_COST_OUTCOMES, PAIR_OUTCOMES, pow2_bucket_label
 
 PALETTE = [
     "#2a78d6",
@@ -376,48 +376,66 @@ def _sparse_ordinal(field: str, title: str, last: int, every: int = 5) -> alt.X:
     )
 
 
-def attempts_to_success(attempts: pl.DataFrame, meta: dict) -> alt.Chart:
-    """How many attempts each run's search took: pairs per bucket of first success and attempts run."""
-    # Every bucket up to the largest gets a column, so an empty one shows as a gap.
-    ranges = [attempt_bucket_label(b) for b in range(int(attempts["bucket"].max() or 0) + 1)]  # ty: ignore[invalid-argument-type]
+def _measure_bars(
+    counts: pl.DataFrame,
+    value: str,
+    axis_title: str,
+    order: list[str],
+    colors: list[str],
+    title: str,
+    meta: dict,
+    every: int,
+) -> alt.Chart:
+    """Pairs per `value` and measure, or per power-of-two bucket if `counts` has them."""
+    if "bucket" in counts.columns:
+        last = int(counts["bucket"].max() or 0)  # ty: ignore[invalid-argument-type]
+        field = "range:O"
+        x = alt.X(
+            field,
+            title=axis_title,
+            scale=alt.Scale(domain=[pow2_bucket_label(b) for b in range(last + 1)]),
+            axis=alt.Axis(labelAngle=-45, grid=False),
+        )
+    else:
+        last = int(counts[value].max() or 0)  # ty: ignore[invalid-argument-type]
+        field = f"{value}:O"
+        x = _sparse_ordinal(field, axis_title, last, every)
     return (
-        alt.Chart(attempts)
+        alt.Chart(counts)
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X(
-                "range:O",
-                title="attempts",
-                scale=alt.Scale(domain=ranges),
-                axis=alt.Axis(labelAngle=-45, grid=False),
-            ),
-            xOffset=alt.XOffset("measure:N", sort=ATTEMPT_ORDER),
+            x=x,
+            xOffset=alt.XOffset("measure:N", sort=order),
             y=alt.Y("count:Q", title=_pairs(meta)),
-            color=_ordered_color("measure:N", ATTEMPT_ORDER, ATTEMPT_COLORS),
+            color=_ordered_color("measure:N", order, colors),
             **_grid(meta),
             tooltip=[
                 *GRID_TOOLTIP,
                 "measure:N",
-                alt.Tooltip("range:O", title="attempts"),
+                alt.Tooltip(field, title=axis_title),
                 alt.Tooltip("count:Q", title=_pairs(meta)),
             ],
         )
-        .properties(title=_title("Attempts", meta), width=CELL_WIDTH, height=CELL_HEIGHT)
+        .properties(title=_title(title, meta), width=CELL_WIDTH, height=CELL_HEIGHT)
+    )
+
+
+def attempts_to_success(attempts: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Pairs per attempt of the first success and per number of attempts run."""
+    return _measure_bars(
+        attempts, "attempts", "attempts", ATTEMPT_ORDER, ATTEMPT_COLORS, "Attempts", meta, every=10
     )
 
 
 def search_depth(depths: pl.DataFrame, meta: dict) -> alt.Chart:
-    """How deep each run's search went: pairs per depth of first success and deepest attempt."""
-    max_depth = int(depths["depth"].max() or 0)  # ty: ignore[invalid-argument-type]
-    return (
-        alt.Chart(depths)
-        .mark_bar()
-        .encode(  # ty: ignore[unresolved-attribute]
-            x=_sparse_ordinal("depth:O", "search-tree depth", max_depth),
-            xOffset=alt.XOffset("measure:N", sort=DEPTH_ORDER),
-            y=alt.Y("count:Q", title=_pairs(meta)),
-            color=_ordered_color("measure:N", DEPTH_ORDER, DEPTH_COLORS),
-            **_grid(meta),
-            tooltip=[*GRID_TOOLTIP, "measure:N", "depth:O", "count:Q"],
-        )
-        .properties(title=_title("Search depth", meta), width=CELL_WIDTH, height=CELL_HEIGHT)
+    """Pairs per depth of the first success and of the deepest attempt."""
+    return _measure_bars(
+        depths,
+        "depth",
+        "search-tree depth",
+        DEPTH_ORDER,
+        DEPTH_COLORS,
+        "Search depth",
+        meta,
+        every=5,
     )

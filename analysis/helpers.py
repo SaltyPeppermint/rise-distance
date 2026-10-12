@@ -17,11 +17,11 @@ GUIDED_PEAK_SCOPES = {
     "guided workflow": "guided_peak_rss",
 }
 
-# Pair columns describing how deep the search tree went, by display name.
-DEPTH_MEASURES = {"success_depth": "first success", "deepest_attempt": "deepest attempt"}
-
-# Pair columns counting attempts, by display name.
-ATTEMPT_MEASURES = {"success_attempt": "first success", "attempts_run": "attempts run"}
+# Pair columns behind each quantity `measure_counts` counts, mapped to display names.
+MEASURES = {
+    "depth": {"success_depth": "first success", "deepest_attempt": "deepest attempt"},
+    "attempts": {"success_attempt": "first success", "attempts_run": "attempts run"},
+}
 
 # Ordered: the drawing slot of a grouped bar is the position in this tuple.
 BRUTE_COST_OUTCOMES = ("guided failed", "guided proved")
@@ -486,54 +486,36 @@ def pairwise_solved_diff(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def depth_counts(frame: pl.DataFrame) -> pl.DataFrame:
-    """Pairs per search-tree depth: where the first success sat, and how deep any attempt went.
-
-    A pair without a success has no `success_depth`, one without any attempt
-    no `deepest_attempt`; neither is counted for that measure.
-    """
-    return (
-        frame.unpivot(
-            index=GROUP, on=list(DEPTH_MEASURES), variable_name="measure", value_name="depth"
-        )
-        .drop_nulls("depth")
-        .with_columns(pl.col("measure").replace_strict(DEPTH_MEASURES))
-        .group_by(*GROUP, "measure", "depth", maintain_order=True)
-        .len("count")
-    )
-
-
-def attempt_bucket_label(bucket: int) -> str:
-    """Attempt range of a power-of-two bucket: 1, 2, 3–4, 5–8, …"""
+def pow2_bucket_label(bucket: int) -> str:
+    """Value range of a power-of-two bucket: 1, 2, 3–4, 5–8, …"""
     if bucket < 2:
         return str(bucket + 1)
     return f"{2 ** (bucket - 1) + 1}–{2**bucket}"
 
 
-def attempt_counts(frame: pl.DataFrame) -> pl.DataFrame:
-    """Pairs per power-of-two attempt bucket: the attempt of the first success, and attempts run.
+def measure_counts(frame: pl.DataFrame, value: str, log_buckets: bool = False) -> pl.DataFrame:
+    """Pairs per grid cell, `MEASURES[value]` measure and positive value, or its power-of-two bucket.
 
-    Bucket `k` holds the attempts in (2^(k-1), 2^k]. A pair without a success
-    has no `success_attempt`, one without any attempt runs 0; neither is
-    counted for that measure.
+    Bucket `k` holds the values in (2^(k-1), 2^k], labelled in `range`.
     """
-    attempts = frame.unpivot(
-        index=GROUP, on=list(ATTEMPT_MEASURES), variable_name="measure", value_name="attempts"
-    ).filter(pl.col("attempts") > 0)
-    top = int(attempts["attempts"].max() or 1)  # ty: ignore[invalid-argument-type]
+    measures = MEASURES[value]
+    values = (
+        frame.unpivot(index=GROUP, on=list(measures), variable_name="measure", value_name=value)
+        .filter(pl.col(value) > 0)
+        .with_columns(pl.col("measure").replace_strict(measures))
+    )
+    if not log_buckets:
+        return values.group_by(*GROUP, "measure", value, maintain_order=True).len("count")
+    top = int(values[value].max() or 1)  # ty: ignore[invalid-argument-type]
     # The number of powers of two below n is ceil(log2 n), without float rounding.
-    bucket = pl.sum_horizontal(pl.col("attempts") > 2**j for j in range(top.bit_length()))
+    bucket = pl.sum_horizontal(pl.col(value) > 2**j for j in range(top.bit_length()))
     return (
-        attempts.with_columns(
-            pl.col("measure").replace_strict(ATTEMPT_MEASURES),
-            bucket.cast(pl.Int64).alias("bucket"),
+        values.group_by(
+            *GROUP, "measure", bucket.cast(pl.Int64).alias("bucket"), maintain_order=True
         )
-        .group_by(*GROUP, "measure", "bucket", maintain_order=True)
         .len("count")
         .with_columns(
-            pl.col("bucket")
-            .map_elements(attempt_bucket_label, return_dtype=pl.String)
-            .alias("range")
+            pl.col("bucket").map_elements(pow2_bucket_label, return_dtype=pl.String).alias("range")
         )
     )
 
