@@ -34,6 +34,8 @@ PAIR_OUTCOMES = ("eventually proved", "never proved")
 # other varying setting names the grid's columns.
 STRATEGY = "strategy"
 SEED = "seed"
+# Also the x of `guides_trend`, which draws one line per remaining setting.
+GUIDES = "guides"
 
 # Grid cell of a run: seeds are replicates of one configuration, so every
 # aggregate pools them and only `pairwise_solved_diff` keeps runs apart.
@@ -49,6 +51,8 @@ class Run:
     setting: str
     # The setting and, if it varies, the seed: what tells the run apart within its strategy.
     short: str
+    # The setting without the guides per attempt: a line of `guides_trend`.
+    trend: str
 
 
 def _run_dirs(folder: str, pattern: str) -> list[Path]:
@@ -72,6 +76,7 @@ def _settings(config: dict) -> dict[str, str]:
         STRATEGY: f"{config['search_policy']} · {frontier}",
         "branching": f"branching={config['branching']}",
         "sampling": config["sample_policy"],
+        GUIDES: f"guides={config['guides_per_attempt']}",
         "union": "full_union" if config["full_union"] else "simple_union",
         "attempts": f"attempts={budget['max_attempts']}",
         "time": f"time={budget['max_pair_time']}",
@@ -129,10 +134,11 @@ def _resolve_runs(
     for directory, config in complete:
         settings = _settings(config)
         setting = " · ".join(settings[key] for key in columns) or "all runs"
+        trend = " · ".join(settings[key] for key in columns if key != GUIDES) or "all runs"
         name = f"run_{directory.name.split('_')[0]}"
         short = f"{setting} · {settings[SEED]}" if SEED in varying else setting
         label = f"{name} · {settings[STRATEGY]}\n{short}"
-        runs.append(Run(directory, label, config, settings[STRATEGY], setting, short))
+        runs.append(Run(directory, label, config, settings[STRATEGY], setting, short, trend))
     return runs, incomplete_runs, varying, constant
 
 
@@ -213,6 +219,8 @@ def load_comparisons(
                 pl.lit(run.strategy).alias("strategy"),
                 pl.lit(run.setting).alias("setting"),
                 pl.lit(run.short).alias("short"),
+                pl.lit(run.trend).alias("trend"),
+                pl.lit(run.config["guides_per_attempt"]).alias("guides"),
                 pl.lit(run.directory.name).alias("run"),
                 pl.concat_str(["start", "goal"], separator="│").alias("pair"),
             )
@@ -229,6 +237,8 @@ def load_comparisons(
                 run.short for run in sorted(runs, key=lambda run: settings.index(run.setting))
             )
         ),
+        "trends": list(dict.fromkeys(run.trend for run in runs)),
+        "guides": sorted({run.config["guides_per_attempt"] for run in runs}),
         "subtitle": [
             s for s in (" · ".join(constant), f"{data.height} planned pair observations") if s
         ],
@@ -517,6 +527,25 @@ def measure_counts(frame: pl.DataFrame, value: str, log_buckets: bool = False) -
         .with_columns(
             pl.col("bucket").map_elements(pow2_bucket_label, return_dtype=pl.String).alias("range")
         )
+    )
+
+
+def guides_trend(frame: pl.DataFrame) -> pl.DataFrame:
+    """Per strategy, remaining setting and guides per attempt: what the guides change.
+
+    The guided success rate next to the unguided one over every planned pair, and
+    over the pairs that ran an attempt, the mean number of attempts (the median
+    is almost always one) and the median of each pair's largest attempt peak.
+    """
+    ran = pl.col("attempts_run") > 0
+    return frame.group_by(STRATEGY, "trend", "guides", maintain_order=True).agg(
+        pl.len().alias("n"),
+        pl.col("guided_success").sum().alias("successes"),
+        pl.col("guided_success").mean().alias("success_rate"),
+        pl.col("unguided_success").mean().alias("unguided_rate"),
+        ran.sum().alias("n_ran"),
+        pl.col("attempts_run").filter(ran).mean().alias("mean_attempts"),
+        (pl.col("attempt_peak_rss_max").filter(ran).median() / 2**20).alias("median_peak_mib"),
     )
 
 
