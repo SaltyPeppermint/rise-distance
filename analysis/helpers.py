@@ -1,9 +1,10 @@
 """Load and summarize guided peak-memory experiments against brute-force proof cost."""
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -94,10 +95,20 @@ def _varying(configs: Sequence[dict]) -> tuple[list[str], list[str]]:
     return varying, constant
 
 
+def _matches(directory: Path, config: dict, where: Mapping[str, Any]) -> bool:
+    """Whether `config` has every `where` value, a list or tuple naming the values allowed."""
+    for key, allowed in where.items():
+        if key not in config:
+            raise KeyError(f"{directory.name}/config.json has no {key!r} to filter on")
+        if config[key] not in (allowed if isinstance(allowed, (list, tuple)) else (allowed,)):
+            return False
+    return True
+
+
 def _resolve_runs(
-    patterns: Sequence[str], folder: str
+    patterns: Sequence[str], folder: str, where: Mapping[str, Any]
 ) -> tuple[list[Run], list[str], list[str], list[str]]:
-    """Resolve run folders under `data/<folder>` by name substring.
+    """Resolve run folders under `data/<folder>` by name substring, keeping those `where` matches.
 
     Also returns the incomplete run folders, and `_varying` over the complete ones.
     """
@@ -121,9 +132,14 @@ def _resolve_runs(
                 print(f"{directory} is incomplete; missing final artifacts: {', '.join(absent)}")
             incomplete_runs.append(str(directory))
             continue
-        complete.append((directory, json.loads(config_path.read_text())))
+        config = json.loads(config_path.read_text())
+        if _matches(directory, config, where):
+            complete.append((directory, config))
     if not complete:
-        raise FileNotFoundError(f"No completed guided-search runs in data/{folder}")
+        raise FileNotFoundError(
+            f"No completed guided-search runs in data/{folder}"
+            + (f" match {dict(where)}" if where else "")
+        )
     complete.sort(key=lambda run: int(run[0].name.split("_")[0]))
 
     # Labels name only what tells the selected runs apart; `load_comparisons`
@@ -183,15 +199,21 @@ def _unguided_baseline(run: Run) -> pl.DataFrame:
 
 
 def load_comparisons(
-    patterns: Sequence[str], folder: str = "guided_search"
+    patterns: Sequence[str],
+    folder: str = "guided_search",
+    where: Mapping[str, Any] | None = None,
 ) -> tuple[list[Run], list[str], pl.DataFrame, dict]:
     """Stack the one-row-per-pair results of the runs `patterns` select in `data/<folder>`.
+
+    `where` keeps only runs whose `config.json` has every given value; a list
+    or tuple value allows any of its entries. A run it drops is not reported
+    as missing, and settings it pins move from the labels into the subtitle.
 
     Joins each run's unguided and brute-force baselines. Returns the runs, the
     incomplete run folders that were skipped, the stacked results, and the
     chart metadata.
     """
-    runs, incomplete, varying, constant = _resolve_runs(patterns, folder)
+    runs, incomplete, varying, constant = _resolve_runs(patterns, folder, where or {})
     frames = []
     for run in runs:
         frame = pl.read_parquet(run.directory / "pairs.parquet")
