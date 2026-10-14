@@ -3,7 +3,8 @@
 Each pair gets a tree of guide chains explored through a work queue. All
 processes are capped at ``max_rss``; a ``sample`` killed there is retried with
 fewer iterations (see `run_capped`). Panics (``binary_panic``), hard timeouts
-(``timeout``) and over-long arguments (``arg_too_long``) are recorded, not retried.
+(``timeout``), children cut off by the pair's time budget (``budget_exhausted``)
+and over-long arguments (``arg_too_long``) are recorded, not retried.
 """
 
 import asyncio
@@ -158,14 +159,8 @@ class SearchArgs(ReplayArgs):
 
     @property
     def timeout(self) -> float | None:
-        """Hard timeout of every `sample` and `attempt` process"""
+        """Hard timeout of one `sample` draw, summed over its `run_capped` tries."""
         return None if self.max_pair_time is None else self.max_pair_time + TIMEOUT_GRACE
-
-    @property
-    def attempt_timeout(self) -> float | None:
-        """Hard timeout of every `attempt` process: `max_attempt_time` capped by `timeout`."""
-        timeouts = [t for t in (self.max_attempt_time, self.timeout) if t is not None]
-        return min(timeouts, default=None)
 
     def sample_flags(self, language: str) -> list[str]:
         """Flags shared by every `sample` process."""
@@ -206,7 +201,7 @@ class Expansion:
         "no_novel_terms",
         "out_of_memory",
         "binary_panic",
-        "timeout",
+        "budget_exhausted",
         "arg_too_long",
     ]
     meta: dict
@@ -230,6 +225,10 @@ class Budget:
 
     def expired(self) -> bool:
         return self.max_time is not None and self.spent >= self.max_time
+
+    def deadline(self) -> float | None:
+        """Timeout of the next child: time left plus `TIMEOUT_GRACE`."""
+        return None if self.max_time is None else self.max_time - self.spent + TIMEOUT_GRACE
 
 
 @dataclass
@@ -257,48 +256,56 @@ async def run_capped(
     args: SearchArgs, limit: PrioritySlot, cmd: list[str], what: str
 ) -> tuple[Measured | None, float]:
     """Run under the RSS cap, retrying a killed child up to `sampling_backoff`
-    times, each with one fewer productive iteration.
+    times, each with one fewer productive iteration. All tries share `args.timeout`.
 
     Returns `None` if every try was killed, plus the wall time summed over all
     tries. A `BinaryPanicked`/`TimeoutKilled` is not retried and carries that sum."""
     cmd = [*cmd, "--print-success-iters"]
-    cap = args.max_rss_bytes
-    timeout = args.timeout
+
+    def with_flag(cmd: list[str], flag: str, value: str) -> list[str]:
+        """Copy of `cmd` with `flag` set to `value`, replacing an existing value."""
+        try:
+            i = cmd.index(flag)
+            return [*cmd[: i + 1], value, *cmd[i + 2 :]]
+        except ValueError:
+            return [*cmd, flag, value]
+
+    async def attempt(cmd: list[str], spent: float) -> Measured:
+        """One try with what is left of `timeout` after `spent` seconds."""
+        left = None
+        if args.timeout is not None:
+            left = args.timeout - spent
+            if left <= 0:
+                raise TimeoutKilled(what, args.timeout, spent)
+        try:
+            return await run_json_subprocess(
+                cmd, what=what, max_rss_bytes=args.max_rss_bytes, limit=limit, timeout=left
+            )
+        except (BinaryPanicked, TimeoutKilled) as failed:
+            failed.wall_time += spent
+            raise
+
     # First try, recording the productive eqsat iterations
     try:
-        measured = await run_json_subprocess(
-            cmd, what=what, max_rss_bytes=cap, limit=limit, timeout=timeout
-        )
+        measured = await attempt(cmd, 0.0)
         return measured, measured.wall_time
     except MemoryKilled as killed:
         wall_time = killed.wall_time
         candidates = killed.productive_iters
 
     for max_iters in itertools.islice(reversed(candidates), args.sampling_backoff):
-        # Set or replace `--max-iters`.
         try:
-            index = cmd.index("--max-iters")
-            cmd[index + 1] = str(max_iters)
-        except ValueError:
-            cmd.extend(["--max-iters", str(max_iters)])
-        try:
-            measured = await run_json_subprocess(
-                cmd, what=what, max_rss_bytes=cap, limit=limit, timeout=timeout
-            )
+            measured = await attempt(with_flag(cmd, "--max-iters", str(max_iters)), wall_time)
             return measured, wall_time + measured.wall_time
         except MemoryKilled as killed:
             wall_time += killed.wall_time
-        except (BinaryPanicked, TimeoutKilled) as failed:
-            failed.wall_time += wall_time
-            raise
-
     return None, wall_time
 
 
 async def draw_expansion(
     args: SearchArgs, sample_flags: list[str], limit: PrioritySlot, s_expr: str
 ) -> Expansion:
-    """Run one `sample` process from `s_expr`."""
+    """Run one `sample` process from `s_expr`, under a whole pair's budget."""
     cmd = [
         str(args.sample_bin),
         *sample_flags,
@@ -317,7 +324,7 @@ async def draw_expansion(
         return Expansion((), "binary_panic", dict(EMPTY_SAMPLE_META), panicked.wall_time)
     except TimeoutKilled as timed_out:
         log(f"WARNING: {timed_out}")
-        return Expansion((), "timeout", dict(EMPTY_SAMPLE_META), timed_out.wall_time)
+        return Expansion((), "budget_exhausted", dict(EMPTY_SAMPLE_META), timed_out.wall_time)
 
     # Every try was killed at the cap.
     if measured is None:
@@ -372,6 +379,9 @@ class SamplePools:
         """That term's pool, drawing it only if this run has not already.
 
         The Pool may cache for the whole run but it simulates being pair independence.
+
+        Since several pairs may await one draw, it runs under a whole pair's budget,
+        and each pair cuts it to its own deadline in `SearchFrontier._expand`.
         """
         # No `await` before the task finishes, so no race
         if s_expr not in self.tasks:
@@ -433,11 +443,16 @@ class SearchFrontier(ABC):
         but never samples past them.
         """
         started_at = self.budget.spent
+        deadline = self.budget.deadline()
         cached = node.s_expr in self.trace.drawn
         self.trace.drawn.add(node.s_expr)
         expansion = await self.pools.draw(node.s_expr)
         # A pool this pair already drew cost it nothing but the lookup.
         wall_time = 0.0 if cached else expansion.wall_time
+        # A draw that outran this pair's deadline would have been killed there.
+        if deadline is not None and wall_time > deadline:
+            wall_time = deadline
+            expansion = Expansion((), "budget_exhausted", dict(EMPTY_SAMPLE_META), wall_time)
         self.budget.charge(wall_time)
 
         children = []
@@ -582,6 +597,11 @@ async def search_pair(
                 full_union=args.full_union,
             ),
         ]
+        # `max_attempt_time`, capped by the pair's deadline.
+        deadline = budget.deadline()
+        by_budget = deadline is not None and (
+            args.max_attempt_time is None or deadline < args.max_attempt_time
+        )
         # A killed or panicked attempt comes back as a failed one rather than an
         # exception, since the search simply moves on to the next node.
         attempt = await measure_attempt(
@@ -589,7 +609,8 @@ async def search_pair(
             what=f"attempt for goal {pair.goal!r}",
             max_rss_bytes=args.max_rss_bytes,
             limit=limit,
-            timeout=args.attempt_timeout,
+            timeout=deadline if by_budget else args.max_attempt_time,
+            timeout_reason="budget_exhausted" if by_budget else "timeout",
         )
         budget.charge(attempt.wall_time)
         trace.attempts.append(

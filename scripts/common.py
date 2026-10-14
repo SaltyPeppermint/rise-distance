@@ -390,10 +390,12 @@ def attempt_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
 def failure_summary(stop_reason: str) -> dict[str, Any]:
     """An `attempt_summary`-shaped row with all measurements `None`, for a child
-    that never printed one (`out_of_memory`, `binary_panic`, `arg_too_long`, `timeout`).
+    that never printed one (`out_of_memory`, `binary_panic`, `arg_too_long`, `timeout`,
+    `budget_exhausted`).
 
     `binary_panic` is an uncaught panic, unlike eqsat's `panic`; `timeout` is the
-    hard timeout, unlike egg's `TimeLimit`.
+    hard timeout, unlike egg's `TimeLimit`; `budget_exhausted` is the hard timeout
+    set by the guided search's pair budget.
     """
     empty = dict.fromkeys(ATTEMPT_DTYPES)
     panic = stop_reason == "binary_panic"
@@ -407,13 +409,14 @@ async def measure_attempt(
     max_rss_bytes: int,
     limit: PrioritySlot,
     timeout: float | None = None,
+    timeout_reason: str = "timeout",
 ) -> AttemptResult:
     """Run one `attempt` process under the RSS cap and the hard timeout.
 
     An attempt killed at the cap, by an uncaught panic, at its hard timeout, or
     never spawned since an argument exceeds the kernel's limit comes back as a
     failed attempt with ``stop_reason="out_of_memory"``/``"binary_panic"``/
-    ``"timeout"``/``"arg_too_long"`` rather than an exception.
+    `timeout_reason`/``"arg_too_long"`` rather than an exception.
     """
     try:
         measured = await run_json_subprocess(
@@ -426,7 +429,7 @@ async def measure_attempt(
         return AttemptResult(failure_summary("out_of_memory"), None, killed.wall_time)
     except TimeoutKilled as timed_out:
         log(f"WARNING: {timed_out}")
-        return AttemptResult(failure_summary("timeout"), None, timed_out.wall_time)
+        return AttemptResult(failure_summary(timeout_reason), None, timed_out.wall_time)
     except BinaryPanicked as panicked:
         panicked.warn()
         return AttemptResult(failure_summary("binary_panic"), None, panicked.wall_time)
