@@ -114,10 +114,13 @@ class SearchArgs(ReplayArgs):
         default=1, gt=0, description=("Sibling guides unioned per eqsat.")
     )
 
-    branching: int = Field(
+    tree_width: int = Field(
         default=5,
         gt=0,
-        description=("Guides drawn each time a node is expanded. -> Branching factor"),
+        description=(
+            "Attempt batches per expanded node; each expansion draws "
+            "`tree_width * guides_per_attempt` guides."
+        ),
     )
 
     sampling_backoff: int | None = Field(
@@ -151,12 +154,6 @@ class SearchArgs(ReplayArgs):
     def validate_search_budget(self) -> SearchArgs:
         if self.max_pair_time is None and self.max_attempts is None:
             raise ValueError("give at least one of max_pair_time and max_attempts")
-        return self
-
-    @model_validator(mode="after")
-    def validate_guides_branching(self) -> SearchArgs:
-        if self.branching % self.guides_per_attempt != 0:
-            raise ValueError("branching must be a multiple of guides_per_attempt")
         return self
 
     @property
@@ -305,7 +302,9 @@ async def draw_expansion(
     cmd = [
         str(args.sample_bin),
         *sample_flags,
-        *cli_flags(**args.limits, start=s_expr, n_samples=args.branching),
+        *cli_flags(
+            **args.limits, start=s_expr, n_samples=args.tree_width * args.guides_per_attempt
+        ),
     ]
 
     try:
@@ -665,7 +664,7 @@ def summarize_pair(args: SearchArgs, trace: PairTrace) -> dict:
         "goal": trace.pair.goal,
         "sample_policy": args.sample_policy,
         "search_policy": args.search_policy,
-        "branching": args.branching,
+        "tree_width": args.tree_width,
         "guides_per_attempt": args.guides_per_attempt,
         "max_attempts": args.max_attempts,
         "max_pair_time": args.max_pair_time,

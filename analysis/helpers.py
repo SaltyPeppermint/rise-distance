@@ -75,7 +75,7 @@ def _settings(config: dict) -> dict[str, str]:
     frontier = "frontier" if config["frontier"] else "whole"
     return {
         STRATEGY: f"{config['search_policy']} · {frontier}",
-        "branching": f"branching={config['branching']}",
+        "tree_width": f"tree_width={config['tree_width']}",
         "sampling": config["sample_policy"],
         GUIDES: f"guides={config['guides_per_attempt']}",
         "union": "full_union" if config["full_union"] else "simple_union",

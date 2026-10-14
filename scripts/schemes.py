@@ -88,7 +88,7 @@ PAIR_SCHEMA = {
     "goal": pl.String,
     "sample_policy": pl.String,
     "search_policy": pl.String,
-    "branching": pl.Int64,
+    "tree_width": pl.Int64,
     "guides_per_attempt": pl.Int64,
     "max_attempts": pl.Int64,
     "max_pair_time": pl.Float64,
