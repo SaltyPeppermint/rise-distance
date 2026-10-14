@@ -80,6 +80,15 @@ def cli_flags(**values: object) -> list[str]:
     return flags
 
 
+def with_flag(cmd: list[str], flag: str, value: str) -> list[str]:
+    """Copy of `cmd` with `flag` set to `value`, replacing an existing value."""
+    try:
+        i = cmd.index(flag)
+        return [*cmd[: i + 1], value, *cmd[i + 2 :]]
+    except ValueError:
+        return [*cmd, flag, value]
+
+
 def exit_if_missing(*binaries: Path) -> None:
     """Print an error and exit 2 if any binary is missing."""
     missing = [b for b in binaries if not b.exists()]

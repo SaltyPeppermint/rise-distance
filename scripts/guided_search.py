@@ -40,6 +40,7 @@ from common import (
     measure_attempt,
     problem_language,
     run_json_subprocess,
+    with_flag,
 )
 from replay_args import ReplayArgs
 from schemes import ATTEMPT_SCHEMA, EMPTY_SAMPLE_META, EXPANSION_SCHEMA, PAIR_SCHEMA
@@ -70,6 +71,15 @@ class SearchPolicy(StrEnum):
     @property
     def frontier(self) -> type[SearchFrontier]:
         return DfsFrontier if self is SearchPolicy.DFS else BfsFrontier
+
+
+class BackoffPolicy(StrEnum):
+    """How `run_capped` steps down the iterations of a killed `sample`."""
+
+    # 1, 2, 4, ... fewer until a try fits, then bisect
+    GALLOP = "gallop"
+    # 1, 2, 3, ... fewer until a try fits
+    LINEAR = "linear"
 
 
 class SearchArgs(ReplayArgs):
@@ -124,13 +134,18 @@ class SearchArgs(ReplayArgs):
         ),
     )
 
-    sampling_backoff: int | None = Field(
+    sampling_retries: int | None = Field(
         default=None,
         ge=0,
         description=(
-            "Retries of a `sample` killed at `max_rss`, each with one fewer productive "
-            "iteration. 0 disables, unlimited if omitted."
+            "Retries of a `sample` killed at `max_rss`, with fewer productive iterations "
+            "(see `sampling_backoff`). 0 disables, unlimited if omitted."
         ),
+    )
+
+    sampling_backoff: BackoffPolicy = Field(
+        default=BackoffPolicy.GALLOP,
+        description="How `sampling_retries` step down the iterations (see `run_capped`).",
     )
 
     size_search_steps: int = Field(
@@ -255,20 +270,17 @@ class PairTrace:
 async def run_capped(
     args: SearchArgs, limit: PrioritySlot, cmd: list[str], what: str
 ) -> tuple[Measured | None, float]:
-    """Run under the RSS cap, retrying a killed child up to `sampling_backoff`
-    times, each with one fewer productive iteration. All tries share `args.timeout`.
+    """Run under the RSS cap, retrying a killed child up to `sampling_retries`
+    times with fewer productive iterations: stepping down from the iterations
+    reached until a try fits, then bisecting for the most iterations that fit.
+    `sampling_backoff` picks the steps: 1, 2, 4, ... fewer (`gallop`) or 1, 2,
+    3, ... fewer (`linear`, whose first fit needs no bisecting). Assumes peak
+    RSS grows with the iterations. All tries share `args.timeout`.
 
     Returns `None` if every try was killed, plus the wall time summed over all
-    tries. A `BinaryPanicked`/`TimeoutKilled` is not retried and carries that sum."""
+    tries. A `BinaryPanicked`/`TimeoutKilled` is not retried and carries that
+    sum, except a timeout after a fit, which returns that fit."""
     cmd = [*cmd, "--print-success-iters"]
-
-    def with_flag(cmd: list[str], flag: str, value: str) -> list[str]:
-        """Copy of `cmd` with `flag` set to `value`, replacing an existing value."""
-        try:
-            i = cmd.index(flag)
-            return [*cmd[: i + 1], value, *cmd[i + 2 :]]
-        except ValueError:
-            return [*cmd, flag, value]
 
     async def attempt(cmd: list[str], spent: float) -> Measured:
         """One try with what is left of `timeout` after `spent` seconds."""
@@ -293,13 +305,37 @@ async def run_capped(
         wall_time = killed.wall_time
         candidates = killed.productive_iters
 
-    for max_iters in itertools.islice(reversed(candidates), args.sampling_backoff):
+    retries = itertools.count() if args.sampling_retries is None else range(args.sampling_retries)
+    # Indices into `candidates`: `fail` was killed (`len` stands for the
+    # unbounded first try), `ok` fit, with `best` its result.
+    fail, ok, best = len(candidates), None, None
+    step = 1
+    for _ in retries:
+        if ok is None:
+            # Step down from the end until a try fits.
+            if fail == 0:
+                break
+            i = max(len(candidates) - step, 0)
+            step = step * 2 if args.sampling_backoff is BackoffPolicy.GALLOP else step + 1
+        else:
+            # Bisect between the largest fit and the smallest kill.
+            if fail - ok <= 1:
+                break
+            i = (ok + fail) // 2
         try:
-            measured = await attempt(with_flag(cmd, "--max-iters", str(max_iters)), wall_time)
-            return measured, wall_time + measured.wall_time
+            measured = await attempt(with_flag(cmd, "--max-iters", str(candidates[i])), wall_time)
         except MemoryKilled as killed:
             wall_time += killed.wall_time
-    return None, wall_time
+            fail = i
+            continue
+        except TimeoutKilled as timed_out:
+            # Out of time while refining: keep the fit we already have.
+            if best is None:
+                raise
+            return best, timed_out.wall_time
+        wall_time += measured.wall_time
+        ok, best = i, measured
+    return best, wall_time
 
 
 async def draw_expansion(

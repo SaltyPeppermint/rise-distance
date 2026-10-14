@@ -32,18 +32,19 @@ BASELINE_FLAGS: dict[str, Any] = {"max_rss": "450M", "n_starts": 100}
 
 BASE_FLAGS: dict[str, Any] = {
     **BASELINE_FLAGS,
-    "full_union": True,
-    "sampling_backoff": 50,
+    "sampling_retries": 50,
     "seed": 123,
     # "frontier": True,
-    # "sample_policy": "count",
+    "sample_policy": "count",
     "tree_width": 30,
-    "guides_per_attempt": 5,
+    # "guides_per_attempt": 5,
+    "search_policy": "bfs",
 }
 
 # Search stops at whatever is hit earlier
 BUDGETS: tuple[dict[str, Any], ...] = (
-    {"max_pair_time": 120, "max_attempt_time": 10},
+    {"max_pair_time": 120},
+    # {"max_pair_time": 120, "max_attempt_time": 10},
     # {"max_attempts": 60},
 )
 
@@ -51,9 +52,11 @@ GRID: dict[str, tuple[Any, ...]] = {
     # "seed": (123, 456),
     # "sample_policy": ("uniform", "count"),
     # "tree_width": (2, 6),
+    "full_union": (True, False),
     "search_policy": ("dfs", "bfs"),
-    # "guides_per_attempt": (1, 2, 5),
+    "guides_per_attempt": (1, 2, 5, 10, 50),
     "frontier": (True, False),
+    "sampling_backoff": ("gallop", "linear"),
 }
 
 
