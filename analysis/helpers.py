@@ -22,6 +22,7 @@ GUIDED_PEAK_SCOPES = {
 MEASURES = {
     "depth": {"success_depth": "first success", "deepest_attempt": "deepest attempt"},
     "attempts": {"success_attempt": "first success", "attempts_run": "attempts run"},
+    "time": {"success_time": "first success", "search_time": "time spent"},
 }
 
 # Ordered: the drawing slot of a grouped bar is the position in this tuple.
@@ -245,6 +246,9 @@ def load_comparisons(
                 pl.lit(run.config["guides_per_attempt"]).alias("guides"),
                 pl.lit(run.directory.name).alias("run"),
                 pl.concat_str(["start", "goal"], separator="│").alias("pair"),
+                # The search stops at its first success, so its wall time is the time to it.
+                pl.when("guided_success").then("wall_time").alias("success_time"),
+                pl.when(pl.col("attempts_run") > 0).then("wall_time").alias("search_time"),
             )
         )
     data = pl.concat(frames, how="diagonal_relaxed")

@@ -40,6 +40,8 @@ DEPTH_ORDER = ("first success", "deepest attempt")
 DEPTH_COLORS = (SUCCESS_COLOR, NEUTRAL_COLOR)
 ATTEMPT_ORDER = ("first success", "attempts run")
 ATTEMPT_COLORS = DEPTH_COLORS
+TIME_ORDER = ("first success", "time spent")
+TIME_COLORS = DEPTH_COLORS
 # In `PAIR_OUTCOMES` order.
 PAIR_OUTCOME_COLORS = (NEUTRAL_COLOR, FAILURE_COLOR)
 
@@ -389,12 +391,13 @@ def _measure_bars(
 ) -> alt.Chart:
     """Pairs per `value` and measure, or per power-of-two bucket if `counts` has them."""
     if "bucket" in counts.columns:
+        first = int(counts["bucket"].min() or 0)  # ty: ignore[invalid-argument-type]
         last = int(counts["bucket"].max() or 0)  # ty: ignore[invalid-argument-type]
         field = "range:O"
         x = alt.X(
             field,
             title=axis_title,
-            scale=alt.Scale(domain=[pow2_bucket_label(b) for b in range(last + 1)]),
+            scale=alt.Scale(domain=[pow2_bucket_label(b) for b in range(first, last + 1)]),
             axis=alt.Axis(labelAngle=-45, grid=False),
         )
     else:
@@ -421,7 +424,7 @@ def _measure_bars(
     )
 
 
-def attempts_to_success(attempts: pl.DataFrame, meta: dict) -> alt.Chart:
+def search_attempts(attempts: pl.DataFrame, meta: dict) -> alt.Chart:
     """Pairs per attempt of the first success and per number of attempts run."""
     return _measure_bars(
         attempts, "attempts", "attempts", ATTEMPT_ORDER, ATTEMPT_COLORS, "Attempts", meta, every=10
@@ -439,6 +442,13 @@ def search_depth(depths: pl.DataFrame, meta: dict) -> alt.Chart:
         "Search depth",
         meta,
         every=5,
+    )
+
+
+def search_time(times: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Pairs per wall time to the first success and per wall time the search spent."""
+    return _measure_bars(
+        times, "time", "wall time (s)", TIME_ORDER, TIME_COLORS, "Wall time", meta, every=10
     )
 
 
