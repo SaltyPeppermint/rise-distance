@@ -78,6 +78,7 @@ def _settings(config: dict) -> dict[str, str]:
         STRATEGY: f"{config['search_policy']} · {frontier}",
         "tree_width": f"tree_width={config['tree_width']}",
         "sampling": config["sample_policy"],
+        "backoff": f"backoff={config['sampling_backoff']}",
         GUIDES: f"guides={config['guides_per_attempt']}",
         "union": "full_union" if config["full_union"] else "simple_union",
         "attempts": f"attempts={budget['max_attempts']}",
