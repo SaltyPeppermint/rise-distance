@@ -535,6 +535,12 @@ def pow2_bucket_label(bucket: int) -> str:
     return f"{2 ** (bucket - 1) + 1}–{2**bucket}"
 
 
+def _pow2_bucket(value: str, top: int) -> pl.Expr:
+    """Power-of-two bucket of positive `value` up to `top`: `k` holds (2^(k-1), 2^k]."""
+    # The number of powers of two below n is ceil(log2 n), without float rounding.
+    return pl.sum_horizontal(pl.col(value) > 2**j for j in range(top.bit_length())).cast(pl.Int64)
+
+
 def measure_counts(frame: pl.DataFrame, value: str, log_buckets: bool = False) -> pl.DataFrame:
     """Pairs per grid cell, `MEASURES[value]` measure and positive value, or its power-of-two bucket.
 
@@ -549,16 +555,65 @@ def measure_counts(frame: pl.DataFrame, value: str, log_buckets: bool = False) -
     if not log_buckets:
         return values.group_by(*GROUP, "measure", value, maintain_order=True).len("count")
     top = int(values[value].max() or 1)  # ty: ignore[invalid-argument-type]
-    # The number of powers of two below n is ceil(log2 n), without float rounding.
-    bucket = pl.sum_horizontal(pl.col(value) > 2**j for j in range(top.bit_length()))
     return (
         values.group_by(
-            *GROUP, "measure", bucket.cast(pl.Int64).alias("bucket"), maintain_order=True
+            *GROUP, "measure", _pow2_bucket(value, top).alias("bucket"), maintain_order=True
         )
         .len("count")
         .with_columns(
             pl.col("bucket").map_elements(pow2_bucket_label, return_dtype=pl.String).alias("range")
         )
+    )
+
+
+def load_expansions(runs: Sequence[Run]) -> pl.DataFrame:
+    """The `sample` draws of every run, one row per draw a pair paid for.
+
+    Draws a pair replayed from its own cache cost it nothing and are dropped; a
+    pool another pair drew counts for each pair, as their budgets do.
+    """
+    return pl.concat(
+        pl.read_parquet(run.directory / "expansions.parquet")
+        .filter(~pl.col("cached"))
+        .with_columns(
+            pl.lit(run.directory.name).alias("run"),
+            pl.lit(run.strategy).alias("strategy"),
+            pl.lit(run.setting).alias("setting"),
+        )
+        for run in runs
+    )
+
+
+def sample_tries(expansions: pl.DataFrame) -> pl.DataFrame:
+    """Draws per grid cell and power-of-two bucket of `sample` tries, labelled in `range`."""
+    tries = expansions.filter(pl.col("sample_tries") > 0)
+    top = int(tries["sample_tries"].max() or 1)  # ty: ignore[invalid-argument-type]
+    return (
+        tries.group_by(
+            *GROUP,
+            pl.lit("draws").alias("measure"),
+            _pow2_bucket("sample_tries", top).alias("bucket"),
+            maintain_order=True,
+        )
+        .len("count")
+        .with_columns(
+            pl.col("bucket").map_elements(pow2_bucket_label, return_dtype=pl.String).alias("range"),
+            (pl.col("count") / pl.col("count").sum().over(GROUP)).alias("share"),
+        )
+    )
+
+
+def killed_time(expansions: pl.DataFrame) -> pl.DataFrame:
+    """Per grid cell, the `sample` wall time spent in tries killed at the RSS cap."""
+    return (
+        expansions.group_by(GROUP, maintain_order=True)
+        .agg(
+            pl.col("sample_killed_time").sum().alias("killed_time"),
+            pl.col("wall_time").sum().alias("sample_time"),
+            (pl.col("sample_tries") > 1).sum().alias("retried"),
+            pl.len().alias("draws"),
+        )
+        .with_columns((pl.col("killed_time") / pl.col("sample_time")).alias("killed_share"))
     )
 
 

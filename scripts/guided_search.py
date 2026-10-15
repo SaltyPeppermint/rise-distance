@@ -205,6 +205,15 @@ class SearchNode:
     terminal: bool = False
 
 
+@dataclass
+class Tries:
+    """The `sample` processes one `run_capped` call started, and the wall time
+    of those killed at the RSS cap."""
+
+    count: int = 0
+    killed_time: float = 0.0
+
+
 @dataclass(frozen=True)
 class Expansion:
     """A `sample` process's pool and cost."""
@@ -221,6 +230,7 @@ class Expansion:
     ]
     meta: dict
     wall_time: float
+    tries: Tries = field(default_factory=Tries)
 
     @property
     def saturated(self) -> bool:
@@ -268,7 +278,7 @@ class PairTrace:
 
 
 async def run_capped(
-    args: SearchArgs, limit: PrioritySlot, cmd: list[str], what: str
+    args: SearchArgs, limit: PrioritySlot, cmd: list[str], what: str, tries: Tries
 ) -> tuple[Measured | None, float]:
     """Run under the RSS cap, retrying a killed child up to `sampling_retries`
     times with fewer productive iterations: stepping down from the iterations
@@ -279,7 +289,8 @@ async def run_capped(
 
     Returns `None` if every try was killed, plus the wall time summed over all
     tries. A `BinaryPanicked`/`TimeoutKilled` is not retried and carries that
-    sum, except a timeout after a fit, which returns that fit."""
+    sum, except a timeout after a fit, which returns that fit. `tries` counts
+    every try, also those of a call that raised."""
     cmd = [*cmd, "--print-success-iters"]
 
     async def attempt(cmd: list[str], spent: float) -> Measured:
@@ -289,6 +300,7 @@ async def run_capped(
             left = args.timeout - spent
             if left <= 0:
                 raise TimeoutKilled(what, args.timeout, spent)
+        tries.count += 1
         try:
             return await run_json_subprocess(
                 cmd, what=what, max_rss_bytes=args.max_rss_bytes, limit=limit, timeout=left
@@ -303,6 +315,7 @@ async def run_capped(
         return measured, measured.wall_time
     except MemoryKilled as killed:
         wall_time = killed.wall_time
+        tries.killed_time += killed.wall_time
         candidates = killed.productive_iters
 
     retries = itertools.count() if args.sampling_retries is None else range(args.sampling_retries)
@@ -326,6 +339,7 @@ async def run_capped(
             measured = await attempt(with_flag(cmd, "--max-iters", str(candidates[i])), wall_time)
         except MemoryKilled as killed:
             wall_time += killed.wall_time
+            tries.killed_time += killed.wall_time
             fail = i
             continue
         except TimeoutKilled as timed_out:
@@ -350,26 +364,31 @@ async def draw_expansion(
         ),
     ]
 
+    tries = Tries()
     try:
-        measured, wall_time = await run_capped(args, limit, cmd, f"sample for term {s_expr!r}")
+        measured, wall_time = await run_capped(
+            args, limit, cmd, f"sample for term {s_expr!r}", tries
+        )
     except ArgTooLong as too_long:
         log(f"WARNING: {too_long}")
         return Expansion((), "arg_too_long", dict(EMPTY_SAMPLE_META), 0.0)
     except BinaryPanicked as panicked:
         panicked.warn()
-        return Expansion((), "binary_panic", dict(EMPTY_SAMPLE_META), panicked.wall_time)
+        return Expansion((), "binary_panic", dict(EMPTY_SAMPLE_META), panicked.wall_time, tries)
     except TimeoutKilled as timed_out:
         log(f"WARNING: {timed_out}")
-        return Expansion((), "budget_exhausted", dict(EMPTY_SAMPLE_META), timed_out.wall_time)
+        return Expansion(
+            (), "budget_exhausted", dict(EMPTY_SAMPLE_META), timed_out.wall_time, tries
+        )
 
     # Every try was killed at the cap.
     if measured is None:
-        return Expansion((), "out_of_memory", dict(EMPTY_SAMPLE_META), wall_time)
+        return Expansion((), "out_of_memory", dict(EMPTY_SAMPLE_META), wall_time, tries)
 
     # Empty payload: construction failed.
     if not measured.payload:
         meta = {**EMPTY_SAMPLE_META, "peak_rss": measured.peak_rss}
-        return Expansion((), "no_novel_terms", meta, wall_time)
+        return Expansion((), "no_novel_terms", meta, wall_time, tries)
 
     record = measured.payload[0]
     children = tuple(zip(record["samples"], record["samples_s_expr"], strict=True))
@@ -383,7 +402,7 @@ async def draw_expansion(
         "stop_reason": record["stop_reason"],
         "peak_rss": measured.peak_rss,
     }
-    return Expansion(children, "ok" if children else "empty_pool", meta, wall_time)
+    return Expansion(children, "ok" if children else "empty_pool", meta, wall_time, tries)
 
 
 class SamplePools:
@@ -485,10 +504,13 @@ class SearchFrontier(ABC):
         expansion = await self.pools.draw(node.s_expr)
         # A pool this pair already drew cost it nothing but the lookup.
         wall_time = 0.0 if cached else expansion.wall_time
-        # A draw that outran this pair's deadline would have been killed there.
+        # A draw that outran this pair's deadline would have been killed there;
+        # its tries stay those the shared draw ran.
         if deadline is not None and wall_time > deadline:
             wall_time = deadline
-            expansion = Expansion((), "budget_exhausted", dict(EMPTY_SAMPLE_META), wall_time)
+            expansion = Expansion(
+                (), "budget_exhausted", dict(EMPTY_SAMPLE_META), wall_time, expansion.tries
+            )
         self.budget.charge(wall_time)
 
         children = []
@@ -523,6 +545,8 @@ class SearchFrontier(ABC):
                 "pushed": len(batches) * k,
                 "started_at": started_at,
                 "wall_time": wall_time,
+                "sample_tries": expansion.tries.count,
+                "sample_killed_time": expansion.tries.killed_time,
                 **expansion.meta,
             }
         )

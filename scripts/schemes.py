@@ -58,6 +58,8 @@ EXPANSION_SCHEMA = {
     "pushed": pl.Int64,
     "started_at": pl.Float64,
     "wall_time": pl.Float64,
+    "sample_tries": pl.Int64,
+    "sample_killed_time": pl.Float64,
     "iters": pl.Int64,
     "nodes": pl.Int64,
     "classes": pl.Int64,

@@ -42,6 +42,8 @@ ATTEMPT_ORDER = ("first success", "attempts run")
 ATTEMPT_COLORS = DEPTH_COLORS
 TIME_ORDER = ("first success", "time spent")
 TIME_COLORS = DEPTH_COLORS
+TRIES_ORDER = ("draws",)
+TRIES_COLORS = (NEUTRAL_COLOR,)
 # In `PAIR_OUTCOMES` order.
 PAIR_OUTCOME_COLORS = (NEUTRAL_COLOR, FAILURE_COLOR)
 
@@ -388,8 +390,15 @@ def _measure_bars(
     title: str,
     meta: dict,
     every: int,
+    unit: str | None = None,
+    log_count: bool = False,
 ) -> alt.Chart:
-    """Pairs per `value` and measure, or per power-of-two bucket if `counts` has them."""
+    """Pairs per `value` and measure, or per power-of-two bucket if `counts` has them.
+
+    `unit` names what is counted instead of pairs; `log_count` puts the counts
+    on a symlog scale, for a first bucket that dwarfs the rest.
+    """
+    unit = unit or _pairs(meta)
     if "bucket" in counts.columns:
         first = int(counts["bucket"].min() or 0)  # ty: ignore[invalid-argument-type]
         last = int(counts["bucket"].max() or 0)  # ty: ignore[invalid-argument-type]
@@ -410,14 +419,16 @@ def _measure_bars(
         .encode(  # ty: ignore[unresolved-attribute]
             x=x,
             xOffset=alt.XOffset("measure:N", sort=order),
-            y=alt.Y("count:Q", title=_pairs(meta)),
+            y=alt.Y(
+                "count:Q", title=unit, scale=alt.Scale(type="symlog" if log_count else "linear")
+            ),
             color=_ordered_color("measure:N", order, colors),
             **_grid(meta),
             tooltip=[
                 *GRID_TOOLTIP,
                 "measure:N",
                 alt.Tooltip(field, title=axis_title),
-                alt.Tooltip("count:Q", title=_pairs(meta)),
+                alt.Tooltip("count:Q", title=unit),
             ],
         )
         .properties(title=_title(title, meta), width=CELL_WIDTH, height=CELL_HEIGHT)
@@ -449,6 +460,44 @@ def search_time(times: pl.DataFrame, meta: dict) -> alt.Chart:
     """Pairs per wall time to the first success and per wall time the search spent."""
     return _measure_bars(
         times, "time", "wall time (s)", TIME_ORDER, TIME_COLORS, "Wall time", meta, every=10
+    )
+
+
+def sample_tries(tries: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Draws per power-of-two bucket of `sample` tries; past 1, the RSS cap killed a try."""
+    return _measure_bars(
+        tries,
+        "tries",
+        "sample tries per draw",
+        TRIES_ORDER,
+        TRIES_COLORS,
+        "Sample tries",
+        meta,
+        every=1,
+        unit="draws",
+        log_count=True,
+    )
+
+
+def killed_time(killed: pl.DataFrame, meta: dict) -> alt.Chart:
+    """Share of each grid cell's `sample` wall time spent in tries killed at the RSS cap."""
+    return (
+        alt.Chart(killed)
+        .mark_bar(color=FAILURE_COLOR)
+        .encode(  # ty: ignore[unresolved-attribute]
+            x=alt.X("killed_share:Q", title="share of sample time", axis=alt.Axis(format="%")),
+            y=alt.Y("setting:N", sort=list(meta["settings"])),
+            row=_strategy_row(meta),
+            tooltip=[
+                *GRID_TOOLTIP,
+                alt.Tooltip("killed_share:Q", format=".1%", title="killed share"),
+                alt.Tooltip("killed_time:Q", format=".0f", title="killed tries (s)"),
+                alt.Tooltip("sample_time:Q", format=".0f", title="sample time (s)"),
+                alt.Tooltip("retried:Q", title="retried draws"),
+                "draws:Q",
+            ],
+        )
+        .properties(title=_title("Sample time lost to killed tries", meta), width=CELL_WIDTH * 2)
     )
 
 
