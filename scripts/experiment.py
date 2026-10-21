@@ -35,28 +35,31 @@ BASE_FLAGS: dict[str, Any] = {
     "sampling_retries": 50,
     "seed": 123,
     # "frontier": True,
-    "sample_policy": "count",
+    # "sample_policy": "count",
     "tree_width": 30,
+    # "full_union": True,
     # "guides_per_attempt": 5,
-    "search_policy": "bfs",
+    # "search_policy": "dfs",
+    "sampling_backoff": "linear",
 }
 
 # Search stops at whatever is hit earlier
 BUDGETS: tuple[dict[str, Any], ...] = (
-    {"max_pair_time": 120},
+    # {"max_pair_time": 120},
+    {"max_pair_time": 300},
     # {"max_pair_time": 120, "max_attempt_time": 10},
     # {"max_attempts": 60},
 )
 
 GRID: dict[str, tuple[Any, ...]] = {
     # "seed": (123, 456),
-    # "sample_policy": ("uniform", "count"),
+    "sample_policy": ("uniform", "count"),
     # "tree_width": (2, 6),
-    "full_union": (True, False),
+    # "sampling_backoff": ("gallop", "linear"),
     "search_policy": ("dfs", "bfs"),
+    "full_union": (True, False),
     "guides_per_attempt": (1, 2, 5, 10, 50),
     "frontier": (True, False),
-    "sampling_backoff": ("gallop", "linear"),
 }
 
 
