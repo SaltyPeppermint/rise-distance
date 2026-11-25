@@ -1,8 +1,7 @@
-use egg::RecExpr;
+use egg::{Language, RecExpr};
 use rand::Rng;
 use rand::seq::SliceRandom;
 
-use crate::langs::MyLanguage;
 use crate::utils;
 
 /// How an operator's children are filled when building a term.
@@ -69,7 +68,7 @@ impl<L> Grammar<L> {
 }
 
 /// Languages that can be sampled by [`SizeUniformSampler`].
-pub trait Samplable: MyLanguage + Sized {
+pub trait Samplable: Language + Sized {
     /// Return the grammar, optionally replacing its default leaves.
     fn grammar(leaf_symbols: Option<Vec<Self>>) -> Grammar<Self>;
 
@@ -83,7 +82,7 @@ pub trait Samplable: MyLanguage + Sized {
 /// Samples terms uniformly at an exact AST size.
 ///
 /// Binder variables are chosen from the generated body's free variables.
-pub struct SizeUniformSampler<L: MyLanguage> {
+pub struct SizeUniformSampler<L> {
     grammar: Grammar<L>,
     /// Number of terms at each size; index 0 is unused.
     counts: Vec<f64>,

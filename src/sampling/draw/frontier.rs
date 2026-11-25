@@ -1,11 +1,10 @@
-use egg::{EGraph, Id, RecExpr};
+use egg::{Analysis, EGraph, Id, Language, RecExpr};
 use num::BigUint;
 use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
-use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::novel::{NodeMatch, NovelTermCount};
@@ -19,14 +18,14 @@ use crate::utils::{self, HashMap};
 /// `Count` weights each remaining branch proportionally to its unsampled
 /// completions, giving exact uniform sampling without replacement. `Uniform`
 /// gives every non-exhausted local choice equal weight.
-struct FrontierDrawer<'a, 'g, L: MyLanguage, N: MyAnalysis<L>> {
+struct FrontierDrawer<'a, 'g, L: Language, N: Analysis<L>> {
     counts: &'a NovelTermCount,
     graph: &'g EGraph<L, N>,
     root: Id,
     weigher: Weigher,
 }
 
-impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>> FrontierDrawer<'a, 'g, L, N> {
+impl<'a, 'g, L: Language, N: Analysis<L>> FrontierDrawer<'a, 'g, L, N> {
     fn new(
         counts: &'a NovelTermCount,
         graph: &'g EGraph<L, N>,
@@ -180,7 +179,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>> FrontierDrawer<'a, 'g, L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> Drawer<L> for FrontierDrawer<'_, '_, L, N> {
+impl<L: Language, N: Analysis<L>> Drawer<L> for FrontierDrawer<'_, '_, L, N> {
     fn root_histogram(&self) -> Option<&HashMap<usize, BigUint>> {
         self.counts.novel_histogram(self.root)
     }
@@ -230,13 +229,13 @@ fn completes_some_match(profile: &[State], matches: &[NodeMatch]) -> bool {
 /// Final e-graph and complete count tables for frontier sample construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
-pub struct FrontierPackage<L: MyLanguage, N: MyAnalysis<L>> {
+pub struct FrontierPackage<L: Language, N: Analysis<L>> {
     egraph: EGraph<L, N>,
     counts: NovelTermCount,
     root: Id,
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
+impl<L: Language, N: Analysis<L>> FrontierPackage<L, N> {
     fn from_counts(
         egraph: EGraph<L, N>,
         root: Id,
@@ -295,7 +294,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> SamplePackage<L> for FrontierPackage<L, N> {
+impl<L: Language, N: Analysis<L>> SamplePackage<L> for FrontierPackage<L, N> {
     /// Novel root-term counts by size.
     ///
     /// # Panics

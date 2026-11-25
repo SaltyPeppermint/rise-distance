@@ -2,7 +2,6 @@ use std::fmt::{self, Display};
 
 use egg::{Id, Language, RecExpr};
 
-use crate::langs::MyLanguage;
 use crate::origin::OriginLang;
 use crate::utils;
 
@@ -382,9 +381,9 @@ impl<L: Language> From<&RecExpr<L>> for FlatTree<L> {
     }
 }
 
-impl<L: MyLanguage> From<&RecExpr<OriginLang<L>>> for FlatTree<L> {
+impl<L: Language> From<&RecExpr<OriginLang<L>>> for FlatTree<L> {
     fn from(value: &RecExpr<OriginLang<L>>) -> Self {
-        fn rec<LL: MyLanguage>(expr: &RecExpr<OriginLang<LL>>, id: Id) -> FlatTree<LL> {
+        fn rec<LL: Language>(expr: &RecExpr<OriginLang<LL>>, id: Id) -> FlatTree<LL> {
             let children = expr[id]
                 .inner()
                 .children()

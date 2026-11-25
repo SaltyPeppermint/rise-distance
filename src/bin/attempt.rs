@@ -16,13 +16,15 @@
 //! what makes the two peaks comparable. The driver owns the search loop and its
 //! early stop.
 
+use std::fmt::Display;
+
 use clap::Parser;
-use egg::{Iteration, RecExpr, Rewrite};
-use serde::Serialize;
+use egg::{Analysis, FromOp, Iteration, Language, RecExpr, Rewrite};
+use serde::{Deserialize, Serialize};
 
 use rise_distance::cli::Measured;
-use rise_distance::eqsat::{self, EqsatConfig, AttemptError, ReachedRun};
-use rise_distance::langs::{Lang, MyAnalysis, MyLanguage, math, prop};
+use rise_distance::eqsat::{self, AttemptError, EqsatConfig, ReachedRun};
+use rise_distance::langs::{Lang, math, prop};
 use rise_distance::origin::OriginLang;
 
 #[derive(Parser)]
@@ -76,7 +78,11 @@ fn main() {
 }
 
 /// Run this process's single eqsat
-fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
+fn run<L, N>(args: &Args, rules: &[Rewrite<L, N>])
+where
+    L: Language + FromOp<Error: Display> + for<'de> Deserialize<'de> + 'static,
+    N: Analysis<L> + Default,
+{
     let goal = args
         .goal
         .parse::<RecExpr<L>>()

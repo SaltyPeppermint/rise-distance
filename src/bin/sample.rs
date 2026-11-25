@@ -4,14 +4,16 @@
 //! Arguments come from `guided_search.py`; output is a one-element JSON array
 //! on stdout, or an empty array on failure. Logs go to stderr.
 
+use std::fmt::Display;
+
 use clap::Parser;
-use egg::{AstSize, CostFunction, RecExpr, Rewrite};
+use egg::{Analysis, AstSize, CostFunction, FromOp, Language, RecExpr, Rewrite};
 use serde::Serialize;
 use time::OffsetDateTime;
 
 use rise_distance::cli::{Measured, Policy};
 use rise_distance::eqsat::{self, EqsatConfig, EqsatResult};
-use rise_distance::langs::{Lang, MyAnalysis, MyLanguage, math, prop};
+use rise_distance::langs::{Lang, math, prop};
 use rise_distance::origin::{self, OriginLang};
 use rise_distance::sampling::{SamplePackage, FrontierPackage, WholePackage};
 use rise_distance::utils;
@@ -88,7 +90,11 @@ fn main() {
 }
 
 /// Build one language-specific seed's sample record and print it as JSON.
-fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
+fn main_inner<L, N>(args: &Args, rules: &[Rewrite<L, N>])
+where
+    L: Language + FromOp<Error: Display> + Display + Serialize,
+    N: Analysis<L> + Default,
+{
     eprintln!(
         "\n=== Start Term: {} (max-iters={}) ===",
         args.start, args.eqsat.max_iters
@@ -111,10 +117,11 @@ fn main_inner<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, 
     println!();
 }
 
-fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
-    args: &Args,
-    rules: &[Rewrite<L, N>],
-) -> Result<Samples<L>, String> {
+fn build_sample_record<L, N>(args: &Args, rules: &[Rewrite<L, N>]) -> Result<Samples<L>, String>
+where
+    L: Language + FromOp<Error: Display>,
+    N: Analysis<L> + Default,
+{
     let start = args
         .start
         .parse::<RecExpr<L>>()
@@ -162,7 +169,7 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
     })
 }
 
-fn build_frontier_samples<L: MyLanguage, N: MyAnalysis<L>>(
+fn build_frontier_samples<L: Language, N: Analysis<L>>(
     args: &Args,
     result: EqsatResult<L, N>,
     policy: Policy,
@@ -193,7 +200,7 @@ fn build_frontier_samples<L: MyLanguage, N: MyAnalysis<L>>(
         .map_err(|e| format!("policy {policy} failed to draw samples: {e}"))
 }
 
-fn build_whole_samples<L: MyLanguage, N: MyAnalysis<L>>(
+fn build_whole_samples<L: Language, N: Analysis<L>>(
     args: &Args,
     result: EqsatResult<L, N>,
     policy: Policy,
@@ -226,8 +233,9 @@ fn build_whole_samples<L: MyLanguage, N: MyAnalysis<L>>(
 
 /// For Serialization purposes we have to go via Vec instead of using `RecExpr`
 #[derive(Serialize, Debug, Clone)]
+#[serde(bound(serialize = "L: Language + Display + Serialize"))]
 #[expect(clippy::struct_field_names)]
-struct Samples<L: MyLanguage> {
+struct Samples<L> {
     samples: Vec<Vec<OriginLang<L>>>,
     samples_s_expr: Vec<RecExpr<L>>,
     /// The guide-phase replay's egraph and run, which the samples are drawn from.

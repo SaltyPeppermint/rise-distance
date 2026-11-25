@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use strum::Display;
 use thiserror::Error;
 
-use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::{self, OriginLang};
 use crate::previous::PrevIndex;
 use crate::utils::{self, HashMap, HashSet};
@@ -60,7 +59,7 @@ pub struct EqsatConfig {
 impl EqsatConfig {
     /// Build a [`Runner`] with these limits, memory tracking, and scheduler.
     #[must_use]
-    pub fn build_runner<L: MyLanguage, N: MyAnalysis<L>, D: IterationData<L, N>>(
+    pub fn build_runner<L: Language, N: Analysis<L> + Default, D: IterationData<L, N>>(
         &self,
     ) -> Runner<L, N, D> {
         let mut runner = Runner::<L, N, D>::new_with_memory_tracker(
@@ -209,8 +208,8 @@ pub fn run<'a, L, N, R>(
     config: &EqsatConfig,
 ) -> Option<EqsatResult<L, N>>
 where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
+    L: Language + 'a,
+    N: Analysis<L> + Default + 'a,
     R: IntoIterator<Item = &'a Rewrite<L, N>>,
 {
     // Analysis hooks may union while the initial expression is inserted, so
@@ -274,7 +273,7 @@ where
 }
 
 /// Whether the canonical root reaches `goal`.
-fn goal_reached<L: MyLanguage, N: Analysis<L>>(
+fn goal_reached<L: Language, N: Analysis<L>>(
     goal: &RecExpr<L>,
     egraph: &EGraph<L, N>,
     root: Id,
@@ -307,7 +306,7 @@ pub struct ReachedRun {
 /// # Panics
 ///
 /// Panics if `guides` is empty.
-pub fn guided<L: MyLanguage, N: MyAnalysis<L>>(
+pub fn guided<L: Language + 'static, N: Analysis<L> + Default>(
     guides: &[RecExpr<OriginLang<L>>],
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
@@ -330,7 +329,7 @@ pub fn guided<L: MyLanguage, N: MyAnalysis<L>>(
 
 /// Run single-seed eqsat until `goal` is reached or a limit stops the run.
 #[expect(clippy::missing_errors_doc)]
-pub fn unguided<L: MyLanguage, N: MyAnalysis<L>>(
+pub fn unguided<L: Language + 'static, N: Analysis<L> + Default>(
     start: &RecExpr<L>,
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
@@ -342,7 +341,7 @@ pub fn unguided<L: MyLanguage, N: MyAnalysis<L>>(
 
 /// Run `rules` on a prepared `runner` until `goal` is reached or a limit stops
 /// the run, then report the final e-graph.
-fn run_until_goal<L: MyLanguage, N: MyAnalysis<L>>(
+fn run_until_goal<L: Language + 'static, N: Analysis<L> + Default>(
     mut runner: Runner<L, N, ()>,
     goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
@@ -393,8 +392,8 @@ fn run_until_goal<L: MyLanguage, N: MyAnalysis<L>>(
 
 fn add_with_root_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>
 where
-    L: MyLanguage,
-    N: MyAnalysis<L>,
+    L: Language + 'a,
+    N: Analysis<L>,
     D: IterationData<L, N>,
     I: IntoIterator<Item = &'a RecExpr<OriginLang<L>>>,
 {
@@ -412,8 +411,8 @@ where
 
 fn add_with_full_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>
 where
-    L: MyLanguage + 'a,
-    N: MyAnalysis<L>,
+    L: Language + 'a,
+    N: Analysis<L>,
     D: IterationData<L, N>,
     I: IntoIterator<Item = &'a RecExpr<OriginLang<L>>>,
 {
@@ -436,12 +435,12 @@ where
     runner
 }
 
-fn add_uncanon_remember<L: MyLanguage, N: MyAnalysis<L>>(
+fn add_uncanon_remember<L: Language, N: Analysis<L>>(
     graph: &mut EGraph<L, N>,
     guide: &RecExpr<OriginLang<L>>,
     origin_to_new_ids: &mut HashMap<Id, HashSet<Id>>,
 ) -> Id {
-    fn rec<LL: MyLanguage, NN: MyAnalysis<LL>>(
+    fn rec<LL: Language, NN: Analysis<LL>>(
         graph: &mut EGraph<LL, NN>,
         guide: &RecExpr<OriginLang<LL>>,
         origin_to_new_ids: &mut HashMap<Id, HashSet<Id>>,

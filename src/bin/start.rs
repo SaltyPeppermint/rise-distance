@@ -1,7 +1,8 @@
+use std::fmt::Display;
 use std::time::Instant;
 
 use clap::Parser;
-use egg::{Iteration, RecExpr, Rewrite, StopReason};
+use egg::{Analysis, Iteration, Language, RecExpr, Rewrite, StopReason};
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 use serde::Serialize;
@@ -9,7 +10,7 @@ use serde::Serialize;
 use rise_distance::cli::Measured;
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::generator::{Samplable, SizeUniformSampler};
-use rise_distance::langs::{Lang, MyAnalysis, MyLanguage, math, prop};
+use rise_distance::langs::{Lang, math, prop};
 
 #[derive(Parser)]
 #[command(
@@ -53,7 +54,7 @@ fn main() {
     println!();
 }
 
-fn run_one<L: Samplable, N: MyAnalysis<L>>(
+fn run_one<L: Samplable + Display, N: Analysis<L> + Default>(
     args: &Args,
     validity_config: &EqsatConfig,
     rules: &[Rewrite<L, N>],
@@ -97,7 +98,7 @@ pub struct Measurement {
 }
 
 #[must_use]
-pub fn validity_check<L: MyLanguage, N: MyAnalysis<L> + Default>(
+pub fn validity_check<L: Language + Display, N: Analysis<L> + Default>(
     expr: &RecExpr<L>,
     config: &EqsatConfig,
     rules: &[Rewrite<L, N>],

@@ -4,13 +4,12 @@ mod whole;
 
 use std::borrow::Borrow;
 
-use egg::RecExpr;
+use egg::{Language, RecExpr};
 use num::{BigUint, ToPrimitive, Zero};
 use rand_chacha::ChaCha12Rng;
 use thiserror::Error;
 
 use crate::cli::Policy;
-use crate::langs::MyLanguage;
 use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::weigher::{Choice, Weigher};
@@ -22,7 +21,7 @@ use trie::SampledTrie;
 pub use whole::WholePackage;
 
 /// Draws size-targeted root samples from an e-graph.
-trait Drawer<L: MyLanguage> {
+trait Drawer<L: Language> {
     /// Histogram of extractable term sizes for the drawer's root class,
     /// or `None` if the root has no entries under this drawer's constraints.
     fn root_histogram(&self) -> Option<&HashMap<usize, BigUint>>;
@@ -124,7 +123,7 @@ pub enum DrawingError {
     InsufficientTerms,
 }
 
-pub trait SamplePackage<L: MyLanguage> {
+pub trait SamplePackage<L: Language> {
     /// Log the stats about the root into stderr.
     fn log_root_counts(&self) {
         let mut sorted_hist = self.root_histogram().iter().collect::<Vec<_>>();
@@ -162,7 +161,7 @@ pub(super) fn draw_children<L, H, F>(
     mut draw_child: F,
 ) -> Vec<RecExpr<OriginLang<L>>>
 where
-    L: MyLanguage,
+    L: Language,
     H: Borrow<HashMap<usize, BigUint>>,
     F: FnMut(usize, usize, Option<&BigUint>, &mut DrawCursor<'_>) -> RecExpr<OriginLang<L>>,
 {

@@ -1,11 +1,10 @@
-use egg::{EGraph, Id, RecExpr};
+use egg::{Analysis, EGraph, Id, Language, RecExpr};
 use num::BigUint;
 use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
-use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::whole;
@@ -13,7 +12,7 @@ use crate::sampling::draw::{self, SamplePackage, DrawCursor, Drawer, DrawingErro
 use crate::sampling::weigher::{Choice, Weigher};
 use crate::utils::{self, HashMap};
 
-struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>> {
+struct WholeDrawer<'a, 'b, L: Language, N: Analysis<L>> {
     /// Histogram of the counts for each class, indexed by `node_idx`
     counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
     graph: &'b EGraph<L, N>,
@@ -21,7 +20,7 @@ struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>> {
     weigher: Weigher,
 }
 
-impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>> WholeDrawer<'a, 'b, L, N> {
+impl<'a, 'b, L: Language, N: Analysis<L>> WholeDrawer<'a, 'b, L, N> {
     fn new(
         counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
         graph: &'b EGraph<L, N>,
@@ -92,7 +91,7 @@ impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>> WholeDrawer<'a, 'b, L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> Drawer<L> for WholeDrawer<'_, '_, L, N> {
+impl<L: Language, N: Analysis<L>> Drawer<L> for WholeDrawer<'_, '_, L, N> {
     fn root_histogram(&self) -> Option<&HashMap<usize, BigUint>> {
         self.counts.get(&self.root)
     }
@@ -112,13 +111,13 @@ impl<L: MyLanguage, N: MyAnalysis<L>> Drawer<L> for WholeDrawer<'_, '_, L, N> {
 /// construction.
 ///
 /// Construction consumes [`EqsatResult`] and discards its run metadata.
-pub struct WholePackage<L: MyLanguage, N: MyAnalysis<L>> {
+pub struct WholePackage<L: Language, N: Analysis<L>> {
     egraph: EGraph<L, N>,
     counts: HashMap<Id, HashMap<usize, BigUint>>,
     root: Id,
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
+impl<L: Language, N: Analysis<L>> WholePackage<L, N> {
     fn from_counts(
         egraph: EGraph<L, N>,
         root: Id,
@@ -176,7 +175,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> SamplePackage<L> for WholePackage<L, N> {
+impl<L: Language, N: Analysis<L>> SamplePackage<L> for WholePackage<L, N> {
     /// Root-term counts by size.
     ///
     /// # Panics

@@ -7,8 +7,6 @@ use egg::{Analysis, EGraph, RecExpr};
 use foldhash::fast::FixedState;
 
 #[cfg(test)]
-use crate::langs::MyLanguage;
-#[cfg(test)]
 use crate::origin::OriginLang;
 use crate::utils::{DenseUnionFind, HashMap};
 
@@ -97,10 +95,7 @@ impl<L: Language> PrevIndex<L> {
     /// boundary. Origins are deliberately ignored: previous membership is a
     /// property of the lowered language expression.
     #[cfg(test)]
-    pub(crate) fn contains_origin_expr(&self, expr: &RecExpr<OriginLang<L>>) -> bool
-    where
-        L: MyLanguage,
-    {
+    pub(crate) fn contains_origin_expr(&self, expr: &RecExpr<OriginLang<L>>) -> bool {
         let mut ids: Vec<Option<Id>> = Vec::with_capacity(expr.as_ref().len());
         for node in expr.as_ref() {
             if node

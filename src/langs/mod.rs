@@ -2,47 +2,7 @@ pub mod lambda;
 pub mod math;
 pub mod prop;
 
-use std::fmt::Display;
-
-use egg::{Analysis, FromOp, Language};
 use serde::{Deserialize, Serialize};
-
-/// Trait for node labels in e-graphs and exprs.
-pub trait MyLanguage:
-    Serialize + for<'de> Deserialize<'de> + Display + Language + FromOp<Error: Display> + 'static
-{
-}
-
-impl<
-    L: Serialize + for<'de> Deserialize<'de> + Display + Language + FromOp<Error: Display> + 'static,
-> MyLanguage for L
-{
-}
-
-/// Trait for node labels in e-graphs and exprs.
-pub trait MyAnalysis<L: MyLanguage>:
-    Serialize
-    + for<'de> Deserialize<'de>
-    + std::fmt::Debug
-    + Analysis<L, Data: Clone + Eq + Default>
-    + Default
-    + Clone
-    + 'static
-{
-}
-
-impl<
-    N: Serialize
-        + for<'de> Deserialize<'de>
-        + std::fmt::Debug
-        + Analysis<L, Data: Clone + Eq + Default>
-        + Default
-        + Clone
-        + 'static,
-    L: MyLanguage,
-> MyAnalysis<L> for N
-{
-}
 
 /// Which language the terms in a run folder are drawn from.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]

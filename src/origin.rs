@@ -3,17 +3,15 @@ use std::fmt::Display;
 use egg::{FromOp, Id, Language, RecExpr};
 use serde::{Deserialize, Serialize};
 
-use crate::langs::MyLanguage;
 use crate::utils;
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(bound = "L: MyLanguage")]
-pub struct OriginLang<L: MyLanguage> {
+pub struct OriginLang<L> {
     inner: L,
     origin: Id,
 }
 
-impl<L: MyLanguage> OriginLang<L> {
+impl<L> OriginLang<L> {
     pub const fn new(inner: L, origin: Id) -> Self {
         Self { inner, origin }
     }
@@ -27,7 +25,7 @@ impl<L: MyLanguage> OriginLang<L> {
     }
 }
 
-impl<L: MyLanguage> Language for OriginLang<L> {
+impl<L: Language> Language for OriginLang<L> {
     type Discriminant = (L::Discriminant, Id);
 
     fn discriminant(&self) -> Self::Discriminant {
@@ -47,7 +45,7 @@ impl<L: MyLanguage> Language for OriginLang<L> {
     }
 }
 
-impl<L: MyLanguage> FromOp for OriginLang<L> {
+impl<L: FromOp> FromOp for OriginLang<L> {
     type Error = L::Error;
 
     fn from_op(op: &str, children: Vec<Id>) -> Result<Self, Self::Error> {
@@ -58,13 +56,13 @@ impl<L: MyLanguage> FromOp for OriginLang<L> {
     }
 }
 
-impl<L: MyLanguage> Display for OriginLang<L> {
+impl<L: Display> Display for OriginLang<L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.inner, f)
     }
 }
 
 #[must_use]
-pub fn lower<L: MyLanguage>(higher: RecExpr<OriginLang<L>>) -> RecExpr<L> {
+pub fn lower<L: Language>(higher: RecExpr<OriginLang<L>>) -> RecExpr<L> {
     higher.into_iter().map(|n| n.inner).collect()
 }
