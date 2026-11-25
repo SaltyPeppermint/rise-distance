@@ -98,7 +98,7 @@ impl<L: Language> Language for SketchLang<L> {
     }
 }
 
-impl<L: Language + Display> Display for SketchLang<L> {
+impl<L: Display> Display for SketchLang<L> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Any => write!(f, "?"),

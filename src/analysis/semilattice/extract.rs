@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, fmt::Debug};
+use std::cmp::Ordering;
 
 use egg::{Analysis, CostFunction, DidMerge, EGraph, Id, Language};
 
@@ -6,12 +6,12 @@ use super::SemiLatticeAnalysis;
 use crate::utils::{ExprHashCons, HashMap};
 
 #[derive(Debug)]
-pub struct ExtractAnalysis<'a, L: Language, CF> {
+pub struct ExtractAnalysis<'a, L, CF> {
     pub(crate) exprs: &'a mut ExprHashCons<L>,
     pub(crate) cost_fn: &'a mut CF,
 }
 
-impl<'a, L: Language, CF> ExtractAnalysis<'a, L, CF> {
+impl<'a, L, CF> ExtractAnalysis<'a, L, CF> {
     pub(crate) const fn new(exprs: &'a mut ExprHashCons<L>, cost_fn: &'a mut CF) -> Self {
         Self { exprs, cost_fn }
     }
@@ -21,20 +21,16 @@ impl<L, A, CF> SemiLatticeAnalysis<L, A> for ExtractAnalysis<'_, L, CF>
 where
     L: Language,
     A: Analysis<L>,
-    CF: CostFunction<L> + Debug,
-    CF::Cost: 'static,
+    CF: CostFunction<L>,
 {
     type Data = (CF::Cost, usize);
 
-    fn make<'a>(
+    fn make(
         &mut self,
         _egraph: &EGraph<L, A>,
         enode: &L,
         analysis_of: &HashMap<Id, Self::Data>,
-    ) -> Self::Data
-    where
-        Self::Data: 'a,
-    {
+    ) -> Self::Data {
         // Take a node, calculate it's cost, store it in the egraph_id: (cost, rec_expr_id) map
         let expr_node = enode.clone().map_children(|c| Id::from(analysis_of[&c].1));
         let expr = self.exprs.add(expr_node);
@@ -79,20 +75,17 @@ impl<L, A, CF> SemiLatticeAnalysis<L, A> for ExtractContainsAnalysis<'_, L, CF>
 where
     L: Language,
     A: Analysis<L>,
-    CF: CostFunction<L> + Debug,
-    CF::Cost: 'static + Ord,
+    CF: CostFunction<L>,
+    CF::Cost: Ord,
 {
     type Data = Option<(CF::Cost, usize)>;
 
-    fn make<'a>(
+    fn make(
         &mut self,
         egraph: &EGraph<L, A>,
         enode: &L,
         analysis_of: &HashMap<Id, Self::Data>,
-    ) -> Self::Data
-    where
-        Self::Data: 'a,
-    {
+    ) -> Self::Data {
         {
             // Children that satisfy '?' by index
             let children_any = enode
@@ -152,20 +145,12 @@ where
 }
 
 #[derive(Debug)]
-pub struct ExtractOnlyContainsAnalysis<'a, L, CF>
-where
-    L: Language,
-    CF: CostFunction<L>,
-{
+pub struct ExtractOnlyContainsAnalysis<'a, L, CF> {
     exprs: &'a mut ExprHashCons<L>,
     cost_fn: &'a mut CF,
 }
 
-impl<'a, L, CF> ExtractOnlyContainsAnalysis<'a, L, CF>
-where
-    L: Language,
-    CF: CostFunction<L>,
-{
+impl<'a, L, CF> ExtractOnlyContainsAnalysis<'a, L, CF> {
     pub const fn new(exprs: &'a mut ExprHashCons<L>, cost_fn: &'a mut CF) -> Self {
         Self { exprs, cost_fn }
     }
@@ -175,20 +160,17 @@ impl<L, A, CF> SemiLatticeAnalysis<L, A> for ExtractOnlyContainsAnalysis<'_, L, 
 where
     L: Language,
     A: Analysis<L>,
-    CF: CostFunction<L> + Debug,
-    CF::Cost: 'static + Ord,
+    CF: CostFunction<L>,
+    CF::Cost: Ord,
 {
     type Data = Option<(CF::Cost, usize)>;
 
-    fn make<'a>(
+    fn make(
         &mut self,
         _egraph: &EGraph<L, A>,
         enode: &L,
         analysis_of: &HashMap<Id, Self::Data>,
-    ) -> Self::Data
-    where
-        Self::Data: 'a,
-    {
+    ) -> Self::Data {
         if enode.is_leaf() {
             return None;
         }

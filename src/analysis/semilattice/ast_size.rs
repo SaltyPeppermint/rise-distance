@@ -8,15 +8,12 @@ use crate::utils::HashMap;
 impl<L: Language, N: Analysis<L>> SemiLatticeAnalysis<L, N> for AstSize {
     type Data = usize;
 
-    fn make<'a>(
+    fn make(
         &mut self,
         _egraph: &EGraph<L, N>,
         enode: &L,
         analysis_of: &HashMap<Id, Self::Data>,
-    ) -> Self::Data
-    where
-        Self::Data: 'a,
-    {
+    ) -> Self::Data {
         enode.fold(1usize, |size, id| size + analysis_of[&id])
     }
 

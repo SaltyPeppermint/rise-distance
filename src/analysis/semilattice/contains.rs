@@ -1,5 +1,3 @@
-use std::fmt::Debug;
-
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
 
 use super::SemiLatticeAnalysis;
@@ -11,15 +9,12 @@ pub struct SatisfiesContainsAnalysis;
 impl<L: Language, N: Analysis<L>> SemiLatticeAnalysis<L, N> for SatisfiesContainsAnalysis {
     type Data = bool;
 
-    fn make<'a>(
+    fn make(
         &mut self,
         _egraph: &EGraph<L, N>,
         enode: &L,
         analysis_of: &HashMap<Id, Self::Data>,
-    ) -> Self::Data
-    where
-        Self::Data: 'a,
-    {
+    ) -> Self::Data {
         enode.any(|c| analysis_of[&c])
     }
 
@@ -36,15 +31,12 @@ pub struct SatisfiesOnlyContainsAnalysis;
 impl<L: Language, A: Analysis<L>> SemiLatticeAnalysis<L, A> for SatisfiesOnlyContainsAnalysis {
     type Data = bool;
 
-    fn make<'a>(
+    fn make(
         &mut self,
         _egraph: &EGraph<L, A>,
         enode: &L,
         analysis_of: &HashMap<Id, Self::Data>,
-    ) -> Self::Data
-    where
-        Self::Data: 'a,
-    {
+    ) -> Self::Data {
         if enode.is_leaf() {
             return false;
         }

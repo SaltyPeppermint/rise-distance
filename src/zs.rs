@@ -83,7 +83,7 @@ impl std::ops::Add for ZSStats {
 
 /// Postorder traversal information for a tree node.
 #[derive(Debug, Clone)]
-struct PostorderNode<'a, L: Language> {
+struct PostorderNode<'a, L> {
     label: &'a L,
     leftmost_leaf: usize,
 }
@@ -91,12 +91,12 @@ struct PostorderNode<'a, L: Language> {
 /// Preprocessed tree for Zhang-Shasha algorithm.
 ///
 /// Reuse this when computing distances against multiple candidate trees.
-struct PreprocessedTree<'a, L: Language> {
+struct PreprocessedTree<'a, L> {
     nodes: Vec<PostorderNode<'a, L>>,
     keyroots: Vec<usize>,
 }
 
-impl<'a, L: Language> PreprocessedTree<'a, L> {
+impl<'a, L> PreprocessedTree<'a, L> {
     /// Create a preprocessed tree from a tree node.
     /// This performs a single postorder traversal to compute leftmost leaf descendants
     /// and keyroots.
@@ -216,7 +216,7 @@ impl<L: Eq> EditCosts<L> for UnitCost {
 }
 
 /// Compute the Zhang-Shasha tree edit distance between two trees.
-pub fn tree_distance<L: Language, C: EditCosts<L>>(
+pub fn tree_distance<L, C: EditCosts<L>>(
     tree1: &FlatTree<L>,
     tree2: &FlatTree<L>,
     costs: &C,
@@ -227,7 +227,7 @@ pub fn tree_distance<L: Language, C: EditCosts<L>>(
 }
 
 /// Compute distance with a pre-preprocessed reference tree.
-fn tree_distance_with_ref<L: Language, C: EditCosts<L>>(
+fn tree_distance_with_ref<L, C: EditCosts<L>>(
     candidate: &FlatTree<L>,
     reference: &PreprocessedTree<L>,
     costs: &C,
@@ -237,7 +237,7 @@ fn tree_distance_with_ref<L: Language, C: EditCosts<L>>(
 }
 
 /// Compute distance between two preprocessed trees.
-fn tree_distance_preprocessed<L: Language, C: EditCosts<L>>(
+fn tree_distance_preprocessed<L, C: EditCosts<L>>(
     t1: &PreprocessedTree<L>,
     t2: &PreprocessedTree<L>,
     costs: &C,
@@ -273,7 +273,7 @@ fn tree_distance_preprocessed<L: Language, C: EditCosts<L>>(
     td[n1 - 1][n2 - 1]
 }
 
-fn compute_forest_distance<L: Language, C: EditCosts<L>>(
+fn compute_forest_distance<L, C: EditCosts<L>>(
     t1: &PreprocessedTree<L>,
     t2: &PreprocessedTree<L>,
     i: usize,
@@ -337,17 +337,17 @@ fn compute_forest_distance<L: Language, C: EditCosts<L>>(
 }
 
 /// Compute tree edit distance with unit costs.
-pub fn tree_distance_unit<L: Language>(tree1: &FlatTree<L>, tree2: &FlatTree<L>) -> usize {
+pub fn tree_distance_unit<L: Eq>(tree1: &FlatTree<L>, tree2: &FlatTree<L>) -> usize {
     tree_distance(tree1, tree2, &UnitCost)
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct FlatTree<L: Language> {
+pub struct FlatTree<L> {
     pub(super) label: L,
     pub(super) children: Vec<FlatTree<L>>,
 }
 
-impl<L: Language> FlatTree<L> {
+impl<L> FlatTree<L> {
     pub fn children(&self) -> &[FlatTree<L>] {
         &self.children
     }
@@ -397,7 +397,7 @@ impl<L: Language> From<&RecExpr<OriginLang<L>>> for FlatTree<L> {
     }
 }
 
-impl<L: Language + Display> Display for FlatTree<L> {
+impl<L: Display> Display for FlatTree<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_leaf() {
             write!(f, "{}", self.label)

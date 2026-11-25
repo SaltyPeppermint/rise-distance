@@ -68,7 +68,7 @@ impl<L> Grammar<L> {
 }
 
 /// Languages that can be sampled by [`SizeUniformSampler`].
-pub trait Samplable: Language + Sized {
+pub trait Samplable: Language {
     /// Return the grammar, optionally replacing its default leaves.
     fn grammar(leaf_symbols: Option<Vec<Self>>) -> Grammar<Self>;
 
@@ -249,7 +249,7 @@ fn pick<R: Rng, T: Clone>(rng: &mut R, pool: &[T]) -> T {
 /// variables, while a binder removes one.
 /// Counts use `f64` because sampling needs ratios, not exact bigints.
 #[expect(clippy::cast_precision_loss)]
-fn count_terms<L: Samplable>(
+fn count_terms<L: PartialEq>(
     grammar: &Grammar<L>,
     limit: usize,
 ) -> (Vec<f64>, Vec<Vec<f64>>, Vec<f64>) {

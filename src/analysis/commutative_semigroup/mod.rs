@@ -1,7 +1,5 @@
 mod expr_count;
 
-use std::fmt::Debug;
-
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
 
 use crate::utils::{HashMap, UniqueQueue};
@@ -10,7 +8,7 @@ use crate::utils::{HashMap, UniqueQueue};
 pub use expr_count::ExprCount;
 
 #[allow(dead_code)]
-pub trait CommutativeSemigroupAnalysis<L: Language, N: Analysis<L>>: Sized + Debug {
+pub trait CommutativeSemigroupAnalysis<L: Language, N: Analysis<L>>: Sized {
     type Data: PartialEq;
 
     fn make(

@@ -64,13 +64,22 @@ where
 /// Notably, insert/pop operations have O(1) expected amortized runtime complexity.
 ///
 /// Thanks @Bastacyclop for the implementation!
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
-pub(crate) struct UniqueQueue<T: Eq + Hash + Clone> {
+#[derive(Clone, Debug)]
+pub(crate) struct UniqueQueue<T> {
     set: HashSet<T>,
     queue: VecDeque<T>,
 }
 
-impl<U: Eq + Hash + Clone + Default> FromIterator<U> for UniqueQueue<U> {
+impl<T> Default for UniqueQueue<T> {
+    fn default() -> Self {
+        Self {
+            set: HashSet::default(),
+            queue: VecDeque::new(),
+        }
+    }
+}
+
+impl<U: Eq + Hash + Clone> FromIterator<U> for UniqueQueue<U> {
     fn from_iter<T: IntoIterator<Item = U>>(iter: T) -> Self {
         let mut queue = Self::default();
         for t in iter {
@@ -114,13 +123,13 @@ pub(crate) fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
 
 /// hash consed storage for expressions,
 /// cheap replacement for garbage collected expressions
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct ExprHashCons<L: Hash + Eq + Language> {
+#[derive(Debug, Clone)]
+pub struct ExprHashCons<L> {
     node_store: Vec<L>,
     memo: HashMap<L, usize>,
 }
 
-impl<L: Language> ExprHashCons<L> {
+impl<L> ExprHashCons<L> {
     #[must_use]
     pub fn new() -> Self {
         ExprHashCons {
@@ -128,6 +137,9 @@ impl<L: Language> ExprHashCons<L> {
             memo: HashMap::default(),
         }
     }
+}
+
+impl<L: Language> ExprHashCons<L> {
 
     pub(crate) fn add(&mut self, node: L) -> usize {
         if let Some(id) = self.memo.get(&node) {
@@ -162,7 +174,7 @@ impl<L: Language> ExprHashCons<L> {
     }
 }
 
-impl<L: Language> Default for ExprHashCons<L> {
+impl<L> Default for ExprHashCons<L> {
     fn default() -> Self {
         Self::new()
     }

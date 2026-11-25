@@ -26,7 +26,7 @@ impl<L: Language, P: PreviousLookup<L> + ?Sized> PreviousLookup<L> for &P {
 /// Class ids are replay representatives. They are intentionally used only as
 /// opaque keys by novelty counting.
 #[derive(Debug)]
-pub(crate) struct PrevIndex<L: Language> {
+pub(crate) struct PrevIndex<L> {
     memo: HashMap<L, Id>,
 }
 

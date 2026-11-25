@@ -2,8 +2,6 @@ mod ast_size;
 mod contains;
 mod extract;
 
-use std::fmt::Debug;
-
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
 
 use crate::utils::{HashMap, UniqueQueue};
@@ -11,18 +9,15 @@ use crate::utils::{HashMap, UniqueQueue};
 pub use contains::{SatisfiesContainsAnalysis, SatisfiesOnlyContainsAnalysis};
 pub use extract::{ExtractAnalysis, ExtractContainsAnalysis, ExtractOnlyContainsAnalysis};
 
-pub trait SemiLatticeAnalysis<L: Language, N: Analysis<L>>: Sized + Debug {
-    type Data: Debug;
+pub trait SemiLatticeAnalysis<L: Language, N: Analysis<L>>: Sized {
+    type Data;
 
-    fn make<'a>(
+    fn make(
         &mut self,
         egraph: &EGraph<L, N>,
         enode: &L,
         analysis_of: &HashMap<Id, Self::Data>,
-    ) -> Self::Data
-    where
-        Self::Data: 'a,
-        Self: 'a;
+    ) -> Self::Data;
 
     fn merge(&mut self, a: &mut Self::Data, b: Self::Data) -> DidMerge;
 

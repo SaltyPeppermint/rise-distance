@@ -390,13 +390,10 @@ fn run_until_goal<L: Language + 'static, N: Analysis<L> + Default>(
     }
 }
 
-fn add_with_root_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>
-where
-    L: Language + 'a,
-    N: Analysis<L>,
-    D: IterationData<L, N>,
-    I: IntoIterator<Item = &'a RecExpr<OriginLang<L>>>,
-{
+fn add_with_root_union<L: Language, N: Analysis<L>, D: IterationData<L, N>>(
+    mut runner: Runner<L, N, D>,
+    guides: &[RecExpr<OriginLang<L>>],
+) -> Runner<L, N, D> {
     for guide in guides {
         let expr = origin::lower(guide.clone());
         runner = runner.with_expr(&expr);
@@ -409,13 +406,10 @@ where
     runner
 }
 
-fn add_with_full_union<'a, L, N, D, I>(mut runner: Runner<L, N, D>, guides: I) -> Runner<L, N, D>
-where
-    L: Language + 'a,
-    N: Analysis<L>,
-    D: IterationData<L, N>,
-    I: IntoIterator<Item = &'a RecExpr<OriginLang<L>>>,
-{
+fn add_with_full_union<L: Language, N: Analysis<L>, D: IterationData<L, N>>(
+    mut runner: Runner<L, N, D>,
+    guides: &[RecExpr<OriginLang<L>>],
+) -> Runner<L, N, D> {
     let mut origin_to_new_ids = HashMap::default();
 
     for guide in guides {

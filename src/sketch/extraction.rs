@@ -1,5 +1,3 @@
-use std::fmt::Debug;
-
 use egg::{Analysis, CostFunction, EGraph, Id, Language, RecExpr};
 
 use super::{Sketch, SketchLang};
@@ -18,8 +16,8 @@ pub fn eclass_extract<L, A, CF>(
 where
     L: Language,
     A: Analysis<L>,
-    CF: CostFunction<L> + Debug,
-    CF::Cost: 'static + Ord,
+    CF: CostFunction<L>,
+    CF::Cost: Ord,
 {
     let canon_id = egraph.find(id);
     let (exprs, eclass_to_best) = extract(sketch, cost_fn, egraph);
@@ -43,8 +41,8 @@ fn extract<L, N, CF>(
 where
     L: Language,
     N: Analysis<L>,
-    CF: CostFunction<L> + Debug,
-    CF::Cost: Ord + 'static,
+    CF: CostFunction<L>,
+    CF::Cost: Ord,
 {
     assert!(egraph.clean);
     let mut memo = HashMap::default();
@@ -80,8 +78,8 @@ fn rec_extract<L, A, CF>(
 where
     L: Language,
     A: Analysis<L>,
-    CF: CostFunction<L> + Debug,
-    CF::Cost: 'static + Ord,
+    CF: CostFunction<L>,
+    CF::Cost: Ord,
 {
     if let Some(value) = memo.get(&sketch_id) {
         return value.clone();
