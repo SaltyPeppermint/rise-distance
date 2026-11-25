@@ -9,7 +9,7 @@ use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::whole;
-use crate::sampling::draw::{self, AnalysisPackage, DrawCursor, Drawer, DrawingError, SampledTrie};
+use crate::sampling::draw::{self, SamplePackage, DrawCursor, Drawer, DrawingError, SampledTrie};
 use crate::sampling::weigher::{Choice, Weigher};
 use crate::utils::{self, HashMap};
 
@@ -119,16 +119,6 @@ pub struct WholePackage<L: MyLanguage, N: MyAnalysis<L>> {
 }
 
 impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
-    /// Build counts through `max_size` over the whole e-graph.
-    /// Returns `None` if the root has no terms within `max_size`.
-    #[must_use]
-    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<WholePackage<L, N>> {
-        let (egraph, root) = result.into_curr();
-        let root = egraph.find(root);
-        let counts = whole::count(&egraph, root, max_size);
-        Self::from_counts(egraph, root, counts)
-    }
-
     fn from_counts(
         egraph: EGraph<L, N>,
         root: Id,
@@ -152,7 +142,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
     /// # Errors
     ///
     /// Returns the cap if the scan or package finds too few terms.
-    pub fn build_through_sizes(
+    pub fn build(
         result: EqsatResult<L, N>,
         start_size: usize,
         search_steps: usize,
@@ -162,7 +152,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
         let (egraph, root) = result.into_curr();
         let root = egraph.find(root);
 
-        let (max_size, counts) = match whole::count_through_sizes(
+        let (max_size, counts) = match whole::count(
             &egraph,
             root,
             cap,
@@ -186,7 +176,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L> for WholePackage<L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> SamplePackage<L> for WholePackage<L, N> {
     /// Root-term counts by size.
     ///
     /// # Panics
@@ -218,15 +208,18 @@ mod tests {
     use Weigher::{Count, Uniform};
 
     fn rooted_counts(
-        max_size: usize,
+        cap: usize,
+        min_extractable: usize,
         graph: &EGraph<Math, ()>,
         root: Id,
     ) -> HashMap<Id, HashMap<usize, BigUint>> {
-        whole::count(graph, root, max_size)
+        whole::count(graph, root, cap, min_extractable)
+            .expect("test graph has enough terms")
+            .1
     }
 
     #[test]
-    fn build_through_sizes_stops_at_min_extractable() {
+    fn build_stops_at_min_extractable() {
         // Unioning `a` with the root of (+ a b) creates a cycle: the root
         // class extracts a, (+ a b), (+ (+ a b) b), ... — one term each at
         // sizes 1, 3, 5, ... The whole package ignores prev entirely, so a
@@ -246,8 +239,8 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let (used_max_size, package) = WholePackage::build_through_sizes(result, 30, 2, 3)
-            .expect("build_through_sizes should succeed");
+        let (used_max_size, package) = WholePackage::build(result, 30, 2, 3)
+            .expect("build should succeed");
 
         assert_eq!(used_max_size, 5);
         let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
@@ -256,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn build_through_sizes_reports_cap_when_short() {
+    fn build_reports_cap_when_short() {
         // A single leaf has exactly one extractable term, so a threshold of
         // 3 can never be met and the scan must report the cap.
         let mut graph = EGraph::<Math, ()>::new(());
@@ -268,7 +261,7 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(graph, root, prev_raw_node_count, prev_union_event_count);
-        let Err(cap) = WholePackage::build_through_sizes(result, 3, 20, 3) else {
+        let Err(cap) = WholePackage::build(result, 3, 20, 3) else {
             panic!("a single term cannot satisfy a threshold of 3");
         };
 
@@ -281,7 +274,7 @@ mod tests {
         let root = graph.add(math::sym("a"));
         graph.rebuild();
 
-        let counts = rooted_counts(10, &graph, root);
+        let counts = rooted_counts(10, 1, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
         let terms = drawer.draw_batch(&[(1, 1)], [42, 0]).unwrap();
@@ -297,7 +290,7 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let counts = rooted_counts(10, &graph, a);
+        let counts = rooted_counts(10, 1, &graph, a);
         let drawer = WholeDrawer::new(&counts, &graph, a, Uniform);
 
         for s in 0..50_u64 {
@@ -314,7 +307,7 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let counts = rooted_counts(10, &graph, root);
+        let counts = rooted_counts(10, 1, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
         assert!(drawer.draw_batch(&[(1, 1)], [0, 0]).is_err());
@@ -337,7 +330,7 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let counts = rooted_counts(10, &graph, root);
+        let counts = rooted_counts(10, 1, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
         let result = drawer.draw_batch(&[(3, 5)], [1, 2]).unwrap();
@@ -350,7 +343,7 @@ mod tests {
         let root = graph.add(math::sym("a"));
         graph.rebuild();
 
-        let counts = rooted_counts(10, &graph, root);
+        let counts = rooted_counts(10, 1, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
         let terms = drawer.draw_batch(&[(1, 1)], [42, 0]).unwrap();
@@ -366,7 +359,7 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let counts = rooted_counts(10, &graph, a);
+        let counts = rooted_counts(10, 1, &graph, a);
         let drawer = WholeDrawer::new(&counts, &graph, a, Count);
 
         for s in 0..50_u64 {
@@ -390,7 +383,7 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let counts = rooted_counts(10, &graph, root);
+        let counts = rooted_counts(10, 1, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
         let result = drawer.draw_batch(&[(3, 5)], [1, 2]).unwrap();
@@ -415,7 +408,7 @@ mod tests {
         let root = graph.add(Math::Add([a1, b1]));
         graph.rebuild();
 
-        let counts = rooted_counts(10, &graph, root);
+        let counts = rooted_counts(10, 6, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
         let exact = drawer
@@ -442,7 +435,7 @@ mod tests {
         let root = graph.add(Math::Ln(a));
         graph.rebuild();
 
-        let counts = rooted_counts(10, &graph, root);
+        let counts = rooted_counts(10, 1, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
         let satisfiable = drawer
@@ -499,7 +492,7 @@ mod tests {
         graph.rebuild();
 
         let target_size = 13;
-        let counts = rooted_counts(target_size, &graph, cur);
+        let counts = rooted_counts(target_size, 28, &graph, cur);
         let root = graph.find(cur);
         // 16 terms through the deep `cos^12` spine + 12 narrow `cos^k(sin(ln^...))`
         // branches = 28 total terms of size 13.
@@ -525,7 +518,7 @@ mod tests {
 
     #[test]
     fn exhaustive_cyclic_draw_both_policies() {
-        // `a == b == (+ a b)` has 16 distinct terms of size 5.
+        // `a == b == (+ a b)` has 2 terms of size 1, 4 of size 3, and 16 of size 5 (22 total).
         let mut graph = EGraph::<Math, ()>::new(());
         let a = graph.add(math::sym("a"));
         let b = graph.add(math::sym("b"));
@@ -535,7 +528,7 @@ mod tests {
         graph.rebuild();
 
         let root = graph.find(apb);
-        let counts = rooted_counts(5, &graph, root);
+        let counts = rooted_counts(5, 22, &graph, root);
         assert_eq!(counts[&root][&5], BigUint::from(16u32));
 
         let count_terms = WholeDrawer::new(&counts, &graph, root, Count)
@@ -559,7 +552,7 @@ mod tests {
         // At root size 5, child sizes sum to 4 across 3 children:
         // (2,1,1), (1,2,1), (1,1,2) -> 3 splits.
         // Add a second leaf to each class so each size 1 has 2 terms and
-        // size 2 has 2 terms: total = 3 * (2 * 2 * 2) = 24 terms.
+        // size 2 has 2 terms: size 4 has 8 terms and size 5 has 24 (32 total).
         let mut graph = EGraph::<SymbolLang, ()>::new(());
         let mk_class = |eg: &mut EGraph<SymbolLang, ()>, p: &str, q: &str| {
             let l1 = eg.add(SymbolLang::leaf(p));
@@ -576,7 +569,7 @@ mod tests {
         graph.rebuild();
 
         let root = graph.find(root);
-        let counts = whole::count(&graph, root, 5);
+        let (_, counts) = whole::count(&graph, root, 5, 32).unwrap();
         assert_eq!(counts[&root][&5], BigUint::from(24u32));
 
         let count_terms = WholeDrawer::new(&counts, &graph, root, Count)

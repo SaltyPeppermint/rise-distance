@@ -11,9 +11,9 @@ use time::OffsetDateTime;
 
 use rise_distance::cli::{Measured, Policy};
 use rise_distance::eqsat::{self, EqsatConfig, EqsatResult};
-use rise_distance::langs::{AvailableLanguages, MyAnalysis, MyLanguage, diospyros, math, prop};
+use rise_distance::langs::{Lang, MyAnalysis, MyLanguage, math, prop};
 use rise_distance::origin::{self, OriginLang};
-use rise_distance::sampling::{AnalysisPackage, FrontierPackage, WholePackage};
+use rise_distance::sampling::{SamplePackage, FrontierPackage, WholePackage};
 use rise_distance::utils;
 
 #[derive(Parser)]
@@ -32,7 +32,7 @@ Example:
 struct Args {
     /// Language used for eqsat.
     #[arg(long)]
-    language: AvailableLanguages,
+    language: Lang,
 
     /// Start-term s-expression whose guide phase gets replayed.
     #[arg(long)]
@@ -50,6 +50,7 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     seed: u64,
 
+    // TODO: ACTUALLY USE THIS
     /// How much to grow `max_size` on each exact-size-search retry.
     #[arg(long, default_value_t = 2)]
     size_search_step: usize,
@@ -75,13 +76,10 @@ fn main() {
     eprintln!("Start Term: {}", args.start);
 
     match args.language {
-        AvailableLanguages::Diospyros => {
-            main_inner(&args, &diospyros::rules(false, false));
-        }
-        AvailableLanguages::Math => {
+        Lang::Math => {
             main_inner(&args, &math::rules());
         }
-        AvailableLanguages::Prop => {
+        Lang::Prop => {
             main_inner(&args, &prop::rules());
         }
     }
@@ -124,7 +122,7 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
 
     // Replay the guide phase under the effective limits the driver computed;
     // the replay ends at whichever limit trips first.
-    let result = eqsat::run_eqsat(&start, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
+    let result = eqsat::run(&start, rules.iter(), &args.eqsat).ok_or("Eqsat failed")?;
 
     eprintln!("DEBUG: PEAK RSS AFTER EQSAT: {}", utils::peak_rss_bytes());
     let stop_reason = format!("{:?}", result.stop_reason());
@@ -135,8 +133,8 @@ fn build_sample_record<L: MyLanguage, N: MyAnalysis<L>>(
     let peak_live_heap = result.peak_allocated();
     let nodes = result.curr().total_number_of_nodes();
     let classes = result.curr().classes().len();
-    let iters = result.data().len();
-    let time = result.data().iter().map(|i| i.total_time).sum();
+    let iters = result.iterations().len();
+    let time = result.iterations().iter().map(|i| i.total_time).sum();
     eprintln!(
         "Guide egraph (replay): {nodes} nodes, {classes} classes, \
          {final_live_heap} live-heap bytes"
@@ -171,7 +169,7 @@ fn build_frontier_samples<L: MyLanguage, N: MyAnalysis<L>>(
     seed_expr: &RecExpr<L>,
 ) -> Result<Vec<RecExpr<OriginLang<L>>>, String> {
     let start_size = AstSize.cost_rec(seed_expr);
-    let (max_size, package) = FrontierPackage::build_through_novel_sizes(
+    let (max_size, package) = FrontierPackage::build(
         result,
         start_size,
         args.size_search_steps,
@@ -202,7 +200,7 @@ fn build_whole_samples<L: MyLanguage, N: MyAnalysis<L>>(
     seed_expr: &RecExpr<L>,
 ) -> Result<Vec<RecExpr<OriginLang<L>>>, String> {
     let start_size = AstSize.cost_rec(seed_expr);
-    let (max_size, package) = WholePackage::build_through_sizes(
+    let (max_size, package) = WholePackage::build(
         result,
         start_size,
         args.size_search_steps,

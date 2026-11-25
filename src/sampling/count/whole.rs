@@ -8,28 +8,8 @@ use crate::utils::HashMap;
 /// Per-class size histograms keyed by canonical e-class id.
 pub(crate) type ClassHistograms = HashMap<Id, HashMap<usize, BigUint>>;
 
-/// Count distinct terms rooted at `root` through `max_size`.
-pub(crate) fn count<L: Language, N: Analysis<L>>(
-    egraph: &EGraph<L, N>,
-    root: Id,
-    max_size: usize,
-) -> ClassHistograms {
-    let budgets = RootBudgets::of_root(egraph, root, max_size);
-    count_rooted(egraph, &budgets)
-}
-
-/// Count distinct terms within pre-established root budgets.
-pub(super) fn count_rooted<L: Language, N: Analysis<L>>(
-    egraph: &EGraph<L, N>,
-    budgets: &RootBudgets,
-) -> ClassHistograms {
-    let mut dp = whole_dp_rooted(egraph, budgets);
-    dp.run(budgets.limit());
-    dp.into_data()
-}
-
 /// Create an unstepped whole-graph DP for the root budgets.
-pub(super) fn whole_dp_rooted<L: Language, N: Analysis<L>>(
+pub(super) fn dp<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     budgets: &RootBudgets,
 ) -> LayeredDp<Id> {
@@ -56,15 +36,15 @@ pub(super) fn whole_dp_rooted<L: Language, N: Analysis<L>>(
 /// # Errors
 ///
 /// Returns the total terms found when `cap` is exhausted below `min_extractable`.
-pub(crate) fn count_through_sizes<L: Language, N: Analysis<L>>(
+pub(crate) fn count<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     root: Id,
     cap: usize,
     min_extractable: usize,
 ) -> Result<(usize, ClassHistograms), BigUint> {
     let root = egraph.find(root);
-    let cap_budgets = RootBudgets::of_root(egraph, root, cap);
-    let mut dp = whole_dp_rooted(egraph, &cap_budgets);
+    let cap_budgets = RootBudgets::new(egraph, root, cap);
+    let mut dp = dp(egraph, &cap_budgets);
 
     let threshold = BigUint::from(min_extractable);
     let mut term_count = BigUint::ZERO;
@@ -76,7 +56,7 @@ pub(crate) fn count_through_sizes<L: Language, N: Analysis<L>>(
             term_count += count;
             if term_count >= threshold {
                 let mut counts = dp.into_data();
-                RootBudgets::of_root(egraph, root, size).prune_histograms(&mut counts, |c| c);
+                RootBudgets::new(egraph, root, size).prune_histograms(&mut counts, |c| c);
                 return Ok((size, counts));
             }
         }
@@ -101,7 +81,9 @@ mod tests {
         egraph.union(a, apb);
         egraph.rebuild();
 
-        let data = count(&egraph, apb, 10);
+        // Sizes 1, 3, 5 each have 1 term, so 3 terms reaches size 5.
+        let (used_size, data) = count(&egraph, apb, 10, 3).unwrap();
+        assert_eq!(used_size, 5);
         let root_data = &data[&egraph.find(apb)];
 
         assert_eq!(root_data[&5], 1usize.into());
@@ -119,7 +101,9 @@ mod tests {
         egraph.union(b, apb);
         egraph.rebuild();
 
-        let data = count(&egraph, apb, 10);
+        // Sizes 1 (2), 3 (4), 5 (16) sum to 22 terms through size 5.
+        let (used_size, data) = count(&egraph, apb, 10, 22).unwrap();
+        assert_eq!(used_size, 5);
 
         let root_data = &data[&egraph.find(apb)];
         assert_eq!(root_data[&5], 16usize.into());
@@ -138,7 +122,9 @@ mod tests {
         egraph.rebuild();
 
         let limit = 6;
-        let rooted = count(&egraph, root, limit);
+        // Root has 1 term at each size 2..=6 (5 total).
+        let (used_size, rooted) = count(&egraph, root, limit, 5).unwrap();
+        assert_eq!(used_size, limit);
 
         // x can spend at most limit - 1 through g; one term per size.
         let x_hist = &rooted[&egraph.find(a)];
@@ -169,7 +155,9 @@ mod tests {
         egraph.union(a, fa);
         egraph.rebuild();
 
-        let rooted = count(&egraph, root, 10);
+        // Root has 1 term at each size 5..=10 (6 total).
+        let (used_size, rooted) = count(&egraph, root, 10, 6).unwrap();
+        assert_eq!(used_size, 10);
 
         let mut x_sizes = rooted[&egraph.find(a)].keys().copied().collect::<Vec<_>>();
         x_sizes.sort_unstable();
@@ -197,9 +185,11 @@ mod tests {
         egraph.rebuild();
 
         let limit = 9;
-        let budgets = RootBudgets::of_root(&egraph, root, limit);
-        let mut dp = whole_dp_rooted(&egraph, &budgets);
-        dp.run(budgets.limit());
+        let budgets = RootBudgets::new(&egraph, root, limit);
+        let mut dp = dp(&egraph, &budgets);
+        for _ in 0..budgets.limit() {
+            dp.step();
+        }
 
         for (&id, per_node) in dp.suffix() {
             for (node, tables) in egraph[id].nodes.iter().zip(per_node) {

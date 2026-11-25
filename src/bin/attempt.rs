@@ -21,8 +21,8 @@ use egg::{Iteration, RecExpr, Rewrite};
 use serde::Serialize;
 
 use rise_distance::cli::Measured;
-use rise_distance::eqsat::{self, EqsatConfig, Goal, GuideError, ReachedRun};
-use rise_distance::langs::{AvailableLanguages, MyAnalysis, MyLanguage, diospyros, math, prop};
+use rise_distance::eqsat::{self, EqsatConfig, AttemptError, ReachedRun};
+use rise_distance::langs::{Lang, MyAnalysis, MyLanguage, math, prop};
 use rise_distance::origin::OriginLang;
 
 #[derive(Parser)]
@@ -41,7 +41,7 @@ Example:
 struct Args {
     /// Which language's rules to run under (from the folder's `problem_args.json`).
     #[arg(long)]
-    language: AvailableLanguages,
+    language: Lang,
 
     /// The goal as a lowered s-expression string.
     #[arg(long)]
@@ -69,9 +69,8 @@ fn main() {
     let args = Args::parse();
 
     match args.language {
-        AvailableLanguages::Diospyros => run(&args, &diospyros::rules(false, false)),
-        AvailableLanguages::Math => run(&args, &math::rules()),
-        AvailableLanguages::Prop => run(&args, &prop::rules()),
+        Lang::Math => run(&args, &math::rules()),
+        Lang::Prop => run(&args, &prop::rules()),
     }
     println!();
 }
@@ -82,19 +81,18 @@ fn run<L: MyLanguage, N: MyAnalysis<L>>(args: &Args, rules: &[Rewrite<L, N>]) {
         .goal
         .parse::<RecExpr<L>>()
         .unwrap_or_else(|e| panic!("Failed to parse goal term '{}': {e}", args.goal));
-    let goal = Goal::Expr(goal);
 
     let result = if args.is_guide {
         let guides: Vec<Vec<OriginLang<L>>> = serde_json::from_str(&args.start)
             .unwrap_or_else(|e| panic!("Failed to parse start guides '{}': {e}", args.start));
         let guides: Vec<RecExpr<OriginLang<L>>> = guides.into_iter().map(RecExpr::from).collect();
-        eqsat::guided_eqsat(&guides, &goal, rules, &args.eqsat, args.full_union)
+        eqsat::guided(&guides, &goal, rules, &args.eqsat, args.full_union)
     } else {
         let start_expr = args
             .start
             .parse::<RecExpr<L>>()
             .unwrap_or_else(|e| panic!("Failed to parse start term '{}': {e}", args.start));
-        eqsat::unguided_eqsat(&start_expr, &goal, rules, &args.eqsat)
+        eqsat::unguided(&start_expr, &goal, rules, &args.eqsat)
     };
 
     serde_json::to_writer(
@@ -150,8 +148,8 @@ impl AttemptSummary {
     }
 }
 
-impl<L: MyLanguage> From<Result<ReachedRun<L>, GuideError>> for AttemptSummary {
-    fn from(result: Result<ReachedRun<L>, GuideError>) -> Self {
+impl From<Result<ReachedRun, AttemptError>> for AttemptSummary {
+    fn from(result: Result<ReachedRun, AttemptError>) -> Self {
         match result {
             Ok(run) => Self::measured(
                 true,
@@ -162,7 +160,7 @@ impl<L: MyLanguage> From<Result<ReachedRun<L>, GuideError>> for AttemptSummary {
                 run.allocated,
                 run.peak_allocated,
             ),
-            Err(GuideError::Unreached {
+            Err(AttemptError::Unreached {
                 stop_reason,
                 iterations,
                 nodes,
@@ -178,7 +176,7 @@ impl<L: MyLanguage> From<Result<ReachedRun<L>, GuideError>> for AttemptSummary {
                 final_allocated,
                 peak_allocated,
             ),
-            Err(GuideError::PanicWhileAttempt) => Self {
+            Err(AttemptError::PanicWhileAttempt) => Self {
                 reached: false,
                 panic: true,
                 stop_reason: "panic".to_owned(),

@@ -124,7 +124,7 @@ pub enum DrawingError {
     InsufficientTerms,
 }
 
-pub trait AnalysisPackage<L: MyLanguage> {
+pub trait SamplePackage<L: MyLanguage> {
     /// Log the stats about the root into stderr.
     fn log_root_counts(&self) {
         let mut sorted_hist = self.root_histogram().iter().collect::<Vec<_>>();

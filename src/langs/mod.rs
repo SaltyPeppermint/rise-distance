@@ -1,7 +1,5 @@
-pub mod diospyros;
 pub mod lambda;
 pub mod math;
-pub mod mini_rise;
 pub mod prop;
 
 use std::fmt::Display;
@@ -49,8 +47,7 @@ impl<
 /// Which language the terms in a run folder are drawn from.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
-pub enum AvailableLanguages {
-    Diospyros,
+pub enum Lang {
     Math,
     Prop,
 }

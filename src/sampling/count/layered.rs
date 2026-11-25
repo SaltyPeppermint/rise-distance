@@ -156,12 +156,6 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
         size
     }
 
-    pub(super) fn run(&mut self, steps: usize) {
-        for _ in 0..steps {
-            self.step();
-        }
-    }
-
     #[must_use]
     pub(super) const fn data(&self) -> &HashMap<K, HashMap<usize, BigUint>> {
         &self.data

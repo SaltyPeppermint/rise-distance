@@ -14,7 +14,7 @@ pub mod langs;
 pub mod origin;
 mod previous;
 pub mod sampling;
-pub mod search;
+#[allow(dead_code, unused_imports)]
 mod sketch;
 pub mod utils;
 pub mod zs;

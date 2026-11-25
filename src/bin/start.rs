@@ -9,7 +9,7 @@ use serde::Serialize;
 use rise_distance::cli::Measured;
 use rise_distance::eqsat::EqsatConfig;
 use rise_distance::generator::{Samplable, SizeUniformSampler};
-use rise_distance::langs::{AvailableLanguages, MyAnalysis, MyLanguage, math, prop};
+use rise_distance::langs::{Lang, MyAnalysis, MyLanguage, math, prop};
 
 #[derive(Parser)]
 #[command(
@@ -36,7 +36,7 @@ struct Args {
 
     /// Language to sample terms from
     #[arg(long)]
-    language: AvailableLanguages,
+    language: Lang,
 
     /// Eqsat limits for this term's validity check.
     #[command(flatten)]
@@ -46,9 +46,8 @@ struct Args {
 fn main() {
     let args = Args::parse();
     let result = match args.language {
-        AvailableLanguages::Diospyros => unimplemented!("Dios has no sampler"),
-        AvailableLanguages::Math => run_one(&args, &args.eqsat, &math::rules()),
-        AvailableLanguages::Prop => run_one(&args, &args.eqsat, &prop::rules()),
+        Lang::Math => run_one(&args, &args.eqsat, &math::rules()),
+        Lang::Prop => run_one(&args, &args.eqsat, &prop::rules()),
     };
     serde_json::to_writer(std::io::stdout().lock(), &Measured::now(result)).unwrap();
     println!();

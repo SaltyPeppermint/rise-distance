@@ -8,7 +8,7 @@ bound every production counting phase.
 The relevant code is:
 
 - [src/sampling/count/budgets.rs](../../src/sampling/count/budgets.rs) —
-  `RootBudgets` and `RootBudgets::of_root`.
+  `RootBudgets` and `RootBudgets::new`.
 - [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) —
   `LayeredDp`.
 - [src/sampling/draw/whole.rs](../../src/sampling/draw/whole.rs) —

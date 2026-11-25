@@ -129,26 +129,15 @@ impl<L: Samplable> SizeUniformSampler<L> {
         }
     }
 
-    /// The exact size of every term this sampler produces.
-    #[must_use]
-    pub const fn target(&self) -> usize {
-        self.target
-    }
-
-    /// Approximate number of terms of size `target`.
-    #[must_use]
-    pub fn space_size(&self) -> f64 {
-        self.counts[self.target]
-    }
-
-    /// Draw one term of size exactly [`target`](Self::target), uniformly at
-    /// random among all terms of that size.
+    /// Draw one term of the sampler's target size, uniformly at random among
+    /// all terms of that size.
     pub fn sample<R: Rng>(&self, rng: &mut R) -> RecExpr<L> {
         self.gen_sized(rng, self.target)
     }
 
     /// Draw `count` terms. Terms may repeat; de-duplication is the caller's job.
-    pub fn sample_many<R: Rng>(&self, rng: &mut R, count: usize) -> Vec<RecExpr<L>> {
+    #[cfg(test)]
+    pub(crate) fn sample_many<R: Rng>(&self, rng: &mut R, count: usize) -> Vec<RecExpr<L>> {
         (0..count).map(|_| self.sample(rng)).collect()
     }
 
@@ -540,7 +529,7 @@ mod tests {
             .map(|expr| expr.to_string())
             .collect::<HashSet<_>>();
         let sampler = SizeUniformSampler::<Tiny>::new(TARGET, None);
-        assert_eq!(sampler.space_size(), expected.len() as f64);
+        assert_eq!(sampler.counts[TARGET], expected.len() as f64);
 
         let mut observed = HashMap::<String, usize>::default();
         let mut rng = ChaCha8Rng::seed_from_u64(0x5eed);

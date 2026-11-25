@@ -1,6 +1,6 @@
 # Root-restricted novel-size search and exact package construction
 
-`FrontierPackage::build_through_novel_sizes` finds the requested novel
+`FrontierPackage::build` finds the requested novel
 root sizes and builds all data needed for exact drawing without enumerating or
 counting classes, e-nodes, or current/previous pairs that the selected root
 cannot use.
@@ -29,33 +29,29 @@ the final size is selected:
 cap = start_size + search_steps
 
 prev_lookup = result.prev_index()
-cap_budgets = RootBudgets::of_root(curr, root, cap)
-matches = enumerate_matches_rooted(curr, prev_lookup, cap_budgets)
+cap_budgets = RootBudgets::new(curr, root, cap)
+matches = enumerate_matches(curr, prev_lookup, cap_budgets)
 drop(prev_lookup)
 
 step whole and joint LayeredDps layer by layer until cumulative
 novel(root, size) >= min_extractable (or cap is exhausted -> Err(cap))
 
-final_budgets = RootBudgets::of_root(curr, root, final_max_size)
+final_budgets = RootBudgets::new(curr, root, final_max_size)
 prune_matches(curr, matches, final_budgets)
 final_budgets.prune_histograms(whole)
 final_budgets.prune_histograms(joint)
 package = NovelTermCount::assemble(whole, joint, matches)
 ```
 
-`FrontierPackage::build(result, max_size)` already knows its final
-limit. It computes final budgets immediately, enumerates matches inside that
-domain, and builds the package without the cap scan.
-
 `start_size` and `search_steps` define only the scan cap. There
 is no retry schedule. On success, both the returned size and the package limit
 are the smallest novel root size at which the cumulative novel term count
 reaches `min_extractable`.
 
-`WholePackage::build_through_sizes` has the same shape with no previous
+`WholePackage::build` has the same shape with no previous
 boundary to subtract: it skips match enumeration entirely and scans
-`find_whole_root_size` over whole root counts, where every extractable term
-counts toward `min_extractable`.
+whole root counts, where every extractable term counts toward
+`min_extractable`.
 
 ## How `search_steps` drives memory
 
@@ -72,7 +68,7 @@ realization did not fit the old cap. The budget map is the domain of everything
 downstream.
 
 **The DP skeleton is allocated for that whole domain up front.**
-`whole_dp_rooted` builds `children_of` — canonical child ids per node — for
+`whole::dp` builds `children_of` — canonical child ids per node — for
 every budgeted class, and `LayeredDp::new` allocates one suffix table per node
 position for each of them, before a single layer is stepped.
 
@@ -82,7 +78,7 @@ classes active at *every* layer, early ones included, so both the retained
 histograms and the suffix tables grow denser per layer rather than just taller.
 
 **On the frontier path, match enumeration runs at the cap.**
-`enumerate_matches_rooted` visits every node whose minimum realization fits its
+`enumerate_matches` visits every node whose minimum realization fits its
 cap budget and retains the bottom-up cover fixpoint used to discover matches.
 That table is built against `cap_budgets` and is only narrowed by
 `prune_matches` *after* the scan has chosen `final_max_size`, so peak RSS
@@ -199,7 +195,7 @@ previous boundary.
 
 ## Diagnostics
 
-`build_through_novel_sizes` writes a diagnostic to its supplied log only when it
+`FrontierPackage::build` writes a diagnostic only when it
 cannot build a package with the requested number of novel sizes. A successful
 call does not write a structural or live-heap summary. Call `log_root_counts`
 explicitly after success when a sorted frontier-size histogram is needed.

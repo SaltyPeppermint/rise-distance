@@ -44,27 +44,6 @@ pub(crate) struct NovelTermCount {
 }
 
 impl NovelTermCount {
-    /// Build novel counts rooted at `root` through `max_size`.
-    ///
-    /// Drops `prev` immediately after match enumeration so peak memory does not
-    /// carry both the previous lookup and the counting DPs.
-    #[must_use]
-    pub(crate) fn build<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
-        curr: &EGraph<L, N>,
-        prev: P,
-        root: Id,
-        max_size: usize,
-    ) -> Self {
-        let budgets = RootBudgets::of_root(curr, root, max_size);
-        let matches = enumerate_matches_rooted(curr, &prev, &budgets);
-        drop(prev);
-
-        let whole = whole::count_rooted(curr, &budgets);
-        let mut joint = joint_dp_rooted(curr, &matches, &budgets);
-        joint.run(budgets.limit());
-        Self::assemble(whole, joint.into_data(), matches)
-    }
-
     /// Find the smallest root size `<= cap` that makes at least
     /// `min_extractable` novel terms available, returning `(max_size, counts)`
     /// pruned to `max_size`'s root budgets in a single DP pass.
@@ -73,7 +52,7 @@ impl NovelTermCount {
     ///
     /// Returns the total novel terms found when `cap` is exhausted below
     /// `min_extractable`.
-    pub(crate) fn build_through_sizes<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
+    pub(crate) fn build<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
         curr: &EGraph<L, N>,
         prev: P,
         root: Id,
@@ -81,12 +60,12 @@ impl NovelTermCount {
         min_extractable: usize,
     ) -> Result<(usize, Self), BigUint> {
         let root = curr.find(root);
-        let cap_budgets = RootBudgets::of_root(curr, root, cap);
-        let mut matches = enumerate_matches_rooted(curr, &prev, &cap_budgets);
+        let cap_budgets = RootBudgets::new(curr, root, cap);
+        let mut matches = enumerate_matches(curr, &prev, &cap_budgets);
         drop(prev);
 
-        let mut whole = whole::whole_dp_rooted(curr, &cap_budgets);
-        let mut joint = joint_dp_rooted(curr, &matches, &cap_budgets);
+        let mut whole = whole::dp(curr, &cap_budgets);
+        let mut joint = joint_dp(curr, &matches, &cap_budgets);
         let root_pairs = matches
             .iter()
             .filter(|&(&(c, _), _)| c == root)
@@ -118,7 +97,7 @@ impl NovelTermCount {
                 if term_count >= threshold {
                     let mut whole_data = whole.into_data();
                     let mut joint_data = joint.into_data();
-                    let final_budgets = RootBudgets::of_root(curr, root, size);
+                    let final_budgets = RootBudgets::new(curr, root, size);
                     prune_matches(curr, &mut matches, &final_budgets);
                     final_budgets.prune_histograms(&mut whole_data, |c| c);
                     final_budgets.prune_histograms(&mut joint_data, |(c, _)| c);
@@ -147,12 +126,6 @@ impl NovelTermCount {
             matches,
             data,
         }
-    }
-
-    /// Novel histograms keyed by canonical current ids.
-    #[must_use]
-    pub(crate) const fn data(&self) -> &HashMap<Id, HashMap<usize, BigUint>> {
-        &self.data
     }
 
     /// Shared-term histogram for a canonical current/previous class pair.
@@ -188,7 +161,7 @@ impl NovelTermCount {
 
 /// Enumerate matches usable from the current root within its size limit.
 /// Previous classes are not root-filtered.
-fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
+fn enumerate_matches<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
     curr: &EGraph<L, N>,
     prev: &P,
     budgets: &RootBudgets,
@@ -273,7 +246,7 @@ type PairChildren = HashMap<(Id, Id), Vec<Vec<(Id, Id)>>>;
 
 /// Create an unstepped joint-DP where each `(curr, prev)` pair inherits its
 /// current class's root budget.
-fn joint_dp_rooted<L: Language, N: Analysis<L>>(
+fn joint_dp<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     matches: &NodeMatches,
     rooted: &RootBudgets,
@@ -342,9 +315,10 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let novel = NovelTermCount::build(&graph, &graph, a, 5);
+        let found = NovelTermCount::build(&graph, &graph, a, 5, 1)
+            .expect_err("expected zero novel terms");
 
-        assert!(novel.data().is_empty(), "expected empty novel data");
+        assert_eq!(found, BigUint::ZERO);
     }
 
     #[test]
@@ -362,20 +336,25 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let novel = NovelTermCount::build(&curr, &prev, root, 5);
+        let (used_size, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1)
+            .expect("expected one novel term at size 2");
+        assert_eq!(used_size, 2);
 
         // The merged a/b class at size 1 has 2 extractions in curr; only "a"
         // is extractable from prev's a-class and only "b" from prev's b-class
         // -> non_novel = 2, novel = 0.
         let ab_class = curr.find(a);
-        assert!(novel.data().get(&ab_class).is_none_or(HashMap::is_empty));
+        assert!(novel.novel_histogram(ab_class).is_none_or(HashMap::is_empty));
         let _ = b;
 
         // Root: 2 extractions in curr (ln(a), ln(b)). ln(a) is extractable
         // from prev's ln(a); ln(b) is not extractable from any prev class
         // (prev had no ln(b)). So novel = 1.
         let root_canon = curr.find(root);
-        assert_eq!(novel.data()[&root_canon][&2], BigUint::from(1u32));
+        assert_eq!(
+            novel.novel_histogram(root_canon).unwrap()[&2],
+            BigUint::from(1u32)
+        );
     }
 
     #[test]
@@ -394,12 +373,17 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let novel = NovelTermCount::build(&curr, &prev, root, 5);
+        let (used_size, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1)
+            .expect("expected novel terms at size 3");
+        assert_eq!(used_size, 3);
 
         let root_canon = curr.find(root);
         // Whole at size 3 = 4 (aa, ab, ba, bb). Only Add(a, b) was in prev.
         // So novel = 4 - 1 = 3.
-        assert_eq!(novel.data()[&root_canon][&3], BigUint::from(3u32));
+        assert_eq!(
+            novel.novel_histogram(root_canon).unwrap()[&3],
+            BigUint::from(3u32)
+        );
     }
 
     #[test]
@@ -411,8 +395,8 @@ mod tests {
         curr.rebuild();
         let prev = curr.clone();
 
-        let budgets = RootBudgets::of_root(&curr, root, 3);
-        let matches = enumerate_matches_rooted(&curr, &prev, &budgets);
+        let budgets = RootBudgets::new(&curr, root, 3);
+        let matches = enumerate_matches(&curr, &prev, &budgets);
         let root = curr.find(root);
         assert!(matches.keys().any(|(c, _)| *c == root));
     }
@@ -427,8 +411,8 @@ mod tests {
         curr.rebuild();
         let prev = curr.clone();
 
-        let budgets = RootBudgets::of_root(&curr, root, 2);
-        let matches = enumerate_matches_rooted(&curr, &prev, &budgets);
+        let budgets = RootBudgets::new(&curr, root, 2);
+        let matches = enumerate_matches(&curr, &prev, &budgets);
 
         assert!(!matches.keys().any(|(c, _)| *c == curr.find(unreachable)));
         assert!(!matches.keys().any(|(c, _)| *c == curr.find(b)));
@@ -446,10 +430,10 @@ mod tests {
         curr.rebuild();
         let root = curr.find(a);
 
-        let cap_budgets = RootBudgets::of_root(&curr, root, 3);
-        let mut matches = enumerate_matches_rooted(&curr, &prev, &cap_budgets);
+        let cap_budgets = RootBudgets::new(&curr, root, 3);
+        let mut matches = enumerate_matches(&curr, &prev, &cap_budgets);
         let before = matches.values().map(Vec::len).sum::<usize>();
-        let final_budgets = RootBudgets::of_root(&curr, root, 1);
+        let final_budgets = RootBudgets::new(&curr, root, 1);
         prune_matches(&curr, &mut matches, &final_budgets);
         let after = matches.values().map(Vec::len).sum::<usize>();
 
@@ -472,8 +456,8 @@ mod tests {
         curr.rebuild();
         let root = curr.find(a);
 
-        let budgets = RootBudgets::of_root(&curr, root, 1);
-        let matches = enumerate_matches_rooted(&curr, &prev, &budgets);
+        let budgets = RootBudgets::new(&curr, root, 1);
+        let matches = enumerate_matches(&curr, &prev, &budgets);
         let previous_classes = matches
             .iter()
             .filter(|((c, _), _)| *c == root)

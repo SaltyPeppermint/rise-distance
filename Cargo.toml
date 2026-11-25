@@ -12,7 +12,6 @@ crate-type = ["rlib"]
 clap = { version = "4", features = ["derive"] }
 egg = { path = "vendor/egg", version = "0.11", features = ["serde-1", "lp"] }
 hashbrown = { version = "0.17", features = ["serde"] }
-lexpr = "0.2"
 tikv-jemallocator = "0.6"
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 procfs = "0.18"
@@ -27,9 +26,6 @@ strum = { version = "0.28", features = ["derive"] }
 thiserror = "2"
 time = { version = "0.3", features = ["local-offset"] }
 foldhash = "0.2"
-
-[dev-dependencies]
-assert_approx_eq = "1"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -94,11 +90,3 @@ path = "src/bin/attempt.rs"
 [[bin]]
 name = "start"
 path = "src/bin/start.rs"
-
-[[bin]]
-name = "rise"
-path = "src/bin/rise.rs"
-
-[[bin]]
-name = "diospyros"
-path = "src/bin/diospyros.rs"

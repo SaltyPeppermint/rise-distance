@@ -9,7 +9,7 @@ use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::novel::{NodeMatch, NovelTermCount};
-use crate::sampling::draw::{self, AnalysisPackage, DrawCursor, Drawer, DrawingError, SampledTrie};
+use crate::sampling::draw::{self, SamplePackage, DrawCursor, Drawer, DrawingError, SampledTrie};
 use crate::sampling::weigher::{Choice, Weigher};
 use crate::utils::{self, HashMap};
 
@@ -182,7 +182,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>> FrontierDrawer<'a, 'g, L, N> {
 
 impl<L: MyLanguage, N: MyAnalysis<L>> Drawer<L> for FrontierDrawer<'_, '_, L, N> {
     fn root_histogram(&self) -> Option<&HashMap<usize, BigUint>> {
-        self.counts.data().get(&self.root)
+        self.counts.novel_histogram(self.root)
     }
 
     fn draw_next(
@@ -237,23 +237,12 @@ pub struct FrontierPackage<L: MyLanguage, N: MyAnalysis<L>> {
 }
 
 impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
-    /// Build counts through `max_size` relative to the previous boundary.
-    /// Returns `None` for an empty frontier.
-    #[must_use]
-    pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<FrontierPackage<L, N>> {
-        let prev = result.prev_index();
-        let (egraph, root) = result.into_curr();
-        let root = egraph.find(root);
-        let counts = NovelTermCount::build(&egraph, prev, root, max_size);
-        Self::from_counts(egraph, root, counts)
-    }
-
     fn from_counts(
         egraph: EGraph<L, N>,
         root: Id,
         counts: NovelTermCount,
     ) -> Option<FrontierPackage<L, N>> {
-        counts.data().get(&root)?;
+        counts.novel_histogram(root)?;
         Some(FrontierPackage {
             egraph,
             counts,
@@ -270,7 +259,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
     /// # Errors
     ///
     /// Returns the cap if the scan or package finds too few novel terms.
-    pub fn build_through_novel_sizes(
+    pub fn build(
         result: EqsatResult<L, N>,
         start_size: usize,
         search_steps: usize,
@@ -281,7 +270,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         let (egraph, root) = result.into_curr();
         let root = egraph.find(root);
 
-        let (max_size, counts) = match NovelTermCount::build_through_sizes(
+        let (max_size, counts) = match NovelTermCount::build(
             &egraph,
             prev,
             root,
@@ -306,7 +295,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L> for FrontierPackage<L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> SamplePackage<L> for FrontierPackage<L, N> {
     /// Novel root-term counts by size.
     ///
     /// # Panics
@@ -314,8 +303,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L> for FrontierPackage<L, 
     /// Panics if package construction violated its root-histogram invariant.
     fn root_histogram(&self) -> &HashMap<usize, BigUint> {
         self.counts
-            .data()
-            .get(&self.root)
+            .novel_histogram(self.root)
             .expect("root histogram present iff build returned Some")
     }
 
@@ -339,7 +327,7 @@ mod tests {
     use Weigher::{Count, Uniform};
 
     #[test]
-    fn build_through_novel_sizes_runs_analysis_at_kth_novel_size() {
+    fn build_runs_analysis_at_kth_novel_size() {
         // Unioning `a` with the root of (+ a b) creates a cycle: the root
         // class extracts a, (+ a b), (+ (+ a b) b), ... (sizes 1, 3, 5, ...).
         // `a` and (+ a b) already exist in prev, so the novel sizes are
@@ -358,8 +346,8 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let (used_max_size, package) = FrontierPackage::build_through_novel_sizes(result, 3, 10, 3)
-            .expect("build_through_novel_sizes should succeed");
+        let (used_max_size, package) = FrontierPackage::build(result, 3, 10, 3)
+            .expect("build should succeed");
 
         assert_eq!(used_max_size, 9);
         let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
@@ -389,7 +377,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let novel = NovelTermCount::build(&curr, &prev, root, 5);
+        let (_, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1).unwrap();
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..50_u64 {
@@ -414,7 +402,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let novel = NovelTermCount::build(&curr, &prev, root, 5);
+        let (_, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1).unwrap();
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..100_u64 {
@@ -430,14 +418,25 @@ mod tests {
 
     #[test]
     fn independent_frontier_possible_size_excludes_old_terms() {
-        let mut graph = EGraph::<Math, ()>::new(());
-        let a = graph.add(math::sym("a"));
-        graph.rebuild();
+        // prev: a, b, ln(a) with a == ln(a) (so size 1 is old).
+        // curr: also union(a, b) so ln(b) is novel at size 2, while size 1
+        // only contains old leaves.
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
+        let root = curr.add(Math::Ln(a));
+        curr.union(a, root);
+        curr.rebuild();
+        let prev = curr.clone();
 
-        let novel = NovelTermCount::build(&graph, &graph, a, 5);
-        let drawer = FrontierDrawer::new(&novel, &graph, a, Count);
+        curr.union(a, b);
+        curr.rebuild();
+
+        let (_, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1).unwrap();
+        let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         assert!(drawer.draw_batch(&[(1, 1)], [0, 0]).is_err());
+        assert!(drawer.draw_batch(&[(2, 1)], [0, 0]).is_ok());
     }
 
     #[test]
@@ -458,8 +457,8 @@ mod tests {
         curr.rebuild();
 
         let root = curr.find(root);
-        let novel = NovelTermCount::build(&curr, &prev, root, 5);
-        assert_eq!(novel.data()[&root][&3], BigUint::from(8u32));
+        let (_, novel) = NovelTermCount::build(&curr, &prev, root, 5, 8).unwrap();
+        assert_eq!(novel.novel_histogram(root).unwrap()[&3], BigUint::from(8u32));
 
         let count_terms = FrontierDrawer::new(&novel, &curr, root, Count)
             .draw_batch(&[(3, 8)], [4, 2])
@@ -522,9 +521,10 @@ mod tests {
 
         let root = curr.find(cur);
         let target_size = 11;
-        let novel = NovelTermCount::build(&curr, &prev, root, target_size);
+        let (_, novel) =
+            NovelTermCount::build(&curr, &prev, root, target_size, 26).unwrap();
         // 16 deep `cos^10(n_i)` + 10 narrow `cos^k(sin(ln^...))` = 26 novel terms.
-        assert_eq!(novel.data()[&root][&target_size], BigUint::from(26u32));
+        assert_eq!(novel.novel_histogram(root).unwrap()[&target_size], BigUint::from(26u32));
 
         let uniform_first = FrontierDrawer::new(&novel, &curr, root, Uniform)
             .draw_batch(&[(target_size, 26)], [17, 19])

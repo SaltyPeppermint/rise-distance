@@ -2,8 +2,8 @@ use std::iter;
 use std::time::Duration;
 
 use egg::{
-    Analysis, AstSize, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language, RecExpr,
-    Rewrite, Runner, StopReason,
+    Analysis, BackoffScheduler, EGraph, Id, Iteration, IterationData, Language, RecExpr, Rewrite,
+    Runner, StopReason,
 };
 use serde::{Deserialize, Serialize};
 use strum::Display;
@@ -12,23 +12,14 @@ use thiserror::Error;
 use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::{self, OriginLang};
 use crate::previous::PrevIndex;
-use crate::sketch::{self, Sketch};
 use crate::utils::{self, HashMap, HashSet};
 
 /// Prefix of the machine-readable eqsat progress events written to stderr,
 /// to avoid confusion with human-intended logging
 pub const EVENT_PREFIX: &str = "@EQSAT";
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct EqsatMetadata {
-    pub nodes: usize,
-    pub classes: usize,
-    pub time: f64,
-    pub iters: usize,
-}
-
 #[derive(Debug, Error, Display, Serialize, Clone)]
-pub enum GuideError {
+pub enum AttemptError {
     Unreached {
         stop_reason: StopReason,
         iterations: Vec<Iteration<()>>,
@@ -38,25 +29,6 @@ pub enum GuideError {
         peak_allocated: u64,
     },
     PanicWhileAttempt,
-}
-
-impl EqsatMetadata {
-    /// Summarize an iteration log. Sizes come from its final entry and `iters`
-    /// is the last applied iteration index (`len() - 1`).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `iterations` is empty (a runner always logs at least one).
-    #[must_use]
-    pub fn from_iterations<D>(iterations: &[Iteration<D>]) -> Self {
-        let last = iterations.last().expect("eqsat run logged no iterations");
-        Self {
-            nodes: last.egraph_nodes,
-            classes: last.egraph_classes,
-            time: iterations.iter().map(|i| i.total_time).sum(),
-            iters: iterations.len() - 1,
-        }
-    }
 }
 
 /// Eqsat limits and shared `--max-*` CLI arguments.
@@ -154,11 +126,6 @@ impl<L: Language, N: Analysis<L>> EqsatResult<L, N> {
     }
 
     #[must_use]
-    pub const fn root(&self) -> Id {
-        self.root
-    }
-
-    #[must_use]
     pub const fn curr(&self) -> &EGraph<L, N> {
         &self.curr
     }
@@ -175,14 +142,8 @@ impl<L: Language, N: Analysis<L>> EqsatResult<L, N> {
 
     /// Per-iteration metadata, starting with the initial e-graph iteration.
     #[must_use]
-    pub fn data(&self) -> &[Iteration<Boundary>] {
+    pub fn iterations(&self) -> &[Iteration<Boundary>] {
         &self.iter_data
-    }
-
-    /// Index of the last applied iteration (`iter_data.len() - 1`).
-    #[must_use]
-    pub const fn iters(&self) -> usize {
-        self.iter_data.len() - 1
     }
 
     #[must_use]
@@ -206,17 +167,6 @@ impl<L: Language, N: Analysis<L>> EqsatResult<L, N> {
     #[must_use]
     pub fn into_curr(self) -> (EGraph<L, N>, Id) {
         (self.curr, self.root)
-    }
-
-    /// Summarize the run using the rebuilt final e-graph's size.
-    #[must_use]
-    pub fn metadata(&self) -> EqsatMetadata {
-        EqsatMetadata {
-            nodes: self.curr.total_number_of_nodes(),
-            classes: self.curr.classes().len(),
-            time: self.iter_data.iter().map(|i| i.total_time).sum(),
-            iters: self.iters(),
-        }
     }
 }
 
@@ -253,7 +203,7 @@ const MIN_ITERS: usize = 3;
 /// # Panics
 ///
 /// Panics if the runner omits its required stop reason.
-pub fn run_eqsat<'a, L, N, R>(
+pub fn run<'a, L, N, R>(
     start: &RecExpr<L>,
     rules: R,
     config: &EqsatConfig,
@@ -323,41 +273,22 @@ where
     })
 }
 
-/// A concrete expression or a set of sketches to reach at the root.
-#[derive(Clone)]
-pub enum Goal<L: MyLanguage> {
-    Expr(RecExpr<L>),
-    Sketches(Sketch<L>),
-}
-
-impl<L: MyLanguage> Goal<L> {
-    /// Whether the canonical root reaches this goal.
-    /// Sketch lookup requires a rebuilt e-graph.
-    fn reached<N: Analysis<L>>(&self, egraph: &EGraph<L, N>, root: Id) -> bool {
-        let root = egraph.find(root);
-        match self {
-            Goal::Expr(e) => egraph
-                .lookup_expr(e)
-                .is_some_and(|e| egraph.find(e) == root),
-            Goal::Sketches(sketch) => sketch::eclass_contains(sketch, egraph, root),
-        }
-    }
-
-    fn extract<N: Analysis<L>>(&self, egraph: &EGraph<L, N>, root: Id) -> Option<RecExpr<L>> {
-        self.reached(egraph, root).then_some({
-            match self {
-                Goal::Expr(rec_expr) => rec_expr.clone(),
-                Goal::Sketches(sketch) => sketch::eclass_extract(sketch, AstSize, egraph, root)?.1,
-            }
-        })
-    }
+/// Whether the canonical root reaches `goal`.
+fn goal_reached<L: MyLanguage, N: Analysis<L>>(
+    goal: &RecExpr<L>,
+    egraph: &EGraph<L, N>,
+    root: Id,
+) -> bool {
+    let root = egraph.find(root);
+    egraph
+        .lookup_expr(goal)
+        .is_some_and(|e| egraph.find(e) == root)
 }
 
 /// Outputs from a reached run, including the rebuilt final e-graph size.
 #[derive(Serialize)]
-pub struct ReachedRun<L: MyLanguage> {
+pub struct ReachedRun {
     pub iterations: Vec<Iteration<()>>,
-    pub target: RecExpr<L>,
     pub nodes: usize,
     pub classes: usize,
     /// Final process live heap.
@@ -371,18 +302,18 @@ pub struct ReachedRun<L: MyLanguage> {
 ///
 /// # Errors
 ///
-/// Returns [`GuideError`] if the goal is unreached or the run panics.
+/// Returns [`AttemptError`] if the goal is unreached or the run panics.
 ///
 /// # Panics
 ///
 /// Panics if `guides` is empty.
-pub fn guided_eqsat<L: MyLanguage, N: MyAnalysis<L>>(
+pub fn guided<L: MyLanguage, N: MyAnalysis<L>>(
     guides: &[RecExpr<OriginLang<L>>],
-    goal: &Goal<L>,
+    goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     eqsat: &EqsatConfig,
     full_union: bool,
-) -> Result<ReachedRun<L>, GuideError> {
+) -> Result<ReachedRun, AttemptError> {
     assert!(!guides.is_empty(), "must have at least one guide");
 
     let runner = eqsat.build_runner();
@@ -399,12 +330,12 @@ pub fn guided_eqsat<L: MyLanguage, N: MyAnalysis<L>>(
 
 /// Run single-seed eqsat until `goal` is reached or a limit stops the run.
 #[expect(clippy::missing_errors_doc)]
-pub fn unguided_eqsat<L: MyLanguage, N: MyAnalysis<L>>(
+pub fn unguided<L: MyLanguage, N: MyAnalysis<L>>(
     start: &RecExpr<L>,
-    goal: &Goal<L>,
+    goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     eqsat: &EqsatConfig,
-) -> Result<ReachedRun<L>, GuideError> {
+) -> Result<ReachedRun, AttemptError> {
     let runner = eqsat.build_runner().with_expr(start);
     run_until_goal(runner, goal, rules, format_args!("start term: {start:?}"))
 }
@@ -413,16 +344,16 @@ pub fn unguided_eqsat<L: MyLanguage, N: MyAnalysis<L>>(
 /// the run, then report the final e-graph.
 fn run_until_goal<L: MyLanguage, N: MyAnalysis<L>>(
     mut runner: Runner<L, N, ()>,
-    goal: &Goal<L>,
+    goal: &RecExpr<L>,
     rules: &[Rewrite<L, N>],
     context: std::fmt::Arguments,
-) -> Result<ReachedRun<L>, GuideError> {
+) -> Result<ReachedRun, AttemptError> {
     let goal_clone = goal.clone();
     runner.hooks.insert(
         0,
         Box::new(move |r: &mut Runner<L, N, ()>| {
             let root = r.roots[0];
-            if goal_clone.reached(&r.egraph, root) {
+            if goal_reached(&goal_clone, &r.egraph, root) {
                 return Err("goal found".to_owned());
             }
             Ok(())
@@ -433,24 +364,23 @@ fn run_until_goal<L: MyLanguage, N: MyAnalysis<L>>(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(rules)))
     else {
         eprintln!("Panic caught during verification for {context}");
-        return Err(GuideError::PanicWhileAttempt);
+        return Err(AttemptError::PanicWhileAttempt);
     };
     let memory = runner
         .final_memory_report()
         .expect("configured runner has final memory report");
     runner.egraph.rebuild();
     let root = runner.roots[0];
-    if let Some(target) = goal.extract(&runner.egraph, root) {
+    if goal_reached(goal, &runner.egraph, root) {
         Ok(ReachedRun {
             iterations: runner.iterations,
-            target,
             nodes: runner.egraph.total_number_of_nodes(),
             classes: runner.egraph.classes().len(),
             allocated: memory.final_reading,
             peak_allocated: memory.peak_reading,
         })
     } else {
-        Err(GuideError::Unreached {
+        Err(AttemptError::Unreached {
             stop_reason: runner.stop_reason.clone().unwrap(),
             iterations: runner.iterations,
             nodes: runner.egraph.total_number_of_nodes(),
@@ -551,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn run_eqsat_reconstructs_the_boundary_before_trailing_noop() {
+    fn run_reconstructs_the_boundary_before_trailing_noop() {
         let start: RecExpr<Math> = "a".parse().unwrap();
         let rules = [
             egg::rewrite!("a-to-b"; "a" => "b"),
@@ -565,7 +495,7 @@ mod tests {
             print_success_iters: false,
         };
 
-        let result = run_eqsat::<Math, (), _>(&start, rules.iter(), &config)
+        let result = run::<Math, (), _>(&start, rules.iter(), &config)
             .expect("three boundary states should produce a previous index");
         let union_event_count = result.curr().union_event_count();
         let prev = result.prev_index();
@@ -595,7 +525,7 @@ mod tests {
     #[test]
     fn verify_reachability_enforces_memory_limit() {
         let guide: RecExpr<OriginLang<Math>> = "x".parse().unwrap();
-        let goal = Goal::Expr("definitely_unreachable".parse().unwrap());
+        let goal = "definitely_unreachable".parse().unwrap();
         let config = EqsatConfig {
             max_iters: 100,
             max_nodes: usize::MAX,
@@ -605,10 +535,10 @@ mod tests {
         };
 
         let result =
-            guided_eqsat::<Math, ConstantFold>(&[guide], &goal, &math::rules(), &config, false);
+            guided::<Math, ConstantFold>(&[guide], &goal, &math::rules(), &config, false);
         assert!(matches!(
             result,
-            Err(GuideError::Unreached {
+            Err(AttemptError::Unreached {
                 stop_reason: StopReason::MemoryLimit(observed),
                 ..
             }) if observed > 0
@@ -618,7 +548,7 @@ mod tests {
     #[test]
     fn unguided_reachability_canonicalizes_a_stale_root() {
         let seed = "(+ x 0)".parse().unwrap();
-        let goal = Goal::Expr("x".parse().unwrap());
+        let goal = "x".parse().unwrap();
         let config = EqsatConfig {
             max_iters: 10,
             max_nodes: 10_000,
@@ -627,7 +557,7 @@ mod tests {
             print_success_iters: false,
         };
 
-        let result = unguided_eqsat::<Math, ConstantFold>(&seed, &goal, &math::rules(), &config);
+        let result = unguided::<Math, ConstantFold>(&seed, &goal, &math::rules(), &config);
         assert!(
             result.is_ok(),
             "(+ x 0) and x share the root e-class even after x becomes its representative"

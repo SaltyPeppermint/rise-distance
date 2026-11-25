@@ -76,7 +76,7 @@ root-filtered.
 #### Pseudocode
 
 ```
-function enumerate_matches_rooted(curr, prev, budgets):
+function enumerate_matches(curr, prev, budgets):
     cover   : Map<curr_class, Set<prev_class>> = empty
     matches : Map<(curr_class, node_idx), List<NodeMatch>> = empty
 
@@ -339,7 +339,7 @@ We prove two statements together by induction on `size`:
 
 ### Base case (size 1, leaves)
 
-**(A)** A size-1 candidate in `construct_inside(c, 1, pc)` is a leaf node `n ∈ c` with a match `m` such that `m.prev_class = pc`. By construction of `enumerate_matches_rooted`, such a match exists iff `prev.lookup(n) = pc`. So the drawn term is a leaf `n` with `prev.lookup(n) = pc`. ✓
+**(A)** A size-1 candidate in `construct_inside(c, 1, pc)` is a leaf node `n ∈ c` with a match `m` such that `m.prev_class = pc`. By construction of `enumerate_matches`, such a match exists iff `prev.lookup(n) = pc`. So the drawn term is a leaf `n` with `prev.lookup(n) = pc`. ✓
 
 **(N)** A size-1 candidate in `construct_outside(c, 1)` is a leaf node `n ∈ c` whose empty profile `[]` does not complete any match — i.e., no leaf match exists for `n`. By the same construction, this means `prev.lookup(n) = None`. ✓
 
@@ -354,7 +354,7 @@ The chosen profile `(a_1, …, a_k)` and the IHs determine each `t_i`:
 - If `a_i = None`: by IH (N), `prev.lookup(t_i) = None`. But we just said `prev.lookup(t_i) = q_i`, a concrete prev class. Contradiction unless every `a_i ≠ None`.
 - If `a_i = Some(pc_i)`: by IH (A), `prev.lookup(t_i) = pc_i`. So `q_i = pc_i`.
 
-Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. Because this is a real recursive drawing query, `c`, its node, and every `c_i` fit the shared root budgets. The cartesian product loop in [`enumerate_matches_rooted`](../../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
+Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. Because this is a real recursive drawing query, `c`, its node, and every `c_i` fit the shared root budgets. The cartesian product loop in [`enumerate_matches`](../../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
 
 (The `cover_of` exposed to the drawer is a subset of match enumeration's internal cover — rooted joint counting drops `(c, pc)` pairs whose histogram is empty within the class budget. That's harmless here: any `q_i` reached by a real drawn child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `FrontierDrawer` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
 
@@ -443,13 +443,11 @@ asserts.
 ## 6. API summary
 
 ```rust
-// Fixed size limit; `None` for an empty frontier.
-let package = FrontierPackage::build(result, max_size)?;
-// Or: scan for the smallest limit with at least `min_extractable` novel terms.
+// Scan for the smallest limit with at least `min_extractable` novel terms.
 let (max_size, package) =
-    FrontierPackage::build_through_novel_sizes(result, start_size, search_steps, min_extractable)?;
+    FrontierPackage::build(result, start_size, search_steps, min_extractable)?;
 
-// `AnalysisPackage` trait: spread `count` draws over the root sizes, then draw.
+// `SamplePackage` trait: spread `count` draws over the root sizes, then draw.
 let terms = package.draw_samples(count, policy, seed)?;
 ```
 

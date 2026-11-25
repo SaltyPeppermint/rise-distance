@@ -71,7 +71,7 @@ impl RootBudgets {
     }
 
     /// Compute canonical class budgets and minima for a root and size limit.
-    pub(super) fn of_root<L: Language, N: Analysis<L>>(
+    pub(super) fn new<L: Language, N: Analysis<L>>(
         egraph: &EGraph<L, N>,
         root: Id,
         limit: usize,

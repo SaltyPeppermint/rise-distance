@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use crate::utils::HashMap;
 
-pub use draw::{AnalysisPackage, FrontierPackage, WholePackage};
+pub use draw::{SamplePackage, FrontierPackage, WholePackage};
 
 /// Add the convolution of `a` and `b` (capped at `budget`) into `out`.
 fn convolve_into(
