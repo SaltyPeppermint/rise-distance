@@ -99,7 +99,7 @@ where
             egraph
                 // Get all the eclasses with a matching node
                 .classes_for_op(&inner_node.discriminant())
-                .map(|potential_ids| {
+                .map_or_default(|potential_ids| {
                     let mut node_to_child_indices = inner_node.clone();
                     node_to_child_indices
                         .children_mut()
@@ -146,7 +146,6 @@ where
                         })
                         .collect()
                 })
-                .unwrap_or_default()
         }
         SketchLang::Contains(inner_sketch_id) => {
             let contained_matches = rec_extract(
