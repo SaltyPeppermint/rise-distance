@@ -22,7 +22,9 @@ impl Samplable for Prop {
 }
 
 fn default_symbols() -> Vec<Prop> {
-    (0..20)
+    const DEFAULT_VAR_COUNT: usize = 20;
+
+    (0..DEFAULT_VAR_COUNT)
         .map(|i| Prop::Symbol(format!("x{i}").into()))
         .collect()
 }

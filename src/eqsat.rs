@@ -104,7 +104,7 @@ pub struct EqsatResult<L: Language, N: Analysis<L>> {
 impl<L: Language, N: Analysis<L>> EqsatResult<L, N> {
     /// Construct a test result with a known previous-boundary marker.
     #[cfg(test)]
-    pub(crate) fn new_for_tests(
+    pub(crate) const fn new_for_tests(
         curr: EGraph<L, N>,
         root: Id,
         prev_raw_node_count: usize,
@@ -141,8 +141,8 @@ impl<L: Language, N: Analysis<L>> EqsatResult<L, N> {
 
     /// Per-iteration metadata, starting with the initial e-graph iteration.
     #[must_use]
-    pub fn iterations(&self) -> &[Iteration<Boundary>] {
-        &self.iter_data
+    pub const fn iterations(&self) -> &[Iteration<Boundary>] {
+        self.iter_data.as_slice()
     }
 
     #[must_use]
@@ -152,13 +152,13 @@ impl<L: Language, N: Analysis<L>> EqsatResult<L, N> {
 
     /// Final process live heap while the final e-graph was alive.
     #[must_use]
-    pub fn allocated(&self) -> u64 {
+    pub const fn allocated(&self) -> u64 {
         self.allocated
     }
 
     /// Peak process live heap during the run.
     #[must_use]
-    pub fn peak_allocated(&self) -> u64 {
+    pub const fn peak_allocated(&self) -> u64 {
         self.peak_allocated
     }
 
@@ -569,10 +569,11 @@ mod tests {
     #[test]
     fn readings_include_heap_held_before_the_runner_existed() {
         const BYTES: usize = 32 * 1024 * 1024;
+        const PAGE_SIZE: usize = 4096;
         let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut held = vec![0_u8; BYTES];
-        for byte in held.iter_mut().step_by(4096) {
+        for byte in held.iter_mut().step_by(PAGE_SIZE) {
             *byte = 1;
         }
         let runner = Runner::<Math, ConstantFold>::new_with_memory_tracker(
@@ -624,13 +625,14 @@ mod tests {
     #[test]
     fn live_heap_tracks_allocations() {
         const BYTES: usize = 512 * 1024 * 1024; // 512 MiB
+        const PAGE_SIZE: usize = 4096;
         let _guard = HEAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let before = utils::live_heap_bytes();
 
         // Touch every page so the allocation is real, then drop it.
         let mut buf = vec![0u8; BYTES];
-        for i in (0..BYTES).step_by(4096) {
+        for i in (0..BYTES).step_by(PAGE_SIZE) {
             buf[i] = 1;
         }
         std::hint::black_box(&buf);

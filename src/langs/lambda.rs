@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn lambda_ematching_bench() {
-        let exprs = &[
+        const EXPRS: &[&str] = &[
             "(let zeroone (lam x
             (if (= (var x) 0)
                 0
@@ -397,7 +397,7 @@ mod tests {
             (app (var fib) 4))",
         ];
 
-        let extra_patterns = &[
+        const EXTRA_PATTERNS: &[&str] = &[
             "(if (= (var ?x) ?e) ?then ?else)",
             "(+ (+ ?a ?b) ?c)",
             "(let ?v (fix ?v ?e) ?e)",
@@ -418,7 +418,7 @@ mod tests {
             "(lam ?fresh (let ?v1 ?e (let ?v2 (var ?fresh) ?body)))",
         ];
 
-        egg::test::bench_egraph("lambda", rules(), exprs, extra_patterns);
+        egg::test::bench_egraph("lambda", rules(), EXPRS, EXTRA_PATTERNS);
     }
 
     #[test]

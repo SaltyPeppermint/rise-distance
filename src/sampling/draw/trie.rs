@@ -19,7 +19,7 @@ pub(crate) struct DrawCursor<'a> {
 }
 
 impl<'a> DrawCursor<'a> {
-    pub(super) fn new(sampled: &'a mut SampledTrie, rng: &'a mut ChaCha12Rng) -> Self {
+    pub(super) const fn new(sampled: &'a mut SampledTrie, rng: &'a mut ChaCha12Rng) -> Self {
         Self {
             sampled,
             node: TrieNodeId::ROOT,
@@ -82,8 +82,8 @@ impl SampledTrie {
         }
     }
 
-    fn has_children(&self, node: TrieNodeId) -> bool {
-        !matches!(self.nodes[node.0].children, TrieChildren::Empty)
+    const fn has_children(&self, node: TrieNodeId) -> bool {
+        !matches!(self.nodes.as_slice()[node.0].children, TrieChildren::Empty)
     }
 
     fn used(&self, node: TrieNodeId, key: usize) -> u64 {

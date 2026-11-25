@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::origin::OriginLang;
-use crate::sampling;
+use crate::sampling::{self, INLINE_ARITY};
 use crate::sampling::count::whole;
 use crate::sampling::draw::{self, SamplePackage, DrawCursor, Drawer, DrawingError, SampledTrie};
 use crate::sampling::weigher::{Choice, Weigher};
@@ -37,7 +37,7 @@ impl<'a, 'b, L: Language, N: Analysis<L>> WholeDrawer<'a, 'b, L, N> {
 
     /// The counted histograms of a nodes children or `None` if any
     /// child were not counted => 0
-    fn child_hists(&self, node: &L) -> Option<SmallVec<[&HashMap<usize, BigUint>; 2]>> {
+    fn child_hists(&self, node: &L) -> Option<SmallVec<[&HashMap<usize, BigUint>; INLINE_ARITY]>> {
         node.children()
             .iter()
             .map(|&c| self.counts.get(&self.graph.find(c)))

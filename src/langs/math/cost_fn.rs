@@ -2,6 +2,9 @@ use egg::{CostFunction, Id, Language};
 
 use super::Math;
 
+const CHEAP: usize = 1;
+const EXPENSIVE: usize = 100;
+
 pub struct DiffIntExpensive;
 impl CostFunction<Math> for DiffIntExpensive {
     type Cost = usize;
@@ -10,8 +13,8 @@ impl CostFunction<Math> for DiffIntExpensive {
         C: FnMut(Id) -> Self::Cost,
     {
         let op_cost = match enode {
-            Math::Diff(..) | Math::Integral(..) => 100,
-            _ => 1,
+            Math::Diff(..) | Math::Integral(..) => EXPENSIVE,
+            _ => CHEAP,
         };
         enode.fold(op_cost, |sum, i| sum + costs(i))
     }
@@ -25,8 +28,8 @@ impl CostFunction<Math> for DiffIntCheap {
         C: FnMut(Id) -> Self::Cost,
     {
         let op_cost = match enode {
-            Math::Diff(..) | Math::Integral(..) => 1,
-            _ => 100,
+            Math::Diff(..) | Math::Integral(..) => CHEAP,
+            _ => EXPENSIVE,
         };
         enode.fold(op_cost, |sum, i| sum + costs(i))
     }
@@ -40,8 +43,8 @@ impl CostFunction<Math> for AddExpensive {
         C: FnMut(Id) -> Self::Cost,
     {
         let op_cost = match enode {
-            Math::Add(..) => 100,
-            _ => 1,
+            Math::Add(..) => EXPENSIVE,
+            _ => CHEAP,
         };
         enode.fold(op_cost, |sum, i| sum + costs(i))
     }
@@ -54,8 +57,8 @@ impl CostFunction<Math> for AddCheap {
         C: FnMut(Id) -> Self::Cost,
     {
         let op_cost = match enode {
-            Math::Add(..) => 1,
-            _ => 100,
+            Math::Add(..) => CHEAP,
+            _ => EXPENSIVE,
         };
         enode.fold(op_cost, |sum, i| sum + costs(i))
     }
@@ -69,8 +72,8 @@ impl CostFunction<Math> for SillyCheap {
         C: FnMut(Id) -> Self::Cost,
     {
         let op_cost = match enode {
-            Math::SillyAdd(..) => 1,
-            _ => 100,
+            Math::SillyAdd(..) => CHEAP,
+            _ => EXPENSIVE,
         };
         enode.fold(op_cost, |sum, i| sum + costs(i))
     }
@@ -84,8 +87,8 @@ impl CostFunction<Math> for TinyConstant {
         C: FnMut(Id) -> Self::Cost,
     {
         let op_cost = match enode {
-            Math::TinyConst(_) => 1,
-            _ => 100,
+            Math::TinyConst(_) => CHEAP,
+            _ => EXPENSIVE,
         };
         enode.fold(op_cost, |sum, i| sum + costs(i))
     }

@@ -26,7 +26,7 @@ pub fn find_min_zs<L: Language, CF: EditCosts<L>, I: Iterator<Item = RecExpr<L>>
         let running = best.as_ref().map_or(usize::MAX, |v: &(_, usize)| v.1);
 
         if candidate_flat.size().abs_diff(ref_size) > running {
-            return (best, stats + ZSStats::size_pruned());
+            return (best, stats + ZSStats::SIZE_PRUNED);
         }
 
         let distance = tree_distance_with_ref(&candidate_flat, &ref_pp, costs);
@@ -35,7 +35,7 @@ pub fn find_min_zs<L: Language, CF: EditCosts<L>, I: Iterator<Item = RecExpr<L>>
             .flatten()
             .min_by_key(|v| v.1);
 
-        (best, stats + ZSStats::compared())
+        (best, stats + ZSStats::COMPARED)
     })
 }
 
@@ -52,21 +52,17 @@ pub struct ZSStats {
 }
 
 impl ZSStats {
-    pub(crate) const fn size_pruned() -> Self {
-        Self {
-            trees_enumerated: 1,
-            size_pruned: 1,
-            full_comparisons: 0,
-        }
-    }
+    pub(crate) const SIZE_PRUNED: Self = Self {
+        trees_enumerated: 1,
+        size_pruned: 1,
+        full_comparisons: 0,
+    };
 
-    pub(crate) const fn compared() -> Self {
-        Self {
-            trees_enumerated: 1,
-            size_pruned: 0,
-            full_comparisons: 1,
-        }
-    }
+    pub(crate) const COMPARED: Self = Self {
+        trees_enumerated: 1,
+        size_pruned: 0,
+        full_comparisons: 1,
+    };
 }
 
 impl std::ops::Add for ZSStats {
@@ -164,18 +160,18 @@ impl<'a, L> PreprocessedTree<'a, L> {
     }
 
     /// Returns the postorder index of the leftmost leaf descendant of node i
-    fn leftmost_leaf(&self, i: usize) -> usize {
-        self.nodes[i].leftmost_leaf
+    const fn leftmost_leaf(&self, i: usize) -> usize {
+        self.nodes.as_slice()[i].leftmost_leaf
     }
 
     /// Returns the label of node i
-    fn label(&self, i: usize) -> &L {
-        self.nodes[i].label
+    const fn label(&self, i: usize) -> &L {
+        self.nodes.as_slice()[i].label
     }
 
     /// Returns the keyroots of the tree (nodes that start new subproblems)
-    fn keyroots(&self) -> &[usize] {
-        &self.keyroots
+    const fn keyroots(&self) -> &[usize] {
+        self.keyroots.as_slice()
     }
 }
 
@@ -348,8 +344,8 @@ pub struct FlatTree<L> {
 }
 
 impl<L> FlatTree<L> {
-    pub fn children(&self) -> &[FlatTree<L>] {
-        &self.children
+    pub const fn children(&self) -> &[FlatTree<L>] {
+        self.children.as_slice()
     }
 
     pub const fn label(&self) -> &L {

@@ -41,7 +41,7 @@ impl<L> Grammar<L> {
     ///
     /// `ops[k]` holds the operators of arity `k`, so `ops[0]` are the leaves.
     #[must_use]
-    pub fn new(ops: Vec<Vec<L>>, vars: Vec<L>, binder: Vec<L>) -> Self {
+    pub const fn new(ops: Vec<Vec<L>>, vars: Vec<L>, binder: Vec<L>) -> Self {
         Self { ops, vars, binder }
     }
 
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn binder_counts_include_each_valid_variable_choice() {
-        let expected = [
+        const EXPECTED: [f64; 16] = [
             5.0,
             20.0,
             209.0,
@@ -416,8 +416,8 @@ mod tests {
             1_327_641_834_673_817.0,
             17_077_796_005_488_284.0,
         ];
-        let (counts, _, _) = count_terms(&Math::grammar(None), expected.len());
-        assert_eq!(&counts[1..], expected);
+        let (counts, _, _) = count_terms(&Math::grammar(None), EXPECTED.len());
+        assert_eq!(&counts[1..], EXPECTED);
     }
 
     define_language! {

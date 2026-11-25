@@ -89,11 +89,13 @@ trait Drawer<L: Language> {
     /// Panics if the root has no extractable terms under this drawer's
     /// constraints.
     fn smallest(&self) -> RecExpr<OriginLang<L>> {
+        const SMALLEST_SEED: [u64; 2] = [0, 0];
+
         let size = *self
             .root_histogram()
             .and_then(|h| h.keys().min())
             .expect("root has at least one extractable term");
-        self.draw_batch(&[(size, 1)], [0, 0])
+        self.draw_batch(&[(size, 1)], SMALLEST_SEED)
             .expect("smallest size has at least one term")
             .pop()
             .expect("batch of one returns one term")

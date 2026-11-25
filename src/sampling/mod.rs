@@ -13,6 +13,9 @@ use crate::utils::HashMap;
 
 pub use draw::{SamplePackage, FrontierPackage, WholePackage};
 
+/// Inline `SmallVec` capacity for per-node child slices (most operators are unary or binary).
+pub(crate) const INLINE_ARITY: usize = 2;
+
 /// Add the convolution of `a` and `b` (capped at `budget`) into `out`.
 fn convolve_into(
     a: &HashMap<usize, BigUint>,
@@ -136,7 +139,7 @@ fn greedy_distribute_alloc(count: usize, histogram: &HashMap<usize, BigUint>) ->
 
 /// Cartesian product over an iterator of per-slot option iterators.
 /// For zero slots, returns `[[]]` (a single empty combination).
-fn cartesian_product<T, S, I>(slots: I) -> Vec<SmallVec<[T; 2]>>
+fn cartesian_product<T, S, I>(slots: I) -> Vec<SmallVec<[T; INLINE_ARITY]>>
 where
     T: Copy,
     S: IntoIterator<Item = T>,

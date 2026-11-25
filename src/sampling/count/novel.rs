@@ -10,14 +10,14 @@ use super::budgets::RootBudgets;
 use super::layered::LayeredDp;
 use super::whole;
 use crate::previous::PreviousLookup;
-use crate::sampling;
+use crate::sampling::{self, INLINE_ARITY};
 use crate::utils::{HashMap, HashSet};
 
 /// A current e-node's match in the previous e-graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct NodeMatch {
     pub(crate) prev_class: Id,
-    pub(crate) prev_children: SmallVec<[Id; 2]>,
+    pub(crate) prev_children: SmallVec<[Id; INLINE_ARITY]>,
 }
 
 /// Per `(curr_class, node_idx)`: every match of that e-node in prev.
@@ -180,7 +180,7 @@ fn enumerate_matches<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
                         .children()
                         .iter()
                         .map(|&child| curr.find(child))
-                        .collect::<SmallVec<[Id; 2]>>();
+                        .collect::<SmallVec<[Id; INLINE_ARITY]>>();
                     (c, idx, node, children)
                 })
         })
@@ -196,7 +196,7 @@ fn enumerate_matches<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
             let Some(slots) = child_canons
                 .iter()
                 .map(|child| cover.get(child).map(|set| set.iter().copied()))
-                .collect::<Option<SmallVec<[_; 2]>>>()
+                .collect::<Option<SmallVec<[_; INLINE_ARITY]>>>()
             else {
                 continue;
             };

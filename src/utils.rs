@@ -8,6 +8,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 
 // Deterministic HashMap and HashSet
+const DEFAULT_HASH_STATE: FixedState = FixedState::with_seed(0);
 #[expect(clippy::disallowed_types, reason = "defines the safe crate wide type")]
 pub(crate) type HashMap<K, V> = hashbrown::HashMap<K, V, FixedState>;
 #[expect(clippy::disallowed_types, reason = "defines the safe crate wide type")]
@@ -70,12 +71,19 @@ pub(crate) struct UniqueQueue<T> {
     queue: VecDeque<T>,
 }
 
-impl<T> Default for UniqueQueue<T> {
-    fn default() -> Self {
+impl<T> UniqueQueue<T> {
+    #[must_use]
+    pub(crate) const fn new() -> Self {
         Self {
-            set: HashSet::default(),
+            set: HashSet::with_hasher(DEFAULT_HASH_STATE),
             queue: VecDeque::new(),
         }
+    }
+}
+
+impl<T> Default for UniqueQueue<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -112,11 +120,14 @@ impl<T: Eq + Hash + Clone> UniqueQueue<T> {
 }
 
 pub(crate) fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
-    const { assert!(N >= 1 && N <= 4, "must provide 1 to 4 u64 values") };
+    const SEED_BYTES: usize = 32;
+    const WORD_BYTES: usize = size_of::<u64>();
+    const MAX_WORDS: usize = SEED_BYTES / WORD_BYTES;
+    const { assert!(N >= 1 && N <= MAX_WORDS, "must provide 1 to 4 u64 values") };
 
-    let mut seed = [0u8; 32];
+    let mut seed = [0u8; SEED_BYTES];
     for (i, v) in values.iter().enumerate() {
-        seed[i * 8..(i + 1) * 8].copy_from_slice(&v.to_le_bytes());
+        seed[i * WORD_BYTES..(i + 1) * WORD_BYTES].copy_from_slice(&v.to_le_bytes());
     }
     ChaCha12Rng::from_seed(seed)
 }
@@ -131,10 +142,10 @@ pub(crate) struct ExprHashCons<L> {
 
 impl<L> ExprHashCons<L> {
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         ExprHashCons {
             node_store: Vec::new(),
-            memo: HashMap::default(),
+            memo: HashMap::with_hasher(DEFAULT_HASH_STATE),
         }
     }
 }

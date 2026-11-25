@@ -16,6 +16,7 @@
 //! what makes the two peaks comparable. The driver owns the search loop and its
 //! early stop.
 
+use std::borrow::Cow;
 use std::fmt::Display;
 
 use clap::Parser;
@@ -116,7 +117,7 @@ struct AttemptSummary {
     reached: bool,
     panic: bool,
     /// `goal_found`, `panic`, or egg's `StopReason` as `{:?}` (`NodeLimit(1000)`).
-    stop_reason: String,
+    stop_reason: Cow<'static, str>,
     iters: Option<usize>,
     nodes: Option<usize>,
     classes: Option<usize>,
@@ -130,9 +131,22 @@ struct AttemptSummary {
 }
 
 impl AttemptSummary {
+    const PANIC: Self = Self {
+        reached: false,
+        panic: true,
+        stop_reason: Cow::Borrowed("panic"),
+        iters: None,
+        nodes: None,
+        classes: None,
+        total_applied: None,
+        total_time: None,
+        final_live_heap: None,
+        peak_live_heap: None,
+    };
+
     fn measured(
         reached: bool,
-        stop_reason: String,
+        stop_reason: Cow<'static, str>,
         iterations: &[Iteration<()>],
         nodes: usize,
         classes: usize,
@@ -159,7 +173,7 @@ impl From<Result<ReachedRun, AttemptError>> for AttemptSummary {
         match result {
             Ok(run) => Self::measured(
                 true,
-                "goal_found".to_owned(),
+                Cow::Borrowed("goal_found"),
                 &run.iterations,
                 run.nodes,
                 run.classes,
@@ -175,25 +189,14 @@ impl From<Result<ReachedRun, AttemptError>> for AttemptSummary {
                 peak_allocated,
             }) => Self::measured(
                 false,
-                format!("{stop_reason:?}"),
+                Cow::Owned(format!("{stop_reason:?}")),
                 &iterations,
                 nodes,
                 classes,
                 final_allocated,
                 peak_allocated,
             ),
-            Err(AttemptError::PanicWhileAttempt) => Self {
-                reached: false,
-                panic: true,
-                stop_reason: "panic".to_owned(),
-                iters: None,
-                nodes: None,
-                classes: None,
-                total_applied: None,
-                total_time: None,
-                final_live_heap: None,
-                peak_live_heap: None,
-            },
+            Err(AttemptError::PanicWhileAttempt) => Self::PANIC,
         }
     }
 }

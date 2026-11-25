@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::origin::OriginLang;
-use crate::sampling;
+use crate::sampling::{self, INLINE_ARITY};
 use crate::sampling::count::novel::{NodeMatch, NovelTermCount};
 use crate::sampling::draw::{self, SamplePackage, DrawCursor, Drawer, DrawingError, SampledTrie};
 use crate::sampling::weigher::{Choice, Weigher};
@@ -52,7 +52,7 @@ impl<'a, 'g, L: Language, N: Analysis<L>> FrontierDrawer<'a, 'g, L, N> {
         &self,
         curr: Id,
         node_idx: usize,
-        child_states: SmallVec<[State; 2]>,
+        child_states: SmallVec<[State; INLINE_ARITY]>,
         child_budget: usize,
     ) -> Option<Branch<'_>> {
         let child_hists = self.graph[curr].nodes[node_idx]
@@ -61,7 +61,7 @@ impl<'a, 'g, L: Language, N: Analysis<L>> FrontierDrawer<'a, 'g, L, N> {
             .copied()
             .zip(child_states.iter().copied())
             .map(|(child, state)| self.histogram(child, state))
-            .collect::<Option<SmallVec<[_; 2]>>>()?;
+            .collect::<Option<SmallVec<[_; INLINE_ARITY]>>>()?;
         let count = sampling::convolve_at(&child_hists, child_budget)?;
         Some(Branch {
             node_idx,
@@ -211,9 +211,9 @@ enum State {
 /// One feasible root-production/profile choice at a `(class, size, state)`.
 struct Branch<'a> {
     node_idx: usize,
-    child_states: SmallVec<[State; 2]>,
+    child_states: SmallVec<[State; INLINE_ARITY]>,
     count: BigUint,
-    child_hists: SmallVec<[&'a HashMap<usize, BigUint>; 2]>,
+    child_hists: SmallVec<[&'a HashMap<usize, BigUint>; INLINE_ARITY]>,
 }
 
 fn completes_some_match(profile: &[State], matches: &[NodeMatch]) -> bool {

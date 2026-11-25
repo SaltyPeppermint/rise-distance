@@ -20,9 +20,13 @@ pub type Constant = Ratio<BigInt>;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct TinyConstVal(pub Constant);
 
+impl TinyConstVal {
+    const PREFIX: &str = "tinyconst_";
+}
+
 impl std::fmt::Display for TinyConstVal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "tinyconst_{}", self.0)
+        write!(f, "{}{}", Self::PREFIX, self.0)
     }
 }
 
@@ -30,7 +34,7 @@ impl std::str::FromStr for TinyConstVal {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let rest = s
-            .strip_prefix("tinyconst_")
+            .strip_prefix(Self::PREFIX)
             .ok_or_else(|| format!("not a tinyconst: {s}"))?;
         let c: Constant = rest.parse().map_err(|e| format!("{e}"))?;
         Ok(TinyConstVal(c))
@@ -166,9 +170,11 @@ fn is_not_zero(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst
 
 #[must_use]
 pub fn silly_rules() -> Vec<Rewrite<Math, ConstantFold>> {
+    const SILLY_BOUND: f64 = 0.000_000_1;
+
     let mut r = rules();
-    r.push(silly_add(0.000_000_1));
-    r.push(tiny_constant(0.000_000_1));
+    r.push(silly_add(SILLY_BOUND));
+    r.push(tiny_constant(SILLY_BOUND));
     r
 }
 
@@ -456,7 +462,7 @@ mod tests {
 
     #[test]
     fn math_ematching_bench() {
-        let exprs = &[
+        const EXPRS: &[&str] = &[
             "(i (ln x) x)",
             "(i (+ x (cos x)) x)",
             "(i (* (cos x) x) x)",
@@ -466,7 +472,7 @@ mod tests {
             "(/ 1 (- (/ (+ 1 (sqrt five)) 2) (/ (- 1 (sqrt five)) 2)))",
         ];
 
-        let extra_patterns = &[
+        const EXTRA_PATTERNS: &[&str] = &[
             "(+ ?a (+ ?b ?c))",
             "(+ (+ ?a ?b) ?c)",
             "(* ?a (* ?b ?c))",
@@ -501,7 +507,7 @@ mod tests {
             "(- (* ?a (i ?b ?x)) (i (* (d ?x ?a) (i ?b ?x)) ?x))",
         ];
 
-        egg::test::bench_egraph("math", rules(), exprs, extra_patterns);
+        egg::test::bench_egraph("math", rules(), EXPRS, EXTRA_PATTERNS);
     }
 
     #[test]
