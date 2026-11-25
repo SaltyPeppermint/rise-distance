@@ -124,9 +124,3 @@ impl SampledTrie {
         child
     }
 }
-
-impl Default for SampledTrie {
-    fn default() -> Self {
-        Self::new()
-    }
-}

@@ -124,14 +124,14 @@ pub(crate) fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
 /// hash consed storage for expressions,
 /// cheap replacement for garbage collected expressions
 #[derive(Debug, Clone)]
-pub struct ExprHashCons<L> {
+pub(crate) struct ExprHashCons<L> {
     node_store: Vec<L>,
     memo: HashMap<L, usize>,
 }
 
 impl<L> ExprHashCons<L> {
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         ExprHashCons {
             node_store: Vec::new(),
             memo: HashMap::default(),
@@ -174,13 +174,7 @@ impl<L: Language> ExprHashCons<L> {
     }
 }
 
-impl<L> Default for ExprHashCons<L> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub fn stack_children<L: Language>(children: &[RecExpr<L>], root: L) -> RecExpr<L> {
+pub(crate) fn stack_children<L: Language>(children: &[RecExpr<L>], root: L) -> RecExpr<L> {
     let mut i = 0;
     root.map_children(|_c| {
         let new_id = Id::from(i);
