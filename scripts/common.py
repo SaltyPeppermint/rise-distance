@@ -316,6 +316,7 @@ async def run_json_subprocess(
     limit: PrioritySlot,
     max_rss_bytes: int | None = None,
     timeout: float | None = None,
+    stdin: bytes | None = None,
 ) -> Measured:
     """Run a JSON child and return its payload plus its peak RSS.
 
@@ -338,13 +339,13 @@ async def run_json_subprocess(
         started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *(prefix_rss_cap(cmd, max_rss_bytes) if max_rss_bytes else cmd),
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         try:
             async with asyncio.timeout(timeout):
-                out, err = await proc.communicate()
+                out, err = await proc.communicate(stdin)
         except (asyncio.CancelledError, TimeoutError) as stopped:
             # Cancelling or timing out only unwinds the *read*, so the child has to be killed by hand.
             # `systemd-run --scope` execs the workload in place rather than forking,
@@ -421,6 +422,7 @@ async def measure_attempt(
     limit: PrioritySlot,
     timeout: float | None = None,
     timeout_reason: str = "timeout",
+    stdin: bytes | None = None,
 ) -> AttemptResult:
     """Run one `attempt` process under the RSS cap and the hard timeout.
 
@@ -431,7 +433,12 @@ async def measure_attempt(
     """
     try:
         measured = await run_json_subprocess(
-            cmd, what=what, max_rss_bytes=max_rss_bytes, limit=limit, timeout=timeout
+            cmd,
+            what=what,
+            max_rss_bytes=max_rss_bytes,
+            limit=limit,
+            timeout=timeout,
+            stdin=stdin,
         )
     except ArgTooLong as too_long:
         log(f"WARNING: {too_long}")

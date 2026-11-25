@@ -46,13 +46,14 @@ async def run_unguided_pair(
     cmd = [
         str(args.attempt_bin),
         *base_flags,
-        *cli_flags(start=pair.start, goal=pair.goal),
+        *cli_flags(goal=pair.goal),
     ]
     attempt = await measure_attempt(
         cmd,
         what=f"unguided attempt for goal term {pair.goal!r}",
         max_rss_bytes=args.max_rss_bytes,
         limit=limit,
+        stdin=pair.start.encode(),
     )
     summary = attempt.summary
     return {

@@ -91,7 +91,7 @@ fn main() {
 /// Build one language-specific seed's sample record and print it as JSON.
 fn main_inner<L, N>(args: &Args, rules: &[Rewrite<L, N>])
 where
-    L: Language + FromOp<Error: Display> + Display + Serialize,
+    L: Language + FromOp<Error: Display> + Display,
     N: Analysis<L> + Default,
 {
     eprintln!(
@@ -156,8 +156,8 @@ where
         utils::peak_rss_bytes()
     );
     Ok(Samples {
-        samples: samples.clone().into_iter().map(|e| e.to_vec()).collect(),
-        samples_s_expr: samples.into_iter().map(origin::lower).collect(),
+        samples_s_expr: samples.iter().cloned().map(origin::lower).collect(),
+        samples,
         nodes,
         classes,
         iters,
@@ -232,12 +232,11 @@ fn build_whole_samples<L: Language, N: Analysis<L>>(
         .map_err(|e| format!("policy {policy} failed to draw samples: {e}"))
 }
 
-/// For Serialization purposes we have to go via Vec instead of using `RecExpr`
 #[derive(Serialize, Debug, Clone)]
-#[serde(bound(serialize = "L: Language + Display + Serialize"))]
+#[serde(bound(serialize = "L: Language + Display"))]
 #[expect(clippy::struct_field_names)]
 struct Samples<L> {
-    samples: Vec<Vec<OriginLang<L>>>,
+    samples: Vec<RecExpr<OriginLang<L>>>,
     samples_s_expr: Vec<RecExpr<L>>,
     /// The guide-phase replay's egraph and run, which the samples are drawn from.
     nodes: usize,

@@ -234,11 +234,14 @@ async def run_attempt(
     """Measure what the unguided start->goal search actually costs."""
     cmd = [
         str(args.attempt_bin),
-        *cli_flags(language=args.language, start=pair["start"], goal=pair["goal"]),
+        *cli_flags(language=args.language, goal=pair["goal"]),
         *flags,
     ]
     measured = await run_json_subprocess(
-        cmd, what=f"attempt for goal {pair['goal']!r}", limit=limit
+        cmd,
+        what=f"attempt for goal {pair['goal']!r}",
+        limit=limit,
+        stdin=pair["start"].encode(),
     )
     return {**pair, **attempt_summary(measured.payload), "peak_rss": measured.peak_rss}
 

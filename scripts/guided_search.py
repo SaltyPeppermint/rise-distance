@@ -192,15 +192,15 @@ class SearchArgs(ReplayArgs):
 class SearchNode:
     """Node in the search tree.
 
-    `guide` is the guide's node array, `s_expr` its lowered term that `sample`
-    draws from next. The root has the start term and no guide. `terminal` marks
-    a node drawn from a saturated egraph.
+    `guide` is the origin-annotated guide s-expression, `s_expr` its lowered
+    term that `sample` draws from next. The root has the start term and no
+    guide. `terminal` marks a node drawn from a saturated egraph.
     """
 
     node_id: int
     parent_id: int | None
     depth: int
-    guide: list | None
+    guide: str | None
     s_expr: str
     terminal: bool = False
 
@@ -218,7 +218,7 @@ class Tries:
 class Expansion:
     """A `sample` process's pool and cost."""
 
-    children: tuple[tuple[list, str], ...]
+    children: tuple[tuple[str, str], ...]
     status: Literal[
         "ok",
         "empty_pool",
@@ -515,10 +515,9 @@ class SearchFrontier(ABC):
 
         children = []
         for guide, s_expr in expansion.children:
-            key = json.dumps(guide)
-            if key in self._seen:
+            if guide in self._seen:
                 continue
-            self._seen.add(key)
+            self._seen.add(guide)
             children.append(
                 SearchNode(
                     next(self._ids),
@@ -653,7 +652,6 @@ async def search_pair(
             *cli_flags(
                 goal=pair.goal,
                 is_guide=True,
-                start=json.dumps([node.guide for node in batch]),
                 full_union=args.full_union,
             ),
         ]
@@ -671,6 +669,7 @@ async def search_pair(
             limit=limit,
             timeout=deadline if by_budget else args.max_attempt_time,
             timeout_reason="budget_exhausted" if by_budget else "timeout",
+            stdin=json.dumps([node.guide for node in batch], separators=(",", ":")).encode(),
         )
         budget.charge(attempt.wall_time)
         trace.attempts.append(

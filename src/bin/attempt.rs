@@ -2,10 +2,10 @@
 //! reachability.
 //!
 //! Stateless — no guide egraph replay or samples construction.
-//! `guided_search.py` spawns this once per attempt, passing everything on argv:
-//! the goal via `--goal` and, with `--is-guide`, that attempt's guides as a JSON
-//! array of [`OriginLang`] node arrays via `--start`. Without `--is-guide` the
-//! same flag takes a plain s-expression and the run is the unguided baseline.
+//! `guided_search.py` spawns this once per attempt, passing `--goal` on argv
+//! and the start input on stdin: with `--is-guide`, a JSON array of
+//! origin-annotated [`OriginLang`] s-expressions; without `--is-guide`, a plain
+//! s-expression for the unguided baseline.
 //! Prints the run's [`AttemptSummary`] as the `payload` of a [`Measured`] envelope.
 //!
 //! One attempt per process is deliberate: the peak RSS reported in the
@@ -18,10 +18,11 @@
 
 use std::borrow::Cow;
 use std::fmt::Display;
+use std::io::{self, BufReader};
 
 use clap::Parser;
 use egg::{Analysis, FromOp, Iteration, Language, RecExpr, Rewrite};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use rise_distance::cli::Measured;
 use rise_distance::eqsat::{self, AttemptError, EqsatConfig, ReachedRun};
@@ -32,12 +33,12 @@ use rise_distance::origin::OriginLang;
 #[command(
     about = "Run one attempt: union a set of guides, saturate, report reachability",
     after_help = "\
-With `--is-guide`, `--start` is one attempt's guides as a JSON array of guide
-node arrays. Otherwise `--start` is a plain s-expression. The result is printed
-as a JSON object.
+Reads the start input from stdin: with `--is-guide`, a JSON array of
+origin-annotated s-expressions; otherwise a plain s-expression. The result is
+printed as a JSON object.
 
 Example:
-  attempt --language math --goal '(+ x 0)' --start 'x' \\
+  echo 'x' | attempt --language math --goal '(+ x 0)' \\
     --max-iters 200 --max-nodes 1000000 --max-time 10
 "
 )]
@@ -50,12 +51,7 @@ struct Args {
     #[arg(long)]
     goal: String,
 
-    /// The start of the run: a JSON array of guides with `--is-guide`,
-    /// otherwise a plain s-expression for the unguided baseline.
-    #[arg(long)]
-    start: String,
-
-    /// Read `--start` as a guide rather than as a baseline s-expression.
+    /// Read stdin as a JSON array of guides rather than a baseline s-expression.
     #[arg(long, default_value_t = false)]
     is_guide: bool,
 
@@ -81,7 +77,7 @@ fn main() {
 /// Run this process's single eqsat
 fn run<L, N>(args: &Args, rules: &[Rewrite<L, N>])
 where
-    L: Language + FromOp<Error: Display> + for<'de> Deserialize<'de> + 'static,
+    L: Language + FromOp<Error: Display> + 'static,
     N: Analysis<L> + Default,
 {
     let goal = args
@@ -90,15 +86,22 @@ where
         .unwrap_or_else(|e| panic!("Failed to parse goal term '{}': {e}", args.goal));
 
     let result = if args.is_guide {
-        let guides: Vec<Vec<OriginLang<L>>> = serde_json::from_str(&args.start)
-            .unwrap_or_else(|e| panic!("Failed to parse start guides '{}': {e}", args.start));
-        let guides: Vec<RecExpr<OriginLang<L>>> = guides.into_iter().map(RecExpr::from).collect();
+        let guide_strs: Vec<String> = serde_json::from_reader(BufReader::new(io::stdin().lock()))
+            .unwrap_or_else(|e| panic!("Failed to parse start guides from stdin: {e}"));
+        let guides: Vec<RecExpr<OriginLang<L>>> = guide_strs
+            .iter()
+            .map(|s| {
+                s.parse()
+                    .unwrap_or_else(|e| panic!("Failed to parse guide '{s}': {e}"))
+            })
+            .collect();
         eqsat::guided(&guides, &goal, rules, &args.eqsat, args.full_union)
     } else {
-        let start_expr = args
-            .start
+        let start_str = io::read_to_string(io::stdin()).expect("Failed to read start term from stdin");
+        let start_expr = start_str
+            .trim()
             .parse::<RecExpr<L>>()
-            .unwrap_or_else(|e| panic!("Failed to parse start term '{}': {e}", args.start));
+            .unwrap_or_else(|e| panic!("Failed to parse start term '{start_str}': {e}"));
         eqsat::unguided(&start_expr, &goal, rules, &args.eqsat)
     };
 
