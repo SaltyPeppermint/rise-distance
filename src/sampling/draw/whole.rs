@@ -8,7 +8,7 @@ use crate::eqsat::EqsatResult;
 use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::OriginLang;
 use crate::sampling;
-use crate::sampling::count::{RootBudgets, whole};
+use crate::sampling::count::whole;
 use crate::sampling::draw::{self, AnalysisPackage, DrawCursor, Drawer, DrawingError, SampledTrie};
 use crate::sampling::weigher::{Choice, Count, Uniform, Weigher};
 use crate::utils::{self, HashMap};
@@ -124,24 +124,19 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
     /// Returns `None` if the root has no terms within `max_size`.
     #[must_use]
     pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<WholePackage<L, N>> {
-        let curr = result.curr();
-        let root = curr.find(result.root());
-        let budgets = RootBudgets::of_root(curr, root, max_size);
-
-        Self::from_root_budget(result, max_size, &budgets)
+        let (egraph, root) = result.into_curr();
+        let root = egraph.find(root);
+        let counts = whole::count(&egraph, root, max_size);
+        Self::from_counts(egraph, root, max_size, counts)
     }
 
-    fn from_root_budget(
-        result: EqsatResult<L, N>,
+    fn from_counts(
+        egraph: EGraph<L, N>,
+        root: Id,
         max_size: usize,
-        budgets: &RootBudgets,
+        counts: HashMap<Id, HashMap<usize, BigUint>>,
     ) -> Option<WholePackage<L, N>> {
-        let (egraph, root) = result.into_curr();
-        let counts = whole::count_histograms_rooted(&egraph, budgets);
-
-        let root = egraph.find(root);
         let histogram = counts.get(&root)?;
-
         let min_size = histogram.keys().min().copied().unwrap_or(1);
         Some(WholePackage {
             egraph,
@@ -169,25 +164,21 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
         min_extractable: usize,
     ) -> Result<(usize, Self), usize> {
         let cap = start_size + search_steps;
+        let (egraph, root) = result.into_curr();
+        let root = egraph.find(root);
 
-        let curr = result.curr();
-        let root = curr.find(result.root());
-        let cap_budgets = RootBudgets::of_root(curr, root, cap);
+        let (max_size, counts) =
+            match whole::count_through_sizes(&egraph, root, cap, min_extractable) {
+                Ok(found) => found,
+                Err(term_count) => {
+                    eprintln!(
+                        "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
+                    );
+                    return Err(cap);
+                }
+            };
 
-        let max_size = match whole::find_whole_root_size(curr, root, min_extractable, &cap_budgets)
-        {
-            Ok(max_size) => max_size,
-            Err(term_count) => {
-                eprintln!(
-                    "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
-                );
-                return Err(cap);
-            }
-        };
-
-        let final_budgets = RootBudgets::of_root(curr, root, max_size);
-
-        let Some(package) = Self::from_root_budget(result, max_size, &final_budgets) else {
+        let Some(package) = Self::from_counts(egraph, root, max_size, counts) else {
             eprintln!("package construction found no terms (max_size={max_size})");
             return Err(cap);
         };
@@ -243,8 +234,7 @@ mod tests {
         graph: &EGraph<Math, ()>,
         root: Id,
     ) -> HashMap<Id, HashMap<usize, BigUint>> {
-        let budgets = RootBudgets::of_root(graph, root, max_size);
-        whole::count_histograms_rooted(graph, &budgets)
+        whole::count(graph, root, max_size)
     }
 
     #[test]
@@ -600,8 +590,7 @@ mod tests {
         graph.rebuild();
 
         let root = graph.find(root);
-        let budgets = RootBudgets::of_root(&graph, root, 5);
-        let counts = whole::count_histograms_rooted(&graph, &budgets);
+        let counts = whole::count(&graph, root, 5);
         assert_eq!(counts[&root][&5], BigUint::from(24u32));
 
         let count_terms = WholeDrawer::new(&counts, &graph, root, Count)

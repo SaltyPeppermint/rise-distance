@@ -33,19 +33,14 @@ cap_budgets = RootBudgets::of_root(curr, root, cap)
 matches = enumerate_matches_rooted(curr, prev_lookup, cap_budgets)
 drop(prev_lookup)
 
-final_max_size = find_novel_root_sizes(
-    curr, root, matches, min_extractable, cap_budgets
-)
-
-if fewer than min_extractable terms were found:
-    return Err(cap)
+step whole and joint LayeredDps layer by layer until cumulative
+novel(root, size) >= min_extractable (or cap is exhausted -> Err(cap))
 
 final_budgets = RootBudgets::of_root(curr, root, final_max_size)
 prune_matches(curr, matches, final_budgets)
-
-whole = count_histograms_rooted(curr, final_budgets)
-joint = compute_joint_rooted(curr, matches, final_budgets)
-package = NovelTermCount::from_rooted_matches(whole, joint, matches)
+final_budgets.prune_histograms(whole)
+final_budgets.prune_histograms(joint)
+package = NovelTermCount::assemble(whole, joint, matches)
 ```
 
 `FrontierPackage::build(result, max_size)` already knows its final
@@ -164,13 +159,11 @@ novel(root, s) = whole(root, s)
                - sum_pc joint((root, pc), s)
 ```
 
-The scan uses `BigUint`, so nonzero detection is exact. It records nonzero
-sizes in ascending order and stops at the requested count; no larger scan
-layer or exact-drawing suffix cache is constructed.
-
-The final package is a separate pass because drawing needs complete rooted
-histograms and whole suffix tables through `final_max_size`, potentially with
-the caller's counter type rather than `BigUint`.
+The scan uses `BigUint`, so nonzero detection is exact. Once the cumulative
+novel count reaches `min_extractable` at `final_max_size`, the already-computed
+`whole` and `joint` histograms are retained directly and pruned in place to
+`final_budgets` (no second DP pass is needed), then subtracted in place to
+produce the novel histograms.
 
 ## Final-size pruning and retained data
 

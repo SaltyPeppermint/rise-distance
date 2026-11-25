@@ -5,71 +5,79 @@ use super::budgets::RootBudgets;
 use super::layered::LayeredDp;
 use crate::utils::HashMap;
 
-/// Count distinct terms within pre-established root budgets.
-pub(crate) fn count_histograms_rooted<L: Language, N: Analysis<L>>(
+/// Per-class size histograms keyed by canonical e-class id.
+pub(crate) type ClassHistograms = HashMap<Id, HashMap<usize, BigUint>>;
+
+/// Count distinct terms rooted at `root` through `max_size`.
+pub(crate) fn count<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
-    rooted: &RootBudgets,
-) -> HashMap<Id, HashMap<usize, BigUint>> {
-    let mut dp = whole_dp_rooted(egraph, rooted);
-    for _ in 0..rooted.limit() {
-        dp.step();
-    }
+    root: Id,
+    max_size: usize,
+) -> ClassHistograms {
+    let budgets = RootBudgets::of_root(egraph, root, max_size);
+    count_rooted(egraph, &budgets)
+}
+
+/// Count distinct terms within pre-established root budgets.
+pub(super) fn count_rooted<L: Language, N: Analysis<L>>(
+    egraph: &EGraph<L, N>,
+    budgets: &RootBudgets,
+) -> ClassHistograms {
+    let mut dp = whole_dp_rooted(egraph, budgets);
+    dp.run(budgets.limit());
     dp.into_data()
 }
 
 /// Create an unstepped whole-graph DP for the root budgets.
-pub(crate) fn whole_dp_rooted<L: Language, N: Analysis<L>>(
+pub(super) fn whole_dp_rooted<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
-    rooted: &RootBudgets,
+    budgets: &RootBudgets,
 ) -> LayeredDp<Id> {
     assert!(egraph.clean);
-    let children_of = rooted
+    let children_of = budgets
         .budgets()
         .keys()
-        .map(|id| {
-            let per_node = egraph[*id]
+        .map(|&id| {
+            let per_node = egraph[id]
                 .nodes
                 .iter()
                 .map(|node| node.children().iter().map(|&c| egraph.find(c)).collect())
                 .collect();
-            (*id, per_node)
+            (id, per_node)
         })
         .collect();
-    LayeredDp::new(children_of, rooted.budgets().clone())
+    LayeredDp::new(children_of, budgets.budgets().clone())
 }
 
-// ============================================================================
-// Exact root-size scan.
-// ============================================================================
-
-/// Find the smallest root size that makes at least `min_extractable` terms
-/// available within `rooted`.
-///
-/// The whole-graph analogue of `find_novel_root_sizes`: with no previous boundary to
-/// subtract, every term the root can extract counts toward the threshold.
+/// Find the smallest root size `<= cap` that makes at least `min_extractable`
+/// terms available, returning `(max_size, counts)` pruned to `max_size`'s root
+/// budgets in a single DP pass.
 ///
 /// # Errors
 ///
-/// Returns the terms found when `rooted` is exhausted below `min_extractable`.
-pub(crate) fn find_whole_root_size<L: Language, N: Analysis<L>>(
+/// Returns the total terms found when `cap` is exhausted below `min_extractable`.
+pub(crate) fn count_through_sizes<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     root: Id,
+    cap: usize,
     min_extractable: usize,
-    rooted: &RootBudgets,
-) -> Result<usize, BigUint> {
+) -> Result<(usize, ClassHistograms), BigUint> {
     let root = egraph.find(root);
-    let mut whole = whole_dp_rooted(egraph, rooted);
+    let cap_budgets = RootBudgets::of_root(egraph, root, cap);
+    let mut dp = whole_dp_rooted(egraph, &cap_budgets);
 
+    let threshold = BigUint::from(min_extractable);
     let mut term_count = BigUint::ZERO;
-    for _ in 0..rooted.limit() {
-        let size = whole.step();
-
-        // Final as of this layer. Zero-count entries are absent and read as 0.
-        let count = whole.data().get(&root).and_then(|hist| hist.get(&size));
-        if let Some(count) = count.filter(|count| !count.is_zero()) {
+    for _ in 0..cap_budgets.limit() {
+        let size = dp.step();
+        if let Some(count) = dp.data().get(&root).and_then(|hist| hist.get(&size))
+            && !count.is_zero()
+        {
             term_count += count;
-            if term_count >= min_extractable.into() {
-                return Ok(size);
+            if term_count >= threshold {
+                let mut counts = dp.into_data();
+                RootBudgets::of_root(egraph, root, size).prune_histograms(&mut counts, |c| c);
+                return Ok((size, counts));
             }
         }
     }
@@ -83,15 +91,6 @@ mod tests {
     use super::*;
     use crate::sampling;
 
-    fn rooted_counts(
-        egraph: &EGraph<SymbolLang, ()>,
-        root: Id,
-        limit: usize,
-    ) -> HashMap<Id, HashMap<usize, BigUint>> {
-        let budgets = RootBudgets::of_root(egraph, root, limit);
-        count_histograms_rooted(egraph, &budgets)
-    }
-
     #[test]
     fn simple_term_size_count() {
         let mut egraph = EGraph::<SymbolLang, ()>::default();
@@ -102,7 +101,7 @@ mod tests {
         egraph.union(a, apb);
         egraph.rebuild();
 
-        let data = rooted_counts(&egraph, apb, 10);
+        let data = count(&egraph, apb, 10);
         let root_data = &data[&egraph.find(apb)];
 
         assert_eq!(root_data[&5], 1usize.into());
@@ -120,7 +119,7 @@ mod tests {
         egraph.union(b, apb);
         egraph.rebuild();
 
-        let data = rooted_counts(&egraph, apb, 10);
+        let data = count(&egraph, apb, 10);
 
         let root_data = &data[&egraph.find(apb)];
         assert_eq!(root_data[&5], 16usize.into());
@@ -139,7 +138,7 @@ mod tests {
         egraph.rebuild();
 
         let limit = 6;
-        let rooted = rooted_counts(&egraph, root, limit);
+        let rooted = count(&egraph, root, limit);
 
         // x can spend at most limit - 1 through g; one term per size.
         let x_hist = &rooted[&egraph.find(a)];
@@ -170,7 +169,7 @@ mod tests {
         egraph.union(a, fa);
         egraph.rebuild();
 
-        let rooted = rooted_counts(&egraph, root, 10);
+        let rooted = count(&egraph, root, 10);
 
         let mut x_sizes = rooted[&egraph.find(a)].keys().copied().collect::<Vec<_>>();
         x_sizes.sort_unstable();
@@ -200,9 +199,7 @@ mod tests {
         let limit = 9;
         let budgets = RootBudgets::of_root(&egraph, root, limit);
         let mut dp = whole_dp_rooted(&egraph, &budgets);
-        for _ in 0..budgets.limit() {
-            dp.step();
-        }
+        dp.run(budgets.limit());
 
         for (&id, per_node) in dp.suffix() {
             for (node, tables) in egraph[id].nodes.iter().zip(per_node) {

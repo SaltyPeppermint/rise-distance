@@ -17,6 +17,12 @@ pub(crate) trait PreviousLookup<L: Language> {
     fn lookup(&self, node: L) -> Option<Id>;
 }
 
+impl<L: Language, P: PreviousLookup<L> + ?Sized> PreviousLookup<L> for &P {
+    fn lookup(&self, node: L) -> Option<Id> {
+        (**self).lookup(node)
+    }
+}
+
 /// Canonical-node-to-class lookup reconstructed for one earlier boundary.
 ///
 /// Class ids are replay representatives. They are intentionally used only as

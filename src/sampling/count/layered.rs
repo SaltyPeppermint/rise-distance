@@ -32,7 +32,7 @@ type SuffixTables<K> = HashMap<K, Vec<Vec<HashMap<usize, BigUint>>>>;
 
 /// Size-layered counting over e-class keys or current/previous class pairs.
 /// Each key contains nodes represented by their child keys.
-pub struct LayeredDp<K> {
+pub(super) struct LayeredDp<K> {
     /// Per key, per node: canonical child keys, aligned with node order.
     children_of: HashMap<K, Vec<Vec<K>>>,
     /// Largest size computed per key; unbudgeted keys are skipped.
@@ -48,7 +48,7 @@ pub struct LayeredDp<K> {
 impl<K: Copy + Eq + Hash> LayeredDp<K> {
     /// Every budgeted key must occur in `children_of`; unbudgeted children
     /// have no terms.
-    pub fn new(children_of: HashMap<K, Vec<Vec<K>>>, budgets: HashMap<K, usize>) -> Self {
+    pub(super) fn new(children_of: HashMap<K, Vec<Vec<K>>>, budgets: HashMap<K, usize>) -> Self {
         let suffix = budgets
             .keys()
             .map(|&k| {
@@ -73,7 +73,7 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
     }
 
     /// Complete and return the next size layer. Counts through it are final.
-    pub(crate) fn step(&mut self) -> usize {
+    pub(super) fn step(&mut self) -> usize {
         self.size += 1;
         let size = self.size;
         // Children of a size-`size` term share this budget; it is also the
@@ -156,25 +156,26 @@ impl<K: Copy + Eq + Hash> LayeredDp<K> {
         size
     }
 
-    #[must_use]
-    pub(crate) const fn data(&self) -> &HashMap<K, HashMap<usize, BigUint>> {
-        &self.data
+    pub(super) fn run(&mut self, steps: usize) {
+        for _ in 0..steps {
+            self.step();
+        }
     }
 
     #[must_use]
-    pub(crate) const fn budgets(&self) -> &HashMap<K, usize> {
-        &self.budgets
+    pub(super) const fn data(&self) -> &HashMap<K, HashMap<usize, BigUint>> {
+        &self.data
     }
 
     /// The DP's working tables, in the truncated [`SuffixTables`] layout.
     #[cfg(test)]
-    pub(crate) const fn suffix(&self) -> &SuffixTables<K> {
+    pub(super) const fn suffix(&self) -> &SuffixTables<K> {
         &self.suffix
     }
 
     /// Consume the DP, returning the histograms and dropping the suffix
     /// tables.
-    pub(crate) fn into_data(self) -> HashMap<K, HashMap<usize, BigUint>> {
+    pub(super) fn into_data(self) -> HashMap<K, HashMap<usize, BigUint>> {
         self.data
     }
 }

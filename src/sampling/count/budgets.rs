@@ -1,11 +1,12 @@
 use egg::{Analysis, AstSize, EGraph, Id, Language};
+use num::BigUint;
 
 use crate::analysis::semilattice::SemiLatticeAnalysis;
 use crate::utils::{HashMap, UniqueQueue};
 
 /// Per-class size bounds and minima for extractions from one root.
 #[derive(Debug, Clone)]
-pub(crate) struct RootBudgets {
+pub(super) struct RootBudgets {
     budgets: HashMap<Id, usize>,
     min_sizes: HashMap<Id, usize>,
     limit: usize,
@@ -13,28 +14,28 @@ pub(crate) struct RootBudgets {
 
 impl RootBudgets {
     #[must_use]
-    pub(crate) fn budget(&self, id: Id) -> Option<usize> {
+    pub(super) fn budget(&self, id: Id) -> Option<usize> {
         self.budgets.get(&id).copied()
     }
 
     #[must_use]
-    pub(crate) fn min_size(&self, id: Id) -> usize {
+    pub(super) fn min_size(&self, id: Id) -> usize {
         self.min_sizes[&id]
     }
 
     #[must_use]
-    pub(crate) const fn budgets(&self) -> &HashMap<Id, usize> {
+    pub(super) const fn budgets(&self) -> &HashMap<Id, usize> {
         &self.budgets
     }
 
     #[must_use]
-    pub(crate) const fn limit(&self) -> usize {
+    pub(super) const fn limit(&self) -> usize {
         self.limit
     }
 
     /// Whether `node` fits its class budget at minimum child sizes.
     #[must_use]
-    pub(crate) fn node_fits<L: Language, N: Analysis<L>>(
+    pub(super) fn node_fits<L: Language, N: Analysis<L>>(
         &self,
         egraph: &EGraph<L, N>,
         class: Id,
@@ -51,22 +52,33 @@ impl RootBudgets {
             .is_some_and(|minimum| minimum <= budget)
     }
 
+    /// Drop entries outside these budgets from a histogram table keyed by `K`.
+    pub(super) fn prune_histograms<K, F>(
+        &self,
+        data: &mut HashMap<K, HashMap<usize, BigUint>>,
+        curr_of: F,
+    ) where
+        K: Copy,
+        F: Fn(K) -> Id,
+    {
+        data.retain(|&key, hist| {
+            let Some(limit) = self.budget(curr_of(key)) else {
+                return false;
+            };
+            hist.retain(|&size, _| size <= limit);
+            !hist.is_empty()
+        });
+    }
+
     /// Compute canonical class budgets and minima for a root and size limit.
-    pub(crate) fn of_root<L: Language, N: Analysis<L>>(
+    pub(super) fn of_root<L: Language, N: Analysis<L>>(
         egraph: &EGraph<L, N>,
         root: Id,
         limit: usize,
     ) -> Self {
         assert!(egraph.clean);
-        let mut raw_min_sizes = HashMap::default();
-        AstSize.one_shot_analysis(egraph, &mut raw_min_sizes);
-        let min_sizes = egraph
-            .classes()
-            .map(|class| {
-                let id = egraph.find(class.id);
-                (id, raw_min_sizes[&id])
-            })
-            .collect();
+        let mut min_sizes = HashMap::default();
+        AstSize.one_shot_analysis(egraph, &mut min_sizes);
         let budgets = class_budgets(egraph, egraph.find(root), limit, &min_sizes);
         Self {
             budgets,
@@ -78,7 +90,6 @@ impl RootBudgets {
 
 /// Largest subterm size usable by each class below `limit` from `root`.
 /// Unreachable classes are ignored and not included in the result.
-/// Basically a fixpoint
 fn class_budgets<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     root: Id,

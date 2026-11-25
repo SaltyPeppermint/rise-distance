@@ -7,8 +7,7 @@ use crate::eqsat::EqsatResult;
 use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::OriginLang;
 use crate::sampling;
-use crate::sampling::count::novel::{self, NodeMatch, NodeMatches, NovelTermCount};
-use crate::sampling::count::{RootBudgets, whole};
+use crate::sampling::count::novel::{NodeMatch, NovelTermCount};
 use crate::sampling::draw::{self, AnalysisPackage, DrawCursor, Drawer, DrawingError, SampledTrie};
 use crate::sampling::weigher::{Choice, Count, Uniform, Weigher};
 use crate::utils::{self, HashMap};
@@ -42,9 +41,10 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
     }
 
     fn histogram(&self, child: Id, state: State) -> Option<&HashMap<usize, BigUint>> {
+        let canon = self.graph.find(child);
         match state {
-            State::Novel => self.counts.novel_histogram(self.graph, child),
-            State::SharedWith(prev) => self.counts.joint_histogram(self.graph, child, prev),
+            State::Novel => self.counts.novel_histogram(canon),
+            State::SharedWith(prev) => self.counts.joint_histogram(canon, prev),
         }
     }
 
@@ -135,7 +135,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
             .enumerate()
             .flat_map(|(node_idx, _)| {
                 self.counts
-                    .matches_of(self.graph, curr, node_idx)
+                    .matches_of(curr, node_idx)
                     .iter()
                     .filter(move |m| m.prev_class == prev)
                     .filter_map(move |matched| {
@@ -157,12 +157,12 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
             .iter()
             .enumerate()
             .flat_map(|(node_idx, node)| {
-                let matches = self.counts.matches_of(self.graph, curr, node_idx);
-                let slot_options = node.children().iter().map(|child| {
+                let matches = self.counts.matches_of(curr, node_idx);
+                let slot_options = node.children().iter().map(|&child| {
                     std::iter::once(State::Novel)
                         .chain(
                             self.counts
-                                .cover_of(self.graph, *child)
+                                .cover_of(self.graph.find(child))
                                 .iter()
                                 .copied()
                                 .map(State::SharedWith),
@@ -254,33 +254,20 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
     /// Returns `None` for an empty frontier.
     #[must_use]
     pub fn build(result: EqsatResult<L, N>, max_size: usize) -> Option<FrontierPackage<L, N>> {
-        let curr = result.curr();
-        let root = curr.find(result.root());
-        let budgets = RootBudgets::of_root(curr, root, max_size);
-
         let prev = result.prev_index();
-        let mut matches = novel::enumerate_matches_rooted(curr, &prev, &budgets);
-        drop(prev);
-        novel::prune_matches(curr, &mut matches, &budgets);
-        Self::from_rooted_matches(result, max_size, matches, &budgets)
+        let (egraph, root) = result.into_curr();
+        let root = egraph.find(root);
+        let counts = NovelTermCount::build(&egraph, prev, root, max_size);
+        Self::from_counts(egraph, root, max_size, counts)
     }
 
-    /// Finish [`build`](Self::build) from matches already restricted
-    /// to the supplied final root budgets.
-    fn from_rooted_matches(
-        result: EqsatResult<L, N>,
+    fn from_counts(
+        egraph: EGraph<L, N>,
+        root: Id,
         max_size: usize,
-        matches: NodeMatches,
-        budgets: &RootBudgets,
+        counts: NovelTermCount,
     ) -> Option<FrontierPackage<L, N>> {
-        let (egraph, root) = result.into_curr();
-        let whole = whole::count_histograms_rooted(&egraph, budgets);
-        let counts = NovelTermCount::from_rooted_matches(&egraph, &whole, matches, budgets);
-        drop(whole);
-
-        let root = egraph.find(root);
         let histogram = counts.data().get(&root)?;
-
         let min_size = histogram.keys().min().copied().unwrap_or(1);
         Some(FrontierPackage {
             egraph,
@@ -291,18 +278,15 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         })
     }
 
-    /// Build a package ending at the `novel_size_goal`-th novel root size.
+    /// Build a package ending at the smallest novel root size that makes at
+    /// least `min_extractable` novel terms available.
     ///
     /// The exact scan stops at the cap `start_size + search_steps`.
     /// See `docs/counting/novel_size_search.md`.
     ///
     /// # Errors
     ///
-    /// Returns the cap if the scan or package finds too few novel sizes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `novel_size_goal` is zero or writing to `log` fails.
+    /// Returns the cap if the scan or package finds too few novel terms.
     pub fn build_through_novel_sizes(
         result: EqsatResult<L, N>,
         start_size: usize,
@@ -310,36 +294,22 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         min_extractable: usize,
     ) -> Result<(usize, Self), usize> {
         let cap = start_size + search_steps;
-
         let prev = result.prev_index();
-        let curr = result.curr();
-        let root = curr.find(result.root());
-        let cap_budgets = RootBudgets::of_root(curr, root, cap);
-        let mut matches = novel::enumerate_matches_rooted(curr, &prev, &cap_budgets);
+        let (egraph, root) = result.into_curr();
+        let root = egraph.find(root);
 
-        drop(prev);
+        let (max_size, counts) =
+            match NovelTermCount::build_through_sizes(&egraph, prev, root, cap, min_extractable) {
+                Ok(found) => found,
+                Err(term_count) => {
+                    eprintln!(
+                        "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
+                    );
+                    return Err(cap);
+                }
+            };
 
-        let max_size = match novel::find_novel_root_sizes(
-            curr,
-            root,
-            &matches,
-            min_extractable,
-            &cap_budgets,
-        ) {
-            Ok(max_size) => max_size,
-            Err(term_count) => {
-                eprintln!(
-                    "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
-                );
-                return Err(cap);
-            }
-        };
-
-        let final_budgets = RootBudgets::of_root(curr, root, max_size);
-        novel::prune_matches(curr, &mut matches, &final_budgets);
-
-        let Some(package) = Self::from_rooted_matches(result, max_size, matches, &final_budgets)
-        else {
+        let Some(package) = Self::from_counts(egraph, root, max_size, counts) else {
             eprintln!("package construction found no novel terms (max_size={max_size})");
             return Err(cap);
         };
@@ -444,7 +414,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let novel = NovelTermCount::rooted_for_tests(5, &curr, &prev, root);
+        let novel = NovelTermCount::build(&curr, &prev, root, 5);
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..50_u64 {
@@ -469,7 +439,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let novel = NovelTermCount::rooted_for_tests(5, &curr, &prev, root);
+        let novel = NovelTermCount::build(&curr, &prev, root, 5);
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..100_u64 {
@@ -489,7 +459,7 @@ mod tests {
         let a = graph.add(math::sym("a"));
         graph.rebuild();
 
-        let novel = NovelTermCount::rooted_for_tests(5, &graph, &graph, a);
+        let novel = NovelTermCount::build(&graph, &graph, a, 5);
         let drawer = FrontierDrawer::new(&novel, &graph, a, Count);
 
         assert!(drawer.draw_batch(&[(1, 1)], [0, 0]).is_err());
@@ -513,7 +483,7 @@ mod tests {
         curr.rebuild();
 
         let root = curr.find(root);
-        let novel = NovelTermCount::rooted_for_tests(5, &curr, &prev, root);
+        let novel = NovelTermCount::build(&curr, &prev, root, 5);
         assert_eq!(novel.data()[&root][&3], BigUint::from(8u32));
 
         let count_terms = FrontierDrawer::new(&novel, &curr, root, Count)
@@ -577,7 +547,7 @@ mod tests {
 
         let root = curr.find(cur);
         let target_size = 11;
-        let novel = NovelTermCount::rooted_for_tests(target_size, &curr, &prev, root);
+        let novel = NovelTermCount::build(&curr, &prev, root, target_size);
         // 16 deep `cos^10(n_i)` + 10 narrow `cos^k(sin(ln^...))` = 26 novel terms.
         assert_eq!(novel.data()[&root][&target_size], BigUint::from(26u32));
 
