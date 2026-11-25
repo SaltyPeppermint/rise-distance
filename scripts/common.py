@@ -330,6 +330,8 @@ async def run_json_subprocess(
     per-argument limit, `MemoryKilled` when `max_rss_bytes` is set and the cap
     killed it, `TimeoutKilled` when `timeout` is set and the child outran it,
     and `BinaryPanicked` when the child panicked.
+
+    TODO: make what and limit non-optional
     """
     check_arg_sizes(cmd, what)
     async with limit:

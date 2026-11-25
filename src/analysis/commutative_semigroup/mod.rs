@@ -42,14 +42,6 @@ pub trait CommutativeSemigroupAnalysis<L: Language, N: Analysis<L>>: Sized + Deb
     }
 }
 
-/// Single-threaded worklist fixpoint. The counting monoid is monotone,
-/// so a class's value only grows until `make` truncates it at the size
-/// limit; with one worker every publish is computed from the current
-/// `data`, so an empty worklist is a genuine fixpoint. (A prior
-/// multi-threaded version raced here: a stale computation could clobber
-/// a fresher value under a non-atomic read-modify-write, under-counting
-/// classes in a cycle. Measurements showed the parallelism bought ~1.0x
-/// while doing so, so it was removed rather than made race-safe.)
 fn resolve_pending_analysis<L, N, B>(
     egraph: &EGraph<L, N>,
     analysis: &B,
