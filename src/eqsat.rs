@@ -130,13 +130,9 @@ impl<L: Language, N: Analysis<L>> EqsatResult<L, N> {
     }
 
     /// Reconstruct the previous-boundary index without mutating the final graph.
+    #[cfg(test)]
     pub(crate) fn prev_index(&self) -> PrevIndex<L> {
-        PrevIndex::from_union_history(
-            self.curr.nodes(),
-            self.prev_boundary.raw_node_count,
-            self.prev_boundary.union_event_count,
-            self.curr.union_events(),
-        )
+        self.prev_boundary.prev_index(&self.curr)
     }
 
     /// Per-iteration metadata, starting with the initial e-graph iteration.
@@ -167,6 +163,11 @@ impl<L: Language, N: Analysis<L>> EqsatResult<L, N> {
     pub fn into_curr(self) -> (EGraph<L, N>, Id) {
         (self.curr, self.root)
     }
+
+    /// Consume the result and return the final egraph, root id, and previous boundary.
+    pub(crate) fn into_curr_and_boundary(self) -> (EGraph<L, N>, Id, Boundary) {
+        (self.curr, self.root, self.prev_boundary)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -181,6 +182,19 @@ impl Boundary {
             raw_node_count: egraph.nodes().len(),
             union_event_count: egraph.union_event_count(),
         }
+    }
+
+    /// Reconstruct the previous-boundary index from `curr` without mutating it.
+    pub(crate) fn prev_index<L: Language, N: Analysis<L>>(
+        self,
+        curr: &EGraph<L, N>,
+    ) -> PrevIndex<L> {
+        PrevIndex::from_union_history(
+            curr.nodes(),
+            self.raw_node_count,
+            self.union_event_count,
+            curr.union_events(),
+        )
     }
 }
 

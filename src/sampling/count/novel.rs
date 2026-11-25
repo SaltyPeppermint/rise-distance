@@ -6,7 +6,7 @@ use egg::{Analysis, EGraph, Id, Language};
 use num::{BigUint, Zero};
 use smallvec::SmallVec;
 
-use super::budgets::RootBudgets;
+use super::budgets::{MinSizes, RootBudgets, self};
 use super::layered::LayeredDp;
 use super::whole;
 use crate::previous::PreviousLookup;
@@ -46,67 +46,94 @@ pub(crate) struct NovelTermCount {
 impl NovelTermCount {
     /// Find the smallest root size `<= cap` that makes at least
     /// `min_extractable` novel terms available, returning `(max_size, counts)`
-    /// pruned to `max_size`'s root budgets in a single DP pass.
+    /// pruned to `max_size`'s root budgets.
+    ///
+    /// Budgets are grown geometrically from `min_size(root) + initial_step` up
+    /// to `cap`, reusing a single `AstSize` pass so early successes avoid
+    /// allocating match tables and DPs for the full `cap`. `make_prev` is
+    /// invoked per attempt and dropped before the DPs allocate, so the previous
+    /// lookup index never overlaps in memory with the whole/joint DP tables.
     ///
     /// # Errors
     ///
     /// Returns the total novel terms found when `cap` is exhausted below
     /// `min_extractable`.
-    pub(crate) fn build<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
+    pub(crate) fn build<L, N, P, F>(
         curr: &EGraph<L, N>,
-        prev: P,
+        mut make_prev: F,
         root: Id,
         cap: usize,
+        initial_step: usize,
         min_extractable: usize,
-    ) -> Result<(usize, Self), BigUint> {
+    ) -> Result<(usize, Self), BigUint>
+    where
+        L: Language,
+        N: Analysis<L>,
+        P: PreviousLookup<L>,
+        F: FnMut() -> P,
+    {
         let root = curr.find(root);
-        let cap_budgets = RootBudgets::new(curr, root, cap);
-        let mut matches = enumerate_matches(curr, &prev, &cap_budgets);
-        drop(prev);
-
-        let mut whole = whole::dp(curr, &cap_budgets);
-        let mut joint = joint_dp(curr, &matches, &cap_budgets);
-        let root_pairs = matches
-            .iter()
-            .filter(|&(&(c, _), _)| c == root)
-            .flat_map(|(_, ms)| ms.iter().map(|m| (root, m.prev_class)))
-            .collect::<HashSet<_>>();
-
+        let min_sizes = MinSizes::new(curr);
+        let root_min = min_sizes.get(root);
         let threshold = BigUint::from(min_extractable);
-        let mut term_count = BigUint::ZERO;
-        for _ in 0..cap_budgets.limit() {
-            let size = whole.step();
-            joint.step();
+        let mut last_term_count = BigUint::ZERO;
 
-            let Some(mut novel) = whole
-                .data()
-                .get(&root)
-                .and_then(|hist| hist.get(&size))
-                .cloned()
-            else {
-                continue;
-            };
-            for pair in &root_pairs {
-                if let Some(count) = joint.data().get(pair).and_then(|hist| hist.get(&size)) {
-                    novel -= count;
+        for try_cap in budgets::doubling_caps(root_min, cap, initial_step) {
+            let try_budgets = min_sizes.budgets_for(curr, root, try_cap);
+            // TODO: Check whether dropping and rebuilding `prev` on every retry
+            // is necessary for peak memory and whether it impacts performance too much.
+            let prev = make_prev();
+            let mut matches = enumerate_matches(curr, &prev, &try_budgets);
+            drop(prev);
+
+            let root_pairs = matches
+                .iter()
+                .filter(|&(&(c, _), _)| c == root)
+                .flat_map(|(_, ms)| ms.iter().map(|m| (root, m.prev_class)))
+                .collect::<HashSet<_>>();
+            let limit = try_budgets.limit();
+            let mut whole = whole::dp(curr, &try_budgets);
+            let mut joint = joint_dp(curr, &matches, &try_budgets);
+            drop(try_budgets);
+
+            let mut term_count = BigUint::ZERO;
+            for _ in 0..limit {
+                let size = whole.step();
+                joint.step();
+
+                let Some(mut novel) = whole
+                    .data()
+                    .get(&root)
+                    .and_then(|hist| hist.get(&size))
+                    .cloned()
+                else {
+                    continue;
+                };
+                for pair in &root_pairs {
+                    if let Some(count) = joint.data().get(pair).and_then(|hist| hist.get(&size)) {
+                        novel -= count;
+                    }
+                }
+
+                if !novel.is_zero() {
+                    term_count += novel;
+                    if term_count >= threshold {
+                        let mut whole_data = whole.into_data();
+                        let mut joint_data = joint.into_data();
+                        let final_budgets = min_sizes.budgets_for(curr, root, size);
+                        prune_matches(curr, &mut matches, &final_budgets);
+                        final_budgets.prune_histograms(&mut whole_data, |c| c);
+                        final_budgets.prune_histograms(&mut joint_data, |(c, _)| c);
+                        drop(final_budgets);
+                        drop(min_sizes);
+                        return Ok((size, Self::assemble(whole_data, joint_data, matches)));
+                    }
                 }
             }
-
-            if !novel.is_zero() {
-                term_count += novel;
-                if term_count >= threshold {
-                    let mut whole_data = whole.into_data();
-                    let mut joint_data = joint.into_data();
-                    let final_budgets = RootBudgets::new(curr, root, size);
-                    prune_matches(curr, &mut matches, &final_budgets);
-                    final_budgets.prune_histograms(&mut whole_data, |c| c);
-                    final_budgets.prune_histograms(&mut joint_data, |(c, _)| c);
-                    return Ok((size, Self::assemble(whole_data, joint_data, matches)));
-                }
-            }
+            last_term_count = term_count;
         }
 
-        Err(term_count)
+        Err(last_term_count)
     }
 
     fn assemble(
@@ -164,7 +191,7 @@ impl NovelTermCount {
 fn enumerate_matches<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
     curr: &EGraph<L, N>,
     prev: &P,
-    budgets: &RootBudgets,
+    budgets: &RootBudgets<'_>,
 ) -> NodeMatches {
     let fitting_nodes = budgets
         .budgets()
@@ -225,7 +252,7 @@ fn enumerate_matches<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
 fn prune_matches<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     matches: &mut NodeMatches,
-    budgets: &RootBudgets,
+    budgets: &RootBudgets<'_>,
 ) {
     matches.retain(|&(c, idx), _| {
         budgets.budget(c).is_some()
@@ -249,7 +276,7 @@ type PairChildren = HashMap<(Id, Id), Vec<Vec<(Id, Id)>>>;
 fn joint_dp<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     matches: &NodeMatches,
-    rooted: &RootBudgets,
+    rooted: &RootBudgets<'_>,
 ) -> LayeredDp<(Id, Id)> {
     let mut children_of = PairChildren::default();
     for (&(c, idx), ms) in matches {
@@ -315,7 +342,7 @@ mod tests {
         graph.union(a, b);
         graph.rebuild();
 
-        let found = NovelTermCount::build(&graph, &graph, a, 5, 1)
+        let found = NovelTermCount::build(&graph, || &graph, a, 5, 2, 1)
             .expect_err("expected zero novel terms");
 
         assert_eq!(found, BigUint::ZERO);
@@ -336,7 +363,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let (used_size, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1)
+        let (used_size, novel) = NovelTermCount::build(&curr, || &prev, root, 5, 2, 1)
             .expect("expected one novel term at size 2");
         assert_eq!(used_size, 2);
 
@@ -373,7 +400,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let (used_size, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1)
+        let (used_size, novel) = NovelTermCount::build(&curr, || &prev, root, 5, 2, 1)
             .expect("expected novel terms at size 3");
         assert_eq!(used_size, 3);
 
@@ -395,7 +422,8 @@ mod tests {
         curr.rebuild();
         let prev = curr.clone();
 
-        let budgets = RootBudgets::new(&curr, root, 3);
+        let min_sizes = MinSizes::new(&curr);
+        let budgets = min_sizes.budgets_for(&curr, root, 3);
         let matches = enumerate_matches(&curr, &prev, &budgets);
         let root = curr.find(root);
         assert!(matches.keys().any(|(c, _)| *c == root));
@@ -411,7 +439,8 @@ mod tests {
         curr.rebuild();
         let prev = curr.clone();
 
-        let budgets = RootBudgets::new(&curr, root, 2);
+        let min_sizes = MinSizes::new(&curr);
+        let budgets = min_sizes.budgets_for(&curr, root, 2);
         let matches = enumerate_matches(&curr, &prev, &budgets);
 
         assert!(!matches.keys().any(|(c, _)| *c == curr.find(unreachable)));
@@ -430,10 +459,11 @@ mod tests {
         curr.rebuild();
         let root = curr.find(a);
 
-        let cap_budgets = RootBudgets::new(&curr, root, 3);
+        let min_sizes = MinSizes::new(&curr);
+        let cap_budgets = min_sizes.budgets_for(&curr, root, 3);
         let mut matches = enumerate_matches(&curr, &prev, &cap_budgets);
         let before = matches.values().map(Vec::len).sum::<usize>();
-        let final_budgets = RootBudgets::new(&curr, root, 1);
+        let final_budgets = min_sizes.budgets_for(&curr, root, 1);
         prune_matches(&curr, &mut matches, &final_budgets);
         let after = matches.values().map(Vec::len).sum::<usize>();
 
@@ -456,7 +486,8 @@ mod tests {
         curr.rebuild();
         let root = curr.find(a);
 
-        let budgets = RootBudgets::new(&curr, root, 1);
+        let min_sizes = MinSizes::new(&curr);
+        let budgets = min_sizes.budgets_for(&curr, root, 1);
         let matches = enumerate_matches(&curr, &prev, &budgets);
         let previous_classes = matches
             .iter()

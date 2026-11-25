@@ -134,9 +134,11 @@ impl<L: Language, N: Analysis<L>> WholePackage<L, N> {
     /// Build a package ending at the smallest root size that makes at least
     /// `min_extractable` terms available.
     ///
-    /// The exact scan stops at the cap `start_size + search_steps`.
-    /// Unlike the frontier package there is no previous boundary to subtract,
-    /// so every term the root can extract counts toward the threshold.
+    /// The exact scan grows budgets geometrically starting at
+    /// `min_size(root) + search_step` and stops at the cap
+    /// `start_size + search_steps`. Unlike the frontier package there is no
+    /// previous boundary to subtract, so every term the root can extract
+    /// counts toward the threshold.
     ///
     /// # Errors
     ///
@@ -144,6 +146,7 @@ impl<L: Language, N: Analysis<L>> WholePackage<L, N> {
     pub fn build(
         result: EqsatResult<L, N>,
         start_size: usize,
+        search_step: usize,
         search_steps: usize,
         min_extractable: usize,
     ) -> Result<(usize, Self), usize> {
@@ -155,6 +158,7 @@ impl<L: Language, N: Analysis<L>> WholePackage<L, N> {
             &egraph,
             root,
             cap,
+            search_step,
             min_extractable,
         ) {
             Ok(found) => found,
@@ -212,7 +216,7 @@ mod tests {
         graph: &EGraph<Math, ()>,
         root: Id,
     ) -> HashMap<Id, HashMap<usize, BigUint>> {
-        whole::count(graph, root, cap, min_extractable)
+        whole::count(graph, root, cap, 2, min_extractable)
             .expect("test graph has enough terms")
             .1
     }
@@ -238,7 +242,7 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let (used_max_size, package) = WholePackage::build(result, 30, 2, 3)
+        let (used_max_size, package) = WholePackage::build(result, 30, 2, 2, 3)
             .expect("build should succeed");
 
         assert_eq!(used_max_size, 5);
@@ -260,7 +264,7 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(graph, root, prev_raw_node_count, prev_union_event_count);
-        let Err(cap) = WholePackage::build(result, 3, 20, 3) else {
+        let Err(cap) = WholePackage::build(result, 3, 2, 20, 3) else {
             panic!("a single term cannot satisfy a threshold of 3");
         };
 
@@ -568,7 +572,7 @@ mod tests {
         graph.rebuild();
 
         let root = graph.find(root);
-        let (_, counts) = whole::count(&graph, root, 5, 32).unwrap();
+        let (_, counts) = whole::count(&graph, root, 5, 2, 32).unwrap();
         assert_eq!(counts[&root][&5], BigUint::from(24u32));
 
         let count_terms = WholeDrawer::new(&counts, &graph, root, Count)

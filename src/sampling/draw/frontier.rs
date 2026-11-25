@@ -252,7 +252,9 @@ impl<L: Language, N: Analysis<L>> FrontierPackage<L, N> {
     /// Build a package ending at the smallest novel root size that makes at
     /// least `min_extractable` novel terms available.
     ///
-    /// The exact scan stops at the cap `start_size + search_steps`.
+    /// The exact scan grows budgets geometrically starting at
+    /// `min_size(root) + search_step` and stops at the cap
+    /// `start_size + search_steps`.
     /// See `docs/counting/novel_size_search.md`.
     ///
     /// # Errors
@@ -261,19 +263,20 @@ impl<L: Language, N: Analysis<L>> FrontierPackage<L, N> {
     pub fn build(
         result: EqsatResult<L, N>,
         start_size: usize,
+        search_step: usize,
         search_steps: usize,
         min_extractable: usize,
     ) -> Result<(usize, Self), usize> {
         let cap = start_size + search_steps;
-        let prev = result.prev_index();
-        let (egraph, root) = result.into_curr();
+        let (egraph, root, prev_boundary) = result.into_curr_and_boundary();
         let root = egraph.find(root);
 
         let (max_size, counts) = match NovelTermCount::build(
             &egraph,
-            prev,
+            || prev_boundary.prev_index(&egraph),
             root,
             cap,
+            search_step,
             min_extractable,
         ) {
             Ok(found) => found,
@@ -345,7 +348,7 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let (used_max_size, package) = FrontierPackage::build(result, 3, 10, 3)
+        let (used_max_size, package) = FrontierPackage::build(result, 3, 2, 10, 3)
             .expect("build should succeed");
 
         assert_eq!(used_max_size, 9);
@@ -376,7 +379,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let (_, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1).unwrap();
+        let (_, novel) = NovelTermCount::build(&curr, || &prev, root, 5, 2, 1).unwrap();
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..50_u64 {
@@ -401,7 +404,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let (_, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1).unwrap();
+        let (_, novel) = NovelTermCount::build(&curr, || &prev, root, 5, 2, 1).unwrap();
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..100_u64 {
@@ -431,7 +434,7 @@ mod tests {
         curr.union(a, b);
         curr.rebuild();
 
-        let (_, novel) = NovelTermCount::build(&curr, &prev, root, 5, 1).unwrap();
+        let (_, novel) = NovelTermCount::build(&curr, || &prev, root, 5, 2, 1).unwrap();
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         assert!(drawer.draw_batch(&[(1, 1)], [0, 0]).is_err());
@@ -456,7 +459,7 @@ mod tests {
         curr.rebuild();
 
         let root = curr.find(root);
-        let (_, novel) = NovelTermCount::build(&curr, &prev, root, 5, 8).unwrap();
+        let (_, novel) = NovelTermCount::build(&curr, || &prev, root, 5, 2, 8).unwrap();
         assert_eq!(novel.novel_histogram(root).unwrap()[&3], BigUint::from(8u32));
 
         let count_terms = FrontierDrawer::new(&novel, &curr, root, Count)
@@ -521,7 +524,7 @@ mod tests {
         let root = curr.find(cur);
         let target_size = 11;
         let (_, novel) =
-            NovelTermCount::build(&curr, &prev, root, target_size, 26).unwrap();
+            NovelTermCount::build(&curr, || &prev, root, target_size, 2, 26).unwrap();
         // 16 deep `cos^10(n_i)` + 10 narrow `cos^k(sin(ln^...))` = 26 novel terms.
         assert_eq!(novel.novel_histogram(root).unwrap()[&target_size], BigUint::from(26u32));
 

@@ -52,9 +52,8 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     seed: u64,
 
-    // TODO: ACTUALLY USE THIS
-    /// How much to grow `max_size` on each exact-size-search retry.
-    #[arg(long, default_value_t = 2)]
+    /// Initial headroom added to `min_size(root)` on exact-size search, doubled until the cap.
+    #[arg(long, default_value_t = 1)]
     size_search_step: usize,
 
     /// Number of exact-size-search increments.
@@ -179,6 +178,7 @@ fn build_frontier_samples<L: Language, N: Analysis<L>>(
     let (max_size, package) = FrontierPackage::build(
         result,
         start_size,
+        args.size_search_step,
         args.size_search_steps,
         args.n_samples,
     )
@@ -210,6 +210,7 @@ fn build_whole_samples<L: Language, N: Analysis<L>>(
     let (max_size, package) = WholePackage::build(
         result,
         start_size,
+        args.size_search_step,
         args.size_search_steps,
         args.n_samples,
     )
