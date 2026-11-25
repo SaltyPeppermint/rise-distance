@@ -1,6 +1,7 @@
 use egg::{EGraph, Id, RecExpr};
 use num::BigUint;
 use rand_chacha::ChaCha12Rng;
+use smallvec::SmallVec;
 
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
@@ -9,7 +10,7 @@ use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::novel::{NodeMatch, NovelTermCount};
 use crate::sampling::draw::{self, AnalysisPackage, DrawCursor, Drawer, DrawingError, SampledTrie};
-use crate::sampling::weigher::{Choice, Count, Uniform, Weigher};
+use crate::sampling::weigher::{Choice, Weigher};
 use crate::utils::{self, HashMap};
 
 /// Draws frontier terms without replacement using the supplied local weighting
@@ -18,19 +19,19 @@ use crate::utils::{self, HashMap};
 /// `Count` weights each remaining branch proportionally to its unsampled
 /// completions, giving exact uniform sampling without replacement. `Uniform`
 /// gives every non-exhausted local choice equal weight.
-struct FrontierDrawer<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
+struct FrontierDrawer<'a, 'g, L: MyLanguage, N: MyAnalysis<L>> {
     counts: &'a NovelTermCount,
     graph: &'g EGraph<L, N>,
     root: Id,
-    weigher: W,
+    weigher: Weigher,
 }
 
-impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g, L, N, W> {
+impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>> FrontierDrawer<'a, 'g, L, N> {
     fn new(
         counts: &'a NovelTermCount,
         graph: &'g EGraph<L, N>,
         root: Id,
-        weigher: W,
+        weigher: Weigher,
     ) -> Self {
         Self {
             counts,
@@ -52,7 +53,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
         &self,
         curr: Id,
         node_idx: usize,
-        child_states: Vec<State>,
+        child_states: SmallVec<[State; 2]>,
         child_budget: usize,
     ) -> Option<Branch<'_>> {
         let child_hists = self.graph[curr].nodes[node_idx]
@@ -61,7 +62,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
             .copied()
             .zip(child_states.iter().copied())
             .map(|(child, state)| self.histogram(child, state))
-            .collect::<Option<Vec<_>>>()?;
+            .collect::<Option<SmallVec<[_; 2]>>>()?;
         let count = sampling::convolve_at(&child_hists, child_budget)?;
         Some(Branch {
             node_idx,
@@ -102,7 +103,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
         let node = &self.graph[curr].nodes[branch.node_idx];
         let children_ids = node.children();
         let children = draw::draw_children(
-            &self.weigher,
+            self.weigher,
             &branch.child_hists,
             size - 1,
             active_rest,
@@ -159,18 +160,16 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
             .flat_map(|(node_idx, node)| {
                 let matches = self.counts.matches_of(curr, node_idx);
                 let slot_options = node.children().iter().map(|&child| {
-                    std::iter::once(State::Novel)
-                        .chain(
-                            self.counts
-                                .cover_of(self.graph.find(child))
-                                .iter()
-                                .copied()
-                                .map(State::SharedWith),
-                        )
-                        .collect::<Vec<_>>()
+                    std::iter::once(State::Novel).chain(
+                        self.counts
+                            .cover_of(self.graph.find(child))
+                            .iter()
+                            .copied()
+                            .map(State::SharedWith),
+                    )
                 });
 
-                enumerate_profiles(slot_options)
+                sampling::cartesian_product(slot_options)
                     .into_iter()
                     .filter(|profile| !completes_some_match(profile, matches))
                     .filter_map(move |child_states| {
@@ -181,7 +180,7 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L> for FrontierDrawer<'_, '_, L, N, W> {
+impl<L: MyLanguage, N: MyAnalysis<L>> Drawer<L> for FrontierDrawer<'_, '_, L, N> {
     fn root_histogram(&self) -> Option<&HashMap<usize, BigUint>> {
         self.counts.data().get(&self.root)
     }
@@ -193,7 +192,13 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L> for FrontierDrawer<'
         rng: &mut ChaCha12Rng,
     ) -> RecExpr<OriginLang<L>> {
         let mut cursor = DrawCursor::new(sampled, rng);
-        self.construct(self.root, size, State::Novel, Some(&BigUint::ONE), &mut cursor)
+        self.construct(
+            self.root,
+            size,
+            State::Novel,
+            Some(&BigUint::ONE),
+            &mut cursor,
+        )
     }
 }
 
@@ -207,25 +212,9 @@ enum State {
 /// One feasible root-production/profile choice at a `(class, size, state)`.
 struct Branch<'a> {
     node_idx: usize,
-    child_states: Vec<State>,
+    child_states: SmallVec<[State; 2]>,
     count: BigUint,
-    child_hists: Vec<&'a HashMap<usize, BigUint>>,
-}
-
-fn enumerate_profiles<T: Clone>(slot_options: impl Iterator<Item = Vec<T>>) -> Vec<Vec<T>> {
-    let mut profiles = vec![Vec::new()];
-    for slot in slot_options {
-        let mut next = Vec::with_capacity(profiles.len() * slot.len());
-        for prefix in &profiles {
-            for option in &slot {
-                let mut profile = prefix.clone();
-                profile.push(option.clone());
-                next.push(profile);
-            }
-        }
-        profiles = next;
-    }
-    profiles
+    child_hists: SmallVec<[&'a HashMap<usize, BigUint>; 2]>,
 }
 
 fn completes_some_match(profile: &[State], matches: &[NodeMatch]) -> bool {
@@ -244,8 +233,6 @@ fn completes_some_match(profile: &[State], matches: &[NodeMatch]) -> bool {
 pub struct FrontierPackage<L: MyLanguage, N: MyAnalysis<L>> {
     egraph: EGraph<L, N>,
     counts: NovelTermCount,
-    min_size: usize,
-    max_size: usize,
     root: Id,
 }
 
@@ -258,22 +245,18 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         let (egraph, root) = result.into_curr();
         let root = egraph.find(root);
         let counts = NovelTermCount::build(&egraph, prev, root, max_size);
-        Self::from_counts(egraph, root, max_size, counts)
+        Self::from_counts(egraph, root, counts)
     }
 
     fn from_counts(
         egraph: EGraph<L, N>,
         root: Id,
-        max_size: usize,
         counts: NovelTermCount,
     ) -> Option<FrontierPackage<L, N>> {
-        let histogram = counts.data().get(&root)?;
-        let min_size = histogram.keys().min().copied().unwrap_or(1);
+        counts.data().get(&root)?;
         Some(FrontierPackage {
             egraph,
             counts,
-            min_size,
-            max_size,
             root,
         })
     }
@@ -298,18 +281,23 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
         let (egraph, root) = result.into_curr();
         let root = egraph.find(root);
 
-        let (max_size, counts) =
-            match NovelTermCount::build_through_sizes(&egraph, prev, root, cap, min_extractable) {
-                Ok(found) => found,
-                Err(term_count) => {
-                    eprintln!(
-                        "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
-                    );
-                    return Err(cap);
-                }
-            };
+        let (max_size, counts) = match NovelTermCount::build_through_sizes(
+            &egraph,
+            prev,
+            root,
+            cap,
+            min_extractable,
+        ) {
+            Ok(found) => found,
+            Err(term_count) => {
+                eprintln!(
+                    "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
+                );
+                return Err(cap);
+            }
+        };
 
-        let Some(package) = Self::from_counts(egraph, root, max_size, counts) else {
+        let Some(package) = Self::from_counts(egraph, root, counts) else {
             eprintln!("package construction found no novel terms (max_size={max_size})");
             return Err(cap);
         };
@@ -338,20 +326,8 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L> for FrontierPackage<L, 
         policy: Policy,
         seed: [u64; 2],
     ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError> {
-        let histogram = self.root_histogram();
-
-        let requests =
-            sampling::greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
-
-        match policy {
-            Policy::Uniform => FrontierDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
-                .draw_batch(&requests, seed),
-            Policy::Count => FrontierDrawer::new(&self.counts, &self.egraph, self.root, Count)
-                .draw_batch(&requests, seed),
-            Policy::Smallest => Ok(vec![
-                FrontierDrawer::new(&self.counts, &self.egraph, self.root, Uniform).smallest(),
-            ]),
-        }
+        FrontierDrawer::new(&self.counts, &self.egraph, self.root, policy.into())
+            .draw_for_policy(count, policy, seed)
     }
 }
 
@@ -360,6 +336,7 @@ mod tests {
     use super::*;
     use crate::langs::math::{self, Math};
     use crate::origin;
+    use Weigher::{Count, Uniform};
 
     #[test]
     fn build_through_novel_sizes_runs_analysis_at_kth_novel_size() {
@@ -381,12 +358,10 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let (_used_max_size, package) =
-            FrontierPackage::build_through_novel_sizes(result, 3, 10, 3)
-                .expect("build_through_novel_sizes should succeed");
+        let (used_max_size, package) = FrontierPackage::build_through_novel_sizes(result, 3, 10, 3)
+            .expect("build_through_novel_sizes should succeed");
 
-        assert_eq!(package.max_size, 9);
-        assert_eq!(package.min_size, 5);
+        assert_eq!(used_max_size, 9);
         let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
         keys.sort_unstable();
         assert_eq!(keys, vec![5, 7, 9]);

@@ -19,7 +19,7 @@ impl RootBudgets {
     }
 
     #[must_use]
-    pub(super) fn min_size(&self, id: Id) -> usize {
+    fn min_size(&self, id: Id) -> usize {
         self.min_sizes[&id]
     }
 

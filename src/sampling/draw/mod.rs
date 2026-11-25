@@ -99,6 +99,23 @@ trait Drawer<L: MyLanguage> {
             .pop()
             .expect("batch of one returns one term")
     }
+
+    /// Draw `count` samples according to `policy` from this drawer's root.
+    fn draw_for_policy(
+        &self,
+        count: usize,
+        policy: Policy,
+        seed: [u64; 2],
+    ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError> {
+        if matches!(policy, Policy::Smallest) {
+            return Ok(vec![self.smallest()]);
+        }
+        let histogram = self
+            .root_histogram()
+            .expect("root histogram present iff package built");
+        let requests = sampling::greedy_distribute_alloc(count, histogram);
+        self.draw_batch(&requests, seed)
+    }
 }
 
 #[derive(Error, Debug)]
@@ -110,14 +127,10 @@ pub enum DrawingError {
 pub trait AnalysisPackage<L: MyLanguage> {
     /// Log the stats about the root into stderr.
     fn log_root_counts(&self) {
-        let histogram = self.root_histogram();
-        let mut sorted_hist = histogram
-            .iter()
-            .map(|(a, b)| (*a, b.to_owned()))
-            .collect::<Vec<_>>();
-        sorted_hist.sort_unstable_by_key(|(size, _)| *size);
+        let mut sorted_hist = self.root_histogram().iter().collect::<Vec<_>>();
+        sorted_hist.sort_unstable_by_key(|&(&size, _)| size);
         eprintln!("Terms in package:");
-        for (k, v) in &sorted_hist {
+        for (k, v) in sorted_hist {
             eprintln!("{v} terms of size {k}");
         }
     }
@@ -140,8 +153,8 @@ pub trait AnalysisPackage<L: MyLanguage> {
 /// Draw each child subterm for a chosen production, splitting `child_budget`
 /// across children `0..arity - 1` via suffix convolutions and propagating
 /// residual trie capacity into each recursive call.
-pub(super) fn draw_children<L, W, H, F>(
-    weigher: &W,
+pub(super) fn draw_children<L, H, F>(
+    weigher: Weigher,
     child_hists: &[H],
     child_budget: usize,
     active_rest: Option<&BigUint>,
@@ -150,7 +163,6 @@ pub(super) fn draw_children<L, W, H, F>(
 ) -> Vec<RecExpr<OriginLang<L>>>
 where
     L: MyLanguage,
-    W: Weigher,
     H: Borrow<HashMap<usize, BigUint>>,
     F: FnMut(usize, usize, Option<&BigUint>, &mut DrawCursor<'_>) -> RecExpr<OriginLang<L>>,
 {

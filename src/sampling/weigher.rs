@@ -3,6 +3,7 @@ use rand::Rng;
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 
+use crate::cli::Policy;
 use crate::sampling::draw::DrawCursor;
 
 /// One feasible decision candidate with trie edge `key` and local derivation
@@ -38,49 +39,42 @@ impl<'a> Choice<'a> {
     }
 }
 
-pub(super) trait Weigher {
+/// Local selection distribution over feasible derivation choices.
+#[derive(Clone, Copy)]
+pub(super) enum Weigher {
+    Uniform,
+    Count,
+}
+
+impl From<Policy> for Weigher {
+    fn from(policy: Policy) -> Self {
+        match policy {
+            Policy::Count => Self::Count,
+            Policy::Uniform | Policy::Smallest => Self::Uniform,
+        }
+    }
+}
+
+impl Weigher {
     /// Pick an index into `candidates`, each having strictly positive counts.
     ///
     /// When `rest_total` is `Some(rt)`, choices whose capacity
     /// `local_count * rt` is already exhausted at `cursor` are excluded.
     /// When `rest_total` is `None`, `cursor` has no prior draws and every
     /// candidate has `used == 0`.
-    fn pick(
-        &self,
+    pub(super) fn pick(
+        self,
         candidates: &[Choice<'_>],
         rest_total: Option<&BigUint>,
         cursor: &mut DrawCursor<'_>,
-    ) -> usize;
-}
-
-pub(super) struct Uniform;
-
-/// True iff the product of positive `factors` strictly exceeds `used`.
-fn product_exceeds(factors: &[&BigUint], used: u64) -> bool {
-    if used == 0 {
-        return true;
-    }
-    let limit = u128::from(used);
-    let mut prod: u128 = 1;
-    for factor in factors {
-        debug_assert!(!factor.is_zero(), "candidate count must be positive");
-        let Some(value) = factor.to_u64() else {
-            return true;
-        };
-        if value > used {
-            return true;
-        }
-        prod = prod.saturating_mul(u128::from(value));
-        if prod > limit {
-            return true;
+    ) -> usize {
+        match self {
+            Self::Uniform => Self::pick_uniform(candidates, rest_total, cursor),
+            Self::Count => Self::pick_count(candidates, rest_total, cursor),
         }
     }
-    false
-}
 
-impl Weigher for Uniform {
-    fn pick(
-        &self,
+    fn pick_uniform(
         candidates: &[Choice<'_>],
         rest_total: Option<&BigUint>,
         cursor: &mut DrawCursor<'_>,
@@ -106,54 +100,58 @@ impl Weigher for Uniform {
         );
         feasible[cursor.rng.gen_range(0..feasible.len())]
     }
-}
 
-pub(super) struct Count;
-
-fn residual_weight(mut cap: BigUint, used: u64) -> Option<BigUint> {
-    if used == 0 {
-        return (!cap.is_zero()).then_some(cap);
-    }
-    debug_assert!(
-        cap.to_u64().is_none_or(|v| v >= used),
-        "used ({used}) exceeded capacity ({cap})"
-    );
-    cap -= used;
-    (!cap.is_zero()).then_some(cap)
-}
-
-impl Weigher for Count {
-    fn pick(
-        &self,
+    fn pick_count(
         candidates: &[Choice<'_>],
         rest_total: Option<&BigUint>,
         cursor: &mut DrawCursor<'_>,
     ) -> usize {
         let Some(rt) = rest_total else {
-            return WeightedIndex::new(
-                candidates
-                    .iter()
-                    .map(|choice| choice.rest.map_or_else(|| choice.count.clone(), |r| choice.count * r)),
-            )
+            return WeightedIndex::new(candidates.iter().map(|choice| {
+                choice
+                    .rest
+                    .map_or_else(|| choice.count.clone(), |r| choice.count * r)
+            }))
             .expect("weights contain a positive choice")
             .sample(cursor.rng);
         };
-        let mut indices = Vec::with_capacity(candidates.len());
-        let mut weights = Vec::with_capacity(candidates.len());
-        for (idx, choice) in candidates.iter().enumerate() {
+        WeightedIndex::new(candidates.iter().map(|choice| {
             let used = cursor.used(choice.key);
-            let cap = match choice.rest {
+            let mut cap = match choice.rest {
                 Some(rest) => choice.count * rest * rt,
                 None => choice.count * rt,
             };
-            if let Some(rem) = residual_weight(cap, used) {
-                indices.push(idx);
-                weights.push(rem);
-            }
-        }
-        let pick = WeightedIndex::new(&weights)
-            .expect("residual weights contain a positive choice")
-            .sample(cursor.rng);
-        indices[pick]
+            debug_assert!(
+                cap.to_u64().is_none_or(|v| v >= used),
+                "used ({used}) exceeded capacity ({cap})"
+            );
+            cap -= used;
+            cap
+        }))
+        .expect("residual weights contain a positive choice")
+        .sample(cursor.rng)
     }
+}
+
+/// True iff the product of positive `factors` strictly exceeds `used`.
+fn product_exceeds(factors: &[&BigUint], used: u64) -> bool {
+    if used == 0 {
+        return true;
+    }
+    let limit = u128::from(used);
+    let mut prod: u128 = 1;
+    for factor in factors {
+        debug_assert!(!factor.is_zero(), "candidate count must be positive");
+        let Some(value) = factor.to_u64() else {
+            return true;
+        };
+        if value > used {
+            return true;
+        }
+        prod = prod.saturating_mul(u128::from(value));
+        if prod > limit {
+            return true;
+        }
+    }
+    false
 }

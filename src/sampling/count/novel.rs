@@ -10,6 +10,7 @@ use super::budgets::RootBudgets;
 use super::layered::LayeredDp;
 use super::whole;
 use crate::previous::PreviousLookup;
+use crate::sampling;
 use crate::utils::{HashMap, HashSet};
 
 /// A current e-node's match in the previous e-graph.
@@ -90,9 +91,7 @@ impl NovelTermCount {
             .iter()
             .filter(|&(&(c, _), _)| c == root)
             .flat_map(|(_, ms)| ms.iter().map(|m| (root, m.prev_class)))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
+            .collect::<HashSet<_>>();
 
         let threshold = BigUint::from(min_extractable);
         let mut term_count = BigUint::ZERO;
@@ -221,7 +220,14 @@ fn enumerate_matches_rooted<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
     while changed {
         changed = false;
         for &(c, idx, node, ref child_canons) in &fitting_nodes {
-            for combo in child_combinations(child_canons, &cover) {
+            let Some(slots) = child_canons
+                .iter()
+                .map(|child| cover.get(child).map(|set| set.iter().copied()))
+                .collect::<Option<SmallVec<[_; 2]>>>()
+            else {
+                continue;
+            };
+            for combo in sampling::cartesian_product(slots) {
                 let mut iter = combo.iter().copied();
                 let translated = node.clone().map_children(|_| iter.next().unwrap());
                 if let Some(prev_class) = prev.lookup(translated) {
@@ -256,31 +262,6 @@ fn prune_matches<L: Language, N: Analysis<L>>(
                 .is_some_and(|node| budgets.node_fits(egraph, c, node))
     });
     matches.shrink_to_fit();
-}
-
-/// Cartesian product of `cover[child_i]` over `i`. For zero-arity nodes,
-/// returns `[[]]` (a single empty combination).
-fn child_combinations(children: &[Id], cover: &HashMap<Id, HashSet<Id>>) -> Vec<SmallVec<[Id; 2]>> {
-    let mut combos = vec![SmallVec::new()];
-    for child in children {
-        let Some(opts) = cover.get(child) else {
-            return Vec::new();
-        };
-        if opts.is_empty() {
-            return Vec::new();
-        }
-        combos = combos
-            .iter()
-            .flat_map(|prefix| {
-                opts.iter().map(|&opt| {
-                    let mut p = prefix.clone();
-                    p.push(opt);
-                    p
-                })
-            })
-            .collect();
-    }
-    combos
 }
 
 // ============================================================================

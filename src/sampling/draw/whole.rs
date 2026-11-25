@@ -10,23 +10,23 @@ use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::whole;
 use crate::sampling::draw::{self, AnalysisPackage, DrawCursor, Drawer, DrawingError, SampledTrie};
-use crate::sampling::weigher::{Choice, Count, Uniform, Weigher};
+use crate::sampling::weigher::{Choice, Weigher};
 use crate::utils::{self, HashMap};
 
-struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
+struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>> {
     /// Histogram of the counts for each class, indexed by `node_idx`
     counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
     graph: &'b EGraph<L, N>,
     root: Id,
-    weigher: W,
+    weigher: Weigher,
 }
 
-impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> WholeDrawer<'a, 'b, L, N, W> {
+impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>> WholeDrawer<'a, 'b, L, N> {
     fn new(
         counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
         graph: &'b EGraph<L, N>,
         root: Id,
-        weigher: W,
+        weigher: Weigher,
     ) -> Self {
         Self {
             counts,
@@ -71,13 +71,14 @@ impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> WholeDrawer<'a, 'b, L,
             .iter()
             .map(|(node_idx, count, _)| Choice::branch(*node_idx, count))
             .collect::<Vec<_>>();
-        let (pick_idx, _, hists) = &feasible_nodes[self.weigher.pick(&choices, active_rest, cursor)];
+        let (pick_idx, _, hists) =
+            &feasible_nodes[self.weigher.pick(&choices, active_rest, cursor)];
 
         cursor.step(*pick_idx);
         let pick = &eclass.nodes[*pick_idx];
         let children_ids = pick.children();
         let children = draw::draw_children(
-            &self.weigher,
+            self.weigher,
             hists,
             child_budget,
             active_rest,
@@ -91,7 +92,7 @@ impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> WholeDrawer<'a, 'b, L,
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L> for WholeDrawer<'_, '_, L, N, W> {
+impl<L: MyLanguage, N: MyAnalysis<L>> Drawer<L> for WholeDrawer<'_, '_, L, N> {
     fn root_histogram(&self) -> Option<&HashMap<usize, BigUint>> {
         self.counts.get(&self.root)
     }
@@ -114,8 +115,6 @@ impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L> for WholeDrawer<'_, 
 pub struct WholePackage<L: MyLanguage, N: MyAnalysis<L>> {
     egraph: EGraph<L, N>,
     counts: HashMap<Id, HashMap<usize, BigUint>>,
-    min_size: usize,
-    max_size: usize,
     root: Id,
 }
 
@@ -127,22 +126,18 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
         let (egraph, root) = result.into_curr();
         let root = egraph.find(root);
         let counts = whole::count(&egraph, root, max_size);
-        Self::from_counts(egraph, root, max_size, counts)
+        Self::from_counts(egraph, root, counts)
     }
 
     fn from_counts(
         egraph: EGraph<L, N>,
         root: Id,
-        max_size: usize,
         counts: HashMap<Id, HashMap<usize, BigUint>>,
     ) -> Option<WholePackage<L, N>> {
-        let histogram = counts.get(&root)?;
-        let min_size = histogram.keys().min().copied().unwrap_or(1);
+        counts.get(&root)?;
         Some(WholePackage {
             egraph,
             counts,
-            min_size,
-            max_size,
             root,
         })
     }
@@ -167,18 +162,22 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
         let (egraph, root) = result.into_curr();
         let root = egraph.find(root);
 
-        let (max_size, counts) =
-            match whole::count_through_sizes(&egraph, root, cap, min_extractable) {
-                Ok(found) => found,
-                Err(term_count) => {
-                    eprintln!(
-                        "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
-                    );
-                    return Err(cap);
-                }
-            };
+        let (max_size, counts) = match whole::count_through_sizes(
+            &egraph,
+            root,
+            cap,
+            min_extractable,
+        ) {
+            Ok(found) => found,
+            Err(term_count) => {
+                eprintln!(
+                    "found insufficient ({term_count}) extractable terms with cap={cap} when {min_extractable} were expected"
+                );
+                return Err(cap);
+            }
+        };
 
-        let Some(package) = Self::from_counts(egraph, root, max_size, counts) else {
+        let Some(package) = Self::from_counts(egraph, root, counts) else {
             eprintln!("package construction found no terms (max_size={max_size})");
             return Err(cap);
         };
@@ -206,20 +205,8 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L> for WholePackage<L, N> 
         policy: Policy,
         seed: [u64; 2],
     ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError> {
-        let histogram = self.root_histogram();
-
-        let requests =
-            sampling::greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
-
-        match policy {
-            Policy::Uniform => WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
-                .draw_batch(&requests, seed),
-            Policy::Count => WholeDrawer::new(&self.counts, &self.egraph, self.root, Count)
-                .draw_batch(&requests, seed),
-            Policy::Smallest => Ok(vec![
-                WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform).smallest(),
-            ]),
-        }
+        WholeDrawer::new(&self.counts, &self.egraph, self.root, policy.into())
+            .draw_for_policy(count, policy, seed)
     }
 }
 
@@ -228,6 +215,7 @@ mod tests {
     use super::*;
     use crate::langs::math::{self, Math};
     use crate::origin;
+    use Weigher::{Count, Uniform};
 
     fn rooted_counts(
         max_size: usize,
@@ -262,8 +250,6 @@ mod tests {
             .expect("build_through_sizes should succeed");
 
         assert_eq!(used_max_size, 5);
-        assert_eq!(package.max_size, 5);
-        assert_eq!(package.min_size, 1);
         let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
         keys.sort_unstable();
         assert_eq!(keys, vec![1, 3, 5]);
