@@ -42,7 +42,7 @@ non_novel(c, s) = sum over pc of joint(c, pc)(s)
 novel(c, s)     = whole(c, s) - non_novel(c, s)
 ```
 
-`novel(c, s)` is what `possible_size` consults and what the drawer weighs.
+`novel(c, s)` is what `Drawer::root_histogram` exposes and what the drawer weighs.
 
 ---
 
@@ -160,8 +160,8 @@ function derive_novel(whole, joint):
     return novel
 ```
 
-`novel(c, s)` is the count the drawer uses for both
-`ExactDrawer::possible_size` and the outer weighting distribution at the root.
+`novel(c, s)` is the count the drawer uses for both feasibility checks in
+`Drawer::draw_batch` and the outer weighting distribution at the root.
 
 ---
 
@@ -330,7 +330,7 @@ counting keeps no suffix tables of its own.
 
 ## 4. Correctness
 
-**Claim.** `draw(root, size, rng)` returns a term `t` with `prev.lookup(t) = None` whenever `possible_size(root, size, 0)` holds.
+**Claim.** `draw_next(size, sampled, rng)` returns a term `t` with `prev.lookup(t) = None` whenever `novel(root)(size) > 0` and fewer than `novel(root)(size)` terms have already been recorded in `sampled`.
 
 We prove two statements together by induction on `size`:
 
@@ -432,7 +432,7 @@ Nine profiles total. The single match `(R_prev, [A, B])` is completed by the pro
 
 Profiles with any `None` have count 0 because `novel_histogram(M)` is empty. The remaining profiles also have count 0 in this graph.
 
-So the drawer picks uniformly (under `CountWeigher`) from the three terms
+So the drawer picks uniformly (under `Count`) from the three terms
 novel relative to `prev`: `Add(a,a)`, `Add(b,a)`, `Add(b,b)`, but never
 `Add(a,b)`. This is exactly what
 `sampling::draw::frontier::tests::independent_frontier_draw_union_diagonal`
@@ -449,13 +449,13 @@ let package = FrontierPackage::build(result, max_size)?;
 let (max_size, package) =
     FrontierPackage::build_through_novel_sizes(result, start_size, search_steps, min_extractable)?;
 
-// `DrawerPackage` trait: spread `count` draws over the root sizes, then draw.
+// `AnalysisPackage` trait: spread `count` draws over the root sizes, then draw.
 let terms = package.draw_samples(count, policy, seed)?;
 ```
 
 `FrontierDrawer` implements the
 [`Drawer`](../../src/sampling/draw/mod.rs) trait, so it gets `draw_batch` and
-`draw_root_batch` from the shared bounded distinct-collection implementation.
+`smallest` from the shared trie-based without-replacement implementation.
 
 `FrontierPackage` ([src/sampling/draw/frontier.rs](../../src/sampling/draw/frontier.rs))
 is the construction boundary. It reconstructs the complete previous lookup,

@@ -11,10 +11,12 @@ The relevant implementation is:
 - [`src/sampling/count/novel.rs`](../../src/sampling/count/novel.rs):
   previous-node matches plus whole, joint, and novel histograms;
 - [`src/sampling/draw/frontier.rs`](../../src/sampling/draw/frontier.rs):
-  frontier states, feasible derivations, and independent weighted drawing
-  over them; and
-- [`src/sampling/draw/weigher.rs`](../../src/sampling/draw/weigher.rs):
-  the `CountWeigher` and `UniformWeigher` selection policies.
+  frontier states, feasible derivations, and without-replacement drawing over
+  them;
+- [`src/sampling/draw/trie.rs`](../../src/sampling/draw/trie.rs):
+  sparse pre-order derivation trie (`SampledTrie`) and `DrawCursor`; and
+- [`src/sampling/weigher.rs`](../../src/sampling/weigher.rs):
+  the `Count` and `Uniform` selection policies.
 
 The detailed counting argument is in
 [`novel_candidates.md`](novel_candidates.md). Direct grammar
@@ -129,14 +131,16 @@ branches and size splits.
 
 ## Selection distributions
 
-`FrontierDrawer` draws each complete expression without reference
-to earlier expressions in the batch. A `Weigher` controls its local random
-choices:
+`FrontierDrawer` draws terms without replacement across a size bucket using a
+sparse pre-order derivation trie (`SampledTrie`) that records how many
+completed root terms have already used each prefix. A `Weigher` controls local
+random choices over the remaining unsampled completions:
 
-- `CountWeigher` weights a branch by its number of complete expressions and a
-  child-size split by `child_count * rest_count`.
-- `UniformWeigher` assigns equal weight to every feasible local branch and
-  child-size choice.
+- `Count` weights each branch and child-size split by its exact remaining
+  unsampled capacity (`local_count * rest_total - used`), yielding exact
+  uniform sampling without replacement over the remaining frontier terms.
+- `Uniform` assigns equal weight to every local branch and child-size choice
+  whose remaining capacity is positive, excluding exhausted subtrees.
 
 Both distributions operate over the same feasible productions; they can affect
 which valid expression is likely, but not its size or frontier membership.
@@ -168,21 +172,21 @@ Every recursive child size is strictly smaller than its parent size. The proof
 and construction therefore remain well-founded even when the e-graph contains
 cycles.
 
-## Duplicate collection and work bound
+## Without-replacement collection and work bound
 
-Repeated direct draws can produce the same complete expression. The shared
-`Drawer::draw_size` implementation inserts completed expressions into a set
-and retries until it reaches the requested distinct count or exhausts its
-fixed draw budget.
+Because both whole and frontier derivations are unambiguous (each distinct
+concrete term corresponds to a unique pre-order sequence of branch and
+child-size decisions), `Drawer::draw_batch` maintains one `SampledTrie` per
+size bucket and calls `Drawer::draw_next` once per requested term—with no
+rejection retries.
 
-The exact histogram caps the target to the known number of available terms.
-The retry phase is additionally bounded by
-`MAX_DRAW_ATTEMPTS_PER_CANDIDATE * requested_count`. Duplicate handling is
-therefore finite and separate from frontier correctness: every attempted draw
-is already a valid exact-size frontier term.
+The exact histogram caps `target` to the known number of available terms. Once
+a draw steps onto an unvisited prefix in the trie, the remaining suffix cannot
+collide with any prior draw, so residual-capacity tracking switches off for the
+rest of that draw while still recording its path.
 
-The returned expressions are sorted after collection, making the result stable
-for a fixed seed and deterministic traversal order.
+The returned expressions are sorted after collection, making the output order
+stable across runs for a fixed seed.
 
 ## Possible follow-up work
 
@@ -193,8 +197,6 @@ selection:
    materializing their full Cartesian product.
 2. Cache feasible branches or suffix convolutions by `(class, size, state)` if
    repeated batch construction makes recomputation significant.
-3. Implement exact rank/unrank over counted frontier derivations if guaranteed
-   drawing without replacement becomes valuable.
 
 None of these changes should participate in proving size or frontier status;
 they operate only on productions already established as feasible.

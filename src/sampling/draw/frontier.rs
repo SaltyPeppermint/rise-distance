@@ -1,7 +1,5 @@
 use egg::{EGraph, Id, RecExpr};
-use num::{BigUint, Zero};
-use rand::distributions::WeightedIndex;
-use rand::prelude::*;
+use num::BigUint;
 use rand_chacha::ChaCha12Rng;
 
 use crate::cli::Policy;
@@ -11,17 +9,17 @@ use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::novel::{self, NodeMatch, NodeMatches, NovelTermCount};
 use crate::sampling::count::{RootBudgets, whole};
-use crate::sampling::draw::{AnalysisPackage, Drawer, DrawingError};
-use crate::sampling::weigher::{Count, Uniform, Weigher};
+use crate::sampling::draw::{self, AnalysisPackage, DrawCursor, Drawer, DrawingError, SampledTrie};
+use crate::sampling::weigher::{Choice, Count, Uniform, Weigher};
 use crate::utils::{self, HashMap};
 
-/// Draws each frontier term independently using the supplied local weighting
-/// policy.
+/// Draws frontier terms without replacement using the supplied local weighting
+/// policy and a pre-order [`SampledTrie`] of previously drawn derivations.
 ///
-/// `CountWeigher` draws proportionally to the number of complete terms below
-/// each derivation choice. `UniformWeigher` gives every feasible local choice
-/// equal weight. Neither policy coordinates choices across a batch.
-pub struct FrontierDrawer<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
+/// `Count` weights each remaining branch proportionally to its unsampled
+/// completions, giving exact uniform sampling without replacement. `Uniform`
+/// gives every non-exhausted local choice equal weight.
+struct FrontierDrawer<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
     counts: &'a NovelTermCount,
     graph: &'g EGraph<L, N>,
     root: Id,
@@ -29,8 +27,7 @@ pub struct FrontierDrawer<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
 }
 
 impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g, L, N, W> {
-    #[must_use]
-    pub const fn new(
+    fn new(
         counts: &'a NovelTermCount,
         graph: &'g EGraph<L, N>,
         root: Id,
@@ -39,19 +36,9 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
         Self {
             counts,
             graph,
-            root,
+            root: graph.find(root),
             weigher,
         }
-    }
-
-    fn pick_branch(&self, choices: &[Branch], rng: &mut ChaCha12Rng) -> usize {
-        WeightedIndex::new(
-            choices
-                .iter()
-                .map(|choice| self.weigher.node_weight(&choice.count)),
-        )
-        .expect("frontier branch weights contain a positive choice")
-        .sample(rng)
     }
 
     fn histogram(&self, child: Id, state: State) -> Option<&HashMap<usize, BigUint>> {
@@ -84,15 +71,18 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
         })
     }
 
-    /// Construct a term in `state` using only feasible frontier productions.
+    /// Construct a term in `state` using only feasible frontier productions
+    /// that still have unsampled completions in `cursor`.
     fn construct(
         &self,
         id: Id,
         size: usize,
         state: State,
-        rng: &mut ChaCha12Rng,
+        rest_total: Option<&BigUint>,
+        cursor: &mut DrawCursor<'_>,
     ) -> RecExpr<OriginLang<L>> {
         let curr = self.graph.find(id);
+        let active_rest = cursor.active_rest(rest_total);
 
         let branches = self.branches(curr, size, state);
         assert!(
@@ -100,41 +90,33 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
             "frontier state has at least one feasible production"
         );
 
-        let branch_idx = self.pick_branch(&branches, rng);
+        let choices = branches
+            .iter()
+            .enumerate()
+            .map(|(branch_idx, branch)| Choice::branch(branch_idx, &branch.count))
+            .collect::<Vec<_>>();
+        let branch_idx = self.weigher.pick(&choices, active_rest, cursor);
+        cursor.step(branch_idx);
+
         let branch = &branches[branch_idx];
         let node = &self.graph[curr].nodes[branch.node_idx];
-        let child_budget = size - 1;
-        let suffix = sampling::suffix_convolutions(&branch.child_hists, child_budget);
-
-        let mut remaining = child_budget;
-        let mut children = Vec::with_capacity(node.children().len());
-        for (child_index, &child_id) in node.children().iter().enumerate() {
-            let choices = branch.child_hists[child_index]
-                .iter()
-                .filter_map(|(&child_size, child_count)| {
-                    let rest_size = remaining.checked_sub(child_size)?;
-                    let rest_count = suffix[child_index + 1].get(&rest_size)?;
-                    (!rest_count.is_zero()).then(|| {
-                        (
-                            child_size,
-                            self.weigher.child_weight(child_count, rest_count),
-                        )
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            assert!(
-                !choices.is_empty(),
-                "chosen frontier production has a feasible child-size split"
-            );
-            let size_idx = WeightedIndex::new(choices.iter().map(|(_, weight)| weight))
-                .expect("frontier child-size weights contain a positive choice")
-                .sample(rng);
-            let child_size = choices[size_idx].0;
-            remaining -= child_size;
-            let child = self.construct(child_id, child_size, branch.child_states[child_index], rng);
-            children.push(child);
-        }
+        let children_ids = node.children();
+        let children = draw::draw_children(
+            &self.weigher,
+            &branch.child_hists,
+            size - 1,
+            active_rest,
+            cursor,
+            |i, child_size, child_rest, cur| {
+                self.construct(
+                    children_ids[i],
+                    child_size,
+                    branch.child_states[i],
+                    child_rest,
+                    cur,
+                )
+            },
+        );
 
         utils::stack_children(&children, OriginLang::new(node.clone(), curr))
     }
@@ -199,21 +181,19 @@ impl<'a, 'g, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> FrontierDrawer<'a, 'g,
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for FrontierDrawer<'_, '_, L, N, W> {
-    fn root(&self) -> Id {
-        self.root
+impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L> for FrontierDrawer<'_, '_, L, N, W> {
+    fn root_histogram(&self) -> Option<&HashMap<usize, BigUint>> {
+        self.counts.data().get(&self.root)
     }
 
-    fn find(&self, id: Id) -> Id {
-        self.graph.find(id)
-    }
-
-    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, BigUint>> {
-        self.counts.data().get(&self.find(id))
-    }
-
-    fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
-        self.construct(id, size, State::Novel, rng)
+    fn draw_next(
+        &self,
+        size: usize,
+        sampled: &mut SampledTrie,
+        rng: &mut ChaCha12Rng,
+    ) -> RecExpr<OriginLang<L>> {
+        let mut cursor = DrawCursor::new(sampled, rng);
+        self.construct(self.root, size, State::Novel, Some(&BigUint::ONE), &mut cursor)
     }
 }
 
@@ -368,7 +348,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> FrontierPackage<L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for FrontierPackage<L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L> for FrontierPackage<L, N> {
     /// Novel root-term counts by size.
     ///
     /// # Panics
@@ -388,28 +368,20 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for FrontierPackage<
         policy: Policy,
         seed: [u64; 2],
     ) -> Result<Vec<RecExpr<OriginLang<L>>>, DrawingError> {
-        let histogram = self
-            .counts
-            .data()
-            .get(&self.root)
-            .ok_or(DrawingError::HistogramEmpty)?;
+        let histogram = self.root_histogram();
 
         let requests =
             sampling::greedy_distribute_alloc(self.min_size, self.max_size, count, histogram);
 
         match policy {
             Policy::Uniform => FrontierDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
-                .draw_root_batch(&requests, seed),
+                .draw_batch(&requests, seed),
             Policy::Count => FrontierDrawer::new(&self.counts, &self.egraph, self.root, Count)
-                .draw_root_batch(&requests, seed),
+                .draw_batch(&requests, seed),
             Policy::Smallest => Ok(vec![
-                FrontierDrawer::new(&self.counts, &self.egraph, self.root, Uniform).smallest_root(),
+                FrontierDrawer::new(&self.counts, &self.egraph, self.root, Uniform).smallest(),
             ]),
         }
-    }
-
-    fn root(&self) -> Id {
-        self.root
     }
 }
 
@@ -476,8 +448,8 @@ mod tests {
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..50_u64 {
-            let mut rng = utils::combined_rng([seed]);
-            let term = origin::lower(drawer.draw(root, 2, &mut rng)).to_string();
+            let terms = drawer.draw_batch(&[(2, 1)], [seed, 0]).unwrap();
+            let term = origin::lower(terms[0].clone()).to_string();
             assert_eq!(term, "(ln b)", "got non-frontier sample: {term}");
         }
     }
@@ -501,8 +473,8 @@ mod tests {
         let drawer = FrontierDrawer::new(&novel, &curr, root, Count);
 
         for seed in 0..100_u64 {
-            let mut rng = utils::combined_rng([seed]);
-            let term = origin::lower(drawer.draw(root, 3, &mut rng)).to_string();
+            let terms = drawer.draw_batch(&[(3, 1)], [seed, 0]).unwrap();
+            let term = origin::lower(terms[0].clone()).to_string();
             assert_ne!(term, "(+ a b)", "produced non-frontier term");
             assert!(
                 ["(+ a a)", "(+ b a)", "(+ b b)"].contains(&term.as_str()),
@@ -520,6 +492,109 @@ mod tests {
         let novel = NovelTermCount::rooted_for_tests(5, &graph, &graph, a);
         let drawer = FrontierDrawer::new(&novel, &graph, a, Count);
 
-        assert!(!drawer.possible_size(a, 1, 0));
+        assert!(drawer.draw_batch(&[(1, 1)], [0, 0]).is_err());
+    }
+
+    #[test]
+    fn frontier_exhaustive_draw_both_policies_and_stable_order() {
+        // prev: Add(a, b) with a, b, c distinct.
+        // curr: union(a, b) and union(a, c) -> Add(M, M) has 9 terms of size 3;
+        // only Add(a, b) existed in prev, so 8 novel terms exist.
+        let mut curr = EGraph::<Math, ()>::new(());
+        let a = curr.add(math::sym("a"));
+        let b = curr.add(math::sym("b"));
+        let c = curr.add(math::sym("c"));
+        let root = curr.add(Math::Add([a, b]));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        curr.union(a, b);
+        curr.union(a, c);
+        curr.rebuild();
+
+        let root = curr.find(root);
+        let novel = NovelTermCount::rooted_for_tests(5, &curr, &prev, root);
+        assert_eq!(novel.data()[&root][&3], BigUint::from(8u32));
+
+        let count_terms = FrontierDrawer::new(&novel, &curr, root, Count)
+            .draw_batch(&[(3, 8)], [4, 2])
+            .expect("frontier count exhaustive draw");
+        let uniform_terms = FrontierDrawer::new(&novel, &curr, root, Uniform)
+            .draw_batch(&[(3, 8)], [4, 2])
+            .expect("frontier uniform exhaustive draw");
+
+        assert_eq!(count_terms.len(), 8);
+        assert_eq!(count_terms, uniform_terms);
+
+        let lowered = count_terms
+            .iter()
+            .map(|t| origin::lower(t.clone()).to_string())
+            .collect::<Vec<_>>();
+        assert!(!lowered.contains(&"(+ a b)".to_owned()));
+        let unique = lowered
+            .iter()
+            .cloned()
+            .collect::<crate::utils::HashSet<_>>();
+        assert_eq!(unique.len(), 8);
+    }
+
+    #[test]
+    fn frontier_skewed_uniform_draw_succeeds_without_rejection() {
+        // prev: a single leaf `old` under a 10-step chain of `cos`, plus `sin(s)`.
+        // curr: union 16 fresh leaves `n0..n15` into `old` so the deep branch
+        // has 16 novel terms while each intermediate level gets 1 novel term via
+        // a newly unioned `sin(new_i)` branch -> skewed cardinality under Uniform.
+        let mut curr = EGraph::<Math, ()>::new(());
+        let old = curr.add(math::sym("old"));
+        let mut cur = old;
+        let mut old_spine = Vec::new();
+        for i in 0..10 {
+            let s = curr.add(math::sym(&format!("s{i}")));
+            let cos_node = curr.add(Math::Cos(cur));
+            let sin_node = curr.add(Math::Sin(s));
+            curr.union(cos_node, sin_node);
+            old_spine.push((cos_node, s));
+            cur = cos_node;
+        }
+        curr.rebuild();
+        let prev = curr.clone();
+
+        for i in 0..16 {
+            let fresh = curr.add(math::sym(&format!("n{i}")));
+            curr.union(old, fresh);
+        }
+        // Make each level's `sin` branch also have a single novel term of
+        // matching size by unioning a fresh leaf into `s9` (root-level sin has
+        // size 2, not size 11). Instead build a matching-size novel branch at
+        // every level on top of `s0` so all novel terms have size 11.
+        let mut chain_leaf = curr.add(math::sym("fresh_s"));
+        for &(level_class, _) in &old_spine {
+            let branch = curr.add(Math::Sin(chain_leaf));
+            curr.union(level_class, branch);
+            chain_leaf = curr.add(Math::Ln(chain_leaf));
+        }
+        curr.rebuild();
+
+        let root = curr.find(cur);
+        let target_size = 11;
+        let novel = NovelTermCount::rooted_for_tests(target_size, &curr, &prev, root);
+        // 16 deep `cos^10(n_i)` + 10 narrow `cos^k(sin(ln^...))` = 26 novel terms.
+        assert_eq!(novel.data()[&root][&target_size], BigUint::from(26u32));
+
+        let uniform_first = FrontierDrawer::new(&novel, &curr, root, Uniform)
+            .draw_batch(&[(target_size, 26)], [17, 19])
+            .expect("skewed frontier uniform draw must succeed");
+        let uniform_second = FrontierDrawer::new(&novel, &curr, root, Uniform)
+            .draw_batch(&[(target_size, 26)], [17, 19])
+            .expect("repeated skewed frontier uniform draw must succeed");
+
+        assert_eq!(uniform_first.len(), 26);
+        assert_eq!(uniform_first, uniform_second);
+        for term in &uniform_first {
+            assert!(
+                prev.lookup_expr(&origin::lower(term.clone())).is_none(),
+                "drawn term must be absent from prev"
+            );
+        }
     }
 }

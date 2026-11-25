@@ -1,7 +1,5 @@
 use egg::{EGraph, Id, RecExpr};
 use num::BigUint;
-use rand::distributions::WeightedIndex;
-use rand::prelude::*;
 use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 
@@ -11,11 +9,11 @@ use crate::langs::{MyAnalysis, MyLanguage};
 use crate::origin::OriginLang;
 use crate::sampling;
 use crate::sampling::count::{RootBudgets, whole};
-use crate::sampling::draw::{AnalysisPackage, Drawer, DrawingError};
-use crate::sampling::weigher::{Count, Uniform, Weigher};
+use crate::sampling::draw::{self, AnalysisPackage, DrawCursor, Drawer, DrawingError, SampledTrie};
+use crate::sampling::weigher::{Choice, Count, Uniform, Weigher};
 use crate::utils::{self, HashMap};
 
-pub struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
+struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
     /// Histogram of the counts for each class, indexed by `node_idx`
     counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
     graph: &'b EGraph<L, N>,
@@ -24,8 +22,7 @@ pub struct WholeDrawer<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> {
 }
 
 impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> WholeDrawer<'a, 'b, L, N, W> {
-    #[must_use]
-    pub const fn new(
+    fn new(
         counts: &'a HashMap<Id, HashMap<usize, BigUint>>,
         graph: &'b EGraph<L, N>,
         root: Id,
@@ -34,7 +31,7 @@ impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> WholeDrawer<'a, 'b, L,
         Self {
             counts,
             graph,
-            root,
+            root: graph.find(root),
             weigher,
         }
     }
@@ -47,67 +44,66 @@ impl<'a, 'b, L: MyLanguage, N: MyAnalysis<L>, W: Weigher> WholeDrawer<'a, 'b, L,
             .map(|&c| self.counts.get(&self.graph.find(c)))
             .collect()
     }
-}
 
-impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L, N> for WholeDrawer<'_, '_, L, N, W> {
-    fn root(&self) -> Id {
-        self.root
-    }
-
-    fn find(&self, id: Id) -> Id {
-        self.graph.find(id)
-    }
-
-    fn size_histogram(&self, id: Id) -> Option<&HashMap<usize, BigUint>> {
-        self.counts.get(&id)
-    }
-
-    fn draw(&self, id: Id, size: usize, rng: &mut ChaCha12Rng) -> RecExpr<OriginLang<L>> {
+    fn draw_rec(
+        &self,
+        id: Id,
+        size: usize,
+        rest_total: Option<&BigUint>,
+        cursor: &mut DrawCursor<'_>,
+    ) -> RecExpr<OriginLang<L>> {
         let canon_id = self.graph.find(id);
         let eclass = &self.graph[canon_id];
         let child_budget = size - 1;
+        let active_rest = cursor.active_rest(rest_total);
 
-        let weights = eclass
+        let feasible_nodes = eclass
             .nodes
             .iter()
-            .map(|node| {
-                self.child_hists(node)
-                    .and_then(|hists| sampling::convolve_at(&hists, child_budget))
-                    .map_or_else(|| BigUint::ZERO, |count| self.weigher.node_weight(&count))
-            })
-            .collect::<Vec<_>>();
-        let pick_idx = WeightedIndex::new(&weights).unwrap().sample(rng);
-
-        let pick = &eclass.nodes[pick_idx];
-        // The pick has positive weight, so `convolve_at` saw every child.
-        let hists = self
-            .child_hists(pick)
-            .expect("a weighted node has counted children");
-        let suffix = sampling::suffix_convolutions(&hists, child_budget);
-
-        let mut remaining = child_budget;
-        let children = pick
-            .children()
-            .iter()
             .enumerate()
-            .map(|(i, &c_id)| {
-                let candidates = hists[i]
-                    .iter()
-                    .filter_map(|(&s, count)| {
-                        let rest = remaining.checked_sub(s)?;
-                        let rest_count = suffix[i + 1].get(&rest)?;
-                        Some((s, self.weigher.child_weight(count, rest_count)))
-                    })
-                    .collect::<Vec<_>>();
-
-                let dist = WeightedIndex::new(candidates.iter().map(|(_, w)| w)).unwrap();
-                let chosen_size = candidates[dist.sample(rng)].0;
-                remaining -= chosen_size;
-                self.draw(c_id, chosen_size, rng)
+            .filter_map(|(node_idx, node)| {
+                let hists = self.child_hists(node)?;
+                let count = sampling::convolve_at(&hists, child_budget)?;
+                Some((node_idx, count, hists))
             })
             .collect::<Vec<_>>();
+        let choices = feasible_nodes
+            .iter()
+            .map(|(node_idx, count, _)| Choice::branch(*node_idx, count))
+            .collect::<Vec<_>>();
+        let (pick_idx, _, hists) = &feasible_nodes[self.weigher.pick(&choices, active_rest, cursor)];
+
+        cursor.step(*pick_idx);
+        let pick = &eclass.nodes[*pick_idx];
+        let children_ids = pick.children();
+        let children = draw::draw_children(
+            &self.weigher,
+            hists,
+            child_budget,
+            active_rest,
+            cursor,
+            |i, child_size, child_rest, cur| {
+                self.draw_rec(children_ids[i], child_size, child_rest, cur)
+            },
+        );
 
         utils::stack_children(&children, OriginLang::new(pick.clone(), canon_id))
+    }
+}
+
+impl<L: MyLanguage, N: MyAnalysis<L>, W: Weigher> Drawer<L> for WholeDrawer<'_, '_, L, N, W> {
+    fn root_histogram(&self) -> Option<&HashMap<usize, BigUint>> {
+        self.counts.get(&self.root)
+    }
+
+    fn draw_next(
+        &self,
+        size: usize,
+        sampled: &mut SampledTrie,
+        rng: &mut ChaCha12Rng,
+    ) -> RecExpr<OriginLang<L>> {
+        let mut cursor = DrawCursor::new(sampled, rng);
+        self.draw_rec(self.root, size, Some(&BigUint::ONE), &mut cursor)
     }
 }
 
@@ -200,7 +196,7 @@ impl<L: MyLanguage, N: MyAnalysis<L>> WholePackage<L, N> {
     }
 }
 
-impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for WholePackage<L, N> {
+impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L> for WholePackage<L, N> {
     /// Root-term counts by size.
     ///
     /// # Panics
@@ -226,17 +222,13 @@ impl<L: MyLanguage, N: MyAnalysis<L>> AnalysisPackage<L, N> for WholePackage<L, 
 
         match policy {
             Policy::Uniform => WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform)
-                .draw_root_batch(&requests, seed),
+                .draw_batch(&requests, seed),
             Policy::Count => WholeDrawer::new(&self.counts, &self.egraph, self.root, Count)
-                .draw_root_batch(&requests, seed),
+                .draw_batch(&requests, seed),
             Policy::Smallest => Ok(vec![
-                WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform).smallest_root(),
+                WholeDrawer::new(&self.counts, &self.egraph, self.root, Uniform).smallest(),
             ]),
         }
-    }
-
-    fn root(&self) -> Id {
-        self.root
     }
 }
 
@@ -316,9 +308,9 @@ mod tests {
         let counts = rooted_counts(10, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
-        let mut rng = utils::combined_rng([42]);
-        let term = drawer.draw(root, 1, &mut rng);
-        assert_eq!(origin::lower(term).to_string(), "a");
+        let terms = drawer.draw_batch(&[(1, 1)], [42, 0]).unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(origin::lower(terms[0].clone()).to_string(), "a");
     }
 
     #[test]
@@ -333,8 +325,8 @@ mod tests {
         let drawer = WholeDrawer::new(&counts, &graph, a, Uniform);
 
         for s in 0..50_u64 {
-            let mut rng = utils::combined_rng([s]);
-            let term = origin::lower(drawer.draw(a, 1, &mut rng)).to_string();
+            let terms = drawer.draw_batch(&[(1, 1)], [s, 0]).unwrap();
+            let term = origin::lower(terms[0].clone()).to_string();
             assert!(term == "a" || term == "b", "got unexpected: {term}");
         }
     }
@@ -349,10 +341,10 @@ mod tests {
         let counts = rooted_counts(10, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
-        assert!(!drawer.possible_size(root, 1, 0));
-        assert!(!drawer.possible_size(root, 3, 0));
-        assert!(drawer.possible_size(root, 2, 0));
-        assert!(!drawer.possible_size(root, 2, 1));
+        assert!(drawer.draw_batch(&[(1, 1)], [0, 0]).is_err());
+        assert!(drawer.draw_batch(&[(3, 1)], [0, 0]).is_err());
+        assert!(drawer.draw_batch(&[(2, 1)], [0, 0]).is_ok());
+        assert!(drawer.draw_batch(&[(2, 2)], [0, 0]).is_err());
     }
 
     #[test]
@@ -372,7 +364,7 @@ mod tests {
         let counts = rooted_counts(10, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
-        let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
+        let result = drawer.draw_batch(&[(3, 5)], [1, 2]).unwrap();
         assert!(result.len() <= 6);
     }
 
@@ -385,9 +377,9 @@ mod tests {
         let counts = rooted_counts(10, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
-        let mut rng = utils::combined_rng([42]);
-        let term = drawer.draw(root, 1, &mut rng);
-        assert_eq!(origin::lower(term).to_string(), "a");
+        let terms = drawer.draw_batch(&[(1, 1)], [42, 0]).unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(origin::lower(terms[0].clone()).to_string(), "a");
     }
 
     #[test]
@@ -402,8 +394,8 @@ mod tests {
         let drawer = WholeDrawer::new(&counts, &graph, a, Count);
 
         for s in 0..50_u64 {
-            let mut rng = utils::combined_rng([s]);
-            let term = origin::lower(drawer.draw(a, 1, &mut rng)).to_string();
+            let terms = drawer.draw_batch(&[(1, 1)], [s, 0]).unwrap();
+            let term = origin::lower(terms[0].clone()).to_string();
             assert!(term == "a" || term == "b", "got unexpected: {term}");
         }
     }
@@ -425,7 +417,7 @@ mod tests {
         let counts = rooted_counts(10, &graph, root);
         let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
-        let result = drawer.draw_root_batch(&[(3, 5)], [1, 2]).unwrap();
+        let result = drawer.draw_batch(&[(3, 5)], [1, 2]).unwrap();
 
         assert!(result.len() <= 6);
     }
@@ -451,13 +443,13 @@ mod tests {
         let drawer = WholeDrawer::new(&counts, &graph, root, Count);
 
         let exact = drawer
-            .draw_root_batch(&[(3, 6)], [1, 2])
+            .draw_batch(&[(3, 6)], [1, 2])
             .expect("the size holds exactly the requested 6 terms");
         assert_eq!(exact.len(), 6, "should return exactly the 6 distinct terms");
 
         assert!(
             matches!(
-                drawer.draw_root_batch(&[(3, 1000)], [1, 2]),
+                drawer.draw_batch(&[(3, 1000)], [1, 2]),
                 Err(DrawingError::InsufficientTerms)
             ),
             "a size that cannot supply the request fails the batch"
@@ -478,13 +470,13 @@ mod tests {
         let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
 
         let satisfiable = drawer
-            .draw_root_batch(&[(2, 1)], [1, 2])
+            .draw_batch(&[(2, 1)], [1, 2])
             .expect("the lone size-2 term satisfies a request for one");
         assert_eq!(satisfiable.len(), 1);
 
         assert!(
             matches!(
-                drawer.draw_root_batch(&[(2, 1), (5, 5)], [1, 2]),
+                drawer.draw_batch(&[(2, 1), (5, 5)], [1, 2]),
                 Err(DrawingError::InsufficientTerms)
             ),
             "an empty size poisons an otherwise satisfiable batch"
@@ -492,10 +484,140 @@ mod tests {
 
         assert!(
             matches!(
-                drawer.draw_root_batch(&[(5, 5)], [1, 2]),
+                drawer.draw_batch(&[(5, 5)], [1, 2]),
                 Err(DrawingError::InsufficientTerms)
             ),
             "a wholly empty request returns an Error"
         );
+    }
+
+    #[test]
+    fn skewed_uniform_draw_succeeds_without_rejection() {
+        // Build a chain of 12 unary splits where each level has one 1-term
+        // branch (`sin(leaf)`) and one continuation (`cos(next)`), ending in a
+        // class with 16 leaves. Under local `Uniform`, any single term in the
+        // deep 16-leaf branch has probability 2^-12 * 1/16 = 2^-16, so 32x
+        // rejection sampling would fail to draw all 28 size-13 terms (or even
+        // just 10 of them). Exact trie exclusion must return every term.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let mut leaves = Vec::new();
+        for i in 0..16 {
+            leaves.push(graph.add(math::sym(&format!("x{i}"))));
+        }
+        let base = leaves[0];
+        for &leaf in &leaves[1..] {
+            graph.union(base, leaf);
+        }
+
+        // Pad `base` down a 12-level spine where each level also has a
+        // single-term branch of matching size.
+        let mut cur = base;
+        let mut single_chain = graph.add(math::sym("s"));
+        for _ in 0..12 {
+            let wide = graph.add(Math::Cos(cur));
+            let narrow = graph.add(Math::Sin(single_chain));
+            graph.union(wide, narrow);
+            cur = wide;
+            single_chain = graph.add(Math::Ln(single_chain));
+        }
+        graph.rebuild();
+
+        let target_size = 13;
+        let counts = rooted_counts(target_size, &graph, cur);
+        let root = graph.find(cur);
+        // 16 terms through the deep `cos^12` spine + 12 narrow `cos^k(sin(ln^...))`
+        // branches = 28 total terms of size 13.
+        assert_eq!(counts[&root][&target_size], BigUint::from(28u32));
+
+        let drawer = WholeDrawer::new(&counts, &graph, root, Uniform);
+        let first = drawer
+            .draw_batch(&[(target_size, 28)], [7, 9])
+            .expect("exhaustive uniform draw over skewed graph must succeed");
+        let second = drawer
+            .draw_batch(&[(target_size, 28)], [7, 9])
+            .expect("repeated draw must succeed");
+
+        assert_eq!(first.len(), 28);
+        assert_eq!(first, second, "output order must be stable across runs");
+
+        let lowered = first
+            .into_iter()
+            .map(|t| origin::lower(t).to_string())
+            .collect::<crate::utils::HashSet<_>>();
+        assert_eq!(lowered.len(), 28, "all 28 lowered terms must be distinct");
+    }
+
+    #[test]
+    fn exhaustive_cyclic_draw_both_policies() {
+        // `a == b == (+ a b)` has 16 distinct terms of size 5.
+        let mut graph = EGraph::<Math, ()>::new(());
+        let a = graph.add(math::sym("a"));
+        let b = graph.add(math::sym("b"));
+        let apb = graph.add(Math::Add([a, b]));
+        graph.union(a, apb);
+        graph.union(b, apb);
+        graph.rebuild();
+
+        let root = graph.find(apb);
+        let counts = rooted_counts(5, &graph, root);
+        assert_eq!(counts[&root][&5], BigUint::from(16u32));
+
+        let count_terms = WholeDrawer::new(&counts, &graph, root, Count)
+            .draw_batch(&[(5, 16)], [11, 13])
+            .expect("count exhaustive cyclic draw");
+        let uniform_terms = WholeDrawer::new(&counts, &graph, root, Uniform)
+            .draw_batch(&[(5, 16)], [11, 13])
+            .expect("uniform exhaustive cyclic draw");
+
+        assert_eq!(count_terms.len(), 16);
+        assert_eq!(uniform_terms.len(), 16);
+        // Both drew all 16 distinct terms and sorted them identically.
+        assert_eq!(count_terms, uniform_terms);
+    }
+
+    #[test]
+    fn exhaustive_ternary_variable_split_draw() {
+        use egg::SymbolLang;
+
+        // `f(x, y, z)` where x = {a, g(a)}, y = {b, g(b)}, z = {c, g(c)}.
+        // At root size 5, child sizes sum to 4 across 3 children:
+        // (2,1,1), (1,2,1), (1,1,2) -> 3 splits.
+        // Add a second leaf to each class so each size 1 has 2 terms and
+        // size 2 has 2 terms: total = 3 * (2 * 2 * 2) = 24 terms.
+        let mut graph = EGraph::<SymbolLang, ()>::new(());
+        let mk_class = |eg: &mut EGraph<SymbolLang, ()>, p: &str, q: &str| {
+            let l1 = eg.add(SymbolLang::leaf(p));
+            let l2 = eg.add(SymbolLang::leaf(q));
+            let g = eg.add(SymbolLang::new("g", vec![l1]));
+            eg.union(l1, l2);
+            eg.union(l1, g);
+            l1
+        };
+        let x = mk_class(&mut graph, "a1", "a2");
+        let y = mk_class(&mut graph, "b1", "b2");
+        let z = mk_class(&mut graph, "c1", "c2");
+        let root = graph.add(SymbolLang::new("f", vec![x, y, z]));
+        graph.rebuild();
+
+        let root = graph.find(root);
+        let budgets = RootBudgets::of_root(&graph, root, 5);
+        let counts = whole::count_histograms_rooted(&graph, &budgets);
+        assert_eq!(counts[&root][&5], BigUint::from(24u32));
+
+        let count_terms = WholeDrawer::new(&counts, &graph, root, Count)
+            .draw_batch(&[(5, 24)], [3, 5])
+            .expect("ternary count exhaustive draw");
+        let uniform_terms = WholeDrawer::new(&counts, &graph, root, Uniform)
+            .draw_batch(&[(5, 24)], [3, 5])
+            .expect("ternary uniform exhaustive draw");
+
+        assert_eq!(count_terms.len(), 24);
+        assert_eq!(count_terms, uniform_terms);
+
+        let lowered = count_terms
+            .into_iter()
+            .map(|t| origin::lower(t).to_string())
+            .collect::<crate::utils::HashSet<_>>();
+        assert_eq!(lowered.len(), 24);
     }
 }

@@ -175,7 +175,7 @@ fn build_frontier_samples<L: MyLanguage, N: MyAnalysis<L>>(
         result,
         start_size,
         args.size_search_steps,
-        args.n_samples * 10, // More than 10x the terms should be present so we can easily sample
+        args.n_samples,
     )
     .map_err(|tried_max_size| {
         format!(
@@ -190,16 +190,9 @@ fn build_frontier_samples<L: MyLanguage, N: MyAnalysis<L>>(
     );
     eprintln!("Sampling package succeeded with max_size {max_size}!");
     package.log_root_counts();
-    let samples = package
+    package
         .draw_samples(args.n_samples, policy, [args.seed, 0])
-        .unwrap_or_else(|e| {
-            eprintln!(
-                "WARNING: policy {policy} drew 0 n_samples ({e}) \
-                     driver legs for this policy will have no guides to pick from"
-            );
-            Vec::new()
-        });
-    Ok(samples)
+        .map_err(|e| format!("policy {policy} failed to draw samples: {e}"))
 }
 
 fn build_whole_samples<L: MyLanguage, N: MyAnalysis<L>>(
@@ -213,7 +206,7 @@ fn build_whole_samples<L: MyLanguage, N: MyAnalysis<L>>(
         result,
         start_size,
         args.size_search_steps,
-        args.n_samples * 10, // More than 10x the terms should be present so we can easily sample
+        args.n_samples,
     )
     .map_err(|tried_max_size| {
         format!(
@@ -228,16 +221,9 @@ fn build_whole_samples<L: MyLanguage, N: MyAnalysis<L>>(
     );
     eprintln!("Sampling package succeeded with max_size {max_size}!");
     package.log_root_counts();
-    let samples = package
+    package
         .draw_samples(args.n_samples, policy, [args.seed, 0])
-        .unwrap_or_else(|e| {
-            eprintln!(
-                "WARNING: policy {policy} drew 0 samples ({e}); \
-                     driver legs for this policy will have no guides to pick from"
-            );
-            Vec::new()
-        });
-    Ok(samples)
+        .map_err(|e| format!("policy {policy} failed to draw samples: {e}"))
 }
 
 /// For Serialization purposes we have to go via Vec instead of using `RecExpr`

@@ -28,7 +28,7 @@ pub fn convolve<H: Borrow<HashMap<usize, BigUint>>>(
                 if total > budget {
                     continue;
                 }
-                let product = c_acc.to_owned() * c_h;
+                let product = c_acc * c_h;
                 acc.entry(total)
                     .and_modify(|c| *c += &product)
                     .or_insert(product);
@@ -56,7 +56,7 @@ pub(crate) fn convolve_entry(
         .iter()
         .filter_map(|(&a, count_a)| {
             let count_b = total.checked_sub(a).and_then(|b| inner.get(&b))?;
-            Some(count_a.to_owned() * count_b)
+            Some(count_a * count_b)
         })
         .fold(BigUint::ZERO, |acc, c| acc + c)
 }
@@ -101,7 +101,7 @@ pub fn suffix_convolutions<H: Borrow<HashMap<usize, BigUint>>>(
                 if total > budget {
                     continue;
                 }
-                let product = c_i.to_owned() * c_rest;
+                let product = c_i * c_rest;
                 left[i]
                     .entry(total)
                     .and_modify(|c| *c += &product)
