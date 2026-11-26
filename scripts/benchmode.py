@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 CPU_DIR = Path("/sys/devices/system/cpu")
+CGROUP_DIR = Path("/sys/fs/cgroup")
 PSTATE_STATUS_PATHS = (CPU_DIR / "amd_pstate" / "status", CPU_DIR / "intel_pstate" / "status")
 INTEL_NO_TURBO = CPU_DIR / "intel_pstate" / "no_turbo"
 CPUFREQ_BOOST = CPU_DIR / "cpufreq" / "boost"
@@ -156,6 +157,7 @@ def isolated_cpus(*, sequential: bool = False) -> Generator[tuple[int, list[int]
     )
     saved_sysfs = [(p, val) for p in to_save if (val := _read_sysfs(p)) is not None]
     saved_slices = [(s, _systemctl("show", "-P", "AllowedCPUs", s)) for s in SLICES]
+    all_cpus = _read_sysfs(CPU_DIR / "possible")
 
     try:
         # In active/guided mode firmware picks the clock and may ignore boost/scaling_max_freq.
@@ -186,17 +188,33 @@ def isolated_cpus(*, sequential: bool = False) -> Generator[tuple[int, list[int]
 
         yield freq_mhz, selected
     finally:
-        prev_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        prev_term = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        prev_handlers = {
+            sig: signal.signal(sig, signal.SIG_IGN)
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+        }
         try:
-            for s, cpus in saved_slices:
-                _systemctl("set-property", "--runtime", s, f"AllowedCPUs={cpus}")
+            # Restore sysfs first so SMT siblings are back online before widening slice cpusets.
             for path, val in saved_sysfs:
                 _write_sysfs(path, val)
+            for s, cpus in saved_slices:
+                try:
+                    if not cpus and all_cpus:
+                        # Workaround for upstream systemd bug (systemd/systemd#43846):
+                        # clearing `AllowedCPUs=` on a running unit does not unset its live
+                        # `cpuset.cpus` (and writing "" directly fails with ENOSPC on populated
+                        # cgroups), so widen to all CPUs before clearing the runtime property.
+                        # https://github.com/systemd/systemd/issues/43846
+                        _systemctl("set-property", "--runtime", s, f"AllowedCPUs={all_cpus}")
+                    _systemctl("set-property", "--runtime", s, f"AllowedCPUs={cpus}")
+                except subprocess.CalledProcessError as exc:
+                    print(
+                        f"benchmode: could not restore AllowedCPUs for {s}: {exc}",
+                        file=sys.stderr,
+                    )
             print("benchmode off", file=sys.stderr)
         finally:
-            signal.signal(signal.SIGINT, prev_int)
-            signal.signal(signal.SIGTERM, prev_term)
+            for sig, prev in prev_handlers.items():
+                signal.signal(sig, prev)
 
 
 def _prepare_delegated_cgroup() -> Path:
@@ -207,7 +225,7 @@ def _prepare_delegated_cgroup() -> Path:
     """
     lines = Path("/proc/self/cgroup").read_text().strip().splitlines()
     rel = next(line.split("::", 1)[1] for line in lines if "::" in line).lstrip("/")
-    root = Path("/sys/fs/cgroup") / rel
+    root = CGROUP_DIR / rel
     controllers = set((root / "cgroup.controllers").read_text().split())
     needed = [c for c in ("memory", "cpuset") if c in controllers]
     driver = root / "driver"
@@ -237,10 +255,11 @@ def _run_wrapped(env_file: Path, *, sequential: bool, cmd: Sequence[str]) -> int
     if uid is None or gid is None:
         sys.exit("error: SUDO_UID/SUDO_GID not set")
 
-    def _handle_sigterm(_signum: int, _frame: Any) -> None:
-        raise SystemExit(143)
+    def _handle_stop(signum: int, _frame: Any) -> None:
+        raise SystemExit(128 + signum)
 
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+    signal.signal(signal.SIGTERM, _handle_stop)
+    signal.signal(signal.SIGHUP, _handle_stop)
 
     with isolated_cpus(sequential=sequential) as (freq_mhz, selected_cpus):
         cpu_str = ",".join(str(c) for c in selected_cpus)
@@ -308,7 +327,13 @@ def elevate(cmd: Sequence[str], *, sequential: bool = False) -> int:
             "sequential" if sequential else "parallel",
             *cmd,
         ]
-        return subprocess.run(wrap_cmd, check=False).returncode
+        proc = subprocess.Popen(wrap_cmd)
+        while True:
+            try:
+                return proc.wait()
+            except KeyboardInterrupt:
+                # Let the root wrapper finish its finally cleanup before returning.
+                continue
     finally:
         env_file.unlink(missing_ok=True)
 
