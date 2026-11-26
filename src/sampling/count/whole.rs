@@ -29,7 +29,7 @@ pub(super) fn step<L: Language, N: Analysis<L>>(
                 .filter(|(_, node)| budgets.node_fits(egraph, id, node))
                 .filter_map(|(node_idx, node)| {
                     debug_assert!(node.children().iter().all(|&c| egraph.find(c) == c));
-                    whole.node_count(|| (id, node_idx), node.children(), total)
+                    whole.node_count((id, node_idx), node.children(), total)
                 })
                 .sum::<BigUint>();
             (!count.is_zero()).then_some((id, count))

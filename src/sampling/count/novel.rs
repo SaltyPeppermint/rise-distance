@@ -287,7 +287,7 @@ fn step_joint<L: Language, N: Analysis<L>>(
             })
         })
         .filter_map(|(c, idx, match_idx, pc, children)| {
-            let count = joint.node_count(|| (c, idx, match_idx), &children, total)?;
+            let count = joint.node_count((c, idx, match_idx), &children, total)?;
             Some(((c, pc), count))
         })
         .collect::<Vec<_>>();

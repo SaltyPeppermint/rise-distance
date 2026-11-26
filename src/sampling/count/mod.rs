@@ -52,9 +52,9 @@ impl<K: Eq + Hash, N: Eq + Hash> LayerTable<K, N> {
     /// place for arity >= 3, callers must invoke `node_count` at every
     /// consecutive `total` (`2, 3, ...`) in ascending order without gaps for
     /// each active `node_key`.
-    pub(super) fn node_count<F: FnOnce() -> N>(
+    pub(super) fn node_count(
         &mut self,
-        node_key: F,
+        node_key: N,
         children: &[K],
         total: usize,
     ) -> Option<BigUint> {
@@ -78,7 +78,7 @@ impl<K: Eq + Hash, N: Eq + Hash> LayerTable<K, N> {
                 }
                 let tables = self
                     .suffix
-                    .entry(node_key())
+                    .entry(node_key)
                     .or_insert_with(|| vec![HashMap::default(); children.len() - 2]);
                 // `tables[j]` is suffix position `j + 1` (children `j + 1..n`).
                 for j in (0..tables.len()).rev() {
