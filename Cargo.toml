@@ -12,8 +12,8 @@ crate-type = ["rlib"]
 clap = { version = "4", features = ["derive"] }
 egg = { path = "vendor/egg", version = "0.11", features = ["serde-1", "lp"] }
 hashbrown = { version = "0.17", features = ["serde"] }
-tikv-jemallocator = "0.6"
-tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+tikv-jemallocator = "0.7"
+tikv-jemalloc-ctl = { version = "0.7", features = ["stats"] }
 procfs = "0.18"
 # log = "0.4"
 num-bigint = { version = "0.5", features = ["serde", "rand_0_10"] }
