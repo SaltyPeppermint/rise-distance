@@ -26,14 +26,10 @@ from baseline import check_baseline
 from common import (
     ATTEMPT_BIN,
     SAMPLE_BIN,
-    ArgTooLong,
-    BinaryPanicked,
     Measured,
-    MemoryKilled,
     Pair,
     PrioritySlot,
     SamplePolicy,
-    TimeoutKilled,
     cli_flags,
     exit_if_missing,
     fan_out,
@@ -44,6 +40,7 @@ from common import (
     run_json_subprocess,
     with_flag,
 )
+from errors import ArgTooLong, BinaryPanicked, MemoryKilled, TimeoutKilled
 from replay_args import ReplayArgs
 from schemes import ATTEMPT_SCHEMA, EMPTY_SAMPLE_META, EXPANSION_SCHEMA, PAIR_SCHEMA
 
@@ -371,7 +368,7 @@ async def draw_expansion(
         log(f"WARNING: {too_long}")
         return Expansion((), "arg_too_long", dict(EMPTY_SAMPLE_META), 0.0)
     except BinaryPanicked as panicked:
-        panicked.warn()
+        log(panicked.warning_message)
         return Expansion((), "binary_panic", dict(EMPTY_SAMPLE_META), panicked.wall_time, tries)
     except TimeoutKilled as timed_out:
         log(f"WARNING: {timed_out}")

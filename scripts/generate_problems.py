@@ -21,7 +21,6 @@ from common import (
     ATTEMPT_BIN,
     SAMPLE_BIN,
     START_BIN,
-    MemoryKilled,
     PrioritySlot,
     SamplePolicy,
     attempt_summary,
@@ -32,6 +31,7 @@ from common import (
     parse_size,
     run_json_subprocess,
 )
+from errors import MemoryKilled
 
 
 class GenerateArgs(BaseModel):

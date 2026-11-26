@@ -25,6 +25,7 @@ from common import (
     measure_attempt,
     problem_language,
 )
+from errors import BaselineMismatch
 from replay_args import ReplayArgs
 from schemes import UNGUIDED_SCHEMA
 
@@ -67,10 +68,6 @@ async def run_unguided_pair(
         "unguided_peak_live_heap": summary["peak_live_heap"],
         "unguided_peak_rss": attempt.peak_rss,
     }
-
-
-class BaselineMismatch(RuntimeError):
-    """A stored baseline that was computed under other flags or misses pairs."""
 
 
 def check_baseline(directory: Path, expected: dict, pairs: list[Pair]) -> None:
