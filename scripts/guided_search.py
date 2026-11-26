@@ -31,14 +31,12 @@ from common import (
     PrioritySlot,
     SamplePolicy,
     cli_flags,
-    exit_if_missing,
     fan_out,
     load_pairs,
     log,
     measure_attempt,
     problem_language,
     run_json_subprocess,
-    with_flag,
 )
 from errors import ArgTooLong, BinaryPanicked, MemoryKilled, TimeoutKilled
 from replay_args import ReplayArgs
@@ -286,9 +284,8 @@ async def run_capped(
     tries. A `BinaryPanicked`/`TimeoutKilled` is not retried and carries that
     sum, except a timeout after a fit, which returns that fit. `tries` counts
     every try, also those of a call that raised."""
-    cmd = [*cmd, "--print-success-iters"]
 
-    async def attempt(cmd: list[str], spent: float) -> Measured:
+    async def attempt(max_iters: int | None, spent: float) -> Measured:
         """One try with what is left of `timeout` after `spent` seconds."""
         left = None
         if args.timeout is not None:
@@ -298,7 +295,11 @@ async def run_capped(
         tries.count += 1
         try:
             return await run_json_subprocess(
-                cmd, what=what, max_rss_bytes=args.max_rss_bytes, limit=limit, timeout=left
+                [*cmd, *cli_flags(max_iters=max_iters)],
+                what=what,
+                max_rss_bytes=args.max_rss_bytes,
+                limit=limit,
+                timeout=left,
             )
         except (BinaryPanicked, TimeoutKilled) as failed:
             failed.wall_time += spent
@@ -306,7 +307,7 @@ async def run_capped(
 
     # First try, recording the productive eqsat iterations
     try:
-        measured = await attempt(cmd, 0.0)
+        measured = await attempt(args.max_iters, 0.0)
         return measured, measured.wall_time
     except MemoryKilled as killed:
         wall_time = killed.wall_time
@@ -331,7 +332,7 @@ async def run_capped(
                 break
             i = (ok + fail) // 2
         try:
-            measured = await attempt(with_flag(cmd, "--max-iters", str(candidates[i])), wall_time)
+            measured = await attempt(candidates[i], wall_time)
         except MemoryKilled as killed:
             wall_time += killed.wall_time
             tries.killed_time += killed.wall_time
@@ -355,7 +356,10 @@ async def draw_expansion(
         str(SAMPLE_BIN),
         *sample_flags,
         *cli_flags(
-            **args.limits, start=s_expr, n_samples=args.tree_width * args.guides_per_attempt
+            **{**args.limits, "max_iters": None},
+            start=s_expr,
+            n_samples=args.tree_width * args.guides_per_attempt,
+            print_success_iters=True,
         ),
     ]
 
@@ -477,6 +481,11 @@ class SearchFrontier(ABC):
         self.root = SearchNode(node_id=0, parent_id=None, depth=0, guide=None, s_expr=root)
         self._ids = itertools.count(1)
         self._seen: set[str] = set()
+        self._init_queue()
+
+    @abstractmethod
+    def _init_queue(self) -> None:
+        """Initialize the frontier's backing queue(s) with `self.root`."""
 
     @abstractmethod
     def queue_expansion(self, batch: tuple[SearchNode, ...]) -> None:
@@ -554,16 +563,10 @@ class DfsFrontier(SearchFrontier):
     it reaches the top, and its batches replace it.
     """
 
-    def __init__(
-        self,
-        guides_per_attempt: int,
-        root: str,
-        pools: SamplePools,
-        trace: PairTrace,
-        budget: Budget,
-    ) -> None:
-        super().__init__(guides_per_attempt, root, pools, trace, budget)
-        self._stack: deque[SearchNode | tuple[SearchNode, ...]] = deque([self.root])
+    _stack: deque[SearchNode | tuple[SearchNode, ...]]
+
+    def _init_queue(self) -> None:
+        self._stack = deque([self.root])
 
     def queue_expansion(self, batch: tuple[SearchNode, ...]) -> None:
         # Reversed, so the first sibling ends up on top.
@@ -582,18 +585,13 @@ class DfsFrontier(SearchFrontier):
 class BfsFrontier(SearchFrontier):
     """Exhausts a depth before descending; draws only when no batch is ready."""
 
-    def __init__(
-        self,
-        guides_per_attempt: int,
-        root: str,
-        pools: SamplePools,
-        trace: PairTrace,
-        budget: Budget,
-    ) -> None:
-        super().__init__(guides_per_attempt, root, pools, trace, budget)
+    _to_expand: deque[SearchNode]
+    _ready: deque[tuple[SearchNode, ...]]
+
+    def _init_queue(self) -> None:
         # Nodes whose pool is still to be drawn.
-        self._to_expand: deque[SearchNode] = deque([self.root])
-        self._ready: deque[tuple[SearchNode, ...]] = deque()
+        self._to_expand = deque([self.root])
+        self._ready = deque()
 
     def queue_expansion(self, batch: tuple[SearchNode, ...]) -> None:
         self._to_expand.extend(batch)
@@ -837,7 +835,6 @@ async def search(
     Raises `BaselineMismatch` before any work is spent if the baseline does not fit.
     """
     started = time.monotonic()
-    exit_if_missing(SAMPLE_BIN, ATTEMPT_BIN)
     language = problem_language(args.path)
     base_flags = args.base_flags(language)
     sample_flags = args.sample_flags(language)
@@ -847,8 +844,7 @@ async def search(
 
     args.output.mkdir(parents=True, exist_ok=True)
     # Written first, so `experiment.py --rerun-aborted` can rerun a failed search.
-    config = {**args.model_dump(), "effective_limits": args.limits}
-    (args.output / "config.json").write_text(json.dumps(config, indent=2, default=str))
+    (args.output / "config.json").write_text(json.dumps(args.model_dump(), indent=2, default=str))
 
     log(f"Searching {len(pairs)} (start, goal) pair(s)")
     # Only the processes hold slots, so a pair waiting on another pair's pool holds none.

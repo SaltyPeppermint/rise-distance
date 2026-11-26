@@ -59,14 +59,13 @@ class ReplayArgs(BaseModel):
         return parse_size(self.max_rss)
 
     @property
-    def limits(self) -> dict[str, int | float]:
-        """The configured guide-replay budgets, without the omitted ones."""
-        budgets = {
+    def limits(self) -> dict[str, int | float | None]:
+        """The configured guide-replay budgets."""
+        return {
             "max_iters": self.max_iters,
             "max_nodes": self.max_nodes,
             "max_time": self.max_time,
         }
-        return {key: value for key, value in budgets.items() if value is not None}
 
     def base_flags(self, language: str) -> list[str]:
         """Flags shared by every `attempt` process."""

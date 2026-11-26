@@ -23,9 +23,7 @@ from common import (
     START_BIN,
     PrioritySlot,
     SamplePolicy,
-    attempt_summary,
     cli_flags,
-    exit_if_missing,
     fan_out,
     log,
     parse_size,
@@ -128,17 +126,6 @@ class GenerateArgs(BaseModel):
         }
 
 
-def uniform_sample_allocation(sizes: list[int], total_samples: int) -> list[tuple[int, int]]:
-    if not sizes:
-        return []
-
-    size_count = len(sizes)
-    base = total_samples // size_count
-    remainder = total_samples % size_count
-
-    return [(size, base + int(i < remainder)) for i, size in enumerate(sizes)]
-
-
 def derive_seed(*fields: int) -> int:
     """Stable 64-bit BLAKE2 seed, independent of scheduling."""
     h = hashlib.blake2b(digest_size=8, person=b"rise-seed-v1")
@@ -236,25 +223,21 @@ async def run_attempt(
         limit=limit,
         stdin=pair["start"].encode(),
     )
-    return {**pair, **attempt_summary(measured.payload), "peak_rss": measured.peak_rss}
+    return {**pair, **measured.payload, "peak_rss": measured.peak_rss}
 
 
 async def generate(args: GenerateArgs, limit: PrioritySlot) -> str:
     """Generate the problems into `output` and return a one-line summary."""
-    exit_if_missing(START_BIN, SAMPLE_BIN, ATTEMPT_BIN)
-
     out = args.output
     out.mkdir(parents=True, exist_ok=True)
     limits = args.limits
     flags = cli_flags(**limits)
     min_rss = parse_size(args.min_rss)
 
+    sizes = range(args.min_size, args.max_size + 1)
+    base, remainder = divmod(args.starts, len(sizes))
     slots = [
-        (size, index)
-        for size, count in uniform_sample_allocation(
-            list(range(args.min_size, args.max_size + 1)), args.starts
-        )
-        for index in range(count)
+        (size, index) for i, size in enumerate(sizes) for index in range(base + int(i < remainder))
     ]
     log(f"Generating {len(slots)} start term(s) -> {out}")
     starts = await fan_out(lambda slot: run_start(args, limit, flags, slot), slots, "starts")

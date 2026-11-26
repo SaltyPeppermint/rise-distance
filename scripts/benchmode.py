@@ -8,7 +8,6 @@ housekeeping CPU, run the command as your normal user inside a delegated `bench.
 cgroup across the isolated physical cores, and restore all system settings in `finally`.
 """
 
-import argparse
 import json
 import os
 import shutil
@@ -324,31 +323,11 @@ def elevate(cmd: Sequence[str], *, sequential: bool = False) -> int:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
-    if args[:1] == ["--_exec"]:
-        if len(args) < 4:
-            sys.exit("error: internal --_exec requires env file, CPU string, and command")
+    if args[:1] == ["--_exec"] and len(args) >= 4:
         _exec_with_env(Path(args[1]), args[2], args[3:])
-    if args[:1] == ["--_wrap"]:
-        if len(args) < 4:
-            sys.exit("error: internal --_wrap requires env file, mode, and command")
+    if args[:1] == ["--_wrap"] and len(args) >= 4:
         sys.exit(_run_wrapped(Path(args[1]), sequential=args[2] == "sequential", cmd=args[3:]))
-
-    parser = argparse.ArgumentParser(
-        prog="benchmode.py",
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--sequential",
-        action="store_true",
-        help="Isolate a single physical core instead of all non-housekeeping physical cores.",
-    )
-    parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command and arguments to run.")
-    cli = parser.parse_args(args)
-    cmd = cli.cmd[1:] if cli.cmd[:1] == ["--"] else cli.cmd
-    if not cmd:
-        parser.error("a command is required")
-    sys.exit(elevate(cmd, sequential=cli.sequential))
+    sys.exit("error: benchmode.py is invoked internally via elevate()")
 
 
 if __name__ == "__main__":

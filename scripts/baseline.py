@@ -19,7 +19,6 @@ from common import (
     Pair,
     PrioritySlot,
     cli_flags,
-    exit_if_missing,
     fan_out,
     load_pairs,
     measure_attempt,
@@ -104,7 +103,6 @@ async def compute_baseline(args: BaselineArgs, limit: PrioritySlot) -> str:
 
     Raises `BaselineMismatch` if `output` holds a baseline that does not fit.
     """
-    exit_if_missing(ATTEMPT_BIN)
     out = args.output
     pairs = load_pairs(args.path, args.n_starts)
 

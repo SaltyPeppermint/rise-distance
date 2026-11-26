@@ -1,5 +1,5 @@
 """Shared helpers for the driver scripts: logging, size parsing, CLI flag
-building, binary checks, problem loading, the priority semaphore and `fan_out`,
+building, problem loading, the priority semaphore and `fan_out`,
 subprocess-JSON plumbing, and running a single `attempt` process."""
 
 import asyncio
@@ -71,27 +71,6 @@ def cli_flags(**values: object) -> list[str]:
             flags.append(str(value))
 
     return flags
-
-
-def with_flag(cmd: list[str], flag: str, value: str) -> list[str]:
-    """Copy of `cmd` with `flag` set to `value`, replacing an existing value."""
-    try:
-        i = cmd.index(flag)
-        return [*cmd[: i + 1], value, *cmd[i + 2 :]]
-    except ValueError:
-        return [*cmd, flag, value]
-
-
-def exit_if_missing(*binaries: Path) -> None:
-    """Print an error and exit 2 if any binary is missing."""
-    missing = [b for b in binaries if not b.exists()]
-    if missing:
-        names = " ".join(f"--bin {b.name}" for b in missing)
-        log(
-            f"Binary not found: {', '.join(str(b) for b in missing)}. "
-            f"Build with `cargo build --release {names}`."
-        )
-        raise SystemExit(2)
 
 
 # TODO: the `smallest_novel`/`smallest_overall` policies are gone for now
@@ -240,11 +219,6 @@ def check_arg_sizes(cmd: list[str], what: str) -> None:
 _CGROUP_IDS = itertools.count(1)
 
 
-def prefix_cgroup(argv: list[str], procs_path: Path) -> list[str]:
-    """Move the spawned process into `procs_path` before execing `argv`."""
-    return ["/bin/sh", "-c", 'echo $$ > "$1" && shift && exec "$@"', "_", str(procs_path), *argv]
-
-
 @contextlib.contextmanager
 def _job_cgroup(root: Path, max_rss_bytes: int | None, cpu: int) -> Generator[Path]:
     """Create a per-child cgroup under delegated `root` for RSS cap and CPU pinning."""
@@ -317,8 +291,14 @@ async def run_json_subprocess(
     check_arg_sizes(cmd, what)
     async with limit.hold() as cpu:
         with _job_cgroup(limit.cgroup, max_rss_bytes, cpu) as job_dir:
+            # Move the spawned process into `cgroup.procs`, then exec the workload in place.
             proc = await asyncio.create_subprocess_exec(
-                *prefix_cgroup(cmd, job_dir / "cgroup.procs"),
+                "/bin/sh",
+                "-c",
+                'echo $$ > "$1" && shift && exec "$@"',
+                "_",
+                str(job_dir / "cgroup.procs"),
+                *cmd,
                 stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -328,7 +308,6 @@ async def run_json_subprocess(
                     out, err = await proc.communicate(stdin)
             except (asyncio.CancelledError, TimeoutError) as stopped:
                 # Cancelling or timing out only unwinds the *read*, so the child has to be killed by hand.
-                # `prefix_cgroup` execs the workload in place rather than forking.
                 if proc.returncode is None:
                     with contextlib.suppress(ProcessLookupError):
                         proc.kill()
@@ -368,21 +347,8 @@ class AttemptResult:
     wall_time: float
 
 
-def attempt_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    """`attempt`'s `AttemptSummary` payload (`src/bin/attempt.rs`) as an attempt row.
-
-    The payload already carries exactly the `ATTEMPT_DTYPES` columns; this only
-    checks that the two still agree.
-    """
-    if payload.keys() != ATTEMPT_DTYPES.keys():
-        raise ValueError(
-            f"attempt payload keys {sorted(payload)} differ from {sorted(ATTEMPT_DTYPES)}"
-        )
-    return payload
-
-
 def failure_summary(stop_reason: str) -> dict[str, Any]:
-    """An `attempt_summary`-shaped row with all measurements `None`, for a child
+    """An `AttemptSummary`-shaped row with all measurements `None`, for a child
     that never printed one (`out_of_memory`, `binary_panic`, `arg_too_long`, `timeout`,
     `budget_exhausted`).
 
@@ -432,4 +398,4 @@ async def measure_attempt(
     except BinaryPanicked as panicked:
         log(panicked.warning_message)
         return AttemptResult(failure_summary("binary_panic"), None, panicked.wall_time)
-    return AttemptResult(attempt_summary(measured.payload), measured.peak_rss, measured.wall_time)
+    return AttemptResult(measured.payload, measured.peak_rss, measured.wall_time)

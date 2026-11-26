@@ -165,8 +165,6 @@ async def rerun_aborted(base: Path, slots: PrioritySemaphore) -> None:
     runs = []
     for run_dir in run_dirs:
         config = json.loads((run_dir / "config.json").read_text())
-        # Derived from the other fields.
-        config.pop("effective_limits", None)
         # In case the run was moved since.
         config["output"] = run_dir
         runs.append(SearchArgs(**config))
@@ -255,11 +253,7 @@ def main() -> None:
     if os.environ.get("BENCHMODE") != "1":
         # Build before disabling SMT so cargo can use all hardware threads.
         subprocess.run(["cargo", "build", "--release"], check=True)
-        os.environ["EXPERIMENT_BUILT"] = "1"
         raise SystemExit(elevate([sys.executable, *sys.argv], sequential=cli.sequential))
-
-    if os.environ.get("EXPERIMENT_BUILT") != "1":
-        subprocess.run(["cargo", "build", "--release"], check=True)
 
     slots = PrioritySemaphore(benchmode_cpus(), benchmode_cgroup())
 
