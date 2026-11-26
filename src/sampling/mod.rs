@@ -6,7 +6,7 @@ mod weigher;
 
 use std::borrow::Borrow;
 
-use num::{BigUint, ToPrimitive, Zero};
+use num_bigint::BigUint;
 use smallvec::SmallVec;
 
 use crate::utils::HashMap;
@@ -83,7 +83,13 @@ fn convolve_at<H: Borrow<HashMap<usize, BigUint>>>(
 ) -> Option<BigUint> {
     let count = match histograms {
         [] => return (budget == 0).then_some(BigUint::ONE),
-        [only] => return only.borrow().get(&budget).filter(|c| !c.is_zero()).cloned(),
+        [only] => {
+            return only
+                .borrow()
+                .get(&budget)
+                .filter(|c| **c != BigUint::ZERO)
+                .cloned();
+        }
         [a, b] => convolve_entry(a.borrow(), b.borrow(), budget),
         [first, rest @ ..] => {
             if histograms.iter().any(|h| h.borrow().is_empty()) {
@@ -93,7 +99,7 @@ fn convolve_at<H: Borrow<HashMap<usize, BigUint>>>(
             convolve_entry(first.borrow(), &tail, budget)
         }
     };
-    (!count.is_zero()).then_some(count)
+    (count != BigUint::ZERO).then_some(count)
 }
 
 /// Convolve child histograms right-to-left, returning suffix intermediates.
@@ -126,7 +132,7 @@ fn greedy_distribute_alloc(count: usize, histogram: &HashMap<usize, BigUint>) ->
         if remaining == 0 {
             break;
         }
-        let available = histogram[&size].to_u64().unwrap_or(u64::MAX);
+        let available = u64::try_from(&histogram[&size]).unwrap_or(u64::MAX);
         let take = remaining.min(available);
         if take > 0 {
             requests.push((size, take));

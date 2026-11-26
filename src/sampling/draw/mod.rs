@@ -5,7 +5,7 @@ mod whole;
 use std::borrow::Borrow;
 
 use egg::{Language, RecExpr};
-use num::{BigUint, ToPrimitive, Zero};
+use num_bigint::BigUint;
 use rand_chacha::ChaCha12Rng;
 use thiserror::Error;
 
@@ -54,7 +54,7 @@ trait Drawer<L: Language> {
             req == 0
                 || hist
                     .and_then(|h| h.get(&size))
-                    .is_some_and(|avail| avail.to_u64().is_none_or(|a| a >= req))
+                    .is_some_and(|avail| u64::try_from(avail).ok().is_none_or(|a| a >= req))
         });
         if !feasible {
             return Err(DrawingError::InsufficientTerms);
@@ -190,7 +190,7 @@ where
                 .filter_map(|(&child_size, child_count)| {
                     let rest_size = remaining.checked_sub(child_size)?;
                     let rest_count = rest_hist.get(&rest_size)?;
-                    (!rest_count.is_zero())
+                    (*rest_count != BigUint::ZERO)
                         .then(|| Choice::child_size(child_size, child_count, rest_count))
                 })
                 .collect::<Vec<_>>();

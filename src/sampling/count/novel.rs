@@ -3,7 +3,7 @@
 //! A current term is novel when no previous e-class can extract it.
 
 use egg::{Analysis, EGraph, Id, Language};
-use num::{BigUint, Zero};
+use num_bigint::BigUint;
 use smallvec::SmallVec;
 
 use super::LayerTable;
@@ -101,7 +101,7 @@ impl NovelTermCount {
                 debug_assert!(*whole_count >= root_non_novel);
                 let novel = whole_count - root_non_novel;
 
-                if !novel.is_zero() {
+                if novel != BigUint::ZERO {
                     term_count += novel;
                     if term_count >= threshold {
                         let mut whole_data = whole.into_data();
@@ -331,7 +331,7 @@ fn derive_novel(
         }
     }
     whole.retain(|_, hist| {
-        hist.retain(|_, count| !count.is_zero());
+        hist.retain(|_, count| *count != BigUint::ZERO);
         !hist.is_empty()
     });
     whole

@@ -1,6 +1,6 @@
 use egg::{Id, Language, RecExpr, Symbol};
-use num::FromPrimitive;
-use num::rational::Ratio;
+use num_bigint::BigInt;
+use num_rational::Ratio;
 
 use super::Math;
 use crate::generator::{Grammar, Samplable};
@@ -77,9 +77,9 @@ fn default_symbols() -> Vec<Math> {
     vec![
         Math::Symbol("x".into()),
         Math::Symbol("y".into()),
-        Math::Constant(Ratio::from_i64(0).unwrap()),
-        Math::Constant(Ratio::from_i64(1).unwrap()),
-        Math::Constant(Ratio::from_i64(2).unwrap()),
+        Math::Constant(Ratio::from_integer(BigInt::from(0))),
+        Math::Constant(Ratio::from_integer(BigInt::from(1))),
+        Math::Constant(Ratio::from_integer(BigInt::from(2))),
     ]
 }
 
@@ -262,9 +262,9 @@ mod tests {
         let syms = default_symbols();
         assert!(syms.contains(&Math::Symbol("x".into())));
         assert!(syms.contains(&Math::Symbol("y".into())));
-        assert!(syms.contains(&Math::Constant(Ratio::from_i64(0).unwrap())));
-        assert!(syms.contains(&Math::Constant(Ratio::from_i64(1).unwrap())));
-        assert!(syms.contains(&Math::Constant(Ratio::from_i64(2).unwrap())));
+        assert!(syms.contains(&Math::Constant(Ratio::from_integer(BigInt::from(0)))));
+        assert!(syms.contains(&Math::Constant(Ratio::from_integer(BigInt::from(1)))));
+        assert!(syms.contains(&Math::Constant(Ratio::from_integer(BigInt::from(2)))));
         assert_eq!(syms.len(), 5);
     }
 }

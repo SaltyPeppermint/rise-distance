@@ -5,8 +5,8 @@ use egg::{
     Analysis, Applier, DidMerge, EGraph, Id, Language, PatternAst, Rewrite, Subst, Symbol, Var,
     define_language, rewrite,
 };
-use num::rational::Ratio;
-use num::{BigInt, FromPrimitive, Signed, ToPrimitive, Zero};
+use num_bigint::BigInt;
+use num_rational::Ratio;
 use serde::{Deserialize, Serialize};
 
 use crate::utils::HashSet;
@@ -88,7 +88,7 @@ impl Analysis<Math> for ConstantFold {
                 x(a)? * x(b)?,
                 format!("(* {} {})", x(a)?, x(b)?).parse().unwrap(),
             ),
-            Math::Div([a, b]) if x(b) != Some(&Ratio::zero()) => (
+            Math::Div([a, b]) if x(b).is_some_and(|v| *v.numer() != BigInt::ZERO) => (
                 x(a)? / x(b)?,
                 format!("(/ {} {})", x(a)?, x(b)?).parse().unwrap(),
             ),
@@ -161,7 +161,7 @@ fn is_not_zero(var: &str) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst
     let var = var.parse().unwrap();
     move |egraph, _, subst| {
         if let Some(n) = &egraph[subst[var]].data {
-            (n.0) != Ratio::zero()
+            *n.0.numer() != BigInt::ZERO
         } else {
             true
         }
@@ -260,6 +260,8 @@ fn silly_add(bound: f64) -> Rewrite<Math, ConstantFold> {
 fn has_small_constant_descendant(
     bound: f64,
 ) -> impl Fn(&mut EGraph<Math, ConstantFold>, Id, &Subst) -> bool {
+    let bound = ratio_from_f64(bound).unwrap();
+    let neg_bound = -&bound;
     move |egraph, root, _| {
         let mut visited: HashSet<Id> = HashSet::default();
         let mut stack = vec![egraph.find(root)];
@@ -269,7 +271,8 @@ fn has_small_constant_descendant(
                 continue;
             }
             if let Some((c, _)) = &egraph[id].data
-                && c.abs().to_f64().is_some_and(|v| v < bound)
+                && *c > neg_bound
+                && *c < bound
             {
                 return true;
             }
@@ -288,9 +291,38 @@ fn tiny_constant(bound: f64) -> Rewrite<Math, ConstantFold> {
     rewrite!("is-tiny"; "?a" => {
         TinyConstApplier {
             var: "?a".parse().unwrap(),
-            bound: Ratio::from_f64(bound).unwrap(),
+            bound: ratio_from_f64(bound).unwrap(),
         }
     })
+}
+
+fn ratio_from_f64(value: f64) -> Option<Constant> {
+    if !value.is_finite() {
+        return None;
+    }
+    if value == 0.0 {
+        return Some(Ratio::from_integer(BigInt::ZERO));
+    }
+    let bits = value.to_bits();
+    let sign: i8 = if bits >> 63 == 0 { 1 } else { -1 };
+    let exp_bits = i16::try_from((bits >> 52) & 0x7ff).unwrap();
+    let frac = bits & 0x000f_ffff_ffff_ffff;
+    let (mantissa, exponent) = if exp_bits == 0 {
+        (frac << 1, -1075)
+    } else {
+        (frac | 0x0010_0000_0000_0000, exp_bits - 1075)
+    };
+    let numer = BigInt::from(mantissa) * BigInt::from(sign);
+    if exponent >= 0 {
+        Some(Ratio::from_integer(
+            numer << usize::from(exponent.cast_unsigned()),
+        ))
+    } else {
+        Some(Ratio::new(
+            numer,
+            BigInt::from(1u8) << usize::from(exponent.unsigned_abs()),
+        ))
+    }
 }
 
 struct TinyConstApplier {

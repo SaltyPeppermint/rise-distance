@@ -1,5 +1,5 @@
 use egg::{Analysis, EGraph, Id, Language, RecExpr};
-use num::BigUint;
+use num_bigint::BigUint;
 use rand_chacha::ChaCha12Rng;
 use smallvec::SmallVec;
 

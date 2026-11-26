@@ -1,5 +1,5 @@
 use egg::{Analysis, EGraph, Id, Language};
-use num::{BigUint, Zero};
+use num_bigint::BigUint;
 
 use super::LayerTable;
 use super::budgets::{self, MinSizes, RootBudgets};
@@ -32,7 +32,7 @@ pub(super) fn step<L: Language, N: Analysis<L>>(
                     whole.node_count((id, node_idx), node.children(), total)
                 })
                 .sum::<BigUint>();
-            (!count.is_zero()).then_some((id, count))
+            (count != BigUint::ZERO).then_some((id, count))
         })
         .collect::<Vec<_>>();
     for (id, count) in layer {

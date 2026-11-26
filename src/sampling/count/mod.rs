@@ -11,7 +11,7 @@ pub(super) mod whole;
 
 use std::hash::Hash;
 
-use num::{BigUint, Zero};
+use num_bigint::BigUint;
 
 use crate::sampling;
 use crate::utils::HashMap;
@@ -90,13 +90,13 @@ impl<K: Eq + Hash, N: Eq + Hash> LayerTable<K, N> {
                         continue;
                     };
                     let c = sampling::convolve_entry(child_hist, rest, total);
-                    if !c.is_zero() {
+                    if c != BigUint::ZERO {
                         head[j].insert(total, c);
                     }
                 }
                 sampling::convolve_entry(self.data.get(first)?, &tables[0], total)
             }
         };
-        (!count.is_zero()).then_some(count)
+        (count != BigUint::ZERO).then_some(count)
     }
 }

@@ -1,5 +1,5 @@
 use egg::{Analysis, AstSize, EGraph, Id, Language};
-use num::BigUint;
+use num_bigint::BigUint;
 
 use crate::analysis::semilattice::SemiLatticeAnalysis;
 use crate::utils::{HashMap, UniqueQueue};

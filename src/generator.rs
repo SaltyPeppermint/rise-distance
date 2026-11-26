@@ -1,6 +1,6 @@
 use egg::{Language, RecExpr};
-use rand::Rng;
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
+use rand::{Rng, RngExt};
 
 use crate::utils;
 
@@ -204,7 +204,7 @@ impl<L: Samplable> SizeUniformSampler<L> {
         loop {
             let body = self.gen_sized(rng, n);
             let free_count = L::free_var_indices(&self.grammar, &body).len();
-            if rng.gen_range(0..var_count) < free_count {
+            if rng.random_range(0..var_count) < free_count {
                 return body;
             }
         }

@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use egg::{Analysis, DidMerge, EGraph, Id, Language};
-use num::BigUint;
+use num_bigint::BigUint;
 
 use super::CommutativeSemigroupAnalysis;
 use crate::utils::HashMap;
