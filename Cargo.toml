@@ -17,7 +17,7 @@ tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 procfs = "0.18"
 # log = "0.4"
 num-bigint = { version = "0.5", features = ["serde", "rand_0_10"] }
-num-rational = { version = "0.4", default-features = false, features = ["std", "serde"] }
+num-rational = { version = "0.4", features = [ "serde"] }
 rand = "0.10"
 rand_chacha = "0.10"
 serde = { version = "1", features = ["derive"] }
