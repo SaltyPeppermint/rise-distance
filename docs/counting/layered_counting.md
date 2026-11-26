@@ -1,35 +1,58 @@
 # Size-layered, root-restricted term counting
 
-Candidate construction counts exact-size terms only for current e-classes and
-sizes that can participate in an extraction from the selected root. This
-document describes the shared size-layered kernel and the root budgets that
-bound every production counting phase.
+To sample terms from an e-graph without bias or wasted work, we first count
+how many terms of each exact AST size `s` can be extracted from a chosen root
+e-class.
 
-The relevant code is:
+Doing this naively runs into two problems:
+
+1. **Cycles:** E-graphs often contain cycles (like `X = {a, f(X)}`), where
+   unbounded extraction is infinite.
+2. **Scale:** An e-graph can contain many e-classes and large subterms that can
+   never appear in a size-bounded extraction from `root`.
+
+The counting layer solves both with two shared primitives:
+
+- **Size-layered dynamic programming (`LayerTable`)** counts terms size by size
+  (`s = 1, 2, 3, ...`), unfolding cycles into an acyclic DAG.
+- **Root budgets (`MinSizes` and `RootBudgets`)** compute the largest subterm
+  size each e-class could possibly need for `root`, skipping every unreachable
+  class and oversized e-node.
+
+> **Related docs:** For how these primitives are combined with match
+> enumeration and geometric cap doubling to build a `FrontierPackage`, read
+> [novel_size_search.md](novel_size_search.md) next. For the high-level
+> novel-candidate pipeline, see
+> [novel_candidates.md](../candidates/novel_candidates.md).
+
+## Where the code lives
 
 - [src/sampling/count/budgets.rs](../../src/sampling/count/budgets.rs) —
-  `RootBudgets` and `MinSizes`.
+  `MinSizes`, `RootBudgets`, and `doubling_caps`.
 - [src/sampling/count/mod.rs](../../src/sampling/count/mod.rs) —
-  `LayerTable` and per-node size-layered accumulation.
+  generic `LayerTable` kernel and arity-specialized convolution.
 - [src/sampling/count/whole.rs](../../src/sampling/count/whole.rs) —
-  whole-graph layer stepping directly over the e-graph.
+  whole-graph counting directly over the e-graph.
+- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) —
+  reuse of `LayerTable` for joint `curr`/`prev` counting and novel-size search.
 - [src/sampling/draw/whole.rs](../../src/sampling/draw/whole.rs) —
-  top-down consumption of rooted whole histograms.
-- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — reuse of
-  `LayerTable` for rooted joint counting and the novel-size scan.
-- [src/analysis/semilattice/ast_size.rs](../../src/analysis/semilattice/ast_size.rs)
-  — minimum extraction sizes used by the budget calculation.
+  top-down drawing from whole-graph histograms.
+- [src/analysis/semilattice/ast_size.rs](../../src/analysis/semilattice/ast_size.rs) —
+  minimum extraction sizes (`AstSize`) used to compute root budgets.
 
-## Exact-size recurrence
+---
 
-For a current e-class `c`, the sparse histogram
+## 1. Counting by size layer (handling cycles)
+
+Size `s` is AST node count. For a canonical e-class `c`, we want the sparse
+histogram:
 
 ```text
-whole(c, s) = number of terms of exactly size s extractable from c
+whole(c, s) = |{ terms t of exact size s extractable from c }|
 ```
 
-uses AST node count as size. For an e-node `f(c_1, ..., c_k)`, the node costs
-one and its children share the remaining `s - 1` nodes:
+An e-node `f(c_1, ..., c_k)` contributes `1` for itself, leaving `s - 1` nodes
+to distribute among its `k` children:
 
 ```text
 whole(c, s) = sum over nodes f(c_1, ..., c_k) in c
@@ -37,119 +60,158 @@ whole(c, s) = sum over nodes f(c_1, ..., c_k) in c
               product_i whole(c_i, s_i)
 ```
 
-Every child size is strictly smaller than `s`. Counts at layer `s` therefore
-depend only on completed earlier layers, even if the e-graph contains cycles.
-For example, `X = {a, f(X)}` unfolds by size:
+Because every child subterm has size at least `1`, every `s_i` is strictly less
+than `s`. Layer `s` therefore depends **only on already-finished layers
+`1..s - 1`**.
+
+Even when e-classes form a cycle, the expanded `(e-class, s)` states are
+strictly acyclic. For example, `X = {a, f(X)}` unfolds cleanly one size at a
+time:
 
 ```text
-size 1: a
-size 2: f(a)
-size 3: f(f(a))
+s = 1: a          (count = 1)
+s = 2: f(a)       (count = 1)
+s = 3: f(f(a))    (count = 1)
 ...
 ```
 
-There is a cycle between e-classes but no cycle between expanded
-`(e-class, size)` states.
+No fixpoint iteration is needed: each `(c, s)` entry is computed once.
 
-## The `LayerTable` kernel
+---
 
-`LayerTable<K, N>` is generic over a state key `K` and suffix-cache node key
-`N`. Whole counting uses `K = Id` and steps directly over `egraph[id].nodes`;
-joint current/previous counting uses `K = (Id, PrevId)` and steps directly over
-`matches`.
+## 2. The `LayerTable` kernel
 
-Nodes of arity ≤ 2 are evaluated directly without any suffix table. Only for
-nodes with arity `n >= 3` does `LayerTable` lazily populate sparse suffix
-convolution tables for positions `1..n - 1`:
+`LayerTable<K, N>` is a generic size-layered counter parameterized by:
 
-```text
-S_i(t) = ways to fill children i..n with total size t
-```
+- **`K` (state key):** what is being counted.
+- **`N` (node key):** identifies a specific production for optional suffix
+  caching.
 
-At size layer `s`, it extends each stored suffix by the single total `t = s - 1`:
+| Counting mode | State key `K` | Node key `N` | Steps over |
+| :--- | :--- | :--- | :--- |
+| Whole counting | `Id` (canonical `curr` class `c`) | `(Id, node_idx)` | `egraph[c].nodes` |
+| Joint counting | `(Id, PrevId)` (pair `(c, pc)`) | `(Id, node_idx, match_idx)` | rooted `matches` |
 
-```text
-S_i(t) = sum over sigma of histogram(k_i, sigma) * S_(i+1)(t - sigma)
-```
+### Fast paths by arity
 
-Both factors are final. `sigma >= 1`, so even the suffix lookup is at a total
-strictly below the entry being added. After all nodes in a layer have been
-evaluated, the layer's counts are published into `data`. Separating evaluation
-from publication makes the result independent of hash-map iteration order.
+When computing how many ways a node's children can sum to `total = s - 1`,
+`LayerTable::node_count` avoids unnecessary allocations by specializing on
+arity:
 
-Any suffix cache is dropped once counting finishes; top-down drawing computes
-on-demand suffix convolutions only for nodes with arity ≥ 3.
+- **Arity 0 (leaf):** returns `1` when `total == 0` (`s == 1`), else `None`.
+- **Arity 1 (unary):** direct histogram lookup at `total`.
+- **Arity 2 (binary):** single pointwise convolution of the two child
+  histograms at `total`.
+- **Arity ≥ 3:** lazily populates sparse **suffix convolution tables** for
+  positions `1..n - 1`:
 
-## Shared root budgets
+  ```text
+  S_i(t) = ways to fill children i..n with total size t
+  ```
 
-Production callers first construct one `RootBudgets` value for a canonical
-current root and limit. It owns:
+  At each size layer `s`, `node_count` extends each stored suffix table by just
+  the single new total `t = s - 1`:
 
-- the maximum useful subterm size for each relevant canonical current class;
-- the minimum extraction size for every canonical current class; and
-- the root limit.
+  ```text
+  S_i(t) = sum over sigma of histogram(k_i, sigma) * S_(i+1)(t - sigma)
+  ```
 
-Bundling these values prevents a global size limit from being passed where a
-per-class limit is required. The same value is consumed by whole counting,
-rooted match enumeration, the exact scan, and rooted joint counting.
+  Because every child size `sigma >= 1`, both factors are already finalized.
+  This requires callers to step `total` in ascending order without gaps for
+  each active node key. Once counting finishes, `into_data()` drops the entire
+  suffix cache; top-down drawing computes suffix convolutions on demand only
+  for the arity ≥ 3 nodes it actually visits.
 
-Let `min(c)` be the smallest term extractable from `c`. The root starts with
-the full limit:
+### Order-independent layer updates
 
-```text
-budget(root) = limit
-```
+Within layer `s`, all budgeted states are evaluated against the finalized
+`1..s - 1` tables first, and only then are the new counts inserted into `data`.
+Separating evaluation from publication ensures the counts never depend on
+hash-map iteration order.
 
-For a parent node `f(c_1, ..., c_k)` in class `p`, child `c_i` can use whatever
-remains when the node and every sibling take their minimum sizes:
+---
 
-```text
-candidate_budget(c_i) = budget(p) - 1 - sum_(j != i) min(c_j)
-```
+## 3. Root budgets (`MinSizes` and `RootBudgets`)
 
-A worklist relaxation retains the largest candidate received by each class.
-Nodes whose children cannot fit at their minima do not propagate budgets.
-Classes that never receive a budget cannot occur in any root extraction within
-the limit and are omitted.
+Counting every class up to a global size limit wastes time and memory on
+subterms that can never fit inside a root extraction. Instead, counting is
+scoped to one canonical `root` and size `limit`.
 
-The minimum feasible size of an individual e-node is
+### Step 1: Precompute minimum sizes (`MinSizes`)
 
-```text
-1 + sum_i min(c_i)
-```
+`MinSizes::new(egraph)` runs a single bottom-up `AstSize` analysis to find
+`min(c)`, the size of the smallest term extractable from each canonical class
+`c`. Because `MinSizes` depends only on the e-graph (not on `limit`), callers
+compute it once and reuse it across multiple limits (for example, during
+geometric cap search and final pruning).
 
-Whole counting and rooted match enumeration use this second check to skip
-oversized nodes even inside a relevant class.
+### Step 2: Propagate maximum useful sizes (`RootBudgets`)
 
-## Why capping is exact for root queries
+`min_sizes.budgets_for(egraph, root, limit)` computes `budget(c)`, the largest
+subterm size class `c` can ever take inside a size-`limit` extraction from
+`root`:
 
-Suppose a parent extraction fits within `budget(p)`. After paying for the node
-and giving every sibling at least its minimum size, child `c_i` can receive no
-more than `budget(c_i)` by construction. Consequently:
+1. Seed `root` with the full limit:
+   ```text
+   budget(root) = limit
+   ```
+2. For any parent e-node `f(c_1, ..., c_k)` in class `p`, child `c_i` can use
+   whatever remains after paying `1` for `f` and giving every sibling its
+   minimum possible size:
+   ```text
+   candidate_budget(c_i) = budget(p) - 1 - sum_(j != i) min(c_j)
+   ```
+3. Run a worklist relaxation that keeps the **largest** candidate budget any
+   parent path gives to `c_i`.
 
-- every recursive whole-count lookup requested by the root is retained;
-- every suffix-convolution remainder reachable during drawing is covered by the
-  retained child histograms;
-- every recursive draw call satisfies `size <= budget(child)`; and
-- joint terms are also safe because a joint term for `(c, pc)` is a whole term
-  of current class `c`.
+**Example:** Suppose `root` has `budget = 6` and contains `f(A, B)` where
+`min(A) = 1` and `min(B) = 3`.
+- For `A`: `6 - 1 - 3 = 2` (so `A` never needs terms larger than size 2).
+- For `B`: `6 - 1 - 1 = 4` (so `B` never needs terms larger than size 4).
 
-The restriction removes only states no extraction from the selected root can
-query. Direct histogram queries against deeper classes are intentionally
-capped; `FrontierPackage` exposes root-driven candidate drawing, not a global
-all-class analysis.
+Two additional filters tighten the work further:
 
-## Rooted joint counting
+- **Unreachable / over-budget classes** (those that never receive a budget
+  `>= min(c)`) are omitted from `RootBudgets` entirely.
+- **Oversized e-nodes (`node_fits`)** inside an otherwise relevant class are
+  skipped whenever their cheapest possible realization exceeds the class budget:
+  ```text
+  1 + sum_i min(c_i) > budget(c)
+  ```
 
-Joint counting steps directly over the rooted `matches` table using
-`LayerTable<(Id, PrevId), (Id, usize, usize)>`. For each matched node in current
-class `c` within `budget(c)`, each match `m` contributes to `(c, m.prev_class)`
-with child keys zipped from `(current_child, previous_child)`. Previous classes
-are not assigned an independent reachability or size budget; missing child
-pairs contribute no terms.
+---
 
-See [finding the smallest novel sizes](novel_size_search.md) for the complete
-exact-package flow.
+## 4. Why capping is exact for root queries
+
+Suppose a parent extraction from `p` has size `<= budget(p)`. After paying `1`
+for the parent node and at least `min(c_j)` for every sibling `j != i`, child
+`c_i` cannot possibly exceed `budget(c_i)` by construction.
+
+Consequently, restricting counting and matching to `RootBudgets` drops **only**
+states that no extraction from `root` within `limit` can ever query:
+
+- Every whole-count lookup needed by `root` is present.
+- Every suffix-convolution remainder needed during top-down drawing is covered.
+- Every recursive draw call satisfies `s <= budget(child)`.
+- Every joint `(c, pc)` term is also a whole term of `c`, so `budget(c)` is a
+  sound bound for joint counting too.
+
+> **Note:** Non-root classes are intentionally capped to what `root` can use.
+> `WholePackage` and `FrontierPackage` are built for root-driven drawing, not
+> as global all-class tables.
+
+---
+
+## 5. Next: driving whole and joint counts together
+
+Joint counting reuses `LayerTable` with key `(Id, PrevId)` over the rooted
+`matches` table, giving each pair `(c, pc)` the budget `budget(c)` of its
+current class. See [novel_size_search.md](novel_size_search.md) for how
+`FrontierPackage::build` combines `MinSizes`, `RootBudgets`, match enumeration,
+and simultaneous whole/joint layer stepping to find the smallest usable novel
+size.
+
+---
 
 ## Verification
 
@@ -158,8 +220,8 @@ Tests cover:
 - cyclic e-graphs with finite witnesses at increasing sizes;
 - sibling minima tightening a deep child's budget;
 - unreachable classes and oversized e-nodes being excluded;
-- suffix tables checked entry-for-entry against direct convolutions;
-- scan and final package histograms agreeing for every selected root in small
-  acyclic and cyclic fixtures; and
+- arity ≥ 3 suffix tables matching direct convolutions entry-for-entry;
+- scan and final package histograms agreeing across acyclic and cyclic
+  fixtures; and
 - recursive frontier drawing returning only terms absent from the previous
   boundary.

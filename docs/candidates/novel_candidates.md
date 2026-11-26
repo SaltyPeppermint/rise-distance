@@ -1,460 +1,245 @@
 # Exact novel-candidate construction
 
-End-to-end walkthrough of how the codebase constructs candidate terms from
-`curr` that are *not* extractable from any e-class in `prev`—terms that carry
-information learned in the iteration that produced `curr` from `prev`.
+This document is the high-level guide to how the codebase constructs candidate
+terms from a current e-graph (`curr`) that are **not** extractable from any
+e-class in an earlier snapshot (`prev`)—terms that reflect new equalities
+learned between `prev` and `curr`.
 
-This is e-graph extraction, not direct grammar generation. For the seed-term
-drawer and its binder semantics, see
-[../generation/random_terms.md](../generation/random_terms.md).
+Instead of sampling terms at random and rejecting ones that already existed in
+`prev`, the pipeline has two stages:
 
-The relevant code lives in:
+1. **Count** the exact number of novel terms per size within the root's size
+   budget (`FrontierPackage::build`).
+2. **Draw** directly from the novel subset without replacement
+   (`FrontierDrawer`).
 
-- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — counting & match enumeration.
-- [src/sampling/draw/frontier.rs](../../src/sampling/draw/frontier.rs) — the frontier-constrained derivation space and independent weighted drawing over it.
-- [frontier_drawing.md](frontier_drawing.md) — the separation between frontier correctness and drawing policy.
+> **How the docs fit together:**
+> - **This doc:** core definitions, end-to-end pipeline, correctness proof,
+>   worked example, and public API.
+> - **Drawing & policies:** [frontier_drawing.md](frontier_drawing.md) —
+>   the two-state frontier automaton, agreement profiles, `Weigher` policies,
+>   and `SampledTrie`.
+> - **Counting kernel:** [layered_counting.md](../counting/layered_counting.md) —
+>   `LayerTable` (handling cycles) and `MinSizes` / `RootBudgets`.
+> - **Search & package build:** [novel_size_search.md](../counting/novel_size_search.md) —
+>   geometric cap doubling, match enumeration, incremental scanning, and pruning.
+> - **Seed terms (no e-graph):** [random_terms.md](../generation/random_terms.md).
+
+## Where the code lives
+
+- [src/sampling/count/budgets.rs](../../src/sampling/count/budgets.rs) —
+  `MinSizes`, `RootBudgets`, and `doubling_caps`.
+- [src/sampling/count/mod.rs](../../src/sampling/count/mod.rs) —
+  generic `LayerTable` size-layered DP kernel.
+- [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) —
+  `NovelTermCount`, match enumeration, joint counting, and novel derivation.
+- [src/sampling/draw/frontier.rs](../../src/sampling/draw/frontier.rs) —
+  `FrontierPackage` and `FrontierDrawer`.
+- [src/sampling/draw/mod.rs](../../src/sampling/draw/mod.rs) —
+  shared `Drawer` trait, `SamplePackage`, and `draw_children`.
 
 ---
 
-## 1. Definitions
+## 1. Core definitions
 
-Let `curr` and `prev` be two e-graphs (`prev` is some earlier snapshot of `curr`). Every concrete term `t` (a `RecExpr`) has a unique e-class in any rebuilt e-graph it exists in: `prev.lookup(t)` returns `Some(pc)` for at most one `pc`, and similarly for `curr`.
+Let `curr` and `prev` be two rebuilt e-graphs, and let size `s` be AST node
+count. In any rebuilt e-graph, a concrete term `t` (a `RecExpr`) belongs to
+**at most one** e-class: `prev.lookup(t)` returns `Some(pc)` for at most one
+canonical `prev` class `pc`, or `None` if `t` cannot be extracted from `prev`.
 
-We call a term `t` extracted from curr's class `c`:
+For a term `t` extracted from canonical `curr` class `c`, we call `t`:
 
-- **non-novel** if `prev.lookup(t)` is `Some(_)`, i.e. `t` is also some extraction of some prev class,
-- **novel** otherwise.
+- **non-novel** if `prev.lookup(t) = Some(pc)` for some `prev` class `pc`;
+- **novel** if `prev.lookup(t) = None`.
 
-Two prev classes cannot share a term (`prev.lookup` is unique), so when we count non-novel terms by partitioning over prev classes, there is no double-counting.
+Because two `prev` classes can never share the same concrete term, partitioning
+non-novel terms by their `prev` class `pc` **never double-counts**.
 
-The core data structure is the **joint extractability table**:
+This defines the three count tables used across the counting and drawing docs:
 
-```
-joint(c, pc)(s) =
-    | { extractions t of size s rooted at curr's c
-        such that prev.lookup(t) = Some(pc) } |
-```
+```text
+whole(c, s)     = |{ terms t of exact size s extractable from curr class c }|
 
-From `joint` and the standard whole count `whole(c)(s)` we derive the **novel histogram**:
+joint(c, pc, s) = |{ terms t of exact size s extractable from curr class c
+                     such that prev.lookup(t) = Some(pc) }|
 
-```
-non_novel(c, s) = sum over pc of joint(c, pc)(s)
+non_novel(c, s) = sum over pc of joint(c, pc, s)
 novel(c, s)     = whole(c, s) - non_novel(c, s)
 ```
 
-`novel(c, s)` is what `Drawer::root_histogram` exposes and what the drawer weighs.
+`novel[root]` is what `FrontierPackage::root_histogram` exposes and what the
+drawer uses to allocate draws across sizes.
 
 ---
 
-## 2. Building `joint` — three phases
+## 2. Pipeline overview
 
-### Phase 1: Root- and budget-aware match enumeration
+### Stage 1: Build the count package (`FrontierPackage::build`)
 
-A **match** of a curr e-node `n` (in curr-class `c`) is a prev e-node `n'` (in prev-class `pc`) with the same operator/arity such that `n'`'s child classes can be picked consistently from each curr-child's `cover` set.
+Rather than counting the entire e-graph up to a large global bound, building a
+package scopes all work to `root` and finds the smallest size limit that
+provides at least `min_extractable` novel terms:
 
-Concretely:
+1. **Precompute budgets:** compute `MinSizes` once, then grow size caps
+   geometrically from `min(root) + search_step` up to
+   `cap = start_size + search_steps`, deriving per-class `RootBudgets` for each
+   attempt ([layered_counting.md](../counting/layered_counting.md)).
+2. **Enumerate matches:** find every budgeted `curr` e-node whose operator and
+   child classes match an e-node in `prev` (`NodeMatch`), building each class's
+   `cover[c]` of shared `prev` classes, then drop `prev`'s index before the DP
+   tables allocate ([novel_size_search.md](../counting/novel_size_search.md)).
+3. **Scan layer by layer:** step `whole` and `joint` `LayerTable`s together
+   size by size (`s = 1, 2, ...`) until the cumulative novel count at `root`
+   reaches `min_extractable`.
+4. **Prune and assemble:** tighten `matches`, `whole`, and `joint` in place to
+   the winning size's `final_budgets`, derive `cover` from nonempty `joint`
+   keys, and subtract `joint` from `whole` to obtain `novel`
+   ([novel_size_search.md](../counting/novel_size_search.md)).
 
-```
-NodeMatch {
-    prev_class:    pc,           // the prev e-class containing n'
-    prev_children: [pc_1, ..., pc_k]   // matched child classes (canonical, in prev)
-}
-```
+### Stage 2: Draw novel terms (`FrontierDrawer`)
 
-Where `pc_i` is some prev class that shares an extraction with curr's `child_i`. The set of such candidate prev classes per curr class is called `cover[c]`:
+Given the assembled `NovelTermCount`, `FrontierDrawer` constructs terms
+top-down using a two-state tree automaton:
 
-```
-cover[c] = { pc : prev.lookup(some extraction of c) = Some(pc) }
-```
+- **`State::Novel`** — the subtree must not exist in any `prev` class (always
+  the starting state at `root`).
+- **`State::SharedWith(pc)`** — the subtree must extract into `prev` class `pc`.
 
-`cover` and `matches` mutually depend on each other (a match contributes to
-its parent's `cover`). They are computed jointly via a fixpoint, but only
-inside the selected current root's `RootBudgets`. Previous classes are always
-queried through the complete previous lookup; they are not independently
-root-filtered.
-
-#### Pseudocode
-
-```
-function enumerate_matches(curr, prev, budgets):
-    cover   : Map<curr_class, Set<prev_class>> = empty
-    matches : Map<(curr_class, node_idx), List<NodeMatch>> = empty
-
-    repeat:
-        changed = false
-        for each current class c in budgets:
-          for each e-node n at index idx in c:
-            if 1 + sum(min_size(canonical child)) > budget(c):
-                continue
-            children = canonical curr child class ids of n   // [c_1, ..., c_k]
-            for each combo (pc_1, ..., pc_k) in cover[c_1] x ... x cover[c_k]:
-                // For zero-arity nodes, the cartesian product is a single
-                // empty tuple, so the loop runs once with combo = [].
-                translated_node = n with children replaced by [pc_1, ..., pc_k]
-                if prev.lookup(translated_node) = Some(pc_class):
-                    pc_canon = prev.find(pc_class)
-                    nm = NodeMatch { prev_class: pc_canon,
-                                     prev_children: combo }
-                    if nm not already in matches[(c, idx)]:
-                        matches[(c, idx)].push(nm)
-                        cover[c].insert(pc_canon)
-                        changed = true
-    until not changed
-
-    return matches
-```
-
-The restriction is complete for root drawing. Any shared finite parent term
-within `budget(c)` has strictly smaller shared child terms, and each child fits
-the budget propagated from the root. Induction on term size therefore supplies
-the child cover tuple needed to discover the parent match. Cycles do not break
-the argument because finite extracted trees still decrease in size from parent
-to child. See
-[root-restricted package construction](../counting/novel_size_search.md#why-rooted-enumeration-is-complete).
-
-The implementation builds the drawer-facing `cover` from nonempty `joint`
-keys afterwards, in
-[`NovelTermCount::from_rooted_matches`](../../src/sampling/count/novel.rs).
-
-### Phase 2: Joint counts, layered by size
-
-Once matches are known, compute `joint(c, pc)(s)` bottom-up. The recurrence:
-
-```
-joint(c, pc)(s) =
-    sum over (n at idx in c, m in matches[(c, idx)] with m.prev_class = pc) of:
-        sum over (s_1 + ... + s_k) = s - 1 of:
-            prod_i  joint(c_i, m.prev_children[i])(s_i)
-```
-
-Where `c_i` is the i-th canonical curr child class of `n`. For zero-arity nodes the inner sum is `1` at `s = 1` (one extraction = the node itself).
-
-Only pairs whose current class `c` has a root budget are created, and pair
-`(c, pc)` receives `budget(c)`. The previous class has no separate budget: a
-joint term is a whole term of `c`, so the current root budget is the sound
-bound. Child pairs missing from the budget map contribute no terms.
-
-The matched e-node costs 1, so every child pair is evaluated at a size
-strictly below `s`: the recurrence is stratified by size exactly like the
-whole counts ([layered counting](../counting/layered_counting.md) §2), and the
-implementation reuses the same generic `LayerTable` kernel (one pass per size,
-each `(pair, size)` cell computed once — no fixpoint, even on cyclic e-graphs),
-stepping directly over `matches` with child keys zipped from
-`(n.children, m.prev_children)`. See
-[smallest novel-size search](../counting/novel_size_search.md) for the full argument (this
-replaced a worklist fixpoint over whole per-pair histograms).
-
-### Phase 3: Derive `novel`
-
-Pointwise subtraction:
-
-```
-function derive_novel(whole, joint):
-    non_novel : Map<curr_class, Histogram> = sum_pc joint[(c, pc)]
-    novel     : Map<curr_class, Histogram>
-    for each (c, whole_hist) in whole:
-        for each size, total in whole_hist:
-            n = total - non_novel[c].get(size, 0)
-            if n > 0: novel[c][size] = n
-    return novel
-```
-
-`novel(c, s)` is the count the drawer uses for both feasibility checks in
-`Drawer::draw_batch` and the outer weighting distribution at the root.
+At each step, `FrontierDrawer` enumerates only feasible branches and child-size
+splits (rejecting any `Novel` child profile that completes a `NodeMatch`),
+`Weigher` selects among them according to `Policy` (`Count`, `Uniform`, or
+`Smallest`), and `SampledTrie` tracks prior draws for zero-retry
+without-replacement sampling. See [frontier_drawing.md](frontier_drawing.md) for
+the full automaton rules, branch pseudocode, and policy details.
 
 ---
 
-## 3. Drawing
+## 3. Correctness
 
-### Frontier automaton states
+**Claim.** Whenever `novel(root, s) > 0` and fewer than `novel(root, s)` terms
+have already been sampled, `draw_next(s, sampled, rng)` returns a size-`s` term
+`t` with `prev.lookup(t) = None`.
 
-Once we know we want a novel-rooted term, `FrontierDrawer` threads a
-`State` through every subtree:
+We prove two properties jointly by induction on `s`:
 
-```
-enum State {
-    Novel,           // subtree must not be extractable from any prev class
-    SharedWith(pc),  // subtree must be extractable from prev's pc
-}
-```
+- **(A) `SharedWith(pc)`:** If `joint(c, pc, s) > 0`, constructing at
+  `(c, s, SharedWith(pc))` returns a size-`s` term `t` with
+  `prev.lookup(t) = Some(pc)`.
+- **(N) `Novel`:** If `novel(c, s) > 0`, constructing at `(c, s, Novel)`
+  returns a size-`s` term `t` with `prev.lookup(t) = None`.
 
-- The public `draw(root, size, rng)` always starts in `Novel`.
-- A `Novel` recursion may *choose* to make some children agree with specific prev classes — those children recurse in `SharedWith(pc)`.
-- A `SharedWith(pc)` recursion is fully determined by the joint table: it just picks compatible (node, match) pairs and recurses.
+### Base case (`s = 1`, leaves)
 
-It is useful to read `Novel` as a top-down proof obligation. The drawer
-can discharge it at the current node by choosing an all-`SharedWith` child
-profile that matches no previous e-node, or delegate it to one or more
-`Novel` children. Once any child is outside, the completed parent and
-all of its ancestors are necessarily outside too. Therefore a term needs only
-one point where reconstruction in `prev` fails; the states locate that point
-while keeping every child in a disjoint counted category. See
-[frontier_drawing.md](frontier_drawing.md#novel-as-a-proof-obligation)
-for a worked profile example.
+- **(A):** `shared_branches` picks a leaf `n` with a match `m.prev_class == pc`.
+  By `enumerate_matches`, such a match exists iff `prev.lookup(n) = Some(pc)`. ✓
+- **(N):** `novel_branches` picks a leaf `n` whose empty profile `[]` completes
+  no match—meaning `prev.lookup(n) = None`. ✓
 
-There is no "Free" mode — once we're committed to producing a novel term, every subtree is constrained either to be novel or to agree with a specific prev class.
+### Inductive step (`s > 1`)
 
-### SharedWith — straightforward weighted drawing
+- **(A):** `shared_branches` picks `(n, m)` with `m.prev_class == pc` and child
+  sizes `s_i < s` summing to `s - 1` with
+  `joint(c_i, m.prev_children[i], s_i) > 0`. By IH (A), each child returns
+  `t_i` with `prev.lookup(t_i) = Some(m.prev_children[i])`. Looking up
+  `n(t_1, ..., t_k)` in `prev` finds the matched node in `pc`. ✓
 
-When drawing at curr-class `c`, target size `s`, and committed prev class `pc`:
+- **(N):** Suppose for contradiction that `construct` returns
+  `t = n(t_1, ..., t_k)` with `prev.lookup(t) = Some(P)`. Then `prev` contains
+  an e-node `n'` in `P` with canonical children `[q_1, ..., q_k]` where
+  `prev.lookup(t_i) = Some(q_i)` for every `i`.
+  - If the chosen profile had `profile[i] == Novel`, then IH (N) gives
+    `prev.lookup(t_i) = None`, contradicting `Some(q_i)`.
+  - Therefore every slot must be `profile[i] == SharedWith(pc_i)`, and IH (A)
+    forces `pc_i = q_i`.
+  - Since `t` and all `t_i` fit the root budgets, `enumerate_matches` is
+    complete ([why rooted enumeration is complete](../counting/novel_size_search.md#why-rooted-enumeration-is-complete))
+    and recorded `{ prev_class: P, prev_children: [q_1, ..., q_k] }`.
+  - But then `completes_some_match` would have rejected this profile.
+    Contradiction. ✓
 
-```
-function construct_inside(c, s, pc, rng):
-    candidates = []
-    for (idx, n) in eclass(c).nodes:
-        for m in matches_of(c, idx) with m.prev_class = pc:
-            child_hists = [ joint(child_i, m.prev_children[i])  for i in 0..k ]
-            count       = convolve(child_hists, s - 1)[s - 1]
-            if count > 0:
-                candidates.push((idx, m, weigher.node_weight(count), child_hists))
+### No double-counting
 
-    pick (idx, m, _, child_hists) ~ WeightedIndex over candidates
-    n = eclass(c).nodes[idx]
-
-    children = draw_children(
-        children_ids = n.children,
-        child_hists  = child_hists,
-        states       = [SharedWith(m.prev_children[i])  for i in 0..k],
-        child_budget = s - 1,
-        rng,
-    )
-
-    return stack_children(children, OriginLang(n, c))
-```
-
-`SharedWith` cannot fail in a healthy state: by the time we recurse into it,
-the parent's profile picked `pc` from `cover[c]`, so at least one match in `c`
-has `prev_class = pc`.
-
-### Novel — agreement profiles
-
-This is the heart of the refined drawer. At curr-class `c`, target size `s`:
-
-We need to pick a curr e-node `n` and a way to satisfy "the resulting term is not extractable from any prev class" while using one of `n`'s shapes. For each child slot `i`, the child's extraction has some extractability fingerprint:
-
-- **NOVEL** — the child extraction is not in any prev class, or
-- **`Some(pc)`** — the child extraction lives in prev's `pc`.
-
-A full **agreement profile** is `(a_1, ..., a_k)` with each `a_i` drawn from `{None} ∪ { Some(pc) : pc in cover[child_i] }`.
-
-The term is novel-via-`n` iff its profile does not equal `m.prev_children` for any match `m` of `n`. (If the profile equals some `m.prev_children`, the term is exactly extractable from prev's `m.prev_class`.)
-
-#### Why this enumeration is correct
-
-Two prev classes can't share a term, so any non-novel term rooted at `n` is non-novel via *exactly one* match `m`. The profiles `{m.prev_children : m in matches(n)}` partition the non-novel-via-n extractions. Everything else is novel-via-n, with no risk of double-counting. (Distinct matches must differ in at least one child class after rebuild.)
-
-#### Pseudocode
-
-```
-function construct_outside(c, s, rng):
-    candidates = []
-
-    for (idx, n) in eclass(c).nodes:
-        children = canonical curr child class ids of n   // [c_1, ..., c_k]
-
-        slot_options[i] = [None] ++ [Some(pc) for pc in cover[c_i]]
-
-        for profile in cartesian_product(slot_options):
-            if completes_some_match(profile, matches_of(c, idx)):
-                continue
-            child_hists = [
-                if profile[i] = None:        novel_histogram(c_i)
-                else (profile[i] = Some(pc)): joint(c_i, pc)
-                for i in 0..k
-            ]
-            count = convolve(child_hists, s - 1)[s - 1]
-            if count > 0:
-                candidates.push((idx, profile,
-                                 weigher.node_weight(count),
-                                 child_hists))
-
-    pick (idx, profile, _, child_hists) ~ WeightedIndex over candidates
-    n = eclass(c).nodes[idx]
-
-    states[i] =
-        if profile[i] = None:         Novel
-        else (profile[i] = Some(pc)): SharedWith(pc)
-
-    children = draw_children(
-        children_ids = n.children,
-        child_hists  = child_hists,
-        states       = states,
-        child_budget = s - 1,
-        rng,
-    )
-
-    return stack_children(children, OriginLang(n, c))
-```
-
-```
-function completes_some_match(profile, matches):
-    return any m in matches such that
-        len(profile) = len(m.prev_children)
-        and forall i: profile[i] = Some(m.prev_children[i])
-```
-
-Profiles containing any `None` cannot complete any match, since `None` never equals a `Some(pc)`. Profiles with all `Some(...)` complete a match iff their tuple equals some `m.prev_children` exactly.
-
-### Picking child sizes
-
-Once a candidate `(idx, profile-or-match, child_hists)` is chosen, we need to split `child_budget = s - 1` into `(s_1, ..., s_k)` summing to `child_budget`, weighted by per-child counts and a suffix convolution.
-
-This is identical to the whole drawer's child-size loop, just using the mode-specific `child_hists`:
-
-```
-function draw_children(children_ids, child_hists, states, child_budget, rng):
-    suffix = right-to-left convolution of child_hists  // suffix[i+1] = conv of i+1..k
-    remaining = child_budget
-    drawn = []
-
-    for i in 0..k:
-        candidates = [
-            (s, weigher.child_weight(child_hists[i][s], suffix[i+1][remaining - s]))
-            for s in keys(child_hists[i]) if remaining - s ∈ keys(suffix[i+1])
-              and suffix[i+1][remaining - s] > 0
-        ]
-        s_i ~ WeightedIndex over candidates
-        remaining -= s_i
-        drawn.push(construct(children_ids[i], s_i, states[i], rng))
-
-    return drawn
-```
-
-The suffix convolution is built once per call from the chosen `child_hists`,
-so each child's size is drawn with awareness of the remaining children's
-joint feasibility. Whole drawing does the same from the rooted histograms:
-counting keeps no suffix tables of its own.
-
----
-
-## 4. Correctness
-
-**Claim.** `draw_next(size, sampled, rng)` returns a term `t` with `prev.lookup(t) = None` whenever `novel(root)(size) > 0` and fewer than `novel(root)(size)` terms have already been recorded in `sampled`.
-
-We prove two statements together by induction on `size`:
-
-- **(A)** Constructing under `SharedWith(pc)` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = Some(pc)` (assuming the precondition that `joint[(c, pc)](s) > 0`).
-- **(N)** Constructing under `Novel` at curr-class `c` and size `s` returns `t` with `prev.lookup(t) = None` (assuming `novel(c)(s) > 0`).
-
-### Base case (size 1, leaves)
-
-**(A)** A size-1 candidate in `construct_inside(c, 1, pc)` is a leaf node `n ∈ c` with a match `m` such that `m.prev_class = pc`. By construction of `enumerate_matches`, such a match exists iff `prev.lookup(n) = pc`. So the drawn term is a leaf `n` with `prev.lookup(n) = pc`. ✓
-
-**(N)** A size-1 candidate in `construct_outside(c, 1)` is a leaf node `n ∈ c` whose empty profile `[]` does not complete any match — i.e., no leaf match exists for `n`. By the same construction, this means `prev.lookup(n) = None`. ✓
-
-### Inductive step (size > 1)
-
-**(A) at `(c, s, pc)`.** The drawer picks `(idx, m)` with `m.prev_class = pc` and a child-size split `(s_1, …, s_k)` summing to `s - 1` with each `joint(c_i, m.prev_children[i])(s_i) > 0`. Each child recurses under `SharedWith(m.prev_children[i])`; by IH (A), child `i` returns `t_i` with `prev.lookup(t_i) = m.prev_children[i]`. Then `prev.lookup(n(t_1, …, t_k))` looks up the prev e-node with operator `n` and child classes `m.prev_children`, which by definition of the match sits in `m.prev_class = pc`. So `prev.lookup(t) = pc`. ✓
-
-**(N) at `(c, s)`.** Suppose for contradiction that the drawer returns `t = n(t_1, …, t_k)` with `prev.lookup(t) = Some(P)` for some prev class `P`. Then prev contains an e-node `n'` in `P` with canonical child classes `[q_1, …, q_k]` and `prev.lookup(t_i) = q_i` for each `i`.
-
-The chosen profile `(a_1, …, a_k)` and the IHs determine each `t_i`:
-
-- If `a_i = None`: by IH (N), `prev.lookup(t_i) = None`. But we just said `prev.lookup(t_i) = q_i`, a concrete prev class. Contradiction unless every `a_i ≠ None`.
-- If `a_i = Some(pc_i)`: by IH (A), `prev.lookup(t_i) = pc_i`. So `q_i = pc_i`.
-
-Hence the profile is `(Some(q_1), …, Some(q_k))`. Each `q_i` is shared between curr's `c_i` and prev's `q_i` (witnessed by `t_i`), so `q_i ∈ cover[c_i]` in match enumeration's internal cover. Because this is a real recursive drawing query, `c`, its node, and every `c_i` fit the shared root budgets. The cartesian product loop in [`enumerate_matches`](../../src/sampling/count/novel.rs) therefore visits the combo `(q_1, …, q_k)`, calls `prev.lookup` on the translated node, finds `Some(P)`, and records the match `{ prev_class: P, prev_children: [q_1, …, q_k] }` in `matches[(c, idx)]`. But then `completes_some_match` would have rejected the chosen profile. Contradiction.
-
-(The `cover_of` exposed to the drawer is a subset of match enumeration's internal cover — rooted joint counting drops `(c, pc)` pairs whose histogram is empty within the class budget. That's harmless here: any `q_i` reached by a real drawn child `t_i` is witnessed by `t_i`'s size, which is within budget, so `joint[(c_i, q_i)]` is non-empty and `q_i ∈ cover_of(c_i)`. The slot-options enumeration in `FrontierDrawer` sees it; either way, the `completes_some_match` check sees the match in `matches[(c, idx)]`, which is the only thing that matters.)
-
-So no `t` produced under `Novel` can have `prev.lookup(t) = Some(_)`, i.e., every produced term is novel. ✓
-
-### Why the joint sum doesn't double-count
-
-The argument above also shows why `non_novel(c)(s) = sum_pc joint[(c, pc)](s)` doesn't double-count: if `t = n(t_1, …, t_k)` is non-novel, the unique prev class `P` containing it together with the unique tuple `[q_1, …, q_k] = [prev.lookup(t_i)]` nails down a unique match `m`. So `t` is counted exactly once across all `(c, pc)` pairs — under `pc = P`, by the match `m`. Two different matches at the same node would have to disagree on at least one `prev_children[i]`, but `prev.lookup(t_i)` is a single value, so at most one match's `prev_children` can equal the tuple of child lookups.
-
-This is the partition argument used by `FrontierDrawer`: the partition is by the unique witnessing match, with no overlap.
+Because `prev.lookup(t_i)` is unique for every child `t_i`, a non-novel term
+`n(t_1, ..., t_k)` matches **at most one** `NodeMatch` (distinct matches of `n`
+must differ in at least one `prev_children[i]`). Thus
+`non_novel(c, s) = sum_pc joint(c, pc, s)` counts every non-novel term exactly
+once, and the `Novel` agreement profiles partition the remaining novel terms
+with zero overlap.
 
 ### Termination
 
-The match-enumeration fixpoint adds entries monotonically to a finite rooted set
-(bounded by budgeted current nodes, previous classes, and previous child-class
-tuples), so it terminates. The joint counts need no convergence argument: the
-layered DP runs exactly one pass per size, skipping each pair above its current
-class budget. Drawing is non-recursive in `(c, s)` past the first call: every
-recursive call has strictly smaller `s` (children get `s_i ≤ s - 1`).
+- **Match enumeration:** monotonically adds entries to a finite set of
+  `(curr_node, prev_class, prev_children)` tuples, so the fixpoint terminates.
+- **Counting:** `LayerTable` runs one pass per size `1..=try_cap` (no fixpoint,
+  even on cyclic e-graphs).
+- **Drawing:** every recursive call strictly decreases `s` (`s_i <= s - 1`).
 
 ---
 
-## 5. Worked example: `Add(a, b)` after `union(a, b)`
+## 4. Worked example: `Add(a, b)` after `union(a, b)`
 
-Setup:
+Suppose `prev` contains `a`, `b`, and `Add(a, b)`, and `curr` merges `a` and
+`b`:
 
+```text
+prev classes:  A = {a},  B = {b},  R_prev = {Add(A, B)}
+curr classes:  M = {a, b},         R      = {Add(M, M)}
 ```
-prev: a, b, Add(a, b)
-curr: prev + union(a, b)
-```
 
-After the union, curr has:
+1. **Match enumeration:**
+   - `a` in `M` → match `{ prev_class: A, prev_children: [] }` (`cover[M]` gets `A`).
+   - `b` in `M` → match `{ prev_class: B, prev_children: [] }` (`cover[M]` gets `B`).
+   - `Add(M, M)` in `R` tries all pairs in `{A, B} × {A, B}`: only `(A, B)`
+     exists in `prev`, giving match
+     `{ prev_class: R_prev, prev_children: [A, B] }`.
 
-- merged class `M` containing the e-nodes `Symbol("a")`, `Symbol("b")`.
-- root class `R` containing one e-node `Add(M, M)`.
+2. **Joint counts:**
+   - `joint(M, A, 1) = 1` (`a`)
+   - `joint(M, B, 1) = 1` (`b`)
+   - `joint(R, R_prev, 3) = joint(M, A, 1) * joint(M, B, 1) = 1` (`Add(a, b)`)
 
-Prev has classes `A` (for `a`), `B` (for `b`), `R_prev` (for `Add(a, b)`).
+3. **Novel histogram:**
+   - `M` at size 1: `whole(M, 1) = 2`, `non_novel(M, 1) = 1 + 1 = 2` → `novel[M]` is empty.
+   - `R` at size 3: `whole(R, 3) = 4`, `non_novel(R, 3) = 1` → `novel(R, 3) = 3`.
 
-### Match enumeration
+4. **Drawing at `(R, s = 3, Novel)`:**
+   Each child of `Add(M, M)` has options `[Novel, SharedWith(A), SharedWith(B)]`
+   (9 profiles total):
 
-- `Symbol("a")` in `M`: `prev.lookup(Symbol("a")) = Some(A)`. Match
-  `{ prev_class: A, prev_children: [] }`.
-- `Symbol("b")` in `M`: similar, match with `prev_class: B`.
-- `Add(M, M)` in `R`: cartesian product over `cover[M] = {A, B}` for both children:
-  - `(A, A)` → `prev.lookup(Add(A, A))` = `None`.
-  - `(A, B)` → `prev.lookup(Add(A, B))` = `Some(R_prev)`. Match `{ prev_class: R_prev, prev_children: [A, B] }`.
-  - `(B, A)` → `None`.
-  - `(B, B)` → `None`.
+   | Profile | Status | Count at budget 2 | Drawn term |
+   | :--- | :--- | :---: | :--- |
+   | `(SharedWith(A), SharedWith(B))` | Rejected (`completes_some_match`) | — | — |
+   | Any profile with `Novel` | Kept, but `novel[M]` is empty | 0 | — |
+   | `(SharedWith(A), SharedWith(A))` | Kept | 1 | `Add(a, a)` |
+   | `(SharedWith(B), SharedWith(A))` | Kept | 1 | `Add(b, a)` |
+   | `(SharedWith(B), SharedWith(B))` | Kept | 1 | `Add(b, b)` |
 
-So `matches[(R, 0)]` has exactly one entry.
-
-### Joint counts
-
-- `joint(M, A)(1) = 1` (just `a`).
-- `joint(M, B)(1) = 1` (just `b`).
-- `joint(R, R_prev)(3) = joint(M, A)(1) * joint(M, B)(1) = 1`. (One extraction: `Add(a, b)`.)
-
-### Novel histogram
-
-- `whole(M)(1) = 2`, `non_novel(M)(1) = 1 + 1 = 2`, so `novel(M)(1)` is empty (every leaf of `M` is in some prev class).
-- `whole(R)(3) = 4` (the four ordered pairs over `{a, b}`), `non_novel(R)(3) = 1`, so `novel(R)(3) = 3`.
-
-### Drawing at `(R, size = 3, Novel)`
-
-Slot options for `Add(M, M)`'s two children:
-
-- `slot_options[0] = [None, Some(A), Some(B)]`
-- `slot_options[1] = [None, Some(A), Some(B)]`
-
-Nine profiles total. The single match `(R_prev, [A, B])` is completed by the profile `(Some(A), Some(B))` only, so eight profiles are novel-via-`n`. Of those, the ones with non-zero count at total budget 2:
-
-- `(Some(A), Some(A))`: child_hists = `[joint(M,A), joint(M,A)] = [{1:1}, {1:1}]`, conv at 2 = 1. Recurse children with `SharedWith(A)`. Result: `Add(a, a)`.
-- `(Some(B), Some(A))`: similarly → `Add(b, a)`.
-- `(Some(B), Some(B))`: similarly → `Add(b, b)`.
-
-Profiles with any `None` have count 0 because `novel_histogram(M)` is empty. The remaining profiles also have count 0 in this graph.
-
-So the drawer picks uniformly (under `Count`) from the three terms
-novel relative to `prev`: `Add(a,a)`, `Add(b,a)`, `Add(b,b)`, but never
-`Add(a,b)`. This is exactly what
-`sampling::draw::frontier::tests::independent_frontier_draw_union_diagonal`
-asserts.
+   Under `Policy::Count`, the drawer picks uniformly among the three novel
+   terms `Add(a, a)`, `Add(b, a)`, and `Add(b, b)`, and never produces
+   `Add(a, b)`. This is verified by
+   `sampling::draw::frontier::tests::independent_frontier_draw_union_diagonal`.
 
 ---
 
-## 6. API summary
+## 5. API summary
 
 ```rust
-// Scan for the smallest limit with at least `min_extractable` novel terms.
-let (max_size, package) =
-    FrontierPackage::build(result, start_size, search_steps, min_extractable)?;
+// Grow budgets geometrically from `min(root) + search_step` up to
+// `start_size + search_steps` until at least `min_extractable` novel terms
+// are available.
+let (max_size, package) = FrontierPackage::build(
+    result,
+    start_size,
+    search_step,
+    search_steps,
+    min_extractable,
+)?;
 
-// `SamplePackage` trait: spread `count` draws over the root sizes, then draw.
+// `SamplePackage` trait: allocate `count` draws across root sizes, then draw.
 let terms = package.draw_samples(count, policy, seed)?;
 ```
 
-`FrontierDrawer` implements the
-[`Drawer`](../../src/sampling/draw/mod.rs) trait, so it gets `draw_batch` and
-`smallest` from the shared trie-based without-replacement implementation.
-
 `FrontierPackage` ([src/sampling/draw/frontier.rs](../../src/sampling/draw/frontier.rs))
-is the construction boundary. It reconstructs the complete previous lookup,
-computes current-root budgets, performs rooted matching and counting, retains
-only final-budget package data, and then drops the previous boundary.
+owns the full build lifecycle: computing `MinSizes` once, running the geometric
+cap search with non-overlapping `prev` lookup and DP memory, pruning to the
+final size, and dropping the previous boundary before returning.

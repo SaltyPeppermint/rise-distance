@@ -1,33 +1,30 @@
 # Documentation
 
-The documentation is organized by purpose:
+The documentation is organized by pipeline stage:
 
 ```text
 docs/
-├── candidates/           guide-candidate construction
-├── counting/             counting algorithms and size discovery
-└── generation/           direct grammar term generation
+├── generation/           direct grammar term generation (seeds)
+├── candidates/           novel-candidate overview and frontier drawing
+└── counting/             size-layered counting and novel-size search
 ```
 
-## Start here
+## Reading order
 
-- For seed generation, read
-  [random term generation](generation/random_terms.md).
-- To understand how novel candidates are defined, counted, and drawn,
-  start with
-  [novel-candidate construction](candidates/novel_candidates.md).
-- To understand the shared frontier constraint and the available
-  selection policies, read
-  [frontier drawing policies](candidates/frontier_drawing.md).
-
-## Counting internals
-
-The counting documents build on each other:
-
-1. [Size-layered, root-restricted term counting](counting/layered_counting.md)
-   explains the shared budget primitive and generic exact-size dynamic program,
-   including cyclic e-graphs.
-2. [Root-restricted novel-size search and exact package
-   construction](counting/novel_size_search.md)
-   explains budget-aware matching, cap-to-final pruning, rooted joint counting,
-   package retention, and telemetry.
+1. **Seed generation:** [Random term generation](generation/random_terms.md) —
+   uniform exact-size sampling directly from a language grammar before any
+   e-graph exists.
+2. **Overview:** [Exact novel-candidate construction](candidates/novel_candidates.md) —
+   core definitions (`novel`, `joint`), how the counting and drawing stages fit
+   together, end-to-end correctness, a worked example, and the public API.
+3. **Drawing & policies:** [Exact frontier drawing](candidates/frontier_drawing.md) —
+   the two-state frontier automaton (`Novel` / `SharedWith`), agreement
+   profiles, selection policies (`Count`, `Uniform`, `Smallest`), and
+   `SampledTrie` without-replacement sampling.
+4. **Counting kernel:** [Size-layered, root-restricted term counting](counting/layered_counting.md) —
+   the generic `LayerTable` dynamic program (including cyclic e-graphs) and
+   shared `MinSizes` / `RootBudgets`.
+5. **Size search & package build:** [Root-restricted novel-size search and exact package construction](counting/novel_size_search.md) —
+   geometric cap doubling, memory behavior of `search_step` / `search_steps`,
+   budget-aware match enumeration, simultaneous whole/joint scanning, and
+   final-size pruning.

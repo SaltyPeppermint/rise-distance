@@ -1,120 +1,148 @@
 # Random term generation
 
-Seed terms are sampled directly from a language grammar, before an e-graph
-exists. This differs from
-[exact novel-candidate construction](../candidates/novel_candidates.md),
-which draws terms from an e-graph.
+Seed terms are sampled directly from a language grammar **before any e-graph
+exists**. Given a target AST node count `n`, `SizeUniformSampler` draws a
+well-scoped term of exact size `n` uniformly at random—every valid grammar term
+of size `n` has the exact same probability, even when the grammar includes
+binder operators.
 
-The implementation is in
-[`src/generator.rs`](../../src/generator.rs), with grammars in
-[`src/langs/math/generate.rs`](../../src/langs/math/generate.rs) and
-[`src/langs/prop/generate.rs`](../../src/langs/prop/generate.rs).
+> **Scope:** This document covers direct grammar sampling for seed terms. For
+> extracting novel terms from an e-graph, see
+> [exact novel-candidate construction](../candidates/novel_candidates.md).
 
-## Guarantees
+## Where the code lives
 
-For a requested size `n`, `SizeUniformSampler` always returns a term with
-exactly `n` AST nodes. Every grammar term of that size is equally likely,
-including terms containing binders.
+- [src/generator.rs](../../src/generator.rs) — `Grammar`, `Samplable`, and
+  `SizeUniformSampler`.
+- [src/langs/math/generate.rs](../../src/langs/math/generate.rs) — Math grammar
+  (includes binders `Diff` and `Integral`).
+- [src/langs/prop/generate.rs](../../src/langs/prop/generate.rs) — Propositional
+  logic grammar (binder-free).
+- [src/bin/start.rs](../../src/bin/start.rs) — seed generation and eqsat
+  filtering.
 
-Math has binder operators (`Diff` and `Integral`). Binder bodies are sampled
-with probability proportional to their number of free variables, then the
-bound variable is chosen uniformly from that set. This is uniform over all
-well-scoped `(body, variable)` pairs.
+---
 
-Here a binder `(op body var)` is well-scoped when `var` occurs free in `body`.
-Binding removes that variable from the resulting term's free-variable set.
-Nested binders are counted and sampled under the same rule.
+## 1. Why binders need special care
 
-## Counting and sampling
+A binder `(op body var)` uses 2 nodes for `op` and `var` plus `n - 2` nodes for
+`body`, and is **well-scoped** only when `var` occurs free in `body`. Binding
+removes `var` from the resulting term's free-variable set (nested binders follow
+the same rule).
 
-Let:
+If you sampled `body` uniformly and then picked one of its free variables, you
+would **under-sample** bodies with more free variables: a body with 2 free
+variables admits 2 valid `(body, var)` pairs, while a body with 1 free variable
+admits only 1.
+
+To make every valid `(body, var)` pair equally likely, `SizeUniformSampler`
+instead samples `body` with probability **proportional to `|free(body)|`**, and
+then picks `var` uniformly from `free(body)`.
+
+---
+
+## 2. Stage 1: Bottom-up counting
+
+Before drawing any terms, `SizeUniformSampler::new(target, ...)` precomputes
+how many terms exist at every size up to `target` using `f64` counts (only
+ratios are needed for weighted sampling):
+
+- **`C[n, S]`** — number of size-`n` terms whose exact set of free variables is
+  `S`.
+- **`counts[n]`** — total number of size-`n` terms (`sum_S C[n, S]`).
+- **`fv_totals[n]`** — sum of `|free(t)|` over all size-`n` terms
+  (`sum_S |S| * C[n, S]`), which is the exact number of valid `(body, var)`
+  pairs for a body of size `n`.
+- **`comps[k][m]`** — number of ordered `k`-tuples of terms whose sizes sum to
+  `m`:
+  ```text
+  comps[0][0] = 1
+  comps[0][m] = 0                                      (m != 0)
+  comps[k][m] = sum_(j=1..m) counts[j] * comps[k-1][m-j]
+  ```
+
+### Recurrences
+
+An ordinary arity-`k` operator unions its children's free-variable sets, while
+a binder removes one free variable `v` from its body's set `T`:
 
 ```text
-C[n,S]       = number of size-n terms with exact free-variable set S
-counts[n]    = sum_S C[n,S]
-fv_total[n]  = sum_S |S| C[n,S]
-```
-
-For an ordinary arity-`k` operator, the result's free-variable set is the union
-of its children's sets. For a binder, every free variable in the body provides
-one valid bound-variable choice:
-
-```text
-C[n,S] =
-    ordinary terms whose child free-set union is S
-  + |binder| * sum C[n-2,T]
-      over T and v where v in T and T \ {v} = S
+C[n, S] =
+    (ordinary arity-k terms whose children's free-variable sets union to S)
+  + |binder| * sum over (T, v) with v in T and T \ {v} = S of C[n - 2, T]
 
 counts[n] =
-    sum_k |ops[k]| * comps[k][n-1]
-  + |binder| * fv_total[n-2]
+    sum_k |ops[k]| * comps[k][n - 1]
+  + |binder| * fv_totals[n - 2]
 ```
 
-`comps[k][m]` counts ordered `k`-tuples of terms with total size `m`:
+### Why exact subsets `S` are tracked (and when they aren't)
+
+Tracking only the *count* `|S|` of free variables is not enough, because two
+children's free-variable sets can overlap when unioned.
+
+With `V = |vars|`, target size `N`, and maximum arity `K`, the subset DP uses:
+- **Memory:** `O(K N 2^V)`
+- **Time:** `O(K N^2 4^V + |binder| N V 2^V)`
+
+**Binder-free fast path:** Grammars with no binders track only a single empty
+subset (`2^0 = 1`), regardless of how many variable-like leaves they have.
+
+**Grammar invariants:** When `Grammar::binder` is non-empty, every entry in
+`Grammar::vars` must appear **exactly once** in the leaf pool `ops[0]`. Because
+exact subset counting is exponential in `|vars|`, it is designed for small
+fixed variable pools (such as Math's `x` and `y`).
+
+---
+
+## 3. Stage 2: Top-down sampling
+
+To draw a term of size `n`, `gen_sized(rng, n)` works recursively:
+
+1. **Pick a root shape** (`Arity(k)` or `Binder`), weighted by its exact
+   contribution to `counts[n]`.
+2. **Pick an operator** uniformly from that shape's pool (`ops[k]` or `binder`).
+3. **Fill the children:**
+   - **Ordinary `Arity(k)`:** split the remaining `n - 1` nodes across the `k`
+     children (each split weighted by `counts[j] * comps[remaining - 1][left - j]`)
+     and recurse on each child.
+   - **Binder:** sample a `(body, var)` pair of body size `m = n - 2` by
+     rejection:
+     1. Draw a candidate `body` uniformly at size `m` via `gen_sized(rng, m)`.
+     2. Accept `body` with probability `|free(body)| / |vars|`; otherwise retry.
+     3. Pick `var` uniformly from `free(body)`.
+
+### Why binder sampling is exact and terminates
+
+Multiplying the three probabilities shows that `|free(body)|` cancels out:
 
 ```text
-comps[0][0] = 1
-comps[0][m] = 0                       when m != 0
-comps[k][m] = sum_(j=1..m) counts[j] * comps[k-1][m-j]
-```
-
-The implementation retains the exact subset state because a free-variable
-cardinality alone cannot determine the size of a union: two child sets may
-overlap. With `V = |vars|`, target `N`, and maximum arity `K`, the current
-subset DP uses `O(K N 2^V)` memory and
-`O(K N^2 4^V + |binder| N V 2^V)` time. Binder-free grammars use only the
-single empty subset, regardless of whether their language has variable-like
-leaves.
-
-It then builds a term top-down:
-
-1. Choose a root shape, weighted by its contribution to `counts[n]`.
-2. Choose an operator uniformly from that shape's pool.
-3. Split the remaining size among the children and recurse.
-
-Binary splits are weighted by the number of child pairs they admit. Counts use
-`f64` because only their ratios are needed.
-
-For a binder, the sampler accepts a generated body with probability
-`|free(body)| / |vars|`, then chooses one of its free variables. The two steps
-cancel:
-
-```text
-Pr(propose body) * Pr(accept body) * Pr(choose variable)
+Pr(propose body) * Pr(accept body) * Pr(choose var)
     = (1 / counts[m]) * (|free(body)| / |vars|) * (1 / |free(body)|)
     = 1 / (counts[m] * |vars|)
 ```
 
-Conditioning on acceptance therefore makes every valid body-variable pair
-equiprobable. The acceptance probability at body size `m` is
-`fv_total[m] / (|vars| * counts[m])`. A binder shape has positive weight only
-when this value is positive, so the rejection loop cannot be entered for a
-size having no valid body.
+Every valid `(body, var)` pair has the exact same probability, so conditioning
+on acceptance is **strictly uniform**.
 
-Every entry in `Grammar::vars` must occur exactly once in the leaf pool when
-the grammar has binders. The exact subset representation is exponential in the
-number of such variables and is intended for small fixed variable pools such
-as Math's `x` and `y`.
+Each proposal succeeds with probability `fv_totals[m] / (|vars| * counts[m])`.
+Because `Shape::Binder` only receives positive weight at size `n` when
+`fv_totals[n - 2] > 0`, the rejection loop is never entered unless at least one
+valid body exists.
 
-## Relationship to e-graph candidate construction
+---
 
-`SizeUniformSampler` samples seed terms directly from a language grammar. It
-does not inspect an e-graph.
+## 4. Filtering in `start`
 
-The candidate documents describe a separate pipeline:
+`SizeUniformSampler` draws independently with replacement from the full
+grammar. When building a benchmark corpus, two downstream filters narrow the
+saved terms:
 
-- [Exact novel-candidate construction](../candidates/novel_candidates.md)
-  counts terms extractable from a current e-graph but absent from a previous
-  e-graph.
+- The [`start` binary](../../src/bin/start.rs) rejects candidates that saturate
+  before hitting an eqsat resource limit, bounded by `--retry-limit` draws per
+  term.
+- [`generate_problems.py`](../../scripts/generate_problems.py) drops duplicate
+  terms within each size bucket.
 
-## Filtering in `start`
-
-The [`start` binary](../../src/bin/start.rs) further filters samples:
-
-- Candidates that saturate before hitting an eqsat resource limit are rejected.
-- Duplicate terms within a size bucket are rejected afterwards by
-  [`generate_problems.py`](../../scripts/generate_problems.py).
-
-`--retry-limit` bounds the draws spent finding each distinct, validated term.
-The saved corpus is therefore conditioned on validation and uniqueness; it is
-not a uniform sample of the full grammar.
+The saved corpus is therefore conditioned on non-saturation and uniqueness—it
+is not a uniform sample of the unfiltered grammar.

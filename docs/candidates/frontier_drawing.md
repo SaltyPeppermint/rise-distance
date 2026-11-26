@@ -1,202 +1,250 @@
 # Exact frontier drawing
 
-Frontier membership and random selection are separate responsibilities.
-`FrontierDrawer` enumerates the correctness-critical feasible productions,
-and its `Weigher` chooses among them. Changing the probability distribution
-therefore only means swapping the `Weigher`, not reimplementing the frontier
-test.
+A core design principle of frontier sampling is that **what is valid** and
+**how we pick among valid choices** are completely separate:
 
-The relevant implementation is:
+- **`FrontierDrawer`** enforces correctness: it enumerates only e-nodes,
+  child-state profiles, and child-size splits that are guaranteed to produce a
+  novel term of the exact requested size.
+- **`Weigher`** controls the probability distribution (`Count` vs. `Uniform`)
+  over those already-valid choices, while **`SampledTrie`** ensures no term is
+  drawn twice.
 
-- [`src/sampling/count/novel.rs`](../../src/sampling/count/novel.rs):
-  previous-node matches plus whole, joint, and novel histograms;
-- [`src/sampling/draw/frontier.rs`](../../src/sampling/draw/frontier.rs):
-  frontier states, feasible derivations, and without-replacement drawing over
-  them;
-- [`src/sampling/draw/trie.rs`](../../src/sampling/draw/trie.rs):
-  sparse pre-order derivation trie (`SampledTrie`) and `DrawCursor`; and
-- [`src/sampling/weigher.rs`](../../src/sampling/weigher.rs):
-  the `Count` and `Uniform` selection policies.
+Because of this boundary, changing the sampling distribution only means
+swapping the `Weigher`—never touching the frontier membership logic.
 
-The detailed counting argument is in
-[`novel_candidates.md`](novel_candidates.md). Direct grammar
-drawing, including binder handling, is documented separately in
-[`../generation/random_terms.md`](../generation/random_terms.md).
+> **Prerequisites & related docs:**
+> - For definitions (`novel`, `joint`), the end-to-end correctness proof, and a
+>   full worked example, read [novel_candidates.md](novel_candidates.md).
+> - For how the count tables and `matches` are built, see
+>   [layered_counting.md](../counting/layered_counting.md) and
+>   [novel_size_search.md](../counting/novel_size_search.md).
+> - For direct grammar generation of seed terms, see
+>   [random_terms.md](../generation/random_terms.md).
 
-## Responsibilities
+## Where the code lives
 
-The frontier implementation must:
+- [src/sampling/draw/frontier.rs](../../src/sampling/draw/frontier.rs) —
+  `FrontierDrawer`, `State`, and feasible branch enumeration.
+- [src/sampling/draw/mod.rs](../../src/sampling/draw/mod.rs) —
+  shared `Drawer` trait (`draw_batch`, `smallest`, `draw_for_policy`) and
+  `draw_children`.
+- [src/sampling/draw/trie.rs](../../src/sampling/draw/trie.rs) —
+  sparse pre-order derivation trie (`SampledTrie`) and `DrawCursor`.
+- [src/sampling/weigher.rs](../../src/sampling/weigher.rs) —
+  `Weigher` (`Count` and `Uniform` selection policies).
 
-1. return only current-graph terms that are absent from every previous
-   e-class;
-2. construct terms of exactly the requested size;
-3. terminate on cyclic e-graphs for every finite requested size; and
-4. permit different random distributions over the valid derivations without
-   duplicating the correctness logic.
+---
 
-Construction is direct. It does not generate an unconstrained term and reject
-it after checking previous membership.
+## 1. Design goals
 
-## Frontier membership as a tree automaton
+Frontier drawing guarantees four properties **directly by construction**,
+without generating unconstrained terms and rejecting ones that already existed
+in `prev`:
 
-For a current e-class, a concrete subtree is constructed under one of two
-states:
+1. **Frontier membership:** every drawn term is extractable from `curr` and
+   absent from *every* e-class in `prev`.
+2. **Exact size:** every drawn term has the exact requested AST node count `s`.
+3. **Termination on cycles:** drawing terminates for any finite `s`, even when
+   `curr` contains e-class cycles.
+4. **Pluggable distributions:** different weighting policies can be swapped in
+   without duplicating correctness logic.
+
+---
+
+## 2. Frontier membership as a tree automaton
+
+Every recursive subtree is constructed under one of two states:
 
 ```rust
 enum State {
-    Novel,
-    SharedWith(Id),
+    Novel,              // subtree must NOT exist in any prev e-class
+    SharedWith(PrevId), // subtree MUST extract into this exact prev e-class
 }
 ```
 
-- `SharedWith(pc)` means that the concrete subtree must also be extractable
-  from previous e-class `pc`.
-- `Novel` means that the concrete subtree must not be extractable from
-  any previous e-class.
+Bottom-up, a parent e-node's state is completely determined by its children's
+states:
 
-The transition at a current e-node is determined by its child states:
-
-1. If any child is `Novel`, the parent is also `Novel`.
-2. Otherwise every child is `SharedWith(pc_i)`. Replace the current e-node's
-   children with those previous-class ids and look up the translated node in
-   the previous graph.
-   - A successful lookup places the parent in `SharedWith(parent_pc)`.
-   - A failed lookup places the parent in `Novel`.
+1. **Any child is `Novel`** → the parent is `Novel` (if a subterm doesn't exist
+   in `prev`, no larger term containing it can exist in `prev`).
+2. **All children are `SharedWith(pc_i)`** → replace the node's children with
+   `[pc_1, ..., pc_k]` and look up the translated node in `prev`:
+   - Found in `parent_pc` → the parent is `SharedWith(parent_pc)`.
+   - Not found → the parent is `Novel`.
 
 ### `Novel` as a proof obligation
 
-Construction runs top-down, so `Novel` is an obligation that a selected
-production must discharge or delegate:
+Drawing runs **top-down**, starting at `(root, s, State::Novel)`. Think of
+`Novel` as a proof obligation ("guarantee this subtree cannot be reconstructed
+in `prev`"). At any e-node, you can satisfy it in two ways:
 
-- An all-`SharedWith` child profile discharges the obligation at the current
-  node when the translated parent has no previous-node match.
-- A profile containing a `Novel` child delegates the obligation to that
-  child. Its eventual failure to reconstruct also makes every ancestor absent
-  from the previous graph.
+- **Discharge it here:** pick `SharedWith(pc_i)` for every child such that the
+  translated parent has **no** match in `prev`.
+- **Delegate it downward:** mark at least one child as `Novel`; its failure to
+  reconstruct in `prev` automatically makes the parent and every ancestor novel
+  too.
 
-For example, if the previous graph contains `F(A, B)` but not `F(B, B)`, then:
+**Example:** Suppose `prev` contains `F(A, B)` but *not* `F(B, B)`. At an
+e-node `F(c_1, c_2)` under `State::Novel`:
 
-```text
-[SharedWith(A), SharedWith(B)]  rejected: reconstructs F(A, B)
-[SharedWith(B), SharedWith(B)]  accepted: steps outside at F
-[Novel,  SharedWith(B)]   accepted: delegates to the first child
-```
+| Child profile | Accepted? | Why |
+| :--- | :---: | :--- |
+| `[SharedWith(A), SharedWith(B)]` | No | Reconstructs `F(A, B)` in `prev` |
+| `[SharedWith(B), SharedWith(B)]` | Yes | Discharges obligation at `F` (`F(B, B)` is absent from `prev`) |
+| `[Novel, SharedWith(B)]` | Yes | Delegates obligation to the first child |
 
-Every child remains classified as either `Novel` or one particular
-`SharedWith(pc)`. These cases are disjoint because a concrete previous term
-belongs to a unique rebuilt previous e-class.
+Every child is assigned either `Novel` or one specific `SharedWith(pc)`—there
+is no "free / unconstrained" state. Because any concrete term belongs to at
+most one rebuilt `prev` e-class, these states are **strictly disjoint**,
+keeping the counts exact and preventing double-counting.
 
-Drawing a frontier term starts at:
+> **Why not just require a newly added e-node?** A novel term does not need any
+> brand-new e-node—merging two existing e-classes can create new combinations
+> of old e-nodes (such as `F(B, B)` above). The two-state automaton captures
+> both new nodes and new combinations seamlessly.
 
-```text
-(current root class, requested size, Novel)
-```
+---
 
-This is more precise than requiring the term to contain a newly added e-node.
-A novel term can arise solely from a new combination created by merging child
-classes.
+## 3. Enumerating feasible branches and child sizes
 
-## Count tables and feasible productions
-
-The counted implementation maps its histograms onto the automaton states:
-
-```text
-histogram(current_class, Novel)
-    = novel[current_class]
-
-histogram(current_class, SharedWith(previous_class))
-    = joint[(current_class, previous_class)]
-```
-
-For `SharedWith(pc)`, `FrontierDrawer` considers current e-node matches whose
-previous parent is `pc`. Each child receives the corresponding
-`SharedWith(previous_child)` state.
-
-For `Novel`, each child slot receives these possible states:
+The precomputed histograms from `NovelTermCount` map directly onto the two
+automaton states:
 
 ```text
-Novel
-SharedWith(pc) for each previous class in the child's match cover
+histogram(c, Novel)          = novel[c]
+histogram(c, SharedWith(pc)) = joint[(c, pc)]
 ```
 
-`FrontierDrawer` enumerates child-state profiles and rejects every profile that
-exactly completes a known previous-node match. It then uses the state
-histograms and exact convolution to retain only profiles whose children can
-fill the requested parent size.
+### Branches in `State::SharedWith(pc)`
 
-After choosing a production, suffix convolutions restrict each child-size
-choice to values that leave a feasible exact-size remainder for the later
-children. Consequently, the random selection layer receives only feasible
-branches and size splits.
+When a subtree must land in `prev` class `pc`, only `(node, match)` pairs with
+`m.prev_class == pc` are eligible (`shared_branches`):
 
-## Selection distributions
+```text
+function shared_branches(c, s, pc):
+    branches = []
+    for (idx, n) in eclass(c).nodes:
+        for m in matches[(c, idx)] with m.prev_class == pc:
+            child_states = [SharedWith(pc_i) for pc_i in m.prev_children]
+            child_hists  = [joint[(c_i, pc_i)] for (c_i, pc_i) in zip(n.children, m.prev_children)]
+            count        = convolve_at(child_hists, s - 1)
+            if count > 0:
+                branches.push(Branch { idx, child_states, count, child_hists })
+    return branches
+```
 
-`FrontierDrawer` draws terms without replacement across a size bucket using a
-sparse pre-order derivation trie (`SampledTrie`) that records how many
-completed root terms have already used each prefix. A `Weigher` controls local
-random choices over the remaining unsampled completions:
+### Branches in `State::Novel` (agreement profiles)
 
-- `Count` weights each branch and child-size split by its exact remaining
-  unsampled capacity (`local_count * rest_total - used`), yielding exact
-  uniform sampling without replacement over the remaining frontier terms.
-- `Uniform` assigns equal weight to every local branch and child-size choice
-  whose remaining capacity is positive, excluding exhausted subtrees.
+When a subtree must be novel, we pair each e-node `n` in `c` with every
+**agreement profile** `(state_1, ..., state_k)` over its children, where each
+slot `i` picks from `[Novel] ++ [SharedWith(pc) for pc in cover[c_i]]`.
 
-Both distributions operate over the same feasible productions; they can affect
-which valid expression is likely, but not its size or frontier membership.
+A profile produces a non-novel term iff every slot is `SharedWith(pc_i)` and
+`(pc_1, ..., pc_k)` equals `m.prev_children` for some match `m` of `n`.
+Rejecting those profiles leaves only novel productions (`novel_branches`):
 
-## Correctness argument
+```text
+function novel_branches(c, s):
+    branches = []
+    for (idx, n) in eclass(c).nodes:
+        slot_options = [ [Novel] ++ [SharedWith(pc) for pc in cover[c_i]]
+                         for c_i in n.children ]
+        for profile in cartesian_product(slot_options):
+            if completes_some_match(profile, matches[(c, idx)]):
+                continue
+            child_hists = [ histogram(c_i, profile[i]) for i in 0..k ]
+            count       = convolve_at(child_hists, s - 1)
+            if count > 0:
+                branches.push(Branch { idx, child_states: profile, count, child_hists })
+    return branches
 
-The recursive invariants are:
+function completes_some_match(profile, matches):
+    return any m in matches where
+        profile == [SharedWith(pc) for pc in m.prev_children]
+```
 
-- constructing `(c, s, SharedWith(pc))` returns a size-`s` extraction from
-  current class `c` whose lookup in the previous graph is `pc`; and
-- constructing `(c, s, Novel)` returns a size-`s` extraction from current
-  class `c` whose lookup in the previous graph fails.
+### Splitting child sizes (`draw_children`)
 
-For `SharedWith(pc)`, every exposed current-node/previous-match pair has
-previous parent `pc`, and every child receives the matched previous-child
-state. The induction hypothesis establishes the child lookups, so the
-translated parent exists in `pc`.
+Once `Weigher` picks a branch, `draw::draw_children` splits `child_budget = s - 1`
+into `(s_1, ..., s_k)` using a right-to-left suffix convolution built on demand
+from `branch.child_hists`:
 
-For `Novel`, `FrontierDrawer` rejects every child-state profile equal to a
-known previous-node match. If the selected profile contains `Novel`, the
-induction hypothesis makes reconstruction of a previous parent impossible. If
-all children are `SharedWith`, the rejected-match check establishes that the
-translated parent is absent.
+```text
+function draw_children(children_ids, child_hists, child_states, child_budget, cursor):
+    suffix = right-to-left convolution of child_hists   // suffix[i+1] covers children i+1..k
+    remaining = child_budget
+    drawn = []
 
-For both states, suffix feasibility makes the selected child sizes sum to
-`s - 1`; adding the current e-node gives total size `s`.
+    for i in 0..k:
+        // Only sizes s_i where both child_hists[i][s_i] and suffix[i+1][remaining - s_i]
+        // are positive are offered to `weigher`.
+        s_i = weigher.pick_size(child_hists[i], suffix[i+1], remaining, cursor)
+        remaining -= s_i
+        drawn.push(construct(children_ids[i], s_i, child_states[i], cursor))
 
-Every recursive child size is strictly smaller than its parent size. The proof
-and construction therefore remain well-founded even when the e-graph contains
-cycles.
+    return drawn
+```
 
-## Without-replacement collection and work bound
+As a result, the `Weigher` **only ever sees valid branches and valid size
+splits**.
 
-Because both whole and frontier derivations are unambiguous (each distinct
-concrete term corresponds to a unique pre-order sequence of branch and
-child-size decisions), `Drawer::draw_batch` maintains one `SampledTrie` per
-size bucket and calls `Drawer::draw_next` once per requested term—with no
-rejection retries.
+---
 
-The exact histogram caps `target` to the known number of available terms. Once
-a draw steps onto an unvisited prefix in the trie, the remaining suffix cannot
-collide with any prior draw, so residual-capacity tracking switches off for the
-rest of that draw while still recording its path.
+## 4. Selection policies (`Weigher`)
 
-The returned expressions are sorted after collection, making the output order
-stable across runs for a fixed seed.
+While `FrontierDrawer` determines *which* choices are valid, `Weigher` picks
+among them using the remaining unsampled capacity tracked by `DrawCursor`:
 
-## Possible follow-up work
+| Policy | `Weigher` mode | Local weight of a choice | Resulting distribution |
+| :--- | :--- | :--- | :--- |
+| `Policy::Count` | `Weigher::Count` | Exact remaining unsampled completions (`local_count * rest_total - used`) | Exact **uniform** sampling without replacement over all remaining frontier terms of that size |
+| `Policy::Uniform` | `Weigher::Uniform` | Equal weight (`1`) for every choice with positive remaining capacity | Uniform over local branching decisions (exhausted subtrees excluded) |
+| `Policy::Smallest` | `Weigher::Uniform` | Picks the single smallest available size (`Drawer::smallest`) with a fixed seed | One deterministic smallest novel term |
 
-Potential optimizations should preserve the boundary between feasibility and
-selection:
+Both `Count` and `Uniform` operate over the exact same feasible productions:
+they change *which* valid terms are more likely, never whether a term is novel
+or has the right size.
 
-1. Enumerate child-state profiles lazily so high-arity operators do not require
-   materializing their full Cartesian product.
-2. Cache feasible branches or suffix convolutions by `(class, size, state)` if
-   repeated batch construction makes recomputation significant.
+---
 
-None of these changes should participate in proving size or frontier status;
-they operate only on productions already established as feasible.
+## 5. Without-replacement sampling (`SampledTrie`)
+
+Every concrete term corresponds to a **unique** pre-order sequence of branch
+and child-size decisions (derivations are unambiguous). `Drawer::draw_batch`
+exploits this to sample without replacement in **one pass per requested term,
+with zero rejection retries**:
+
+1. **Feasibility check up front:** `draw_batch` checks `root_histogram()` to
+   verify that each requested size bucket has enough terms (returning
+   `Err(DrawingError::InsufficientTerms)` otherwise).
+2. **One `SampledTrie` per size bucket:** Each node in the sparse trie records
+   how many previously drawn root terms passed through that decision prefix.
+3. **Subtracting used capacity:** While walking an already-visited prefix,
+   `Weigher` subtracts `cursor.used(key)` from each choice's capacity so
+   exhausted subtrees are never revisited.
+4. **Fast path off-trie:** As soon as a draw takes an unvisited edge, no prior
+   draw can collide with the remaining suffix. Residual-capacity tracking
+   (`rest_total`) switches off (`None`) for the rest of that draw while still
+   recording its path in the trie.
+5. **Deterministic ordering:** Drawn expressions in each size bucket are sorted
+   before returning, keeping output order stable for a fixed seed.
+
+For the formal induction proof that every drawn term has exact size `s` and
+`prev.lookup(t) = None`, see
+[novel_candidates.md §3](novel_candidates.md#3-correctness).
+
+---
+
+## 6. Possible follow-up work
+
+Future optimizations should keep the boundary between feasibility and selection
+intact:
+
+1. **Lazy profile enumeration:** stream child-state profiles instead of
+   materializing the full Cartesian product for high-arity operators.
+2. **Branch / suffix caching:** cache feasible branches or suffix convolutions
+   by `(c, s, state)` if large batches spend noticeable time recomputing them.
+
+Neither optimization needs to change how frontier membership or exact size is
+proven—they only speed up enumerating the same feasible productions.

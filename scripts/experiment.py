@@ -39,7 +39,7 @@ BASE_FLAGS: dict[str, Any] = {
     # "frontier": True,
     # "sample_policy": "count",
     "tree_width": 30,
-    # "full_union": True,
+    "full_union": False,
     "guides_per_attempt": 100,
     # "search_policy": "dfs",
     "sampling_backoff": "linear",
@@ -59,7 +59,7 @@ GRID: dict[str, tuple[Any, ...]] = {
     # "tree_width": (2, 6),
     # "sampling_backoff": ("gallop", "linear"),
     "search_policy": ("dfs", "bfs"),
-    "full_union": (True, False),
+    # "full_union": (True, False),
     # "guides_per_attempt": (1,2,5),
     "frontier": (True, False),
 }
