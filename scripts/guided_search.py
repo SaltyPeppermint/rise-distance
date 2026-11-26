@@ -24,6 +24,8 @@ from pydantic import Field, model_validator
 
 from baseline import check_baseline
 from common import (
+    ATTEMPT_BIN,
+    SAMPLE_BIN,
     ArgTooLong,
     BinaryPanicked,
     Measured,
@@ -91,10 +93,6 @@ class SearchArgs(ReplayArgs):
 
     baseline: Path = Field(
         description="Baseline folder from `baseline.py`, matching this run's budget and pairs."
-    )
-
-    sample_bin: Path = Field(
-        default=Path("target/release/sample"), description="Path to the sample-construction binary."
     )
 
     # Search budget
@@ -239,7 +237,7 @@ class Expansion:
 
 @dataclass
 class Budget:
-    """A pair's stop conditions. Pools drawn by other pairs are countet as if they had to be sampled."""
+    """A pair's stop conditions. Pools drawn by other pairs are counted as if they had to be sampled."""
 
     max_time: float | None
     max_attempts: int | None
@@ -357,7 +355,7 @@ async def draw_expansion(
 ) -> Expansion:
     """Run one `sample` process from `s_expr`, under a whole pair's budget."""
     cmd = [
-        str(args.sample_bin),
+        str(SAMPLE_BIN),
         *sample_flags,
         *cli_flags(
             **args.limits, start=s_expr, n_samples=args.tree_width * args.guides_per_attempt
@@ -647,7 +645,7 @@ async def search_pair(
         first = batch[0]
         started_at = budget.spent
         cmd = [
-            str(args.attempt_bin),
+            str(ATTEMPT_BIN),
             *base_flags,
             *cli_flags(
                 goal=pair.goal,
@@ -842,12 +840,12 @@ async def search(
     Raises `BaselineMismatch` before any work is spent if the baseline does not fit.
     """
     started = time.monotonic()
-    exit_if_missing(args.sample_bin, args.attempt_bin)
+    exit_if_missing(SAMPLE_BIN, ATTEMPT_BIN)
     language = problem_language(args.path)
     base_flags = args.base_flags(language)
     sample_flags = args.sample_flags(language)
 
-    pairs = load_pairs(args.path, args.n_starts, args.n_goals)
+    pairs = load_pairs(args.path, args.n_starts)
     check_baseline(args.baseline, args.baseline_key(), pairs)
 
     args.output.mkdir(parents=True, exist_ok=True)

@@ -22,10 +22,6 @@ class ReplayArgs(BaseModel):
         )
     )
 
-    attempt_bin: Path = Field(
-        default=Path("target/release/attempt"), description="Path to the attempt binary."
-    )
-
     # Guide-replay budget
     #
     # At least one must be given. Replay ends when the first configured budget
@@ -55,14 +51,6 @@ class ReplayArgs(BaseModel):
         gt=0,
         description=(
             "Only process the first N start terms in sorted order. All start terms are processed if omitted."
-        ),
-    )
-
-    n_goals: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Only use the first N goals per start term in file order. All goals are used if omitted."
         ),
     )
 

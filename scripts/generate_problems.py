@@ -18,6 +18,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from common import (
+    ATTEMPT_BIN,
+    SAMPLE_BIN,
+    START_BIN,
     MemoryKilled,
     PrioritySlot,
     SamplePolicy,
@@ -37,16 +40,6 @@ class GenerateArgs(BaseModel):
 
     # I/O
     output: Path = Field(description="Output directory.")
-
-    start_bin: Path = Field(
-        default=Path("target/release/start"), description="Start-term generation binary."
-    )
-
-    sample_bin: Path = Field(
-        default=Path("target/release/sample"), description="Goal-sample binary."
-    )
-
-    attempt_bin: Path = Field(default=Path("target/release/attempt"), description="Attempt binary.")
 
     # Start terms
     starts: int = Field(gt=0, description="Number of start terms, spread uniformly over the sizes.")
@@ -174,7 +167,7 @@ async def run_start(
         fields = (args.seed, size, index) if retry == 0 else (args.seed, size, index, retry)
         seed = derive_seed(*fields)
         cmd = [
-            str(args.start_bin),
+            str(START_BIN),
             *cli_flags(size=size, seed=seed, language=args.language, retry_limit=args.retry_limit),
             *flags,
         ]
@@ -206,7 +199,7 @@ async def run_samples(
 ) -> dict[str, Any] | None:
     """Draw goal samples from one start term's novel frontier."""
     cmd = [
-        str(args.sample_bin),
+        str(SAMPLE_BIN),
         *cli_flags(
             language=args.language,
             start=row["start"],
@@ -233,7 +226,7 @@ async def run_attempt(
 ) -> dict[str, Any]:
     """Measure what the unguided start->goal search actually costs."""
     cmd = [
-        str(args.attempt_bin),
+        str(ATTEMPT_BIN),
         *cli_flags(language=args.language, goal=pair["goal"]),
         *flags,
     ]
@@ -248,7 +241,7 @@ async def run_attempt(
 
 async def generate(args: GenerateArgs, limit: PrioritySlot) -> str:
     """Generate the problems into `output` and return a one-line summary."""
-    exit_if_missing(args.start_bin, args.sample_bin, args.attempt_bin)
+    exit_if_missing(START_BIN, SAMPLE_BIN, ATTEMPT_BIN)
 
     out = args.output
     out.mkdir(parents=True, exist_ok=True)

@@ -21,10 +21,14 @@ from tqdm import tqdm
 
 from schemes import ATTEMPT_DTYPES
 
+# Release Rust binaries driven by the scripts.
+START_BIN = Path("target/release/start")
+SAMPLE_BIN = Path("target/release/sample")
+ATTEMPT_BIN = Path("target/release/attempt")
+
 # Machine-readable eqsat progress events (`EVENT_PREFIX` in src/eqsat.rs),
 # emitted under `--print-success-iters`.
 EQSAT_ITER_RE = re.compile(r"^@EQSAT iter=(\d+)$", re.MULTILINE)
-# EQSAT_DONE_RE = re.compile(r"^@EQSAT done\b", re.MULTILINE)
 
 # Rust's exit code for a panic
 PANIC_RETURNCODE = 101
@@ -112,19 +116,17 @@ class Pair:
     goal: str
 
 
-def load_pairs(path: Path, n_starts: int | None = None, n_goals: int | None = None) -> list[Pair]:
+def load_pairs(path: Path, n_starts: int | None = None) -> list[Pair]:
     """Load `problems.json`'s rows as start/goal pairs.
 
-    Keeps the first `n_starts` start terms in sorted order and the first
-    `n_goals` goals per start term in file order; all of them if omitted.
+    Keeps the first `n_starts` start terms in sorted order, and all goals per
+    start term in file order; all starts if `n_starts` is omitted.
     """
     rows = json.loads((path / "problems.json").read_text())
     goals: dict[str, list[str]] = {}
     for row in rows:
         goals.setdefault(row["start"], []).append(row["goal"])
-    return [
-        Pair(start, goal) for start in sorted(goals)[:n_starts] for goal in goals[start][:n_goals]
-    ]
+    return [Pair(start, goal) for start in sorted(goals)[:n_starts] for goal in goals[start]]
 
 
 def problem_language(path: Path) -> str:
@@ -373,8 +375,6 @@ async def run_json_subprocess(
     per-argument limit, `MemoryKilled` when `max_rss_bytes` is set and the cap
     killed it, `TimeoutKilled` when `timeout` is set and the child outran it,
     and `BinaryPanicked` when the child panicked.
-
-    TODO: make what and limit non-optional
     """
     check_arg_sizes(cmd, what)
     async with limit.hold() as cpu:

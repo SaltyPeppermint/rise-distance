@@ -119,7 +119,7 @@ async def run_all(runs: list[SearchArgs], slots: PrioritySemaphore) -> None:
     dumps = [args.model_dump(exclude={"output"}) for args in runs]
     distinct = [key for key in dumps[0] if len({repr(dump[key]) for dump in dumps}) > 1]
 
-    problems = {(args.path, args.n_starts, args.n_goals) for args in runs}
+    problems = {(args.path, args.n_starts) for args in runs}
     counts = {len(load_pairs(*problem)) for problem in problems}
     pairs = str(min(counts)) if len(counts) == 1 else f"{min(counts)}-{max(counts)}"
     varying = f", varying {', '.join(distinct)}" if distinct else ""

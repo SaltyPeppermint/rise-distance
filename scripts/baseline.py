@@ -15,6 +15,7 @@ import polars as pl
 from pydantic import Field
 
 from common import (
+    ATTEMPT_BIN,
     Pair,
     PrioritySlot,
     cli_flags,
@@ -44,7 +45,7 @@ async def run_unguided_pair(
     failure row.
     """
     cmd = [
-        str(args.attempt_bin),
+        str(ATTEMPT_BIN),
         *base_flags,
         *cli_flags(goal=pair.goal),
     ]
@@ -106,9 +107,9 @@ async def compute_baseline(args: BaselineArgs, limit: PrioritySlot) -> str:
 
     Raises `BaselineMismatch` if `output` holds a baseline that does not fit.
     """
-    exit_if_missing(args.attempt_bin)
+    exit_if_missing(ATTEMPT_BIN)
     out = args.output
-    pairs = load_pairs(args.path, args.n_starts, args.n_goals)
+    pairs = load_pairs(args.path, args.n_starts)
 
     if (out / "config.json").is_file():
         check_baseline(out, args.baseline_key(), pairs)
