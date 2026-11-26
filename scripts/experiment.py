@@ -1,6 +1,7 @@
-"""Run a whole experiment: build, compute the shared baseline, then the guided searches.
+"""Run a whole experiment under benchmode: build, compute the shared baseline, then the guided searches.
 
 uv run scripts/experiment.py
+uv run scripts/experiment.py --sequential
 uv run scripts/experiment.py --rerun-aborted [data/guided_search]
 """
 
@@ -20,6 +21,7 @@ from typing import Any
 from tqdm import tqdm
 
 from baseline import BaselineArgs, compute_baseline
+from benchmode import benchmode_cgroup, benchmode_cpus, elevate
 from common import LOG_FILE, PrioritySemaphore, PrioritySlot, load_pairs, log
 from generate_problems import GenerateArgs, generate
 from guided_search import RESULT_FILES, SearchArgs, search
@@ -66,9 +68,6 @@ GRID: dict[str, tuple[Any, ...]] = {
 # Where results go
 OUTPUT_BASE = Path("data/guided_search")
 BASELINE_BASE = Path("data/baselines")
-
-# Concurrency
-JOBS = os.cpu_count() or 1
 
 
 def git_short_hash() -> str:
@@ -124,9 +123,10 @@ async def run_all(runs: list[SearchArgs], slots: PrioritySemaphore) -> None:
     counts = {len(load_pairs(*problem)) for problem in problems}
     pairs = str(min(counts)) if len(counts) == 1 else f"{min(counts)}-{max(counts)}"
     varying = f", varying {', '.join(distinct)}" if distinct else ""
+    cpus = ",".join(map(str, slots.cpus))
     print(
         f"Running {len(runs)} guided search(es) over {pairs} pair(s) "
-        f"on {JOBS} process slots{varying}",
+        f"on {len(slots.cpus)} isolated core(s) ({cpus}){varying}",
         file=sys.stderr,
     )
     # Padded per column, so the labels (and with them the bars) line up.
@@ -173,7 +173,7 @@ async def rerun_aborted(base: Path, slots: PrioritySemaphore) -> None:
     await run_all(runs, slots)
 
 
-async def generate_problems(problems: Path = PROBLEMS) -> None:
+async def generate_problems(slots: PrioritySemaphore, problems: Path = PROBLEMS) -> None:
     args = GenerateArgs(
         starts=1000,
         min_size=30,
@@ -189,7 +189,7 @@ async def generate_problems(problems: Path = PROBLEMS) -> None:
         goals=2,
         output=problems,
     )
-    print(await generate(args, PrioritySemaphore(20).at(0)), file=sys.stderr)
+    print(await generate(args, slots.at(0)), file=sys.stderr)
 
 
 async def experiment(slots: PrioritySemaphore) -> None:
@@ -198,7 +198,7 @@ async def experiment(slots: PrioritySemaphore) -> None:
     suffix = f"{datetime.now().astimezone():%Y-%m-%dT%H:%M}_{git_short_hash()}"
 
     # PROBLEM GENERATION
-    # await generate_problems()
+    # await generate_problems(slots)
 
     # BASELINE, shared by every run below
     baseline = BASELINE_BASE / PROBLEMS.name
@@ -245,10 +245,23 @@ def main() -> None:
         metavar="DIR",
         help=f"Only re-run the aborted runs in DIR (default: {OUTPUT_BASE}), then exit.",
     )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Run on a single isolated core instead of all isolated physical cores.",
+    )
     cli = parser.parse_args()
 
-    subprocess.run(["cargo", "build", "--release"], check=True)
-    slots = PrioritySemaphore(JOBS)
+    if os.environ.get("BENCHMODE") != "1":
+        # Build before disabling SMT so cargo can use all hardware threads.
+        subprocess.run(["cargo", "build", "--release"], check=True)
+        os.environ["EXPERIMENT_BUILT"] = "1"
+        raise SystemExit(elevate([sys.executable, *sys.argv], sequential=cli.sequential))
+
+    if os.environ.get("EXPERIMENT_BUILT") != "1":
+        subprocess.run(["cargo", "build", "--release"], check=True)
+
+    slots = PrioritySemaphore(benchmode_cpus(), benchmode_cgroup())
 
     if cli.rerun_aborted is not None:
         asyncio.run(rerun_aborted(cli.rerun_aborted, slots))

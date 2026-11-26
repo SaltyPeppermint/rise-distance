@@ -5,11 +5,12 @@ subprocess-JSON plumbing, and running a single `attempt` process."""
 import asyncio
 import contextlib
 import heapq
+import itertools
 import json
 import re
 import sys
-import time
-from collections.abc import Callable, Coroutine, Sequence
+from collections import deque
+from collections.abc import AsyncGenerator, Callable, Coroutine, Generator, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -24,10 +25,6 @@ from schemes import ATTEMPT_DTYPES
 # emitted under `--print-success-iters`.
 EQSAT_ITER_RE = re.compile(r"^@EQSAT iter=(\d+)$", re.MULTILINE)
 # EQSAT_DONE_RE = re.compile(r"^@EQSAT done\b", re.MULTILINE)
-
-# The cgroup OOM killer SIGKILLs the child; `systemd-run` reports that as
-# 128+SIGKILL, a direct child as -SIGKILL.
-OOM_RETURNCODES = (-9, 137)
 
 # Rust's exit code for a panic
 PANIC_RETURNCODE = 101
@@ -136,42 +133,46 @@ def problem_language(path: Path) -> str:
 
 
 class PrioritySemaphore:
-    """A semaphore that hands a freed slot to the waiter of the lowest priority,
-    first come first served among equals."""
+    """A semaphore that hands a freed physical CPU core to the waiter of the
+    lowest priority, first come first served among equals.
+    """
 
-    def __init__(self, value: int) -> None:
-        self._free = value
+    def __init__(self, cpus: Sequence[int], cgroup: Path) -> None:
+        if not cpus:
+            raise ValueError("cpus must be non-empty")
+        self.cpus = tuple(cpus)
+        self.cgroup = cgroup
+        self._free: deque[int] = deque(self.cpus)
         # A cancelled waiter stays in the heap until `release` skips it.
-        self._waiters: list[tuple[int, int, asyncio.Future[None]]] = []
+        self._waiters: list[tuple[int, int, asyncio.Future[int]]] = []
         self._arrivals = 0
 
     def at(self, priority: int) -> PrioritySlot:
         """This semaphore as seen by the waiters of `priority`."""
         return PrioritySlot(self, priority)
 
-    async def acquire(self, priority: int) -> None:
-        # A free slot means no one is waiting, since `release` only frees one then.
-        if self._free > 0:
-            self._free -= 1
-            return
-        waiter = asyncio.get_running_loop().create_future()
+    async def acquire(self, priority: int) -> int:
+        # A free core means no one is waiting, since `release` only frees one then.
+        if self._free:
+            return self._free.popleft()
+        waiter: asyncio.Future[int] = asyncio.get_running_loop().create_future()
         self._arrivals += 1
         heapq.heappush(self._waiters, (priority, self._arrivals, waiter))
         try:
-            await waiter
+            return await waiter
         except asyncio.CancelledError:
-            # Handed a slot just before it was cancelled, so pass that slot on.
+            # Handed a core just before it was cancelled, so pass it on.
             if not waiter.cancelled():
-                self.release()
+                self.release(waiter.result())
             raise
 
-    def release(self) -> None:
+    def release(self, cpu: int) -> None:
         while self._waiters:
             _, _, waiter = heapq.heappop(self._waiters)
             if not waiter.done():
-                waiter.set_result(None)
+                waiter.set_result(cpu)
                 return
-        self._free += 1
+        self._free.append(cpu)
 
 
 @dataclass(frozen=True)
@@ -181,11 +182,17 @@ class PrioritySlot:
     semaphore: PrioritySemaphore
     priority: int
 
-    async def __aenter__(self) -> None:
-        await self.semaphore.acquire(self.priority)
+    @property
+    def cgroup(self) -> Path:
+        return self.semaphore.cgroup
 
-    async def __aexit__(self, *exc: object) -> None:
-        self.semaphore.release()
+    @contextlib.asynccontextmanager
+    async def hold(self) -> AsyncGenerator[int]:
+        cpu = await self.semaphore.acquire(self.priority)
+        try:
+            yield cpu
+        finally:
+            self.semaphore.release(cpu)
 
 
 async def fan_out(
@@ -223,7 +230,7 @@ async def fan_out(
 class Measured:
     payload: Any
     peak_rss: int
-    # From the child's spawn to its exit, so time queued for a slot is excluded.
+    # Kernel-accounted cgroup CPU time (`cpu.stat` `usage_usec`), in seconds.
     wall_time: float
 
 
@@ -290,23 +297,56 @@ def check_arg_sizes(cmd: list[str], what: str) -> None:
             raise ArgTooLong(what, flag, size)
 
 
-def prefix_rss_cap(argv: list[str], limit_bytes: int) -> list[str]:
-    return [
-        "systemd-run",
-        "--user",
-        "--scope",
-        "--quiet",
-        "-p",
-        f"MemoryMax={limit_bytes}",
-        "-p",
-        "MemorySwapMax=0",
-        # An OOM-killed scope stops in `failed` state and stays loaded, so a run
-        # that caps on purpose leaks one unit per kill until the user manager
-        # goes `degraded`. This lets systemd collect them as they die.
-        "-p",
-        "CollectMode=inactive-or-failed",
-        "--",
-    ] + argv
+_CGROUP_IDS = itertools.count(1)
+
+
+def prefix_cgroup(argv: list[str], procs_path: Path) -> list[str]:
+    """Move the spawned process into `procs_path` before execing `argv`."""
+    return ["/bin/sh", "-c", 'echo $$ > "$1" && shift && exec "$@"', "_", str(procs_path), *argv]
+
+
+@contextlib.contextmanager
+def _job_cgroup(root: Path, max_rss_bytes: int | None, cpu: int) -> Generator[Path]:
+    """Create a per-child cgroup under delegated `root` for RSS cap and CPU pinning."""
+    job_dir = root / f"job-{next(_CGROUP_IDS)}"
+    job_dir.mkdir()
+    try:
+        if max_rss_bytes is not None:
+            (job_dir / "memory.max").write_text(f"{max_rss_bytes}\n")
+            if (swap := job_dir / "memory.swap.max").exists():
+                swap.write_text("0\n")
+            if (oom_group := job_dir / "memory.oom.group").exists():
+                oom_group.write_text("1\n")
+        if (cpuset := job_dir / "cpuset.cpus").exists():
+            cpuset.write_text(f"{cpu}\n")
+        yield job_dir
+    finally:
+        if (kill := job_dir / "cgroup.kill").exists():
+            with contextlib.suppress(OSError):
+                kill.write_text("1\n")
+        with contextlib.suppress(OSError):
+            job_dir.rmdir()
+
+
+def _cgroup_cpu_time(job_dir: Path) -> float:
+    """Kernel-accounted CPU time (`cpu.stat` `usage_usec`) for `job_dir`, in seconds."""
+    for line in (job_dir / "cpu.stat").read_text().splitlines():
+        key, _, val = line.partition(" ")
+        if key == "usage_usec":
+            return int(val) / 1_000_000
+    raise RuntimeError(f"no usage_usec in {job_dir / 'cpu.stat'}")
+
+
+def _cgroup_oom_killed(job_dir: Path) -> bool:
+    """Whether the kernel's cgroup OOM killer killed a process in `job_dir`."""
+    try:
+        for line in (job_dir / "memory.events").read_text().splitlines():
+            key, _, val = line.partition(" ")
+            if key == "oom_kill":
+                return int(val) > 0
+    except OSError, ValueError:
+        pass
+    return False
 
 
 async def run_json_subprocess(
@@ -324,8 +364,10 @@ async def run_json_subprocess(
     otherwise print, under a `peak_rss` the binary reads from its own
     `VmHWM` just before serializing.
 
-    The child only spawns once it holds a slot of `limit`, and its
-    `wall_time` starts counting then.
+    The child only spawns once it holds a core from `limit`, and runs in its own
+    sub-cgroup inside the delegated `bench.slice` tree, enforcing `memory.max`
+    and per-core `cpuset.cpus`. Its elapsed time is read from `cpu.stat`
+    (`usage_usec`), isolating timing from asyncio event-loop stalls.
 
     Raises `ArgTooLong` before spawning when an argv entry exceeds the kernel's
     per-argument limit, `MemoryKilled` when `max_rss_bytes` is set and the cap
@@ -335,36 +377,37 @@ async def run_json_subprocess(
     TODO: make what and limit non-optional
     """
     check_arg_sizes(cmd, what)
-    async with limit:
-        started = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(
-            *(prefix_rss_cap(cmd, max_rss_bytes) if max_rss_bytes else cmd),
-            stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            async with asyncio.timeout(timeout):
-                out, err = await proc.communicate(stdin)
-        except (asyncio.CancelledError, TimeoutError) as stopped:
-            # Cancelling or timing out only unwinds the *read*, so the child has to be killed by hand.
-            # `systemd-run --scope` execs the workload in place rather than forking,
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                # An already-cancelled caller is handed a second `CancelledError`
-                # The child watcher reaps the child either way.
-                with contextlib.suppress(asyncio.CancelledError):
-                    await proc.wait()
-            if isinstance(stopped, TimeoutError):
-                assert timeout is not None
-                raise TimeoutKilled(what, timeout, time.monotonic() - started) from None
-            raise
-        wall_time = time.monotonic() - started
+    async with limit.hold() as cpu:
+        with _job_cgroup(limit.cgroup, max_rss_bytes, cpu) as job_dir:
+            proc = await asyncio.create_subprocess_exec(
+                *prefix_cgroup(cmd, job_dir / "cgroup.procs"),
+                stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                async with asyncio.timeout(timeout):
+                    out, err = await proc.communicate(stdin)
+            except (asyncio.CancelledError, TimeoutError) as stopped:
+                # Cancelling or timing out only unwinds the *read*, so the child has to be killed by hand.
+                # `prefix_cgroup` execs the workload in place rather than forking.
+                if proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.kill()
+                    # An already-cancelled caller is handed a second `CancelledError`
+                    # The child watcher reaps the child either way.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await proc.wait()
+                if isinstance(stopped, TimeoutError):
+                    assert timeout is not None
+                    raise TimeoutKilled(what, timeout, _cgroup_cpu_time(job_dir)) from None
+                raise
+            wall_time = _cgroup_cpu_time(job_dir)
+            oom_killed = max_rss_bytes is not None and _cgroup_oom_killed(job_dir)
 
     stdout, stderr = out.decode(errors="replace"), err.decode(errors="replace")
 
-    if max_rss_bytes is not None and proc.returncode in OOM_RETURNCODES:
+    if oom_killed:
         raise MemoryKilled(what, stderr, wall_time)
     if proc.returncode == PANIC_RETURNCODE:
         raise BinaryPanicked(what, stderr, wall_time)

@@ -868,6 +868,9 @@ async def search(
             leave=leave,
         )
 
-    summary = report_results(args, traces, pools, time.monotonic() - started)
+    # Offload large parquet/JSON dumps so sibling runs' event loop doesn't stall.
+    summary = await asyncio.to_thread(
+        report_results, args, traces, pools, time.monotonic() - started
+    )
     log(summary)
     return summary
