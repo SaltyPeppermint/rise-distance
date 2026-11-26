@@ -1,6 +1,6 @@
 use egg::{Analysis, EGraph, Id, Language, RecExpr};
 use num_bigint::BigUint;
-use rand_chacha::ChaCha12Rng;
+use rand_chacha::ChaCha8Rng;
 use smallvec::SmallVec;
 
 use crate::cli::Policy;
@@ -189,7 +189,7 @@ impl<L: Language, N: Analysis<L>> Drawer<L> for FrontierDrawer<'_, '_, L, N> {
         &self,
         size: usize,
         sampled: &mut SampledTrie,
-        rng: &mut ChaCha12Rng,
+        rng: &mut ChaCha8Rng,
     ) -> RecExpr<OriginLang<L>> {
         let mut cursor = DrawCursor::new(sampled, rng);
         self.construct(

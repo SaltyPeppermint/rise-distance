@@ -5,7 +5,7 @@ use egg::{Id, Language, RecExpr};
 use foldhash::fast::FixedState;
 use procfs::process::Process;
 use rand::SeedableRng;
-use rand_chacha::ChaCha12Rng;
+use rand_chacha::ChaCha8Rng;
 
 // Deterministic HashMap and HashSet
 const DEFAULT_HASH_STATE: FixedState = FixedState::with_seed(0);
@@ -119,7 +119,7 @@ impl<T: Eq + Hash + Clone> UniqueQueue<T> {
     }
 }
 
-pub(crate) fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
+pub(crate) fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha8Rng {
     const SEED_BYTES: usize = 32;
     const WORD_BYTES: usize = size_of::<u64>();
     const MAX_WORDS: usize = SEED_BYTES / WORD_BYTES;
@@ -129,7 +129,7 @@ pub(crate) fn combined_rng<const N: usize>(values: [u64; N]) -> ChaCha12Rng {
     for (i, v) in values.iter().enumerate() {
         seed[i * WORD_BYTES..(i + 1) * WORD_BYTES].copy_from_slice(&v.to_le_bytes());
     }
-    ChaCha12Rng::from_seed(seed)
+    ChaCha8Rng::from_seed(seed)
 }
 
 /// hash consed storage for expressions,

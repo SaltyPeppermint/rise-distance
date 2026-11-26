@@ -6,7 +6,7 @@ use std::borrow::Borrow;
 
 use egg::{Language, RecExpr};
 use num_bigint::BigUint;
-use rand_chacha::ChaCha12Rng;
+use rand_chacha::ChaCha8Rng;
 use thiserror::Error;
 
 use crate::cli::Policy;
@@ -35,7 +35,7 @@ trait Drawer<L: Language> {
         &self,
         size: usize,
         sampled: &mut SampledTrie,
-        rng: &mut ChaCha12Rng,
+        rng: &mut ChaCha8Rng,
     ) -> RecExpr<OriginLang<L>>;
 
     /// Draw the requested number of distinct root terms at each size, without

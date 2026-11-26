@@ -4,7 +4,7 @@ use std::time::Instant;
 use clap::Parser;
 use egg::{Analysis, Iteration, Language, RecExpr, Rewrite, StopReason};
 use rand::SeedableRng;
-use rand_chacha::ChaCha12Rng;
+use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
 
 use rise_distance::cli::Measured;
@@ -60,7 +60,7 @@ fn run_one<L: Samplable + Display, N: Analysis<L> + Default>(
     rules: &[Rewrite<L, N>],
 ) -> StartTerm {
     let sampler = SizeUniformSampler::<L>::new(args.size, None);
-    let mut rng = ChaCha12Rng::seed_from_u64(args.seed);
+    let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
     for draws in 1..=args.retry_limit {
         let sample = sampler.sample(&mut rng);
         if let Some(measurement) = validity_check(&sample, validity_config, rules) {

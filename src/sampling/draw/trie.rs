@@ -1,5 +1,5 @@
 use num_bigint::BigUint;
-use rand_chacha::ChaCha12Rng;
+use rand_chacha::ChaCha8Rng;
 
 use crate::utils::HashMap;
 
@@ -15,11 +15,11 @@ impl TrieNodeId {
 pub(crate) struct DrawCursor<'a> {
     sampled: &'a mut SampledTrie,
     node: TrieNodeId,
-    pub(crate) rng: &'a mut ChaCha12Rng,
+    pub(crate) rng: &'a mut ChaCha8Rng,
 }
 
 impl<'a> DrawCursor<'a> {
-    pub(super) const fn new(sampled: &'a mut SampledTrie, rng: &'a mut ChaCha12Rng) -> Self {
+    pub(super) const fn new(sampled: &'a mut SampledTrie, rng: &'a mut ChaCha8Rng) -> Self {
         Self {
             sampled,
             node: TrieNodeId::ROOT,
