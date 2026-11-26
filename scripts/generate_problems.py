@@ -1,13 +1,6 @@
-"""Generate start/goal problems that really need the memory budget.
+"""Generate memory-intensive start/goal problems via `start` -> `sample` -> `attempt`.
 
-Three stages, each fanned out over isolated Rust processes:
-1. `start` samples one validated start term per size slot.
-2. `sample` draws goal samples from each start term's novel frontier.
-3. `attempt` runs the unguided start->goal search; its peak RSS (`VmHWM`, the
-   only memory number to trust here) decides whether the pair is kept.
-
-Writes `problems.json` (accepted pairs) and `problem_args.json` (config).
-`experiment.py` drives it.
+Keeps pairs reaching `min_rss` and writes `problems.json` and `problem_args.json`.
 """
 
 import hashlib
@@ -137,16 +130,10 @@ def derive_seed(*fields: int) -> int:
 async def run_start(
     args: GenerateArgs, limit: PrioritySlot, flags: list[str], slot: tuple[int, int]
 ) -> dict[str, Any] | None:
-    """Sample one validated start term of the slot's size, under the RSS cap.
+    """Sample one validated start term for `slot` under `max_rss`.
 
-    A slot killed at the cap is redrawn under a bumped seed. `start` seeds its
-    RNG once per process and runs a validity eqsat per draw, so the same seed
-    would replay the same sequence into the same fatal draw; only a different
-    seed gives the slot a different term to spend its budget on.
-
-    The seed and reseed count are recorded on the returned row, since a
-    reseeded slot is no longer reproducible from `seed` and the slot alone.
-    They are also what the caller counts the cap's cost from.
+    OOM kills retry with a bumped seed so the same fatal draw isn't replayed;
+    the winning seed and retry count are recorded on the returned row.
     """
     size, index = slot
     max_rss = parse_size(args.max_rss) if args.max_rss is not None else None

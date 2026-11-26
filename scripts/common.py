@@ -272,21 +272,10 @@ async def run_json_subprocess(
     timeout: float | None = None,
     stdin: bytes | None = None,
 ) -> Measured:
-    """Run a JSON child and return its payload plus its peak RSS.
+    """Run a JSON child pinned to a `limit` core in a per-job cgroup.
 
-    The child prints a `Measured` envelope (`src/cli.rs`): the payload it would
-    otherwise print, under a `peak_rss` the binary reads from its own
-    `VmHWM` just before serializing.
-
-    The child only spawns once it holds a core from `limit`, and runs in its own
-    sub-cgroup inside the delegated `bench.slice` tree, enforcing `memory.max`
-    and per-core `cpuset.cpus`. Its elapsed time is read from `cpu.stat`
-    (`usage_usec`), isolating timing from asyncio event-loop stalls.
-
-    Raises `ArgTooLong` before spawning when an argv entry exceeds the kernel's
-    per-argument limit, `MemoryKilled` when `max_rss_bytes` is set and the cap
-    killed it, `TimeoutKilled` when `timeout` is set and the child outran it,
-    and `BinaryPanicked` when the child panicked.
+    Uses cgroup `cpu.stat` for `wall_time` and enforces `max_rss_bytes` and `timeout`.
+    Raises `ArgTooLong`, `MemoryKilled`, `TimeoutKilled`, or `BinaryPanicked`.
     """
     check_arg_sizes(cmd, what)
     async with limit.hold() as cpu:
@@ -348,14 +337,7 @@ class AttemptResult:
 
 
 def failure_summary(stop_reason: str) -> dict[str, Any]:
-    """An `AttemptSummary`-shaped row with all measurements `None`, for a child
-    that never printed one (`out_of_memory`, `binary_panic`, `arg_too_long`, `timeout`,
-    `budget_exhausted`).
-
-    `binary_panic` is an uncaught panic, unlike eqsat's `panic`; `timeout` is the
-    hard timeout, unlike egg's `TimeLimit`; `budget_exhausted` is the hard timeout
-    set by the guided search's pair budget.
-    """
+    """Return a failed `AttemptSummary` row with `None` fields for a non-reporting child."""
     empty = dict.fromkeys(ATTEMPT_DTYPES)
     panic = stop_reason == "binary_panic"
     return {**empty, "reached": False, "panic": panic, "stop_reason": stop_reason}
@@ -371,13 +353,7 @@ async def measure_attempt(
     timeout_reason: str = "timeout",
     stdin: bytes | None = None,
 ) -> AttemptResult:
-    """Run one `attempt` process under the RSS cap and the hard timeout.
-
-    An attempt killed at the cap, by an uncaught panic, at its hard timeout, or
-    never spawned since an argument exceeds the kernel's limit comes back as a
-    failed attempt with ``stop_reason="out_of_memory"``/``"binary_panic"``/
-    `timeout_reason`/``"arg_too_long"`` rather than an exception.
-    """
+    """Run one `attempt`, converting OOM, timeout, panic, and arg-size errors into failure rows."""
     try:
         measured = await run_json_subprocess(
             cmd,

@@ -1,10 +1,7 @@
-"""Guide search over the pairs in ``problems.json``, driven by `experiment.py`.
+"""Guided search over `problems.json` pairs, driven by `experiment.py`.
 
-Each pair gets a tree of guide chains explored through a work queue. All
-processes are capped at ``max_rss``; a ``sample`` killed there is retried with
-fewer iterations (see `run_capped`). Panics (``binary_panic``), hard timeouts
-(``timeout``), children cut off by the pair's time budget (``budget_exhausted``)
-and over-long arguments (``arg_too_long``) are recorded, not retried.
+Explores a tree of guide chains per pair under `max_rss`; OOM-killed `sample`
+calls retry with fewer iterations, while other failures are recorded.
 """
 
 import asyncio
@@ -183,12 +180,8 @@ class SearchArgs(ReplayArgs):
 
 @dataclass(frozen=True)
 class SearchNode:
-    """Node in the search tree.
-
-    `guide` is the origin-annotated guide s-expression, `s_expr` its lowered
-    term that `sample` draws from next. The root has the start term and no
-    guide. `terminal` marks a node drawn from a saturated egraph.
-    """
+    """Node in the search tree (`guide` is None at root; `s_expr` is the lowered
+    term to sample from; `terminal` marks a node from a saturated egraph)."""
 
     node_id: int
     parent_id: int | None
@@ -273,17 +266,11 @@ class PairTrace:
 async def run_capped(
     args: SearchArgs, limit: PrioritySlot, cmd: list[str], what: str, tries: Tries
 ) -> tuple[Measured | None, float]:
-    """Run under the RSS cap, retrying a killed child up to `sampling_retries`
-    times with fewer productive iterations: stepping down from the iterations
-    reached until a try fits, then bisecting for the most iterations that fit.
-    `sampling_backoff` picks the steps: 1, 2, 4, ... fewer (`gallop`) or 1, 2,
-    3, ... fewer (`linear`, whose first fit needs no bisecting). Assumes peak
-    RSS grows with the iterations. All tries share `args.timeout`.
+    """Run `sample` under `max_rss`, stepping down and bisecting productive iterations on OOM.
 
-    Returns `None` if every try was killed, plus the wall time summed over all
-    tries. A `BinaryPanicked`/`TimeoutKilled` is not retried and carries that
-    sum, except a timeout after a fit, which returns that fit. `tries` counts
-    every try, also those of a call that raised."""
+    All tries share `args.timeout` and increment `tries`. Returns `(measured, total_wall_time)`
+    (or `None` if every try OOMs); timeouts after a fit return that fit.
+    """
 
     async def attempt(max_iters: int | None, spent: float) -> Measured:
         """One try with what is left of `timeout` after `spent` seconds."""
@@ -405,13 +392,7 @@ async def draw_expansion(
 
 
 class SamplePools:
-    """Every `sample` task the run started, keyed by the start term it sampled from.
-
-    This allows lazy sampling! Later callers simply get the cached results
-
-    The sample draws are all in the same `group` so a failed pair cancels
-    sample tasks still running instead of leaving them un-awaited
-    """
+    """Lazy cache of `sample` tasks keyed by start term, scoped to a shared `TaskGroup`."""
 
     def __init__(
         self,
@@ -430,12 +411,9 @@ class SamplePools:
         return len(self.tasks)
 
     async def draw(self, s_expr: str) -> Expansion:
-        """That term's pool, drawing it only if this run has not already.
+        """Return `s_expr`'s pool, starting a shared draw under a full pair budget if needed.
 
-        The Pool may cache for the whole run but it simulates being pair independence.
-
-        Since several pairs may await one draw, it runs under a whole pair's budget,
-        and each pair cuts it to its own deadline in `SearchFrontier._expand`.
+        Each awaiting pair trims the result to its own deadline in `SearchFrontier._expand`.
         """
         # No `await` before the task finishes, so no race
         if s_expr not in self.tasks:
@@ -605,15 +583,7 @@ class BfsFrontier(SearchFrontier):
 async def search_pair(
     args: SearchArgs, base_flags: list[str], limit: PrioritySlot, pools: SamplePools, pair: Pair
 ) -> PairTrace:
-    """Run one pair's sampling/attempt search and return its trace.
-
-    The loop is: pop a batch of siblings, attempt them together, and on failure
-    hand them back to the frontier, which draws their pools once it needs the
-    children. A batch whose attempt saturated is never handed back, since its
-    subtrees cannot hold the goal. Each attempt is a separate `attempt` process,
-    so its `peak_rss` is that attempt's own peak rather than a high-water mark
-    shared across the pair.
-    """
+    """Run guided search for one pair, popping guide batches and queueing failed non-dead-ends."""
     budget = Budget(max_time=args.max_pair_time, max_attempts=args.max_attempts)
     trace = PairTrace(pair)
     frontier = args.search_policy.frontier(

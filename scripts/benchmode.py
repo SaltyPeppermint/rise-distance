@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 
-"""Run a command under reproducible Linux (AMD/Intel) benchmode isolation.
-
-Uses a single `sudo` wrapper to disable SMT and turbo/boost, switch `amd_pstate` or
-`intel_pstate` to passive, lock CPU frequency, confine system/user slices to the
-housekeeping CPU, run the command as your normal user inside a delegated `bench.slice`
-cgroup across the isolated physical cores, and restore all system settings in `finally`.
-"""
+"""Run a command under isolated Linux benchmode (no SMT/turbo, locked frequency,
+housekeeping slices confined to CPU 0, workload in delegated `bench.slice`)."""
 
 import json
 import os
@@ -205,13 +200,10 @@ def isolated_cpus(*, sequential: bool = False) -> Generator[tuple[int, list[int]
 
 
 def _prepare_delegated_cgroup() -> Path:
-    """Move this process into a `driver` leaf so sibling worker cgroups can use memory/cpuset.
+    """Move this process into a `driver/` leaf and enable memory/cpuset for worker cgroups.
 
-    Cgroup v2 forbids enabling controllers in `cgroup.subtree_control` on a cgroup
-    that holds processes directly ("no internal processes" rule). Moving the driver
-    process into `driver/` leaves the delegated root empty so `common.py` can create
-    per-worker cgroups with `memory.max` and `cpuset.cpus` inside `bench.slice`
-    instead of escaping into `user.slice` via `systemd-run --user`.
+    Cgroup v2's no-internal-processes rule requires the root to be empty before enabling
+    subtree controllers.
     """
     lines = Path("/proc/self/cgroup").read_text().strip().splitlines()
     rel = next(line.split("::", 1)[1] for line in lines if "::" in line).lstrip("/")

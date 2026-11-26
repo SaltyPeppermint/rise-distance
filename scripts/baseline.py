@@ -1,11 +1,6 @@
-"""Run the unguided baseline for a problem folder once.
+"""Compute the shared unguided baseline for a problem folder, driven by `experiment.py`.
 
-The baseline only depends on the problems and the guide-replay budget, not on
-any of the search flags, so a grid of `guided_search.py` runs can share one
-through `baseline` instead of each re-running it. `experiment.py` drives it.
-
-An existing baseline in `output` is kept if it matches and covers every
-pair, and is a hard error otherwise.
+Reuses an existing matching baseline in `output`, or raises `BaselineMismatch`.
 """
 
 import json
@@ -38,12 +33,7 @@ class BaselineArgs(ReplayArgs):
 async def run_unguided_pair(
     args: BaselineArgs, base_flags: list[str], limit: PrioritySlot, pair: Pair
 ) -> dict:
-    """Run the pair-matched single-start baseline.
-
-    A baseline killed at the RSS cap, by an uncaught panic, or with a too-long
-    argument becomes an ``out_of_memory``/``binary_panic``/``arg_too_long``
-    failure row.
-    """
+    """Run the unguided baseline for a single pair."""
     cmd = [
         str(ATTEMPT_BIN),
         *base_flags,
@@ -70,12 +60,8 @@ async def run_unguided_pair(
 
 
 def check_baseline(directory: Path, expected: dict, pairs: list[Pair]) -> None:
-    """Check that the stored baseline in `directory` was computed under the
-    `baseline_key` `expected` and covers `pairs`.
-
-    Raises `BaselineMismatch` if there is no finished baseline in `directory`,
-    or it was computed under a different `baseline_key` or does not cover every pair.
-    """
+    """Verify `directory` has a finished baseline matching `expected` and covering `pairs`,
+    or raise `BaselineMismatch`."""
     if not (directory / "config.json").is_file():
         raise BaselineMismatch(f"no finished baseline in {directory}; run `baseline.py` first")
     config = json.loads((directory / "config.json").read_text())
