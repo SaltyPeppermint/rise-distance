@@ -151,7 +151,6 @@ impl<L> ExprHashCons<L> {
 }
 
 impl<L: Language> ExprHashCons<L> {
-
     pub(crate) fn add(&mut self, node: L) -> usize {
         if let Some(id) = self.memo.get(&node) {
             return *id;

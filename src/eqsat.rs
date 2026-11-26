@@ -541,8 +541,7 @@ mod tests {
             print_success_iters: false,
         };
 
-        let result =
-            guided::<Math, ConstantFold>(&[guide], &goal, &math::rules(), &config, false);
+        let result = guided::<Math, ConstantFold>(&[guide], &goal, &math::rules(), &config, false);
         assert!(matches!(
             result,
             Err(AttemptError::Unreached {

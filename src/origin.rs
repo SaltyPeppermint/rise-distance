@@ -76,8 +76,8 @@ mod tests {
     use super::*;
     use crate::langs::math::{self, Math, TinyConstVal};
     use crate::langs::prop::Prop;
-    use num::rational::Ratio;
     use num::BigInt;
+    use num::rational::Ratio;
 
     #[test]
     fn math_origin_sexpr_roundtrips_with_origins() {

@@ -15,7 +15,7 @@ use rise_distance::cli::{Measured, Policy};
 use rise_distance::eqsat::{self, EqsatConfig, EqsatResult};
 use rise_distance::langs::{Lang, math, prop};
 use rise_distance::origin::{self, OriginLang};
-use rise_distance::sampling::{SamplePackage, FrontierPackage, WholePackage};
+use rise_distance::sampling::{FrontierPackage, SamplePackage, WholePackage};
 use rise_distance::utils;
 
 #[derive(Parser)]

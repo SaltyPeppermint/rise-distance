@@ -97,7 +97,8 @@ where
             .collect();
         eqsat::guided(&guides, &goal, rules, &args.eqsat, args.full_union)
     } else {
-        let start_str = io::read_to_string(io::stdin()).expect("Failed to read start term from stdin");
+        let start_str =
+            io::read_to_string(io::stdin()).expect("Failed to read start term from stdin");
         let start_expr = start_str
             .trim()
             .parse::<RecExpr<L>>()

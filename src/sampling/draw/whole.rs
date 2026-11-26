@@ -6,10 +6,10 @@ use smallvec::SmallVec;
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::origin::OriginLang;
-use crate::sampling::{self, INLINE_ARITY};
 use crate::sampling::count::whole;
-use crate::sampling::draw::{self, SamplePackage, DrawCursor, Drawer, DrawingError, SampledTrie};
+use crate::sampling::draw::{self, DrawCursor, Drawer, DrawingError, SamplePackage, SampledTrie};
 use crate::sampling::weigher::{Choice, Weigher};
+use crate::sampling::{self, INLINE_ARITY};
 use crate::utils::{self, HashMap};
 
 struct WholeDrawer<'a, 'b, L: Language, N: Analysis<L>> {
@@ -242,8 +242,8 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let (used_max_size, package) = WholePackage::build(result, 30, 2, 2, 3)
-            .expect("build should succeed");
+        let (used_max_size, package) =
+            WholePackage::build(result, 30, 2, 2, 3).expect("build should succeed");
 
         assert_eq!(used_max_size, 5);
         let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
