@@ -137,11 +137,10 @@ bound. Child pairs missing from the budget map contribute no terms.
 The matched e-node costs 1, so every child pair is evaluated at a size
 strictly below `s`: the recurrence is stratified by size exactly like the
 whole counts ([layered counting](../counting/layered_counting.md) §2), and the
-implementation reuses the same generic layer-by-layer kernel (`LayeredDp`,
-one pass per size, each `(pair, size)` cell computed once — no fixpoint,
-even on cyclic e-graphs). `joint_children_of` translates the match table
-into the kernel's shape: key = `(c, pc)` pair, one node per match, child
-keys = `zip(n.children, m.prev_children)`. See
+implementation reuses the same generic `LayerTable` kernel (one pass per size,
+each `(pair, size)` cell computed once — no fixpoint, even on cyclic e-graphs),
+stepping directly over `matches` with child keys zipped from
+`(n.children, m.prev_children)`. See
 [smallest novel-size search](../counting/novel_size_search.md) for the full argument (this
 replaced a worklist fixpoint over whole per-pair histograms).
 

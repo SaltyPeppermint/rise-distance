@@ -9,8 +9,8 @@ The relevant code is:
 
 - [src/sampling/count/budgets.rs](../../src/sampling/count/budgets.rs) — shared
   current-root budgets.
-- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) — the
-  generic layered DP.
+- [src/sampling/count/mod.rs](../../src/sampling/count/mod.rs) — the
+  generic `LayerTable` size-layered helper.
 - [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — rooted
   match enumeration, pruning, joint counting, and the exact scan.
 - [src/sampling/draw/frontier.rs](../../src/sampling/draw/frontier.rs) — phase
@@ -33,7 +33,7 @@ cap_budgets = RootBudgets::new(curr, root, cap)
 matches = enumerate_matches(curr, prev_lookup, cap_budgets)
 drop(prev_lookup)
 
-step whole and joint LayeredDps layer by layer until cumulative
+step whole and joint LayerTables layer by layer until cumulative
 novel(root, size) >= min_extractable (or cap is exhausted -> Err(cap))
 
 final_budgets = RootBudgets::new(curr, root, final_max_size)
@@ -58,7 +58,7 @@ whole root counts, where every extractable term counts toward
 `search_steps` looks like a retry counter, but it is not one: it only ever
 enters the code as `cap = start_size + search_steps`, and `cap` is the size
 limit that every pre-scan structure is sized against. Raising it costs memory
-in four places, none of which depend on the size the scan eventually picks.
+in three places, none of which depend on the size the scan eventually picks.
 
 **Budgets admit more classes.** `class_budgets` seeds the root with `cap` and
 propagates `child_budget = (parent_budget - 1) - (mins_sum - min_size(child))`
@@ -67,15 +67,10 @@ reachable class's budget and additionally admits classes whose cheapest
 realization did not fit the old cap. The budget map is the domain of everything
 downstream.
 
-**The DP skeleton is allocated for that whole domain up front.**
-`whole::dp` builds `children_of` — canonical child ids per node — for
-every budgeted class, and `LayeredDp::new` allocates one suffix table per node
-position for each of them, before a single layer is stepped.
-
-**Every layer touches more classes.** `step` works on
-`budgets.iter().filter(|(_, &budget)| size <= budget)`. Higher budgets keep more
-classes active at *every* layer, early ones included, so both the retained
-histograms and the suffix tables grow denser per layer rather than just taller.
+**Every layer touches more classes.** `step` visits budgeted classes while
+`size <= budget`. Higher budgets keep more classes active at *every* layer,
+early ones included, so the retained histograms (and any sparse suffix tables
+for arity ≥ 3 nodes) grow denser per layer rather than just taller.
 
 **On the frontier path, match enumeration runs at the cap.**
 `enumerate_matches` visits every node whose minimum realization fits its
@@ -89,7 +84,7 @@ carries the cap-sized match data even when the selected size is small.
 The scan returns as soon as the cumulative term count reaches
 `min_extractable`, so the number of layers actually stepped is bounded by the
 selected size, not by `cap`. When the search succeeds quickly, `search_steps`
-costs only the four items above.
+costs only the three items above.
 
 When it cannot be satisfied, the loop runs all `rooted.limit() == cap` layers
 over the full admitted class set before returning `Err(cap)`. `search_steps`
@@ -173,11 +168,10 @@ Every previous witness attached to a surviving current node is retained.
 Rooted joint counting decides which current/previous pairs have nonzero cells
 within budget. The package retains only:
 
-- rooted whole histograms and exact-drawing suffix tables;
 - nonempty rooted joint histograms;
 - cover entries derived from nonempty joint keys;
 - the final-budget-pruned node-match table; and
-- novel histograms derived from those rooted counts.
+- novel histograms derived in place from the rooted whole and joint counts.
 
 ## Correctness invariant
 
@@ -185,9 +179,9 @@ For a selected root `r` and final limit `M`, every query reachable while
 constructing a term of size at most `M` remains available:
 
 - the exact novel histogram at `r` through `M`;
-- recursive whole and joint histogram lookups;
+- recursive novel and joint histogram lookups;
 - covers and node matches needed by every feasible frontier state; and
-- suffix tables needed to split child sizes.
+- child-histogram entries needed to split child sizes on demand.
 
 The restriction removes only data no root derivation can query. Every drawn
 candidate remains extractable from the current graph and absent from the

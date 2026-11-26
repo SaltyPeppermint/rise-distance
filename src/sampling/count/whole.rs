@@ -1,32 +1,43 @@
 use egg::{Analysis, EGraph, Id, Language};
 use num::{BigUint, Zero};
 
-use super::budgets::{MinSizes, RootBudgets, self};
-use super::layered::LayeredDp;
+use super::LayerTable;
+use super::budgets::{self, MinSizes, RootBudgets};
 use crate::utils::HashMap;
 
 /// Per-class size histograms keyed by canonical e-class id.
 pub(crate) type ClassHistograms = HashMap<Id, HashMap<usize, BigUint>>;
 
-/// Create an unstepped whole-graph DP for the root budgets.
-pub(super) fn dp<L: Language, N: Analysis<L>>(
+/// Advance `whole` by one size layer directly over `egraph`.
+pub(super) fn step<L: Language, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     budgets: &RootBudgets<'_>,
-) -> LayeredDp<Id> {
+    whole: &mut LayerTable<Id, (Id, usize)>,
+    size: usize,
+) {
     assert!(egraph.clean);
-    let children_of = budgets
+    let total = size - 1;
+    let layer = budgets
         .budgets()
-        .keys()
-        .map(|&id| {
-            let per_node = egraph[id]
+        .iter()
+        .filter(|&(_, &budget)| size <= budget)
+        .filter_map(|(&id, _)| {
+            let count = egraph[id]
                 .nodes
                 .iter()
-                .map(|node| node.children().iter().map(|&c| egraph.find(c)).collect())
-                .collect();
-            (id, per_node)
+                .enumerate()
+                .filter(|(_, node)| budgets.node_fits(egraph, id, node))
+                .filter_map(|(node_idx, node)| {
+                    debug_assert!(node.children().iter().all(|&c| egraph.find(c) == c));
+                    whole.node_count(|| (id, node_idx), node.children(), total)
+                })
+                .sum::<BigUint>();
+            (!count.is_zero()).then_some((id, count))
         })
-        .collect();
-    LayeredDp::new(children_of, budgets.budgets().clone())
+        .collect::<Vec<_>>();
+    for (id, count) in layer {
+        whole.data.entry(id).or_default().insert(size, count);
+    }
 }
 
 /// Find the smallest root size `<= cap` that makes at least `min_extractable`
@@ -55,19 +66,16 @@ pub(crate) fn count<L: Language, N: Analysis<L>>(
 
     for try_cap in budgets::doubling_caps(root_min, cap, initial_step) {
         let try_budgets = min_sizes.budgets_for(egraph, root, try_cap);
-        let limit = try_budgets.limit();
-        let mut layered = dp(egraph, &try_budgets);
-        drop(try_budgets);
+        let mut whole = LayerTable::new();
 
         let mut term_count = BigUint::ZERO;
-        for _ in 0..limit {
-            let size = layered.step();
-            if let Some(count) = layered.data().get(&root).and_then(|hist| hist.get(&size))
-                && !count.is_zero()
-            {
+        for size in 1..=try_budgets.limit() {
+            step(egraph, &try_budgets, &mut whole, size);
+            if let Some(count) = whole.data.get(&root).and_then(|hist| hist.get(&size)) {
                 term_count += count;
                 if term_count >= threshold {
-                    let mut counts = layered.into_data();
+                    let mut counts = whole.into_data();
+                    drop(try_budgets);
                     min_sizes
                         .budgets_for(egraph, root, size)
                         .prune_histograms(&mut counts, |c| c);
@@ -195,8 +203,11 @@ mod tests {
         let b = egraph.add(SymbolLang::leaf("b"));
         let apb = egraph.add(SymbolLang::new("+", vec![a, b]));
         let gab = egraph.add(SymbolLang::new("g", vec![apb, b]));
-        // A ternary node is the only kind that stores a table.
+        let big = egraph.add(SymbolLang::new("g", vec![gab, gab]));
+        let oversized = egraph.add(SymbolLang::new("h", vec![big, gab, gab]));
+        // Only fitting nodes of arity >= 3 store suffix tables.
         let root = egraph.add(SymbolLang::new("h", vec![gab, apb, b]));
+        egraph.union(root, oversized);
 
         egraph.union(a, apb);
         egraph.rebuild();
@@ -204,29 +215,36 @@ mod tests {
         let limit = 9;
         let min_sizes = MinSizes::new(&egraph);
         let budgets = min_sizes.budgets_for(&egraph, root, limit);
-        let mut dp = dp(&egraph, &budgets);
-        for _ in 0..budgets.limit() {
-            dp.step();
+        let mut whole = LayerTable::new();
+        for size in 1..=budgets.limit() {
+            step(&egraph, &budgets, &mut whole, size);
         }
 
-        for (&id, per_node) in dp.suffix() {
-            for (node, tables) in egraph[id].nodes.iter().zip(per_node) {
-                let children = node
-                    .children()
-                    .iter()
-                    .map(|&c| egraph.find(c))
-                    .collect::<Vec<_>>();
+        for &id in budgets.budgets().keys() {
+            for (node_idx, node) in egraph[id].nodes.iter().enumerate() {
+                let children = node.children();
+                let fits = budgets.node_fits(&egraph, id, node);
+                let Some(tables) = whole.suffix.get(&(id, node_idx)) else {
+                    assert!(
+                        children.len() <= 2 || !fits,
+                        "fitting nodes of arity >= 3 populate suffix tables"
+                    );
+                    continue;
+                };
+                assert!(
+                    children.len() >= 3 && fits,
+                    "arity <= 2 or oversized nodes allocate no suffix tables"
+                );
                 let histograms = children
                     .iter()
-                    .map(|c| dp.data().get(c).cloned().unwrap_or_default())
+                    .map(|c| whole.data.get(c).cloned().unwrap_or_default())
                     .collect::<Vec<_>>();
                 let budget = budgets.budget(id).unwrap() - 1;
                 let expected = sampling::suffix_convolutions(&histograms, budget);
 
                 // Only positions `1..n - 1` are stored; the first and the
-                // last two are implicit, and drawers rebuild them with
-                // `suffix_convolutions` over the same histograms.
-                assert_eq!(tables.len(), children.len().saturating_sub(2));
+                // last two are implicit.
+                assert_eq!(tables.len(), children.len() - 2);
                 assert_eq!(tables.as_slice(), &expected[1..=tables.len()]);
             }
         }

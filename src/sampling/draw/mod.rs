@@ -60,25 +60,25 @@ trait Drawer<L: Language> {
             return Err(DrawingError::InsufficientTerms);
         }
 
-        let mut terms = Vec::new();
-        for &(size, requested_count) in requests {
-            if requested_count == 0 {
-                continue;
-            }
-            let target = usize::try_from(requested_count).unwrap();
-            let mut rng = utils::combined_rng([size as u64, seed[0], seed[1]]);
-            let mut sampled = SampledTrie::new();
-            let mut drawn = Vec::with_capacity(target);
-            for _ in 0..target {
-                drawn.push(self.draw_next(size, &mut sampled, &mut rng));
-            }
-            drawn.sort_unstable();
-            debug_assert!(
-                drawn.windows(2).all(|pair| pair[0] != pair[1]),
-                "sampled terms must be pairwise distinct"
-            );
-            terms.extend(drawn);
-        }
+        let terms = requests
+            .iter()
+            .copied()
+            .filter(|&(_, count)| count > 0)
+            .flat_map(|(size, requested_count)| {
+                let target = usize::try_from(requested_count).unwrap();
+                let mut rng = utils::combined_rng([size as u64, seed[0], seed[1]]);
+                let mut sampled = SampledTrie::new();
+                let mut drawn = (0..target)
+                    .map(|_| self.draw_next(size, &mut sampled, &mut rng))
+                    .collect::<Vec<_>>();
+                drawn.sort_unstable();
+                debug_assert!(
+                    drawn.windows(2).all(|pair| pair[0] != pair[1]),
+                    "sampled terms must be pairwise distinct"
+                );
+                drawn
+            })
+            .collect();
         Ok(terms)
     }
 
@@ -167,22 +167,29 @@ where
     H: Borrow<HashMap<usize, BigUint>>,
     F: FnMut(usize, usize, Option<&BigUint>, &mut DrawCursor<'_>) -> RecExpr<OriginLang<L>>,
 {
-    let Some((_, init)) = child_hists.split_last() else {
+    let Some((last, init)) = child_hists.split_last() else {
         return Vec::new();
     };
     let mut drawn = Vec::with_capacity(child_hists.len());
     let mut remaining = child_budget;
 
     if !init.is_empty() {
-        let suffix = sampling::suffix_convolutions(child_hists, child_budget);
+        // Only suffixes `1..n` are read; a binary node (`init.len() == 1`)
+        // reads `last` directly without allocating any convolution tables.
+        let tail_suffix = if init.len() > 1 {
+            sampling::suffix_convolutions(&child_hists[1..], child_budget)
+        } else {
+            Vec::new()
+        };
         for (i, hist) in init.iter().enumerate() {
             let size_rest = cursor.active_rest(active_rest);
+            let rest_hist = tail_suffix.get(i).unwrap_or_else(|| last.borrow());
             let mut choices = hist
                 .borrow()
                 .iter()
                 .filter_map(|(&child_size, child_count)| {
                     let rest_size = remaining.checked_sub(child_size)?;
-                    let rest_count = suffix[i + 1].get(&rest_size)?;
+                    let rest_count = rest_hist.get(&rest_size)?;
                     (!rest_count.is_zero())
                         .then(|| Choice::child_size(child_size, child_count, rest_count))
                 })

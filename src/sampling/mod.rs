@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use crate::utils::HashMap;
 
-pub use draw::{SamplePackage, FrontierPackage, WholePackage};
+pub use draw::{FrontierPackage, SamplePackage, WholePackage};
 
 /// Inline `SmallVec` capacity for per-node child slices (most operators are unary or binary).
 pub(crate) const INLINE_ARITY: usize = 2;
@@ -72,28 +72,27 @@ fn convolve_entry(
             let count_b = total.checked_sub(a).and_then(|b| inner.get(&b))?;
             Some(count_a * count_b)
         })
-        .fold(BigUint::ZERO, |acc, c| acc + c)
+        .sum()
 }
 
 /// The convolution of all `histograms` at exactly `budget`, or `None` when it
 /// is zero.
-///
-/// Only children `1..` are convolved into a table.
 fn convolve_at<H: Borrow<HashMap<usize, BigUint>>>(
     histograms: &[H],
     budget: usize,
 ) -> Option<BigUint> {
-    if histograms.iter().any(|h| h.borrow().is_empty()) {
-        return None;
-    }
-    let Some((first, rest)) = histograms.split_first() else {
-        // The empty product: one filling, of size zero.
-        return (budget == 0).then_some(BigUint::ONE);
+    let count = match histograms {
+        [] => return (budget == 0).then_some(BigUint::ONE),
+        [only] => return only.borrow().get(&budget).filter(|c| !c.is_zero()).cloned(),
+        [a, b] => convolve_entry(a.borrow(), b.borrow(), budget),
+        [first, rest @ ..] => {
+            if histograms.iter().any(|h| h.borrow().is_empty()) {
+                return None;
+            }
+            let tail = convolve(rest, budget);
+            convolve_entry(first.borrow(), &tail, budget)
+        }
     };
-    // `convolve` of nothing is the empty product, so a unary node reads its
-    // lone child's histogram straight off.
-    let tail = convolve(rest, budget);
-    let count = convolve_entry(first.borrow(), &tail, budget);
     (!count.is_zero()).then_some(count)
 }
 

@@ -8,13 +8,15 @@ bound every production counting phase.
 The relevant code is:
 
 - [src/sampling/count/budgets.rs](../../src/sampling/count/budgets.rs) —
-  `RootBudgets` and `RootBudgets::new`.
-- [src/sampling/count/layered.rs](../../src/sampling/count/layered.rs) —
-  `LayeredDp`.
+  `RootBudgets` and `MinSizes`.
+- [src/sampling/count/mod.rs](../../src/sampling/count/mod.rs) —
+  `LayerTable` and per-node size-layered accumulation.
+- [src/sampling/count/whole.rs](../../src/sampling/count/whole.rs) —
+  whole-graph layer stepping directly over the e-graph.
 - [src/sampling/draw/whole.rs](../../src/sampling/draw/whole.rs) —
-  top-down consumption of rooted whole histograms and suffix tables.
+  top-down consumption of rooted whole histograms.
 - [src/sampling/count/novel.rs](../../src/sampling/count/novel.rs) — reuse of
-  the kernel for rooted joint counting and the novel-size scan.
+  `LayerTable` for rooted joint counting and the novel-size scan.
 - [src/analysis/semilattice/ast_size.rs](../../src/analysis/semilattice/ast_size.rs)
   — minimum extraction sizes used by the budget calculation.
 
@@ -49,35 +51,34 @@ size 3: f(f(a))
 There is a cycle between e-classes but no cycle between expanded
 `(e-class, size)` states.
 
-## The `LayeredDp` kernel
+## The `LayerTable` kernel
 
-`LayeredDp<K, C>` is generic over a state key `K` and counter type `C`. Whole
-counting uses `K = Id`; joint current/previous counting uses
-`K = (Id, Id)`.
+`LayerTable<K, N>` is generic over a state key `K` and suffix-cache node key
+`N`. Whole counting uses `K = Id` and steps directly over `egraph[id].nodes`;
+joint current/previous counting uses `K = (Id, PrevId)` and steps directly over
+`matches`.
 
-For each key and node with children `k_1..k_n`, it retains suffix convolution
-tables:
+Nodes of arity ≤ 2 are evaluated directly without any suffix table. Only for
+nodes with arity `n >= 3` does `LayerTable` lazily populate sparse suffix
+convolution tables for positions `1..n - 1`:
 
 ```text
 S_i(t) = ways to fill children i..n with total size t
-S_n    = {0: 1}
 ```
 
-At size layer `s`, it extends each suffix by the single total `t = s - 1`:
+At size layer `s`, it extends each stored suffix by the single total `t = s - 1`:
 
 ```text
 S_i(t) = sum over sigma of histogram(k_i, sigma) * S_(i+1)(t - sigma)
 ```
 
 Both factors are final. `sigma >= 1`, so even the suffix lookup is at a total
-strictly below the entry being added. After all suffixes have been extended,
-the key publishes its layer count by summing `S_0(s - 1)` over its nodes.
-Separating suffix extension from publication makes the result independent of
-hash-map iteration order.
+strictly below the entry being added. After all nodes in a layer have been
+evaluated, the layer's counts are published into `data`. Separating evaluation
+from publication makes the result independent of hash-map iteration order.
 
-Whole counting retains these suffix tables because top-down drawing uses them
-to split a requested size among children without proposing infeasible
-remainders.
+Any suffix cache is dropped once counting finishes; top-down drawing computes
+on-demand suffix convolutions only for nodes with arity ≥ 3.
 
 ## Shared root budgets
 
@@ -117,8 +118,8 @@ The minimum feasible size of an individual e-node is
 1 + sum_i min(c_i)
 ```
 
-Rooted match enumeration uses this second check to skip oversized nodes even
-inside a relevant class.
+Whole counting and rooted match enumeration use this second check to skip
+oversized nodes even inside a relevant class.
 
 ## Why capping is exact for root queries
 
@@ -127,7 +128,8 @@ and giving every sibling at least its minimum size, child `c_i` can receive no
 more than `budget(c_i)` by construction. Consequently:
 
 - every recursive whole-count lookup requested by the root is retained;
-- every suffix-table remainder reachable during drawing is retained;
+- every suffix-convolution remainder reachable during drawing is covered by the
+  retained child histograms;
 - every recursive draw call satisfies `size <= budget(child)`; and
 - joint terms are also safe because a joint term for `(c, pc)` is a whole term
   of current class `c`.
@@ -139,14 +141,12 @@ all-class analysis.
 
 ## Rooted joint counting
 
-Matches turn the generic kernel into a joint DP. A key `(c, pc)` has one DP
-node for each match of an e-node in current class `c` against previous class
-`pc`; its child keys are zipped pairs `(current_child, previous_child)`.
-
-Only pairs whose current class appears in `RootBudgets` are created, and every
-pair receives exactly `budget(c)`. A child pair absent from that map has no
-terms, which is the standard `LayeredDp` contract. Previous classes are not
-assigned an independent reachability or size budget.
+Joint counting steps directly over the rooted `matches` table using
+`LayerTable<(Id, PrevId), (Id, usize, usize)>`. For each matched node in current
+class `c` within `budget(c)`, each match `m` contributes to `(c, m.prev_class)`
+with child keys zipped from `(current_child, previous_child)`. Previous classes
+are not assigned an independent reachability or size budget; missing child
+pairs contribute no terms.
 
 See [finding the smallest novel sizes](novel_size_search.md) for the complete
 exact-package flow.

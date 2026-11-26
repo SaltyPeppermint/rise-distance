@@ -6,10 +6,11 @@ use smallvec::SmallVec;
 use crate::cli::Policy;
 use crate::eqsat::EqsatResult;
 use crate::origin::OriginLang;
-use crate::sampling::{self, INLINE_ARITY};
+use crate::previous::PrevId;
 use crate::sampling::count::novel::{NodeMatch, NovelTermCount};
-use crate::sampling::draw::{self, SamplePackage, DrawCursor, Drawer, DrawingError, SampledTrie};
+use crate::sampling::draw::{self, DrawCursor, Drawer, DrawingError, SamplePackage, SampledTrie};
 use crate::sampling::weigher::{Choice, Weigher};
+use crate::sampling::{self, INLINE_ARITY};
 use crate::utils::{self, HashMap};
 
 /// Draws frontier terms without replacement using the supplied local weighting
@@ -128,7 +129,7 @@ impl<'a, 'g, L: Language, N: Analysis<L>> FrontierDrawer<'a, 'g, L, N> {
         }
     }
 
-    fn shared_branches(&self, curr: Id, size: usize, prev: Id) -> Vec<Branch<'_>> {
+    fn shared_branches(&self, curr: Id, size: usize, prev: PrevId) -> Vec<Branch<'_>> {
         self.graph[curr]
             .nodes
             .iter()
@@ -205,7 +206,7 @@ impl<L: Language, N: Analysis<L>> Drawer<L> for FrontierDrawer<'_, '_, L, N> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
     Novel,
-    SharedWith(Id),
+    SharedWith(PrevId),
 }
 
 /// One feasible root-production/profile choice at a `(class, size, state)`.
@@ -348,8 +349,8 @@ mod tests {
 
         let result =
             EqsatResult::new_for_tests(curr, apb, prev_raw_node_count, prev_union_event_count);
-        let (used_max_size, package) = FrontierPackage::build(result, 3, 2, 10, 3)
-            .expect("build should succeed");
+        let (used_max_size, package) =
+            FrontierPackage::build(result, 3, 2, 10, 3).expect("build should succeed");
 
         assert_eq!(used_max_size, 9);
         let mut keys = package.root_histogram().keys().copied().collect::<Vec<_>>();
@@ -460,7 +461,10 @@ mod tests {
 
         let root = curr.find(root);
         let (_, novel) = NovelTermCount::build(&curr, || &prev, root, 5, 2, 8).unwrap();
-        assert_eq!(novel.novel_histogram(root).unwrap()[&3], BigUint::from(8u32));
+        assert_eq!(
+            novel.novel_histogram(root).unwrap()[&3],
+            BigUint::from(8u32)
+        );
 
         let count_terms = FrontierDrawer::new(&novel, &curr, root, Count)
             .draw_batch(&[(3, 8)], [4, 2])
@@ -523,10 +527,12 @@ mod tests {
 
         let root = curr.find(cur);
         let target_size = 11;
-        let (_, novel) =
-            NovelTermCount::build(&curr, || &prev, root, target_size, 2, 26).unwrap();
+        let (_, novel) = NovelTermCount::build(&curr, || &prev, root, target_size, 2, 26).unwrap();
         // 16 deep `cos^10(n_i)` + 10 narrow `cos^k(sin(ln^...))` = 26 novel terms.
-        assert_eq!(novel.novel_histogram(root).unwrap()[&target_size], BigUint::from(26u32));
+        assert_eq!(
+            novel.novel_histogram(root).unwrap()[&target_size],
+            BigUint::from(26u32)
+        );
 
         let uniform_first = FrontierDrawer::new(&novel, &curr, root, Uniform)
             .draw_batch(&[(target_size, 26)], [17, 19])

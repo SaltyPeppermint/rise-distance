@@ -6,25 +6,25 @@ use egg::{Analysis, EGraph, Id, Language};
 use num::{BigUint, Zero};
 use smallvec::SmallVec;
 
-use super::budgets::{MinSizes, RootBudgets, self};
-use super::layered::LayeredDp;
+use super::LayerTable;
+use super::budgets::{self, MinSizes, RootBudgets};
 use super::whole;
-use crate::previous::PreviousLookup;
+use crate::previous::{PrevId, PreviousLookup};
 use crate::sampling::{self, INLINE_ARITY};
 use crate::utils::{HashMap, HashSet};
 
 /// A current e-node's match in the previous e-graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct NodeMatch {
-    pub(crate) prev_class: Id,
-    pub(crate) prev_children: SmallVec<[Id; INLINE_ARITY]>,
+    pub(crate) prev_class: PrevId,
+    pub(crate) prev_children: SmallVec<[PrevId; INLINE_ARITY]>,
 }
 
 /// Per `(curr_class, node_idx)`: every match of that e-node in prev.
 type NodeMatches = HashMap<(Id, usize), Vec<NodeMatch>>;
 
 /// Shared extraction counts by class pair and size.
-type JointTable = HashMap<(Id, Id), HashMap<usize, BigUint>>;
+type JointTable = HashMap<(Id, PrevId), HashMap<usize, BigUint>>;
 
 /// Joint and novel counts plus previous-node matches.
 #[derive(Debug)]
@@ -33,7 +33,7 @@ pub(crate) struct NovelTermCount {
     joint: JointTable,
 
     /// Previous classes sharing an extraction with each current class.
-    cover: HashMap<Id, Vec<Id>>,
+    cover: HashMap<Id, Vec<PrevId>>,
 
     /// Per `(curr_class, node_idx)`: every match of that e-node in prev.
     matches: NodeMatches,
@@ -60,7 +60,7 @@ impl NovelTermCount {
     /// `min_extractable`.
     pub(crate) fn build<L, N, P, F>(
         curr: &EGraph<L, N>,
-        mut make_prev: F,
+        make_prev: F,
         root: Id,
         cap: usize,
         initial_step: usize,
@@ -70,7 +70,7 @@ impl NovelTermCount {
         L: Language,
         N: Analysis<L>,
         P: PreviousLookup<L>,
-        F: FnMut() -> P,
+        F: Fn() -> P,
     {
         let root = curr.find(root);
         let min_sizes = MinSizes::new(curr);
@@ -86,40 +86,27 @@ impl NovelTermCount {
             let mut matches = enumerate_matches(curr, &prev, &try_budgets);
             drop(prev);
 
-            let root_pairs = matches
-                .iter()
-                .filter(|&(&(c, _), _)| c == root)
-                .flat_map(|(_, ms)| ms.iter().map(|m| (root, m.prev_class)))
-                .collect::<HashSet<_>>();
-            let limit = try_budgets.limit();
-            let mut whole = whole::dp(curr, &try_budgets);
-            let mut joint = joint_dp(curr, &matches, &try_budgets);
-            drop(try_budgets);
+            let mut whole = LayerTable::new();
+            let mut joint = LayerTable::new();
 
             let mut term_count = BigUint::ZERO;
-            for _ in 0..limit {
-                let size = whole.step();
-                joint.step();
+            for size in 1..=try_budgets.limit() {
+                whole::step(curr, &try_budgets, &mut whole, size);
+                let root_non_novel = step_joint(curr, &matches, &try_budgets, &mut joint, size);
 
-                let Some(mut novel) = whole
-                    .data()
-                    .get(&root)
-                    .and_then(|hist| hist.get(&size))
-                    .cloned()
+                let Some(whole_count) = whole.data.get(&root).and_then(|hist| hist.get(&size))
                 else {
                     continue;
                 };
-                for pair in &root_pairs {
-                    if let Some(count) = joint.data().get(pair).and_then(|hist| hist.get(&size)) {
-                        novel -= count;
-                    }
-                }
+                debug_assert!(*whole_count >= root_non_novel);
+                let novel = whole_count - root_non_novel;
 
                 if !novel.is_zero() {
                     term_count += novel;
                     if term_count >= threshold {
                         let mut whole_data = whole.into_data();
                         let mut joint_data = joint.into_data();
+                        drop(try_budgets);
                         let final_budgets = min_sizes.budgets_for(curr, root, size);
                         prune_matches(curr, &mut matches, &final_budgets);
                         final_budgets.prune_histograms(&mut whole_data, |c| c);
@@ -141,7 +128,7 @@ impl NovelTermCount {
         joint: JointTable,
         matches: NodeMatches,
     ) -> Self {
-        let mut cover: HashMap<Id, Vec<Id>> = HashMap::default();
+        let mut cover: HashMap<Id, Vec<PrevId>> = HashMap::default();
         for &(c, pc) in joint.keys() {
             cover.entry(c).or_default().push(pc);
         }
@@ -159,7 +146,7 @@ impl NovelTermCount {
     pub(crate) fn joint_histogram(
         &self,
         curr_canon: Id,
-        prev_id: Id,
+        prev_id: PrevId,
     ) -> Option<&HashMap<usize, BigUint>> {
         self.joint.get(&(curr_canon, prev_id))
     }
@@ -177,7 +164,7 @@ impl NovelTermCount {
     }
 
     /// Previous classes sharing an extraction with canonical `curr_canon`.
-    pub(crate) fn cover_of(&self, curr_canon: Id) -> &[Id] {
+    pub(crate) fn cover_of(&self, curr_canon: Id) -> &[PrevId] {
         self.cover.get(&curr_canon).map_or(&[], Vec::as_slice)
     }
 }
@@ -193,6 +180,7 @@ fn enumerate_matches<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
     prev: &P,
     budgets: &RootBudgets<'_>,
 ) -> NodeMatches {
+    assert!(curr.clean);
     let fitting_nodes = budgets
         .budgets()
         .keys()
@@ -203,24 +191,25 @@ fn enumerate_matches<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
                 .enumerate()
                 .filter(move |(_, node)| budgets.node_fits(curr, c, node))
                 .map(move |(idx, node)| {
-                    let children = node
-                        .children()
-                        .iter()
-                        .map(|&child| curr.find(child))
-                        .collect::<SmallVec<[Id; INLINE_ARITY]>>();
-                    (c, idx, node, children)
+                    debug_assert!(
+                        node.children()
+                            .iter()
+                            .all(|&child| curr.find(child) == child)
+                    );
+                    (c, idx, node)
                 })
         })
         .collect::<Vec<_>>();
 
-    let mut cover: HashMap<Id, HashSet<Id>> = HashMap::default();
+    let mut cover: HashMap<Id, HashSet<PrevId>> = HashMap::default();
     let mut matches = NodeMatches::default();
 
     let mut changed = true;
     while changed {
         changed = false;
-        for &(c, idx, node, ref child_canons) in &fitting_nodes {
-            let Some(slots) = child_canons
+        for &(c, idx, node) in &fitting_nodes {
+            let Some(slots) = node
+                .children()
                 .iter()
                 .map(|child| cover.get(child).map(|set| set.iter().copied()))
                 .collect::<Option<SmallVec<[_; INLINE_ARITY]>>>()
@@ -229,7 +218,7 @@ fn enumerate_matches<L: Language, N: Analysis<L>, P: PreviousLookup<L>>(
             };
             for combo in sampling::cartesian_product(slots) {
                 let mut iter = combo.iter().copied();
-                let translated = node.clone().map_children(|_| iter.next().unwrap());
+                let translated = node.clone().map_children(|_| iter.next().unwrap().raw());
                 if let Some(prev_class) = prev.lookup(translated) {
                     let witness = NodeMatch {
                         prev_class,
@@ -255,11 +244,10 @@ fn prune_matches<L: Language, N: Analysis<L>>(
     budgets: &RootBudgets<'_>,
 ) {
     matches.retain(|&(c, idx), _| {
-        budgets.budget(c).is_some()
-            && egraph[c]
-                .nodes
-                .get(idx)
-                .is_some_and(|node| budgets.node_fits(egraph, c, node))
+        egraph[c]
+            .nodes
+            .get(idx)
+            .is_some_and(|node| budgets.node_fits(egraph, c, node))
     });
     matches.shrink_to_fit();
 }
@@ -268,37 +256,57 @@ fn prune_matches<L: Language, N: Analysis<L>>(
 // Phase 2: joint counts, layered by size.
 // ============================================================================
 
-/// Joint-DP nodes grouped by current/previous class pair.
-type PairChildren = HashMap<(Id, Id), Vec<Vec<(Id, Id)>>>;
-
-/// Create an unstepped joint-DP where each `(curr, prev)` pair inherits its
-/// current class's root budget.
-fn joint_dp<L: Language, N: Analysis<L>>(
+/// Advance `joint` by one size layer directly over `matches`, returning the
+/// total non-novel count at `(budgets.root(), size)`.
+fn step_joint<L: Language, N: Analysis<L>>(
     curr: &EGraph<L, N>,
     matches: &NodeMatches,
-    rooted: &RootBudgets<'_>,
-) -> LayeredDp<(Id, Id)> {
-    let mut children_of = PairChildren::default();
-    for (&(c, idx), ms) in matches {
-        let node = &curr[c].nodes[idx];
-        for m in ms {
-            let child_pairs = node
-                .children()
-                .iter()
-                .zip(m.prev_children.iter())
-                .map(|(&child, &prev_child)| (curr.find(child), prev_child))
-                .collect();
-            children_of
-                .entry((c, m.prev_class))
-                .or_default()
-                .push(child_pairs);
+    budgets: &RootBudgets<'_>,
+    joint: &mut LayerTable<(Id, PrevId), (Id, usize, usize)>,
+    size: usize,
+) -> BigUint {
+    assert!(curr.clean);
+    let total = size - 1;
+    // Collect per-match contributions into a flat Vec before publishing so
+    // `joint.data` reads finish first. If many matches share one `(c, pc)` at
+    // the same size, their counts stay live until merged below (switch back to
+    // a per-layer `HashMap` if that transient overhead ever matters).
+    let layer = matches
+        .iter()
+        .filter(|&(&(c, _), _)| budgets.budget(c).is_some_and(|budget| size <= budget))
+        .flat_map(|(&(c, idx), ms)| {
+            let curr_children = curr[c].nodes[idx].children();
+            debug_assert!(curr_children.iter().all(|&child| curr.find(child) == child));
+            ms.iter().enumerate().map(move |(match_idx, m)| {
+                let children = curr_children
+                    .iter()
+                    .copied()
+                    .zip(m.prev_children.iter().copied())
+                    .collect::<SmallVec<[_; INLINE_ARITY]>>();
+                (c, idx, match_idx, m.prev_class, children)
+            })
+        })
+        .filter_map(|(c, idx, match_idx, pc, children)| {
+            let count = joint.node_count(|| (c, idx, match_idx), &children, total)?;
+            Some(((c, pc), count))
+        })
+        .collect::<Vec<_>>();
+
+    let root = budgets.root();
+    let mut root_non_novel = BigUint::ZERO;
+    for ((c, pc), count) in layer {
+        if c == root {
+            root_non_novel += &count;
         }
+        joint
+            .data
+            .entry((c, pc))
+            .or_default()
+            .entry(size)
+            .and_modify(|acc| *acc += &count)
+            .or_insert(count);
     }
-    let budgets = children_of
-        .keys()
-        .filter_map(|&(c, pc)| rooted.budget(c).map(|budget| ((c, pc), budget)))
-        .collect();
-    LayeredDp::new(children_of, budgets)
+    root_non_novel
 }
 
 // ============================================================================
@@ -371,7 +379,11 @@ mod tests {
         // is extractable from prev's a-class and only "b" from prev's b-class
         // -> non_novel = 2, novel = 0.
         let ab_class = curr.find(a);
-        assert!(novel.novel_histogram(ab_class).is_none_or(HashMap::is_empty));
+        assert!(
+            novel
+                .novel_histogram(ab_class)
+                .is_none_or(HashMap::is_empty)
+        );
         let _ = b;
 
         // Root: 2 extractions in curr (ln(a), ln(b)). ln(a) is extractable
@@ -496,7 +508,36 @@ mod tests {
             .collect::<HashSet<_>>();
 
         assert_eq!(previous_classes.len(), 2);
-        assert!(previous_classes.contains(&prev.find(a)));
-        assert!(previous_classes.contains(&prev.find(b)));
+        assert!(previous_classes.contains(&PreviousLookup::lookup(&prev, math::sym("a")).unwrap()));
+        assert!(previous_classes.contains(&PreviousLookup::lookup(&prev, math::sym("b")).unwrap()));
+    }
+
+    #[test]
+    fn ternary_joint_and_novel_counts_across_layers() {
+        use egg::SymbolLang;
+
+        // prev: a == g(a), b, c, root = h(a, b, c). Extracts h(g^k(a), b, c)
+        // (1 non-novel term at each size >= 4).
+        // curr: union(b, c). Now root extracts 4 terms at each size >= 4,
+        // leaving 3 novel terms at size 4 and 3 at size 5 (6 total).
+        let mut curr = EGraph::<SymbolLang, ()>::default();
+        let a = curr.add(SymbolLang::leaf("a"));
+        let ga = curr.add(SymbolLang::new("g", vec![a]));
+        curr.union(a, ga);
+        let b = curr.add(SymbolLang::leaf("b"));
+        let c = curr.add(SymbolLang::leaf("c"));
+        let root = curr.add(SymbolLang::new("h", vec![a, b, c]));
+        curr.rebuild();
+        let prev = curr.clone();
+
+        curr.union(b, c);
+        curr.rebuild();
+
+        let (used_size, novel) = NovelTermCount::build(&curr, || &prev, root, 8, 2, 6)
+            .expect("expected 6 novel terms by size 5");
+        assert_eq!(used_size, 5);
+        let hist = novel.novel_histogram(curr.find(root)).unwrap();
+        assert_eq!(hist[&4], BigUint::from(3u32));
+        assert_eq!(hist[&5], BigUint::from(3u32));
     }
 }

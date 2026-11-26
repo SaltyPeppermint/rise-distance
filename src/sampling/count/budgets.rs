@@ -32,10 +32,12 @@ impl MinSizes {
         limit: usize,
     ) -> RootBudgets<'_> {
         assert!(egraph.clean);
-        let budgets = class_budgets(egraph, egraph.find(root), limit, &self.min_sizes);
+        let root = egraph.find(root);
+        let budgets = class_budgets(egraph, root, limit, &self.min_sizes);
         RootBudgets {
             budgets,
             min_sizes: self,
+            root,
             limit,
         }
     }
@@ -69,6 +71,7 @@ pub(super) fn doubling_caps(
 pub(super) struct RootBudgets<'a> {
     budgets: HashMap<Id, usize>,
     min_sizes: &'a MinSizes,
+    root: Id,
     limit: usize,
 }
 
@@ -86,6 +89,11 @@ impl RootBudgets<'_> {
     #[must_use]
     pub(super) const fn budgets(&self) -> &HashMap<Id, usize> {
         &self.budgets
+    }
+
+    #[must_use]
+    pub(super) const fn root(&self) -> Id {
+        self.root
     }
 
     #[must_use]

@@ -10,13 +10,29 @@ use foldhash::fast::FixedState;
 use crate::origin::OriginLang;
 use crate::utils::{DenseUnionFind, HashMap};
 
+/// Opaque canonical class identifier from the previous e-graph boundary.
+///
+/// Distinct from current-graph [`Id`]s so current and previous classes cannot
+/// be swapped or used to index the wrong e-graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PrevId(Id);
+
+impl PrevId {
+    /// Underlying e-node child id for translating a current e-node before
+    /// querying [`PreviousLookup`].
+    #[must_use]
+    pub(crate) const fn raw(self) -> Id {
+        self.0
+    }
+}
+
 /// The lookup behavior novelty matching needs from the previous state.
 pub(crate) trait PreviousLookup<L: Language> {
-    fn lookup(&self, node: L) -> Option<Id>;
+    fn lookup(&self, node: L) -> Option<PrevId>;
 }
 
 impl<L: Language, P: PreviousLookup<L> + ?Sized> PreviousLookup<L> for &P {
-    fn lookup(&self, node: L) -> Option<Id> {
+    fn lookup(&self, node: L) -> Option<PrevId> {
         (**self).lookup(node)
     }
 }
@@ -27,7 +43,7 @@ impl<L: Language, P: PreviousLookup<L> + ?Sized> PreviousLookup<L> for &P {
 /// opaque keys by novelty counting.
 #[derive(Debug)]
 pub(crate) struct PrevIndex<L> {
-    memo: HashMap<L, Id>,
+    memo: HashMap<L, PrevId>,
 }
 
 impl<L: Language> PrevIndex<L> {
@@ -69,9 +85,9 @@ impl<L: Language> PrevIndex<L> {
                 *child = replay.find(*child);
             });
             let owner = replay.find(Id::from(raw_index));
-            if let Some(previous_owner) = memo.insert(node, owner) {
+            if let Some(previous_owner) = memo.insert(node, PrevId(owner)) {
                 assert_eq!(
-                    replay.find(previous_owner),
+                    replay.find(previous_owner.raw()),
                     replay.find(owner),
                     "congruent old nodes were not joined in the replay"
                 );
@@ -82,10 +98,12 @@ impl<L: Language> PrevIndex<L> {
     }
 
     #[cfg(test)]
-    pub(crate) fn lookup_expr(&self, expr: &RecExpr<L>) -> Option<Id> {
-        let mut ids = Vec::with_capacity(expr.len());
+    pub(crate) fn lookup_expr(&self, expr: &RecExpr<L>) -> Option<PrevId> {
+        let mut ids: Vec<PrevId> = Vec::with_capacity(expr.len());
         for node in expr {
-            let node = node.clone().map_children(|child| ids[usize::from(child)]);
+            let node = node
+                .clone()
+                .map_children(|child| ids[usize::from(child)].raw());
             ids.push(self.lookup(node)?);
         }
         ids.last().copied()
@@ -96,7 +114,7 @@ impl<L: Language> PrevIndex<L> {
     /// property of the lowered language expression.
     #[cfg(test)]
     pub(crate) fn contains_origin_expr(&self, expr: &RecExpr<OriginLang<L>>) -> bool {
-        let mut ids: Vec<Option<Id>> = Vec::with_capacity(expr.as_ref().len());
+        let mut ids: Vec<Option<PrevId>> = Vec::with_capacity(expr.as_ref().len());
         for node in expr.as_ref() {
             if node
                 .children()
@@ -109,7 +127,7 @@ impl<L: Language> PrevIndex<L> {
             let lowered = node
                 .inner()
                 .clone()
-                .map_children(|child| ids[usize::from(child)].unwrap());
+                .map_children(|child| ids[usize::from(child)].unwrap().raw());
             ids.push(self.lookup(lowered));
         }
         ids.last().is_some_and(Option::is_some)
@@ -117,15 +135,15 @@ impl<L: Language> PrevIndex<L> {
 }
 
 impl<L: Language> PreviousLookup<L> for PrevIndex<L> {
-    fn lookup(&self, node: L) -> Option<Id> {
+    fn lookup(&self, node: L) -> Option<PrevId> {
         self.memo.get(&node).copied()
     }
 }
 
 #[cfg(test)]
 impl<L: Language, N: Analysis<L>> PreviousLookup<L> for EGraph<L, N> {
-    fn lookup(&self, node: L) -> Option<Id> {
-        EGraph::lookup(self, node).map(|id| self.find(id))
+    fn lookup(&self, node: L) -> Option<PrevId> {
+        EGraph::lookup(self, node).map(|id| PrevId(self.find(id)))
     }
 }
 
@@ -160,8 +178,8 @@ mod tests {
             Some(index.lookup(math::sym("a")).unwrap())
         );
         assert_eq!(
-            index.lookup(Math::Ln(index.lookup(math::sym("a")).unwrap())),
-            index.lookup(Math::Ln(index.lookup(math::sym("b")).unwrap()))
+            index.lookup(Math::Ln(index.lookup(math::sym("a")).unwrap().raw())),
+            index.lookup(Math::Ln(index.lookup(math::sym("b")).unwrap().raw()))
         );
         assert_eq!(graph.find(fa), graph.find(fb));
     }
