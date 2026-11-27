@@ -27,6 +27,8 @@ MEASURE_ORDER = ("first success", "whole search")
 # Ordered: tuple position sets grouped-bar slots and legend order.
 BRUTE_COST_OUTCOMES = ("guided failed", "guided proved")
 PAIR_OUTCOMES = ("eventually proved", "never proved")
+MENU_ORDER = ("whole", "frontier")
+MENU_OUTCOME_ORDER = ("both", "whole only", "frontier only", "neither")
 
 STRATEGY = "strategy"
 SEED = "seed"
@@ -541,3 +543,110 @@ def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
         )
         summary = summary.join(ratio, on=GROUP, how="left")
     return summary
+
+
+def _fmt_density(value: float) -> str:
+    """Compact label for a root e-graph `nodes / classes` quantile boundary."""
+    return f"{value:.2f}" if value < 10 else f"{value:.1f}"
+
+
+def egraph_density(
+    runs: Sequence[Run], frame: pl.DataFrame, bins: int = 4
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Success rates and `whole`-vs-`frontier` outcomes across root e-graph density quantiles."""
+    root = (
+        _load_run_table(runs, "expansions.parquet")
+        .filter((pl.col("depth") == 0) & (pl.col("classes") > 0))
+        .with_columns((pl.col("nodes") / pl.col("classes")).alias("density"))
+        .group_by("start")
+        .agg(
+            pl.col("density").median().alias("root_density"),
+            pl.col("classes").median().alias("root_classes"),
+        )
+    )
+    seed_map = {run.directory.name: run.config["seed"] for run in runs}
+    policy_map = {run.directory.name: run.config["search_policy"] for run in runs}
+    menu_map = {
+        run.directory.name: "frontier" if run.config["frontier"] else "whole" for run in runs
+    }
+    data = (
+        frame.select("run", "setting", "pair", "start", "guided_success")
+        .join(root, on="start", how="inner")
+        .with_columns(
+            pl.col("run").replace_strict(seed_map).alias("seed"),
+            pl.col("run").replace_strict(policy_map).alias("search_policy"),
+            pl.col("run").replace_strict(menu_map).alias("menu"),
+        )
+    )
+    unique_pairs = data.select("pair", "root_density").unique()
+    lo = float(unique_pairs["root_density"].min())  # ty: ignore[invalid-argument-type]
+    hi = float(unique_pairs["root_density"].max())  # ty: ignore[invalid-argument-type]
+    cuts = sorted(
+        {
+            float(unique_pairs["root_density"].quantile(i / bins))  # ty: ignore[invalid-argument-type]
+            for i in range(1, bins)
+        }
+    )
+    edges = [lo, *cuts, hi]
+    labels = {
+        i: f"{_fmt_density(edges[i])}–{_fmt_density(edges[i + 1])}" for i in range(len(edges) - 1)
+    }
+    bin_expr: pl.Expr = pl.lit(len(cuts))
+    for i in range(len(cuts) - 1, -1, -1):
+        bin_expr = pl.when(pl.col("root_density") <= cuts[i]).then(pl.lit(i)).otherwise(bin_expr)
+
+    binned = data.with_columns(bin_expr.cast(pl.Int32).alias("bin")).with_columns(
+        pl.col("bin").replace_strict(labels).alias("density_bin")
+    )
+    rates = (
+        binned.group_by("search_policy", "setting", "menu", "bin", "density_bin", maintain_order=True)
+        .agg(
+            pl.len().alias("count"),
+            pl.col("guided_success").sum().alias("solved"),
+            pl.col("guided_success").mean().alias("rate"),
+            pl.col("root_density").median().alias("median_density"),
+            pl.col("root_classes").median().alias("median_classes"),
+        )
+        .sort("search_policy", "setting", "menu", "bin")
+    )
+
+    menus = set(binned["menu"].unique().to_list())
+    if not set(MENU_ORDER).issubset(menus):
+        return rates, pl.DataFrame(
+            schema={
+                "search_policy": pl.String,
+                "setting": pl.String,
+                "bin": pl.Int32,
+                "density_bin": pl.String,
+                "outcome": pl.String,
+                "count": pl.UInt32,
+                "bucket_n": pl.UInt32,
+                "share": pl.Float64,
+            }
+        )
+
+    wide = binned.pivot(
+        on="menu",
+        index=["search_policy", "setting", "seed", "pair", "bin", "density_bin"],
+        values="guided_success",
+    ).drop_nulls(subset=list(MENU_ORDER))
+    paired = (
+        wide.with_columns(
+            pl.when(pl.col("whole") & pl.col("frontier"))
+            .then(pl.lit("both"))
+            .when(pl.col("whole"))
+            .then(pl.lit("whole only"))
+            .when(pl.col("frontier"))
+            .then(pl.lit("frontier only"))
+            .otherwise(pl.lit("neither"))
+            .alias("outcome")
+        )
+        .group_by("search_policy", "setting", "bin", "density_bin", "outcome", maintain_order=True)
+        .agg(pl.len().alias("count"))
+        .with_columns(
+            pl.col("count").sum().over("search_policy", "setting", "bin").alias("bucket_n")
+        )
+        .with_columns((pl.col("count") / pl.col("bucket_n")).alias("share"))
+        .sort("search_policy", "setting", "bin")
+    )
+    return rates, paired

@@ -7,7 +7,14 @@ from typing import Literal
 import altair as alt
 import polars as pl
 
-from helpers import BRUTE_COST_OUTCOMES, MEASURE_ORDER, PAIR_OUTCOMES, pow2_bucket_label
+from helpers import (
+    BRUTE_COST_OUTCOMES,
+    MEASURE_ORDER,
+    MENU_ORDER,
+    MENU_OUTCOME_ORDER,
+    PAIR_OUTCOMES,
+    pow2_bucket_label,
+)
 
 PALETTE = (
     "#2a78d6",
@@ -30,6 +37,8 @@ UNGUIDED_COLOR = PALETTE[1]
 
 OUTCOME_ORDER = ("both", "guided only", "unguided only", "neither")
 OUTCOME_COLORS = (PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR)
+MENU_COLORS = (PALETTE[0], PALETTE[1])
+MENU_OUTCOME_COLORS = (PALETTE[2], PALETTE[0], PALETTE[1], NEUTRAL_COLOR)
 BRUTE_COST_COLORS = (FAILURE_COLOR, SUCCESS_COLOR)
 MEASURE_COLORS = (SUCCESS_COLOR, NEUTRAL_COLOR)
 PAIR_OUTCOME_COLORS = (NEUTRAL_COLOR, FAILURE_COLOR)
@@ -472,4 +481,110 @@ def sampling_overhead(
     )
     return alt.hconcat(tries_panel, killed_panel, spacing=24).properties(
         title=_title("Sampling overhead", meta)
+    )
+
+
+def _policy_grid(meta: dict, policies: Sequence[str], row_labels: bool = True) -> dict:
+    """Row and column channels for a search-policy × setting grid."""
+    header = (
+        alt.Header(labelAngle=0, labelAlign="left", labelOrient="left")
+        if row_labels
+        else alt.Header(labels=False)
+    )
+    return {
+        "row": alt.Row("search_policy:N", sort=list(policies), header=header),
+        "column": alt.Column(
+            "setting:N",
+            sort=meta["settings"],
+            header=alt.Header(labelExpr="split(datum.label, ' · ')"),
+        ),
+    }
+
+
+def egraph_density(
+    density: tuple[pl.DataFrame, pl.DataFrame], meta: dict
+) -> alt.HConcatChart | alt.Chart:
+    """Guided success rate and paired `whole`-vs-`frontier` outcomes by root e-graph density."""
+    rates, paired = density
+    policies = list(dict.fromkeys(s.split(" · ")[0] for s in meta["strategies"]))
+    bin_order = (
+        rates.select("bin", "density_bin")
+        .unique()
+        .sort("bin")["density_bin"]
+        .to_list()
+    )
+    density_x = alt.X(
+        "density_bin:O",
+        title="nodes / classes",
+        sort=bin_order,
+        axis=alt.Axis(labelAngle=-30, grid=False),
+    )
+    rates_panel = (
+        alt.Chart(rates)
+        .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(filled=True, size=45))
+        .encode(  # ty: ignore[unresolved-attribute]
+            x=density_x,
+            y=alt.Y(
+                "rate:Q",
+                title="guided success rate",
+                scale=alt.Scale(domain=[0, 1]),
+                axis=alt.Axis(format="%"),
+            ),
+            color=_ordered_color("menu:N", MENU_ORDER, MENU_COLORS),
+            **_policy_grid(meta, policies),
+            tooltip=[
+                alt.Tooltip("search_policy:N", title="search"),
+                "setting:N",
+                alt.Tooltip("menu:N", title="sampling"),
+                alt.Tooltip("density_bin:O", title="nodes / classes"),
+                alt.Tooltip("rate:Q", format=".1%", title="success rate"),
+                "solved:Q",
+                alt.Tooltip("count:Q", title=_pairs(meta)),
+                alt.Tooltip("median_density:Q", format=".2f", title="median nodes / classes"),
+                alt.Tooltip("median_classes:Q", format=",.0f", title="median root e-classes"),
+            ],
+        )
+        .properties(
+            title=alt.TitleParams("guided success rate", fontSize=11, fontWeight="normal"),
+            width=CELL_WIDTH,
+            height=CELL_HEIGHT + 30,
+        )
+    )
+    if paired.is_empty():
+        return rates_panel.properties(title=_title("Success by root e-graph density", meta))
+
+    paired_panel = (
+        alt.Chart(paired)
+        .transform_calculate(
+            outcome_rank=f"indexof({json.dumps(MENU_OUTCOME_ORDER)}, datum.outcome)"
+        )
+        .mark_bar()
+        .encode(  # ty: ignore[unresolved-attribute]
+            x=density_x,
+            y=alt.Y("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
+            color=_ordered_color("outcome:N", MENU_OUTCOME_ORDER, MENU_OUTCOME_COLORS),
+            order=alt.Order("outcome_rank:Q", sort="ascending"),
+            **_policy_grid(meta, policies, row_labels=False),
+            tooltip=[
+                alt.Tooltip("search_policy:N", title="search"),
+                "setting:N",
+                alt.Tooltip("density_bin:O", title="nodes / classes"),
+                "outcome:N",
+                alt.Tooltip("count:Q", title=_pairs(meta)),
+                alt.Tooltip("share:Q", format=".1%", title="share of bucket"),
+                alt.Tooltip("bucket_n:Q", title=f"{_pairs(meta)} in bucket"),
+            ],
+        )
+        .properties(
+            title=alt.TitleParams(
+                "whole vs frontier outcomes", fontSize=11, fontWeight="normal"
+            ),
+            width=CELL_WIDTH,
+            height=CELL_HEIGHT + 30,
+        )
+    )
+    return (
+        alt.hconcat(rates_panel, paired_panel, spacing=24)
+        .resolve_scale(color="independent")
+        .properties(title=_title("Success by root e-graph density", meta))
     )
