@@ -27,8 +27,9 @@ from common import LOG_FILE, PrioritySemaphore, PrioritySlot, load_pairs, log, p
 from generate_problems import GenerateArgs, generate
 from guided_search import RESULT_FILES, SearchArgs, search
 
-# The experiment (PROBLEMS appends `-<language>`; OUTPUT_BASE uses `<language>` subfolders).
-PROBLEMS = Path("data/problems/expensive-bird")
+# The experiment (results go under `data/<EXPERIMENT>/<language>/{problems,baseline,guided_search}`).
+DATA_BASE = Path("data")
+EXPERIMENT = "expensive-bird"
 
 # Shared by `baseline.py` and `guided_search.py`, so both compute the same baseline.
 BASELINE_FLAGS: dict[str, Any] = {"max_rss": "450M", "n_starts": 100}
@@ -66,17 +67,10 @@ GRID: dict[str, tuple[Any, ...]] = {
 }
 
 
-# Where results go
-OUTPUT_BASE = Path("data/guided_search")
-BASELINE_BASE = Path("data/baselines")
-
-
-def paths_for_language(language: str) -> tuple[Path, Path]:
-    """Return `(problems_dir, output_base)` for `language`."""
-    return (
-        PROBLEMS.with_name(f"{PROBLEMS.name}-{language}"),
-        OUTPUT_BASE / language,
-    )
+def paths_for_language(language: str) -> tuple[Path, Path, Path]:
+    """Return `(problems_dir, baseline_dir, guided_search_dir)` for `language`."""
+    base = DATA_BASE / EXPERIMENT / language
+    return base / "problems", base / "baseline", base / "guided_search"
 
 
 def git_short_hash() -> str:
@@ -204,7 +198,7 @@ async def generate_problems(slots: PrioritySemaphore, language: str, problems: P
 
 async def experiment(slots: PrioritySemaphore, language: str) -> None:
     """Generate problems if missing, compute the baseline, then run the grid."""
-    problems, output_base = paths_for_language(language)
+    problems, baseline, output_base = paths_for_language(language)
     output_base.mkdir(parents=True, exist_ok=True)
     suffix = f"{datetime.now().astimezone():%Y-%m-%dT%H:%M}_{git_short_hash()}"
 
@@ -219,7 +213,6 @@ async def experiment(slots: PrioritySemaphore, language: str) -> None:
         await generate_problems(slots, language, problems)
 
     # BASELINE, shared by every run below
-    baseline = BASELINE_BASE / problems.name
     baseline_args = BaselineArgs(path=problems, output=baseline, **BASELINE_FLAGS)
     print(await compute_baseline(baseline_args, slots.at(0)), file=sys.stderr)
 

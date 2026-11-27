@@ -56,9 +56,9 @@ def _run_dirs(folder: str, pattern: str) -> list[Path]:
     )
 
 
-def _problem_language(config: dict) -> str:
-    """Language of the problem set `config` was run on, from its `problem_args.json`."""
-    args_path = REPO_ROOT / config["path"] / "problem_args.json"
+def _problem_language(problems_dir: Path) -> str:
+    """Language of the problem set in `problems_dir`, from its `problem_args.json`."""
+    args_path = problems_dir / "problem_args.json"
     if not args_path.is_file():
         raise FileNotFoundError(f"Missing {args_path} to determine problem language")
     return str(json.loads(args_path.read_text())["language"])
@@ -97,7 +97,7 @@ def _matches(directory: Path, config: dict, where: Mapping[str, Any]) -> bool:
 
 
 def _resolve_runs(
-    patterns: Sequence[str], folder: str, where: Mapping[str, Any]
+    patterns: Sequence[str], folder: str, problem_lang: str, where: Mapping[str, Any]
 ) -> tuple[list[Run], list[str], list[str], list[str]]:
     """Resolve completed run folders under `data/<folder>`, filtered by `where`."""
     directories = (
@@ -121,7 +121,7 @@ def _resolve_runs(
             incomplete_runs.append(str(directory))
             continue
         config = json.loads(config_path.read_text())
-        config.setdefault("language", _problem_language(config))
+        config.setdefault("language", problem_lang)
         if _matches(directory, config, where):
             complete.append((directory, config))
     if not complete:
@@ -146,14 +146,11 @@ def _resolve_runs(
     return runs, incomplete_runs, varying, constant
 
 
-def _brute_baseline(run: Run) -> pl.DataFrame:
-    """Per-pair brute-force proof cost from the problem set `run` was built on."""
-    directory = REPO_ROOT / run.config["path"]
-    problems = directory / "problems.json"
+def _brute_baseline(problems_dir: Path) -> pl.DataFrame:
+    """Per-pair brute-force proof cost from `problems_dir/problems.json`."""
+    problems = problems_dir / "problems.json"
     if not problems.is_file():
-        raise FileNotFoundError(
-            f"{run.directory.name} was built on {run.config['path']}, which has no problems.json"
-        )
+        raise FileNotFoundError(f"Missing {problems}")
     frame = pl.DataFrame(json.loads(problems.read_text()))
     missing = {"start", "goal", "reached", "peak_rss"} - set(frame.columns)
     if missing:
@@ -172,16 +169,12 @@ def _brute_baseline(run: Run) -> pl.DataFrame:
     return frame.select("start", "goal", pl.col("peak_rss").alias(BRUTE_COLUMN))
 
 
-def _unguided_baseline(run: Run) -> pl.DataFrame:
-    """Per-pair unguided results from the baseline folder `run` references."""
-    directory = REPO_ROOT / run.config["baseline"]
-    results = directory / "unguided.parquet"
+def _unguided_baseline(baseline_dir: Path, label: str) -> pl.DataFrame:
+    """Per-pair unguided results from `baseline_dir/unguided.parquet`."""
+    results = baseline_dir / "unguided.parquet"
     if not results.is_file():
-        raise FileNotFoundError(
-            f"{run.directory.name} was checked against {run.config['baseline']}, "
-            "which has no unguided.parquet"
-        )
-    return pl.read_parquet(results).with_columns(pl.lit(directory.name).alias("baseline"))
+        raise FileNotFoundError(f"Missing {results}")
+    return pl.read_parquet(results).with_columns(pl.lit(label).alias("baseline"))
 
 
 def _load_run_table(runs: Sequence[Run], filename: str) -> pl.DataFrame:
@@ -198,31 +191,38 @@ def _load_run_table(runs: Sequence[Run], filename: str) -> pl.DataFrame:
 
 def load_comparisons(
     patterns: Sequence[str],
+    experiment: str,
     language: str,
-    folder: str = "guided_search",
     where: Mapping[str, Any] | None = None,
 ) -> tuple[list[Run], list[str], pl.DataFrame, dict]:
-    """Load and stack selected runs under `data/<folder>/<language>` with unguided and brute-force baselines."""
-    target_folder = f"{folder}/{language}"
+    """Load and stack selected runs under `data/<experiment>/<language>/guided_search`
+    with unguided and brute-force baselines."""
+    lang_dir = REPO_ROOT / "data" / experiment / language
+    problems_dir = lang_dir / "problems"
+    baseline_dir = lang_dir / "baseline"
+    problem_lang = _problem_language(problems_dir)
+    target_folder = f"{experiment}/{language}/guided_search"
     filters = {"language": language, **(where or {})}
-    runs, incomplete, varying, constant = _resolve_runs(patterns, target_folder, filters)
+    runs, incomplete, varying, constant = _resolve_runs(
+        patterns, target_folder, problem_lang, filters
+    )
+    unguided = _unguided_baseline(baseline_dir, f"{experiment}/{language}")
+    brute = _brute_baseline(problems_dir)
     frames = []
     for run in runs:
         frame = pl.read_parquet(run.directory / "pairs.parquet")
-        frame = frame.join(
-            _unguided_baseline(run), on=["start", "goal"], how="left", validate="1:1"
-        )
+        frame = frame.join(unguided, on=["start", "goal"], how="left", validate="1:1")
         unmatched = frame.filter(pl.col("baseline").is_null()).height
         if unmatched:
             raise ValueError(
-                f"{run.directory.name} has {unmatched} pairs absent from {run.config['baseline']}; "
+                f"{run.directory.name} has {unmatched} pairs absent from {baseline_dir}; "
                 "the baseline changed after the run"
             )
-        frame = frame.join(_brute_baseline(run), on=["start", "goal"], how="left")
+        frame = frame.join(brute, on=["start", "goal"], how="left")
         unmatched = frame.filter(pl.col(BRUTE_COLUMN).is_null()).height
         if unmatched:
             raise ValueError(
-                f"{run.directory.name} has {unmatched} pairs absent from {run.config['path']}; "
+                f"{run.directory.name} has {unmatched} pairs absent from {problems_dir}; "
                 "the run and its problem set disagree"
             )
         frames.append(

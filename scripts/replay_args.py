@@ -77,7 +77,6 @@ class ReplayArgs(BaseModel):
         Two runs with the same key can share a baseline.
         """
         return {
-            "problems": str(self.path.resolve()),
             "max_iters": self.max_iters,
             "max_nodes": self.max_nodes,
             "max_time": self.max_time,
