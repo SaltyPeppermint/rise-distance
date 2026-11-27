@@ -25,10 +25,9 @@ different commit.
 
 ```bash
 uv run scripts/experiment.py --language math   # or prop
-uv run scripts/experiment.py --language prop --rerun-aborted
 ```
 
-This builds the Rust bins, generates the benchmarks, computes the baseline, and does the guided-search in "benchmode"
+This builds the Rust bins, generates the benchmarks (if missing), computes the baseline (if missing), and runs the guided-search grid in "benchmode". Re-running skips already-completed grid runs and resumes aborted ones in place.
 
 ## Data & analysis
 

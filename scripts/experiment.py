@@ -1,8 +1,9 @@
 """Run a whole experiment under benchmode: build, compute the shared baseline, then the guided searches.
 
+Re-running skips already-completed grid configs and resumes aborted ones in place.
+
 uv run scripts/experiment.py [--language math|prop]
 uv run scripts/experiment.py --sequential
-uv run scripts/experiment.py --rerun-aborted [DIR]
 """
 
 import argparse
@@ -152,41 +153,34 @@ async def run_all(runs: list[SearchArgs], slots: PrioritySemaphore) -> None:
             group.create_task(run_guided_search(args, slots.at(priority), label))
 
 
-async def rerun_aborted(base: Path, slots: PrioritySemaphore, language: str) -> None:
-    """Ensure the baseline is complete, then re-run every aborted run in `base` in place.
+def config_key(args: SearchArgs) -> str:
+    """Canonical key for matching a run's settings independent of its output directory."""
+    return json.dumps(args.model_dump(exclude={"output"}), sort_keys=True, default=str)
 
-    A run is aborted if it started (wrote `config.json`) but did not write all its results.
-    """
-    problems, _ = paths_for_language(language)
-    if (problems / "problems.json").is_file():
-        baseline = BASELINE_BASE / problems.name
-        baseline_args = BaselineArgs(path=problems, output=baseline, **BASELINE_FLAGS)
-        print(await compute_baseline(baseline_args, slots.at(0)), file=sys.stderr)
 
-    run_dirs = (
-        sorted(
-            (
-                p
-                for p in base.iterdir()
-                if (p / "config.json").is_file()
-                and not all((p / name).is_file() for name in RESULT_FILES)
-            ),
-            key=run_number,
-        )
-        if base.is_dir()
-        else []
-    )
-    print(f"Re-running {len(run_dirs)} aborted run(s) in {base}")
-    if not run_dirs:
-        return
-
-    runs = []
-    for run_dir in run_dirs:
-        config = json.loads((run_dir / "config.json").read_text())
-        # In case the run was moved since.
-        config["output"] = run_dir
-        runs.append(SearchArgs(**config))
-    await run_all(runs, slots)
+def existing_runs(base: Path) -> tuple[set[str], dict[str, Path]]:
+    """Index existing folders in `base` by config key into completed keys and aborted paths."""
+    completed: set[str] = set()
+    aborted: dict[str, Path] = {}
+    if not base.is_dir():
+        return completed, aborted
+    for run_dir in sorted(base.iterdir(), key=run_number):
+        config_path = run_dir / "config.json"
+        if not config_path.is_file():
+            continue
+        try:
+            config = json.loads(config_path.read_text())
+            config["output"] = run_dir
+            key = config_key(SearchArgs(**config))
+        except ValueError as e:
+            print(f"Ignoring incompatible config in {run_dir}: {e}", file=sys.stderr)
+            continue
+        if all((run_dir / name).is_file() for name in RESULT_FILES):
+            completed.add(key)
+            aborted.pop(key, None)
+        elif key not in completed:
+            aborted[key] = run_dir
+    return completed, aborted
 
 
 async def generate_problems(slots: PrioritySemaphore, language: str, problems: Path) -> None:
@@ -230,8 +224,8 @@ async def experiment(slots: PrioritySemaphore, language: str) -> None:
     print(await compute_baseline(baseline_args, slots.at(0)), file=sys.stderr)
 
     # GRID SEARCH
-    # Validated before any run folder is created.
-    runs = [
+    # Validated before any run folder is created; skip completed and resume aborted in place.
+    desired = [
         SearchArgs(
             **{**BASE_FLAGS, **budget, **dict(zip(GRID, values))},
             path=problems,
@@ -240,21 +234,28 @@ async def experiment(slots: PrioritySemaphore, language: str) -> None:
         )
         for budget, values in itertools.product(BUDGETS, itertools.product(*GRID.values()))
     ]
-    runs = [args.model_copy(update={"output": new_run_dir(output_base, suffix)}) for args in runs]
+    completed, aborted = existing_runs(output_base)
+    runs: list[SearchArgs] = []
+    skipped = resumed = created = 0
+    for args in desired:
+        key = config_key(args)
+        if key in completed:
+            skipped += 1
+        elif key in aborted:
+            runs.append(args.model_copy(update={"output": aborted[key]}))
+            resumed += 1
+        else:
+            runs.append(args.model_copy(update={"output": new_run_dir(output_base, suffix)}))
+            created += 1
 
-    # # INDIVIDUAL RUN(s)
-    # runs += [
-    #     SearchArgs(
-    #         **BASE_FLAGS,
-    #         **BUDGETS[0],
-    #         seed=456,
-    #         search_policy="bfs",
-    #         frontier=True,
-    #         path=problems,
-    #         baseline=baseline,
-    #         output=new_run_dir(output_base, suffix, run=18),
-    #     )
-    # ]
+    if skipped or resumed:
+        print(
+            f"Grid in {output_base}: {skipped} completed (skipped), "
+            f"{resumed} aborted (resuming), {created} new",
+            file=sys.stderr,
+        )
+    if not runs:
+        return
 
     await run_all(runs, slots)
 
@@ -265,14 +266,6 @@ def main() -> None:
         "--language",
         default="math",
         help="Language to run the experiment for (e.g. math, prop; default: math).",
-    )
-    parser.add_argument(
-        "--rerun-aborted",
-        type=Path,
-        nargs="?",
-        const=Path(),
-        metavar="DIR",
-        help="Only re-run the aborted runs in DIR (default: the language's output folder), then exit.",
     )
     parser.add_argument(
         "--sequential",
@@ -287,13 +280,7 @@ def main() -> None:
         raise SystemExit(elevate([sys.executable, *sys.argv], sequential=cli.sequential))
 
     slots = PrioritySemaphore(benchmode_cpus(), benchmode_cgroup())
-
-    if cli.rerun_aborted is not None:
-        _, output_base = paths_for_language(cli.language)
-        rerun_dir = output_base if cli.rerun_aborted == Path() else cli.rerun_aborted
-        asyncio.run(rerun_aborted(rerun_dir, slots, cli.language))
-    else:
-        asyncio.run(experiment(slots, cli.language))
+    asyncio.run(experiment(slots, cli.language))
 
 
 if __name__ == "__main__":
