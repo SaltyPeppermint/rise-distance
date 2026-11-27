@@ -152,19 +152,29 @@ async def run_all(runs: list[SearchArgs], slots: PrioritySemaphore) -> None:
             group.create_task(run_guided_search(args, slots.at(priority), label))
 
 
-async def rerun_aborted(base: Path, slots: PrioritySemaphore) -> None:
-    """Re-run every aborted run in `base` in place, with the flags its `config.json` holds.
+async def rerun_aborted(base: Path, slots: PrioritySemaphore, language: str) -> None:
+    """Ensure the baseline is complete, then re-run every aborted run in `base` in place.
 
     A run is aborted if it started (wrote `config.json`) but did not write all its results.
     """
-    run_dirs = sorted(
-        (
-            p
-            for p in base.iterdir()
-            if (p / "config.json").is_file()
-            and not all((p / name).is_file() for name in RESULT_FILES)
-        ),
-        key=run_number,
+    problems, _ = paths_for_language(language)
+    if (problems / "problems.json").is_file():
+        baseline = BASELINE_BASE / problems.name
+        baseline_args = BaselineArgs(path=problems, output=baseline, **BASELINE_FLAGS)
+        print(await compute_baseline(baseline_args, slots.at(0)), file=sys.stderr)
+
+    run_dirs = (
+        sorted(
+            (
+                p
+                for p in base.iterdir()
+                if (p / "config.json").is_file()
+                and not all((p / name).is_file() for name in RESULT_FILES)
+            ),
+            key=run_number,
+        )
+        if base.is_dir()
+        else []
     )
     print(f"Re-running {len(run_dirs)} aborted run(s) in {base}")
     if not run_dirs:
@@ -281,7 +291,7 @@ def main() -> None:
     if cli.rerun_aborted is not None:
         _, output_base = paths_for_language(cli.language)
         rerun_dir = output_base if cli.rerun_aborted == Path() else cli.rerun_aborted
-        asyncio.run(rerun_aborted(rerun_dir, slots))
+        asyncio.run(rerun_aborted(rerun_dir, slots, cli.language))
     else:
         asyncio.run(experiment(slots, cli.language))
 
