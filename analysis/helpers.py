@@ -29,7 +29,6 @@ PAIR_OUTCOMES = ("eventually proved", "never proved")
 
 STRATEGY = "strategy"
 SEED = "seed"
-GUIDES = "guides"
 # Grid cell of a run: seeds are pooled as replicates.
 GROUP = (STRATEGY, "setting")
 
@@ -42,7 +41,6 @@ class Run:
     strategy: str
     setting: str
     short: str
-    trend: str
 
 
 def _run_dirs(folder: str, pattern: str) -> list[Path]:
@@ -67,7 +65,7 @@ def _settings(config: dict) -> dict[str, str]:
         "tree_width": f"tree_width={config['tree_width']}",
         "sampling": config["sample_policy"],
         "backoff": f"backoff={config['sampling_backoff']}",
-        GUIDES: f"guides={config['guides_per_attempt']}",
+        "guides": f"guides={config['guides_per_attempt']}",
         "union": "full_union" if config["full_union"] else "simple_union",
         "attempts": f"attempts={budget['max_attempts']}",
         "time": f"time={budget['max_pair_time']}",
@@ -128,11 +126,10 @@ def _resolve_runs(
     runs = []
     for (directory, config), settings in zip(complete, all_settings, strict=True):
         setting = " · ".join(settings[key] for key in columns) or "all runs"
-        trend = " · ".join(settings[key] for key in columns if key != GUIDES) or "all runs"
         name = f"run_{directory.name.split('_')[0]}"
         short = f"{setting} · {settings[SEED]}" if SEED in varying else setting
         label = f"{name} · {settings[STRATEGY]}\n{short}"
-        runs.append(Run(directory, label, config, settings[STRATEGY], setting, short, trend))
+        runs.append(Run(directory, label, config, settings[STRATEGY], setting, short))
     return runs, incomplete_runs, varying, constant
 
 
@@ -218,8 +215,6 @@ def load_comparisons(
                 pl.lit(run.strategy).alias("strategy"),
                 pl.lit(run.setting).alias("setting"),
                 pl.lit(run.short).alias("short"),
-                pl.lit(run.trend).alias("trend"),
-                pl.lit(run.config["guides_per_attempt"]).alias("guides"),
                 pl.lit(run.directory.name).alias("run"),
                 pl.concat_str(["start", "goal"], separator="│").alias("pair"),
                 pl.when("guided_success").then("wall_time").alias("success_time"),
@@ -229,6 +224,12 @@ def load_comparisons(
     data = pl.concat(frames, how="diagonal_relaxed")
     seeds = ", ".join(dict.fromkeys(str(run.config["seed"]) for run in runs))
     settings = list(dict.fromkeys(run.setting for run in runs))
+    cell_counts = data.group_by(GROUP).agg(
+        pl.len().alias("tested"),
+        pl.col("pair").n_unique().alias("unique"),
+    )
+    tested = _count_span(cell_counts["tested"])
+    unique = _count_span(cell_counts["unique"])
     meta = {
         "strategies": list(dict.fromkeys(run.strategy for run in runs)),
         "settings": settings,
@@ -238,27 +239,18 @@ def load_comparisons(
                 run.short for run in sorted(runs, key=lambda run: settings.index(run.setting))
             )
         ),
-        "trends": list(dict.fromkeys(run.trend for run in runs)),
-        "guides": sorted({run.config["guides_per_attempt"] for run in runs}),
         "subtitle": [
-            s for s in (" · ".join(constant), f"{data.height} planned pair observations") if s
+            s for s in (" · ".join(constant), f"{tested} goals tested ({unique} unique)") if s
         ],
         "pooled": f"seeds {seeds} pooled" if SEED in varying else None,
     }
     return runs, incomplete, data, meta
 
 
-def success_rates(frame: pl.DataFrame) -> pl.DataFrame:
-    """Guided and unguided success rates per grid cell."""
-    return pl.concat(
-        frame.group_by(GROUP, maintain_order=True).agg(
-            pl.col(f"{method}_success").sum().alias("successes"),
-            pl.len().alias("n"),
-            pl.lit(method).alias("method"),
-            pl.first("baseline"),
-        )
-        for method in ("guided", "unguided")
-    ).with_columns((pl.col("successes") / pl.col("n")).alias("success_rate"))
+def _count_span(series: pl.Series) -> str:
+    """Single integer when all categories match, otherwise `min–max`."""
+    lo, hi = int(series.min()), int(series.max())  # ty: ignore[invalid-argument-type]
+    return str(lo) if lo == hi else f"{lo}–{hi}"
 
 
 def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
@@ -506,20 +498,6 @@ def killed_time(expansions: pl.DataFrame) -> pl.DataFrame:
             pl.len().alias("draws"),
         )
         .with_columns((pl.col("killed_time") / pl.col("sample_time")).alias("killed_share"))
-    )
-
-
-def guides_trend(frame: pl.DataFrame) -> pl.DataFrame:
-    """Success rate, mean attempts, and median max attempt peak by guides per attempt."""
-    ran = pl.col("attempts_run") > 0
-    return frame.group_by(STRATEGY, "trend", "guides", maintain_order=True).agg(
-        pl.len().alias("n"),
-        pl.col("guided_success").sum().alias("successes"),
-        pl.col("guided_success").mean().alias("success_rate"),
-        pl.col("unguided_success").mean().alias("unguided_rate"),
-        ran.sum().alias("n_ran"),
-        pl.col("attempts_run").filter(ran).mean().alias("mean_attempts"),
-        (pl.col("attempt_peak_rss_max").filter(ran).median() / 2**20).alias("median_peak_mib"),
     )
 
 

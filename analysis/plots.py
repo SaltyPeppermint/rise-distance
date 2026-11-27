@@ -28,8 +28,6 @@ NEUTRAL_COLOR = "#b8b8b4"
 GUIDED_COLOR = PALETTE[0]
 UNGUIDED_COLOR = PALETTE[1]
 
-METHOD_ORDER = ("guided", "unguided")
-METHOD_COLORS = (GUIDED_COLOR, UNGUIDED_COLOR)
 OUTCOME_ORDER = ("both", "guided only", "unguided only", "neither")
 OUTCOME_COLORS = (PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR)
 BRUTE_COST_COLORS = (FAILURE_COLOR, SUCCESS_COLOR)
@@ -116,29 +114,6 @@ def _pow2_x(counts: pl.DataFrame, title: str) -> alt.X:
         title=title,
         scale=alt.Scale(domain=[pow2_bucket_label(b) for b in range(first, last + 1)]),
         axis=alt.Axis(labelAngle=-45, grid=False),
-    )
-
-
-def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Guided and unguided success rate per grid cell."""
-    return (
-        alt.Chart(rates)
-        .mark_point(filled=True, size=75)
-        .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X("success_rate:Q", title="success rate", axis=alt.Axis(format="%")),
-            y=alt.Y("setting:N", sort=meta["settings"]),
-            color=_ordered_color("method:N", METHOD_ORDER, METHOD_COLORS),
-            row=_strategy_row(meta),
-            tooltip=[
-                *GRID_TOOLTIP,
-                "method:N",
-                "baseline:N",
-                "successes:Q",
-                "n:Q",
-                alt.Tooltip("success_rate:Q", format=".1%"),
-            ],
-        )
-        .properties(title=_title("Success rate", meta), width=CELL_WIDTH * 2)
     )
 
 
@@ -478,66 +453,3 @@ def killed_time(killed: pl.DataFrame, meta: dict) -> alt.Chart:
         )
         .properties(title=_title("Sample time lost to killed tries", meta), width=CELL_WIDTH * 2)
     )
-
-
-def _trend_panel(
-    trend: pl.DataFrame, meta: dict, field: str, title: str, fmt: str, header: bool = False
-) -> alt.FacetChart:
-    """One `guides_trend` metric plotted against guides per attempt."""
-    line = (
-        alt.Chart()
-        .mark_line(point=alt.OverlayMarkDef(filled=True, size=40))
-        .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X(
-                "guides:O",
-                title="guides per attempt",
-                scale=alt.Scale(domain=meta["guides"]),
-                axis=alt.Axis(labelAngle=0, grid=False),
-            ),
-            y=alt.Y(f"{field}:Q", title=None, axis=alt.Axis(format=fmt)),
-            color=alt.Color("trend:N", sort=meta["trends"], legend=alt.Legend(title=None)),
-            tooltip=[
-                "strategy:N",
-                alt.Tooltip("trend:N", title="setting"),
-                alt.Tooltip("guides:O", title="guides per attempt"),
-                alt.Tooltip("success_rate:Q", format=".1%", title="guided success rate"),
-                alt.Tooltip("unguided_rate:Q", format=".1%", title="unguided success rate"),
-                alt.Tooltip("successes:Q", title="guided successes"),
-                alt.Tooltip("n:Q", title=_pairs(meta)),
-                alt.Tooltip("mean_attempts:Q", format=".1f", title="mean attempts"),
-                alt.Tooltip("median_peak_mib:Q", format=".1f", title="median peak (MiB)"),
-                alt.Tooltip("n_ran:Q", title=f"{_pairs(meta)} that ran an attempt"),
-            ],
-        )
-    )
-    layers = [line]
-    if field == "success_rate":
-        layers.insert(
-            0,
-            alt.Chart()
-            .mark_rule(strokeDash=[5, 4], color="#777")
-            .encode(y="mean(unguided_rate):Q"),  # ty: ignore[unresolved-attribute]
-        )
-    row = (
-        _strategy_row(meta)
-        if header
-        else alt.Row("strategy:N", sort=meta["strategies"], header=alt.Header(labels=False))
-    )
-    return (
-        alt.layer(*layers, data=trend)
-        .properties(width=CELL_WIDTH, height=CELL_HEIGHT)
-        .facet(row=row)
-        .properties(title=alt.TitleParams(title, fontSize=11, fontWeight="normal"))
-    )
-
-
-def guides_trend(trend: pl.DataFrame, meta: dict) -> alt.HConcatChart:
-    """Success, attempts, and attempt peak against guides per attempt."""
-    return alt.hconcat(
-        _trend_panel(
-            trend, meta, "success_rate", "success rate (dashed: unguided)", "%", header=True
-        ),
-        _trend_panel(trend, meta, "mean_attempts", "mean attempts run", "~s"),
-        _trend_panel(trend, meta, "median_peak_mib", "median largest attempt peak RSS (MiB)", "~s"),
-        spacing=24,
-    ).properties(title=_title("Guides per attempt", meta))
