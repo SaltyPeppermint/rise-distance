@@ -117,8 +117,10 @@ def _grid(meta: dict, row_labels: bool = True) -> dict:
 
 def _pow2_x(counts: pl.DataFrame, title: str) -> alt.X:
     """Ordinal x-axis over power-of-two bucket labels."""
-    first = int(counts["bucket"].min() or 0)  # ty: ignore[invalid-argument-type]
-    last = int(counts["bucket"].max() or 0)  # ty: ignore[invalid-argument-type]
+    first, last = counts.select(
+        pl.col("bucket").min().fill_null(0).alias("first"),
+        pl.col("bucket").max().fill_null(0).alias("last"),
+    ).row(0)
     return alt.X(
         "range:O",
         title=title,
@@ -130,10 +132,9 @@ def _pow2_x(counts: pl.DataFrame, title: str) -> alt.X:
 def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
     """Distribution of paired success outcomes."""
     return (
-        alt.Chart(outcomes)
+        alt.Chart(outcomes, mark="bar")
         .transform_calculate(outcome_rank=f"indexof({json.dumps(OUTCOME_ORDER)}, datum.outcome)")
-        .mark_bar()
-        .encode(  # ty: ignore[unresolved-attribute]
+        .encode(
             x=alt.X("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
             y=alt.Y("setting:N", sort=meta["settings"]),
             color=_ordered_color("outcome:N", OUTCOME_ORDER, OUTCOME_COLORS),
@@ -148,9 +149,8 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
 def search_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
     """How every pair's search ended."""
     return (
-        alt.Chart(outcomes)
-        .mark_bar()
-        .encode(  # ty: ignore[unresolved-attribute]
+        alt.Chart(outcomes, mark="bar")
+        .encode(
             x=alt.X("count:Q", title=_pairs(meta)),
             y=alt.Y("outcome:N"),
             color=alt.condition(
@@ -173,9 +173,8 @@ def search_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
 def attempt_failures(failures: pl.DataFrame, meta: dict) -> alt.Chart:
     """Failed attempts by stop reason, split by whether their pair was eventually proved."""
     return (
-        alt.Chart(failures)
-        .mark_bar()
-        .encode(  # ty: ignore[unresolved-attribute]
+        alt.Chart(failures, mark="bar")
+        .encode(
             x=alt.X("count:Q", title="failed attempts"),
             y=alt.Y("failure:N"),
             yOffset=alt.YOffset("pair_outcome:N", sort=list(PAIR_OUTCOMES)),
@@ -193,39 +192,34 @@ def attempt_failures(failures: pl.DataFrame, meta: dict) -> alt.Chart:
     )
 
 
-def peak_memory(
-    memory: tuple[pl.DataFrame, pl.DataFrame], meta: dict
-) -> alt.HConcatChart:
+def peak_memory(memory: tuple[pl.DataFrame, pl.DataFrame], meta: dict) -> alt.HConcatChart:
     """Guided-vs-brute peak RSS scatter next to brute-force cost buckets by guided outcome."""
     comparison, binned = memory
     guided_scope = comparison["guided_peak_scope"][0]
-    points = (
-        alt.Chart()
-        .mark_circle(size=30, opacity=0.5, color=GUIDED_COLOR)
-        .encode(  # ty: ignore[unresolved-attribute]
-            x=alt.X("brute_peak_mib:Q", title="brute force (MiB)"),
-            y=alt.Y("guided_peak_mib:Q", title=f"{guided_scope} (MiB)"),
-            tooltip=[
-                *GRID_TOOLTIP,
-                "mode:N",
-                "start:N",
-                "goal:N",
-                alt.Tooltip("guided_peak_mib:Q", format=".1f"),
-                alt.Tooltip("brute_peak_mib:Q", format=".1f"),
-                alt.Tooltip("peak_ratio:Q", format=".3f"),
-            ],
-        )
+    points = alt.Chart(
+        mark=alt.MarkDef(type="circle", size=30, opacity=0.5, color=GUIDED_COLOR)
+    ).encode(
+        x=alt.X("brute_peak_mib:Q", title="brute force (MiB)"),
+        y=alt.Y("guided_peak_mib:Q", title=f"{guided_scope} (MiB)"),
+        tooltip=[
+            *GRID_TOOLTIP,
+            "mode:N",
+            "start:N",
+            "goal:N",
+            alt.Tooltip("guided_peak_mib:Q", format=".1f"),
+            alt.Tooltip("brute_peak_mib:Q", format=".1f"),
+            alt.Tooltip("peak_ratio:Q", format=".3f"),
+        ],
     )
     bounds = comparison.select(
         pl.min_horizontal("guided_peak_mib", "brute_peak_mib").min().alias("lo"),
         pl.max_horizontal("guided_peak_mib", "brute_peak_mib").max().alias("hi"),
     ).row(0, named=True)
     # Separate data so each cell draws the diagonal once rather than once per point.
-    diagonal = (
-        alt.Chart(pl.DataFrame({"x": [bounds["lo"], bounds["hi"]]}))
-        .mark_line(strokeDash=[5, 4], color="#777")
-        .encode(x=alt.X("x:Q"), y=alt.Y("x:Q"))  # ty: ignore[unresolved-attribute]
-    )
+    diagonal = alt.Chart(
+        pl.DataFrame({"x": [bounds["lo"], bounds["hi"]]}),
+        mark=alt.MarkDef(type="line", strokeDash=[5, 4], color="#777"),
+    ).encode(x=alt.X("x:Q"), y=alt.Y("x:Q"))
     scatter = (
         alt.layer(diagonal, points, data=comparison)
         .properties(width=CELL_WIDTH, height=CELL_WIDTH)
@@ -237,9 +231,8 @@ def peak_memory(
         )
     )
     hist = (
-        alt.Chart(binned)
-        .mark_bar()
-        .encode(  # ty: ignore[unresolved-attribute]
+        alt.Chart(binned, mark="bar")
+        .encode(
             x=alt.X(
                 "slot_start_mib:Q",
                 title="brute force (MiB, log)",
@@ -288,9 +281,21 @@ def _pairwise_matrix(
     """Strategy-block heatmap over `pairwise_solved_diff`, built manually to avoid repeated facet axes."""
     strategies, order = meta["strategies"], meta["shorts"]
     short_rank = {short: i for i, short in enumerate(order)}
-    peak = int(diff[field].max())  # ty: ignore[invalid-argument-type]
+    peak = int(diff.select(pl.col(field).max()).item())
     cutoff = peak / 2
-    axis = {"labelLimit": 0, "labelFontSize": 9, "grid": False, "ticks": False, "domain": False}
+
+    def matrix_axis(*, title: str | None = None, label_angle: float | None = None) -> alt.Axis:
+        return alt.Axis(
+            title=title,
+            titleFontWeight="normal" if title is not None else alt.Undefined,
+            labelAngle=label_angle if label_angle is not None else alt.Undefined,
+            labelLimit=0,
+            labelFontSize=9,
+            grid=False,
+            ticks=False,
+            domain=False,
+        )
+
     tooltip = [
         alt.Tooltip("row_mode:N", title="row"),
         alt.Tooltip("col_mode:N", title="column"),
@@ -310,14 +315,10 @@ def _pairwise_matrix(
         legend=alt.Legend(gradientLength=140),
     )
 
-    def block(row: int, col: int) -> alt.LayerChart:
+    def block(row: int, col: int) -> alt.LayerChart | alt.FacetChart:
         first_col, last_row = col == 0, row == len(strategies) - 1
-        y_axis = (
-            alt.Axis(title=strategies[row], titleFontWeight="normal", **axis)  # ty: ignore[invalid-argument-type]
-            if first_col
-            else None
-        )
-        x_axis = alt.Axis(labelAngle=-90, title=None, **axis) if last_row else None  # ty: ignore[invalid-argument-type]
+        y_axis = matrix_axis(title=strategies[row]) if first_col else None
+        x_axis = matrix_axis(label_angle=-90) if last_row else None
         subset = diff.filter(
             (pl.col("row_strategy") == strategies[row])
             & (pl.col("col_strategy") == strategies[col])
@@ -335,12 +336,12 @@ def _pairwise_matrix(
             y=alt.Y("row_short:N", sort=order, scale=alt.Scale(domain=order), axis=y_axis),
             tooltip=tooltip,
         )
-        cells = base.mark_rect().encode(color=color)  # ty: ignore[unresolved-attribute]
-        labels = base.mark_text(fontSize=9).encode(  # ty: ignore[unresolved-attribute]
+        cells = base.properties(mark="rect").encode(color=color)
+        labels = base.properties(mark=alt.MarkDef(type="text", fontSize=9)).encode(
             text=f"{field}:Q",
             color=alt.condition(alt.datum[field] > cutoff, alt.value("white"), alt.value("#333")),
         )
-        chart = (cells + labels).properties(width=alt.Step(22), height=alt.Step(22))
+        chart = alt.layer(cells, labels).properties(width=alt.Step(22), height=alt.Step(22))
         if row == 0:
             chart = chart.properties(
                 title=alt.TitleParams(
@@ -394,9 +395,8 @@ def _measure_panel(
     """One `search_effort` subplot over power-of-two buckets."""
     unit = _pairs(meta)
     return (
-        alt.Chart(counts)
-        .mark_bar()
-        .encode(  # ty: ignore[unresolved-attribute]
+        alt.Chart(counts, mark="bar")
+        .encode(
             x=_pow2_x(counts, axis_title),
             xOffset=alt.XOffset("measure:N", sort=list(MEASURE_ORDER)),
             y=alt.Y("count:Q", title=unit if first else None),
@@ -433,15 +433,12 @@ def search_effort(effort: dict[str, pl.DataFrame], meta: dict) -> alt.HConcatCha
     ).properties(title=_title("Search effort", meta))
 
 
-def sampling_overhead(
-    overhead: tuple[pl.DataFrame, pl.DataFrame], meta: dict
-) -> alt.HConcatChart:
+def sampling_overhead(overhead: tuple[pl.DataFrame, pl.DataFrame], meta: dict) -> alt.HConcatChart:
     """`sample` retry counts next to the share of wall time lost to RSS-killed tries."""
     tries, killed = overhead
     tries_panel = (
-        alt.Chart(tries)
-        .mark_bar(color=NEUTRAL_COLOR)
-        .encode(  # ty: ignore[unresolved-attribute]
+        alt.Chart(tries, mark=alt.MarkDef(type="bar", color=NEUTRAL_COLOR))
+        .encode(
             x=_pow2_x(tries, "sample tries per draw"),
             y=alt.Y("count:Q", title="draws", scale=alt.Scale(type="symlog")),
             **_grid(meta),
@@ -458,9 +455,8 @@ def sampling_overhead(
         )
     )
     killed_panel = (
-        alt.Chart(killed)
-        .mark_bar(color=FAILURE_COLOR)
-        .encode(  # ty: ignore[unresolved-attribute]
+        alt.Chart(killed, mark=alt.MarkDef(type="bar", color=FAILURE_COLOR))
+        .encode(
             x=alt.X("killed_share:Q", title="share of sample time", axis=alt.Axis(format="%")),
             y=alt.Y("setting:N", sort=meta["settings"]),
             row=_strategy_row(meta, labels=False),
@@ -507,12 +503,7 @@ def egraph_density(
     """Guided success rate and paired `whole`-vs-`frontier` outcomes by root e-graph density."""
     rates, paired = density
     policies = list(dict.fromkeys(s.split(" · ")[0] for s in meta["strategies"]))
-    bin_order = (
-        rates.select("bin", "density_bin")
-        .unique()
-        .sort("bin")["density_bin"]
-        .to_list()
-    )
+    bin_order = rates.select("bin", "density_bin").unique().sort("bin")["density_bin"].to_list()
     density_x = alt.X(
         "density_bin:O",
         title="nodes / classes",
@@ -520,9 +511,13 @@ def egraph_density(
         axis=alt.Axis(labelAngle=-30, grid=False),
     )
     rates_panel = (
-        alt.Chart(rates)
-        .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(filled=True, size=45))
-        .encode(  # ty: ignore[unresolved-attribute]
+        alt.Chart(
+            rates,
+            mark=alt.MarkDef(
+                type="line", strokeWidth=2, point=alt.OverlayMarkDef(filled=True, size=45)
+            ),
+        )
+        .encode(
             x=density_x,
             y=alt.Y(
                 "rate:Q",
@@ -554,12 +549,11 @@ def egraph_density(
         return rates_panel.properties(title=_title("Success by root e-graph density", meta))
 
     paired_panel = (
-        alt.Chart(paired)
+        alt.Chart(paired, mark="bar")
         .transform_calculate(
             outcome_rank=f"indexof({json.dumps(MENU_OUTCOME_ORDER)}, datum.outcome)"
         )
-        .mark_bar()
-        .encode(  # ty: ignore[unresolved-attribute]
+        .encode(
             x=density_x,
             y=alt.Y("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
             color=_ordered_color("outcome:N", MENU_OUTCOME_ORDER, MENU_OUTCOME_COLORS),
@@ -576,9 +570,7 @@ def egraph_density(
             ],
         )
         .properties(
-            title=alt.TitleParams(
-                "whole vs frontier outcomes", fontSize=11, fontWeight="normal"
-            ),
+            title=alt.TitleParams("whole vs frontier outcomes", fontSize=11, fontWeight="normal"),
             width=CELL_WIDTH,
             height=CELL_HEIGHT + 30,
         )

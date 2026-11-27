@@ -265,7 +265,8 @@ def load_comparisons(
 
 def _count_span(series: pl.Series) -> str:
     """Single integer when all categories match, otherwise `min–max`."""
-    lo, hi = int(series.min()), int(series.max())  # ty: ignore[invalid-argument-type]
+    values = series.to_list()
+    lo, hi = int(min(values)), int(max(values))
     return str(lo) if lo == hi else f"{lo}–{hi}"
 
 
@@ -479,7 +480,7 @@ def pow2_bucket_label(bucket: int) -> str:
 def _pow2_counts(frame: pl.DataFrame, value: str, group_cols: Sequence[str]) -> pl.DataFrame:
     """Count positive rows of `value` in power-of-two buckets (2^(k-1), 2^k]."""
     positive = frame.filter(pl.col(value) > 0)
-    top = int(positive[value].max() or 1)  # ty: ignore[invalid-argument-type]
+    top = int(positive.select(pl.col(value).max()).item() or 1)
     # Exact ceil(log2 n) without float rounding.
     bucket = pl.sum_horizontal(pl.col(value) > 2**j for j in range(top.bit_length())).cast(pl.Int64)
     return (
@@ -579,14 +580,12 @@ def egraph_density(
         )
     )
     unique_pairs = data.select("pair", "root_density").unique()
-    lo = float(unique_pairs["root_density"].min())  # ty: ignore[invalid-argument-type]
-    hi = float(unique_pairs["root_density"].max())  # ty: ignore[invalid-argument-type]
-    cuts = sorted(
-        {
-            float(unique_pairs["root_density"].quantile(i / bins))  # ty: ignore[invalid-argument-type]
-            for i in range(1, bins)
-        }
-    )
+    lo, hi, *quantiles = unique_pairs.select(
+        pl.col("root_density").min().alias("lo"),
+        pl.col("root_density").max().alias("hi"),
+        *(pl.col("root_density").quantile(i / bins).alias(f"q{i}") for i in range(1, bins)),
+    ).row(0)
+    cuts = sorted(set(quantiles))
     edges = [lo, *cuts, hi]
     labels = {
         i: f"{_fmt_density(edges[i])}–{_fmt_density(edges[i + 1])}" for i in range(len(edges) - 1)
@@ -599,7 +598,9 @@ def egraph_density(
         pl.col("bin").replace_strict(labels).alias("density_bin")
     )
     rates = (
-        binned.group_by("search_policy", "setting", "menu", "bin", "density_bin", maintain_order=True)
+        binned.group_by(
+            "search_policy", "setting", "menu", "bin", "density_bin", maintain_order=True
+        )
         .agg(
             pl.len().alias("count"),
             pl.col("guided_success").sum().alias("solved"),

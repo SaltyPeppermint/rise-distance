@@ -206,9 +206,7 @@ async def experiment(slots: PrioritySemaphore, language: str) -> None:
     if (problems / "problems.json").is_file():
         actual = problem_language(problems)
         if actual != language:
-            raise ValueError(
-                f"{problems} holds {actual!r} problems, expected {language!r}"
-            )
+            raise ValueError(f"{problems} holds {actual!r} problems, expected {language!r}")
     else:
         await generate_problems(slots, language, problems)
 
