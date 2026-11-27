@@ -522,6 +522,7 @@ def pairwise_solved_diff(frame: pl.DataFrame) -> pl.DataFrame:
             (pl.col("only_row") - pl.col("only_col")).alias("net"),
             (pl.col("n_shared") - pl.col("neither")).alias("combined"),
             (pl.col("only_row") / pl.col("n_shared")).alias("share_only_row"),
+            ((pl.col("n_shared") - pl.col("neither")) / pl.col("n_shared")).alias("share_combined"),
         )
         .join(runs.select(pl.all().name.prefix("row_")), on="row_mode", how="left")
         .join(runs.select(pl.all().name.prefix("col_")), on="col_mode", how="left")

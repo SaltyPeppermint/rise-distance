@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Sequence
+from typing import Literal
 
 import altair as alt
 import polars as pl
@@ -291,14 +292,26 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
     )
 
 
-def solved_diff_matrix(diff: pl.DataFrame, meta: dict) -> alt.VConcatChart:
-    """Problems the row run solves that the column run does not, in strategy blocks.
+def _pairwise_matrix(
+    diff: pl.DataFrame,
+    meta: dict,
+    *,
+    field: str,
+    scheme: Literal["blues", "reds"],
+    legend_title: str,
+    title: str,
+    share_field: str,
+    lower_triangle: bool = False,
+    lower_triangle: bool = False,
+) -> alt.VConcatChart:
+    """Square strategy-block heatmap over `pairwise_solved_diff`, coloured by `field`.
 
     One block per strategy pair, built by hand rather than faceted: a facet with
     per-block axes repeats every label nine times and mis-orders its headers.
     """
     strategies, order = list(meta["strategies"]), list(meta["shorts"])
-    peak = int(diff["only_row"].max())  # ty: ignore[invalid-argument-type]
+    short_rank = {short: i for i, short in enumerate(order)}
+    peak = int(diff[field].max())  # ty: ignore[invalid-argument-type]
     # Half the range keeps the light end of the scheme readable under dark text.
     cutoff = peak / 2
     axis = {"labelLimit": 0, "labelFontSize": 9, "grid": False, "ticks": False, "domain": False}
@@ -312,12 +325,12 @@ def solved_diff_matrix(diff: pl.DataFrame, meta: dict) -> alt.VConcatChart:
         "neither:Q",
         alt.Tooltip("net:Q", title="row − column"),
         alt.Tooltip("n_shared:Q", title="planned pairs"),
-        alt.Tooltip("share_only_row:Q", format=".1%", title="share of planned pairs"),
+        alt.Tooltip(f"{share_field}:Q", format=".1%", title="share of planned pairs"),
     ]
     color = alt.Color(
-        "only_row:Q",
-        title="pairs won",
-        scale=alt.Scale(scheme="blues", domain=[0, peak]),
+        f"{field}:Q",
+        title=legend_title,
+        scale=alt.Scale(scheme=scheme, domain=[0, peak]),
         legend=alt.Legend(gradientLength=140),
     )
 
@@ -331,20 +344,27 @@ def solved_diff_matrix(diff: pl.DataFrame, meta: dict) -> alt.VConcatChart:
             else None
         )
         x_axis = alt.Axis(labelAngle=-90, title=None, **axis) if last_row else None  # ty: ignore[invalid-argument-type]
-        base = alt.Chart(
-            diff.filter(
-                (pl.col("row_strategy") == strategies[row])
-                & (pl.col("col_strategy") == strategies[col])
-            )
-        ).encode(
-            x=alt.X("col_short:N", sort=order, axis=x_axis),
-            y=alt.Y("row_short:N", sort=order, axis=y_axis),
+        subset = diff.filter(
+            (pl.col("row_strategy") == strategies[row])
+            & (pl.col("col_strategy") == strategies[col])
+        )
+        if lower_triangle:
+            if row < col:
+                subset = subset.clear()
+            elif row == col:
+                subset = subset.filter(
+                    pl.col("row_short").replace_strict(short_rank)
+                    > pl.col("col_short").replace_strict(short_rank)
+                )
+        base = alt.Chart(subset).encode(
+            x=alt.X("col_short:N", sort=order, scale=alt.Scale(domain=order), axis=x_axis),
+            y=alt.Y("row_short:N", sort=order, scale=alt.Scale(domain=order), axis=y_axis),
             tooltip=tooltip,
         )
         cells = base.mark_rect().encode(color=color)  # ty: ignore[unresolved-attribute]
         labels = base.mark_text(fontSize=9).encode(  # ty: ignore[unresolved-attribute]
-            text="only_row:Q",
-            color=alt.condition(alt.datum.only_row > cutoff, alt.value("white"), alt.value("#333")),
+            text=f"{field}:Q",
+            color=alt.condition(alt.datum[field] > cutoff, alt.value("white"), alt.value("#333")),
         )
         chart = (cells + labels).properties(width=alt.Step(22), height=alt.Step(22))
         if row == 0:
@@ -360,7 +380,38 @@ def solved_diff_matrix(diff: pl.DataFrame, meta: dict) -> alt.VConcatChart:
         for r in range(len(strategies))
     ]
     return alt.vconcat(*grid, spacing=6).properties(
-        title=_title("Pairwise solved differences: rows solve, columns do not", meta, pooled=False)
+        title=alt.TitleParams(title, fontSize=11, fontWeight="normal")
+    )
+
+
+def pairwise_solved(diff: pl.DataFrame, meta: dict) -> alt.HConcatChart:
+    """Pairwise solved differences next to combined solved counts, in strategy blocks."""
+    return (
+        alt.hconcat(
+            _pairwise_matrix(
+                diff,
+                meta,
+                field="only_row",
+                scheme="blues",
+                legend_title="pairs won",
+                title="rows solve, columns do not",
+                share_field="share_only_row",
+            ),
+            _pairwise_matrix(
+                diff,
+                meta,
+                field="combined",
+                scheme="reds",
+                legend_title="pairs solved",
+                title="combined: either row or column solves",
+                share_field="share_combined",
+                lower_triangle=True,
+                lower_triangle=True,
+            ),
+            spacing=24,
+        )
+        .resolve_scale(color="independent")
+        .properties(title=_title("Pairwise solved", meta, pooled=False))
     )
 
 
