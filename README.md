@@ -20,3 +20,16 @@ git submodule update --init --recursive
 
 Run the same update command after pulling changes that move the submodule to a
 different commit.
+
+## Running experiments
+
+```bash
+uv run scripts/experiment.py --language math   # or prop
+uv run scripts/experiment.py --language prop --rerun-aborted
+```
+
+This builds the Rust bins, generates the benchmarks, computes the baseline, and does the guided-search in "benchmode"
+
+## Data & analysis
+
+See `analysis/README.md`

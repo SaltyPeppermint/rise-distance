@@ -1,8 +1,8 @@
 """Run a whole experiment under benchmode: build, compute the shared baseline, then the guided searches.
 
-uv run scripts/experiment.py
+uv run scripts/experiment.py [--language math|prop]
 uv run scripts/experiment.py --sequential
-uv run scripts/experiment.py --rerun-aborted [data/guided_search]
+uv run scripts/experiment.py --rerun-aborted [DIR]
 """
 
 import argparse
@@ -22,11 +22,11 @@ from tqdm import tqdm
 
 from baseline import BaselineArgs, compute_baseline
 from benchmode import benchmode_cgroup, benchmode_cpus, elevate
-from common import LOG_FILE, PrioritySemaphore, PrioritySlot, load_pairs, log
+from common import LOG_FILE, PrioritySemaphore, PrioritySlot, load_pairs, log, problem_language
 from generate_problems import GenerateArgs, generate
 from guided_search import RESULT_FILES, SearchArgs, search
 
-# The experiment
+# The experiment (PROBLEMS appends `-<language>`; OUTPUT_BASE uses `<language>` subfolders).
 PROBLEMS = Path("data/problems/expensive-bird")
 
 # Shared by `baseline.py` and `guided_search.py`, so both compute the same baseline.
@@ -70,6 +70,14 @@ OUTPUT_BASE = Path("data/guided_search")
 BASELINE_BASE = Path("data/baselines")
 
 
+def paths_for_language(language: str) -> tuple[Path, Path]:
+    """Return `(problems_dir, output_base)` for `language`."""
+    return (
+        PROBLEMS.with_name(f"{PROBLEMS.name}-{language}"),
+        OUTPUT_BASE / language,
+    )
+
+
 def git_short_hash() -> str:
     """Short HEAD hash, suffixed with `-dirty` if there are uncommitted changes"""
     rev = subprocess.run(
@@ -84,11 +92,11 @@ def run_number(path: Path) -> int:
     return int(m.group()) if (m := re.match(r"\d+", path.name)) else 0
 
 
-def new_run_dir(suffix: str, run: int | None = None) -> Path:
-    """Create the folder `<run>_<suffix>` in `OUTPUT_BASE`, numbered after the last run by default."""
+def new_run_dir(output_base: Path, suffix: str, run: int | None = None) -> Path:
+    """Create the folder `<run>_<suffix>` in `output_base`, numbered after the last run by default."""
     if run is None:
-        run = max(map(run_number, OUTPUT_BASE.iterdir()), default=0) + 1
-    out_dir = OUTPUT_BASE / f"{run}_{suffix}"
+        run = max(map(run_number, output_base.iterdir()), default=0) + 1
+    out_dir = output_base / f"{run}_{suffix}"
     out_dir.mkdir()
     return out_dir
 
@@ -171,12 +179,12 @@ async def rerun_aborted(base: Path, slots: PrioritySemaphore) -> None:
     await run_all(runs, slots)
 
 
-async def generate_problems(slots: PrioritySemaphore, problems: Path = PROBLEMS) -> None:
+async def generate_problems(slots: PrioritySemaphore, language: str, problems: Path) -> None:
     args = GenerateArgs(
         starts=1000,
         min_size=30,
         max_size=60,
-        language="math",
+        language=language,
         seed=123,
         max_iters=2000,
         max_nodes=1000000,
@@ -190,17 +198,25 @@ async def generate_problems(slots: PrioritySemaphore, problems: Path = PROBLEMS)
     print(await generate(args, slots.at(0)), file=sys.stderr)
 
 
-async def experiment(slots: PrioritySemaphore) -> None:
-    """Generate the problems if asked to, compute the baseline, then run the grid."""
-    OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
+async def experiment(slots: PrioritySemaphore, language: str) -> None:
+    """Generate problems if missing, compute the baseline, then run the grid."""
+    problems, output_base = paths_for_language(language)
+    output_base.mkdir(parents=True, exist_ok=True)
     suffix = f"{datetime.now().astimezone():%Y-%m-%dT%H:%M}_{git_short_hash()}"
 
-    # PROBLEM GENERATION
-    # await generate_problems(slots)
+    # PROBLEM GENERATION (automatic when the problem folder does not yet exist)
+    if (problems / "problems.json").is_file():
+        actual = problem_language(problems)
+        if actual != language:
+            raise ValueError(
+                f"{problems} holds {actual!r} problems, expected {language!r}"
+            )
+    else:
+        await generate_problems(slots, language, problems)
 
     # BASELINE, shared by every run below
-    baseline = BASELINE_BASE / PROBLEMS.name
-    baseline_args = BaselineArgs(path=PROBLEMS, output=baseline, **BASELINE_FLAGS)
+    baseline = BASELINE_BASE / problems.name
+    baseline_args = BaselineArgs(path=problems, output=baseline, **BASELINE_FLAGS)
     print(await compute_baseline(baseline_args, slots.at(0)), file=sys.stderr)
 
     # GRID SEARCH
@@ -208,13 +224,13 @@ async def experiment(slots: PrioritySemaphore) -> None:
     runs = [
         SearchArgs(
             **{**BASE_FLAGS, **budget, **dict(zip(GRID, values))},
-            path=PROBLEMS,
+            path=problems,
             baseline=baseline,
-            output=OUTPUT_BASE,
+            output=output_base,
         )
         for budget, values in itertools.product(BUDGETS, itertools.product(*GRID.values()))
     ]
-    runs = [args.model_copy(update={"output": new_run_dir(suffix)}) for args in runs]
+    runs = [args.model_copy(update={"output": new_run_dir(output_base, suffix)}) for args in runs]
 
     # # INDIVIDUAL RUN(s)
     # runs += [
@@ -224,9 +240,9 @@ async def experiment(slots: PrioritySemaphore) -> None:
     #         seed=456,
     #         search_policy="bfs",
     #         frontier=True,
-    #         path=PROBLEMS,
+    #         path=problems,
     #         baseline=baseline,
-    #         output=new_run_dir(suffix, run=18),
+    #         output=new_run_dir(output_base, suffix, run=18),
     #     )
     # ]
 
@@ -236,12 +252,17 @@ async def experiment(slots: PrioritySemaphore) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--language",
+        default="math",
+        help="Language to run the experiment for (e.g. math, prop; default: math).",
+    )
+    parser.add_argument(
         "--rerun-aborted",
         type=Path,
         nargs="?",
-        const=OUTPUT_BASE,
+        const=Path(),
         metavar="DIR",
-        help=f"Only re-run the aborted runs in DIR (default: {OUTPUT_BASE}), then exit.",
+        help="Only re-run the aborted runs in DIR (default: the language's output folder), then exit.",
     )
     parser.add_argument(
         "--sequential",
@@ -258,9 +279,11 @@ def main() -> None:
     slots = PrioritySemaphore(benchmode_cpus(), benchmode_cgroup())
 
     if cli.rerun_aborted is not None:
-        asyncio.run(rerun_aborted(cli.rerun_aborted, slots))
+        _, output_base = paths_for_language(cli.language)
+        rerun_dir = output_base if cli.rerun_aborted == Path() else cli.rerun_aborted
+        asyncio.run(rerun_aborted(rerun_dir, slots))
     else:
-        asyncio.run(experiment(slots))
+        asyncio.run(experiment(slots, cli.language))
 
 
 if __name__ == "__main__":

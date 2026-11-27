@@ -54,6 +54,14 @@ def _run_dirs(folder: str, pattern: str) -> list[Path]:
     )
 
 
+def _problem_language(config: dict) -> str:
+    """Language of the problem set `config` was run on, from its `problem_args.json`."""
+    args_path = REPO_ROOT / config["path"] / "problem_args.json"
+    if not args_path.is_file():
+        raise FileNotFoundError(f"Missing {args_path} to determine problem language")
+    return str(json.loads(args_path.read_text())["language"])
+
+
 def _settings(config: dict) -> dict[str, str]:
     """Display values of every setting a run can vary in (strategy first, seed last)."""
     budget = {
@@ -63,6 +71,7 @@ def _settings(config: dict) -> dict[str, str]:
     frontier = "frontier" if config["frontier"] else "whole"
     return {
         STRATEGY: f"{config['search_policy']} · {frontier}",
+        "language": config["language"],
         "tree_width": f"tree_width={config['tree_width']}",
         "sampling": config["sample_policy"],
         "backoff": f"backoff={config['sampling_backoff']}",
@@ -110,6 +119,7 @@ def _resolve_runs(
             incomplete_runs.append(str(directory))
             continue
         config = json.loads(config_path.read_text())
+        config.setdefault("language", _problem_language(config))
         if _matches(directory, config, where):
             complete.append((directory, config))
     if not complete:
@@ -186,11 +196,14 @@ def _load_run_table(runs: Sequence[Run], filename: str) -> pl.DataFrame:
 
 def load_comparisons(
     patterns: Sequence[str],
+    language: str,
     folder: str = "guided_search",
     where: Mapping[str, Any] | None = None,
 ) -> tuple[list[Run], list[str], pl.DataFrame, dict]:
-    """Load and stack selected runs under `data/<folder>` with unguided and brute-force baselines."""
-    runs, incomplete, varying, constant = _resolve_runs(patterns, folder, where or {})
+    """Load and stack selected runs under `data/<folder>/<language>` with unguided and brute-force baselines."""
+    target_folder = f"{folder}/{language}"
+    filters = {"language": language, **(where or {})}
+    runs, incomplete, varying, constant = _resolve_runs(patterns, target_folder, filters)
     frames = []
     for run in runs:
         frame = pl.read_parquet(run.directory / "pairs.parquet")
