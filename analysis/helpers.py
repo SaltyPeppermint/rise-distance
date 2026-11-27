@@ -18,10 +18,11 @@ GUIDED_PEAK_SCOPES = {
 }
 
 MEASURES = {
-    "depth": {"success_depth": "first success", "deepest_attempt": "deepest attempt"},
-    "attempts": {"success_attempt": "first success", "attempts_run": "attempts run"},
-    "time": {"success_time": "first success", "search_time": "time spent"},
+    "attempts": {"success_attempt": "first success", "attempts_run": "whole search"},
+    "depth": {"success_depth": "first success", "deepest_attempt": "whole search"},
+    "time": {"success_time": "first success", "search_time": "whole search"},
 }
+MEASURE_ORDER = ("first success", "whole search")
 
 # Ordered: tuple position sets grouped-bar slots and legend order.
 BRUTE_COST_OUTCOMES = ("guided failed", "guided proved")
@@ -367,7 +368,7 @@ def guided_vs_brute(frame: pl.DataFrame, scope: str) -> pl.DataFrame:
     )
 
 
-def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
+def _brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     """Log-binned brute-force proof cost per grid cell, split by guided outcome."""
     data = frame.select(
         *GROUP,
@@ -408,6 +409,13 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
         )
         .with_columns((pl.col("count") / pl.col("bucket_n")).alias("bucket_share"))
     )
+
+
+def peak_memory(
+    frame: pl.DataFrame, scope: str = "guided workflow", bins: int = 14
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Guided-vs-brute peak RSS on proved pairs and brute-force cost buckets by outcome."""
+    return guided_vs_brute(frame, scope), _brute_cost_by_outcome(frame, bins=bins)
 
 
 def pairwise_solved_diff(frame: pl.DataFrame) -> pl.DataFrame:
@@ -468,28 +476,22 @@ def _pow2_counts(frame: pl.DataFrame, value: str, group_cols: Sequence[str]) -> 
     )
 
 
-def measure_counts(frame: pl.DataFrame, value: str) -> pl.DataFrame:
-    """Pairs per grid cell, `MEASURES[value]` measure, and power-of-two bucket."""
-    measures = MEASURES[value]
-    values = frame.unpivot(
-        index=GROUP, on=list(measures), variable_name="measure", value_name=value
-    ).with_columns(pl.col("measure").replace_strict(measures))
-    return _pow2_counts(values, value, (*GROUP, "measure"))
+def search_effort(frame: pl.DataFrame) -> dict[str, pl.DataFrame]:
+    """Power-of-two bucket counts per grid cell for attempts, depth, and wall time."""
+    result = {}
+    for name, measures in MEASURES.items():
+        values = frame.unpivot(
+            index=GROUP, on=list(measures), variable_name="measure", value_name=name
+        ).with_columns(pl.col("measure").replace_strict(measures))
+        result[name] = _pow2_counts(values, name, (*GROUP, "measure"))
+    return result
 
 
-def load_expansions(runs: Sequence[Run]) -> pl.DataFrame:
-    """Non-cached `sample` draws across runs."""
-    return _load_run_table(runs, "expansions.parquet").filter(~pl.col("cached"))
-
-
-def sample_tries(expansions: pl.DataFrame) -> pl.DataFrame:
-    """Draws per grid cell and power-of-two bucket of `sample` tries."""
-    return _pow2_counts(expansions, "sample_tries", GROUP)
-
-
-def killed_time(expansions: pl.DataFrame) -> pl.DataFrame:
-    """Per grid cell, `sample` wall time spent in tries killed at the RSS cap."""
-    return (
+def sampling_overhead(runs: Sequence[Run]) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Non-cached `sample` retry buckets and share of wall time lost to RSS-killed tries."""
+    expansions = _load_run_table(runs, "expansions.parquet").filter(~pl.col("cached"))
+    tries = _pow2_counts(expansions, "sample_tries", GROUP)
+    killed = (
         expansions.group_by(GROUP, maintain_order=True)
         .agg(
             pl.col("sample_killed_time").sum().alias("killed_time"),
@@ -499,6 +501,7 @@ def killed_time(expansions: pl.DataFrame) -> pl.DataFrame:
         )
         .with_columns((pl.col("killed_time") / pl.col("sample_time")).alias("killed_share"))
     )
+    return tries, killed
 
 
 def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
