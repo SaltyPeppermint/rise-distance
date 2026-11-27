@@ -24,7 +24,7 @@ different commit.
 ## Running experiments
 
 ```bash
-uv run scripts/experiment.py --language math   # or prop
+uv run scripts/experiment.py --language math prop   # one or more languages
 ```
 
 This builds the Rust bins, generates the benchmarks (if missing), computes the baseline (if missing), and runs the guided-search grid in "benchmode". Re-running skips already-completed grid runs and resumes aborted ones in place.

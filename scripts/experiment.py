@@ -2,7 +2,7 @@
 
 Re-running skips already-completed grid configs and resumes aborted ones in place.
 
-uv run scripts/experiment.py [--language math|prop]
+uv run scripts/experiment.py [--language math [prop ...]]
 uv run scripts/experiment.py --sequential
 """
 
@@ -260,12 +260,31 @@ async def experiment(slots: PrioritySemaphore, language: str) -> None:
     await run_all(runs, slots)
 
 
+async def run_languages(slots: PrioritySemaphore, languages: list[str]) -> int:
+    """Run `experiment` for each language in order, continuing past per-language failures."""
+    failed: list[str] = []
+    for language in dict.fromkeys(languages):
+        if len(languages) > 1:
+            print(f"\n=== Language: {language} ===", file=sys.stderr)
+        try:
+            await experiment(slots, language)
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc(file=sys.stderr)
+            print(f"ERROR: language {language!r} failed: {e!r}", file=sys.stderr)
+            failed.append(language)
+    if failed:
+        print(f"Failed language(s): {', '.join(failed)}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--language",
-        default="math",
-        help="Language to run the experiment for (e.g. math, prop; default: math).",
+        nargs="+",
+        default=["math"],
+        help="Language(s) to run the experiment for (e.g. math prop; default: math).",
     )
     parser.add_argument(
         "--sequential",
@@ -280,7 +299,7 @@ def main() -> None:
         raise SystemExit(elevate([sys.executable, *sys.argv], sequential=cli.sequential))
 
     slots = PrioritySemaphore(benchmode_cpus(), benchmode_cgroup())
-    asyncio.run(experiment(slots, cli.language))
+    raise SystemExit(asyncio.run(run_languages(slots, cli.language)))
 
 
 if __name__ == "__main__":
