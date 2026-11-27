@@ -12,35 +12,25 @@ REPO_ROOT = Path(__file__).parent.parent
 
 BRUTE_COLUMN = "brute_peak_rss"
 
-# Guided peaks comparable with brute force
 GUIDED_PEAK_SCOPES = {
     "guided attempt": "attempt_peak_rss",
     "guided workflow": "guided_peak_rss",
 }
 
-# Pair columns behind each quantity `measure_counts` counts, mapped to display names.
 MEASURES = {
     "depth": {"success_depth": "first success", "deepest_attempt": "deepest attempt"},
     "attempts": {"success_attempt": "first success", "attempts_run": "attempts run"},
     "time": {"success_time": "first success", "search_time": "time spent"},
 }
 
-# Ordered: the drawing slot of a grouped bar is the position in this tuple.
+# Ordered: tuple position sets grouped-bar slots and legend order.
 BRUTE_COST_OUTCOMES = ("guided failed", "guided proved")
-
-# Whether a failed attempt's pair was proved by some attempt, in legend order.
 PAIR_OUTCOMES = ("eventually proved", "never proved")
 
-
-# `_settings` keys drawn as the grid's rows; the seed is pooled, and every
-# other varying setting names the grid's columns.
 STRATEGY = "strategy"
 SEED = "seed"
-# Also the x of `guides_trend`, which draws one line per remaining setting.
 GUIDES = "guides"
-
-# Grid cell of a run: seeds are replicates of one configuration, so every
-# aggregate pools them and only `pairwise_solved_diff` keeps runs apart.
+# Grid cell of a run: seeds are pooled as replicates.
 GROUP = (STRATEGY, "setting")
 
 
@@ -51,9 +41,7 @@ class Run:
     config: dict
     strategy: str
     setting: str
-    # The setting and, if it varies, the seed: what tells the run apart within its strategy.
     short: str
-    # The setting without the guides per attempt: a line of `guides_trend`.
     trend: str
 
 
@@ -68,7 +56,7 @@ def _run_dirs(folder: str, pattern: str) -> list[Path]:
 
 
 def _settings(config: dict) -> dict[str, str]:
-    """Display value of every setting a run can differ in, the strategy first and the seed last."""
+    """Display values of every setting a run can vary in (strategy first, seed last)."""
     budget = {
         key: "∞" if config[key] is None else f"{config[key]:g}"
         for key in ("max_attempts", "max_pair_time", "max_attempt_time")
@@ -88,17 +76,8 @@ def _settings(config: dict) -> dict[str, str]:
     }
 
 
-def _varying(configs: Sequence[dict]) -> tuple[list[str], list[str]]:
-    """`_settings` keys that differ between `configs`, and the values of those that do not."""
-    settings = [_settings(config) for config in configs]
-    keys = list(settings[0])
-    varying = [key for key in keys if len({s[key] for s in settings}) > 1]
-    constant = [settings[0][key] for key in keys if key not in varying]
-    return varying, constant
-
-
 def _matches(directory: Path, config: dict, where: Mapping[str, Any]) -> bool:
-    """Whether `config` has every `where` value, a list or tuple naming the values allowed."""
+    """Whether `config` matches every `where` value (list/tuple allows any entry)."""
     for key, allowed in where.items():
         if key not in config:
             raise KeyError(f"{directory.name}/config.json has no {key!r} to filter on")
@@ -110,10 +89,7 @@ def _matches(directory: Path, config: dict, where: Mapping[str, Any]) -> bool:
 def _resolve_runs(
     patterns: Sequence[str], folder: str, where: Mapping[str, Any]
 ) -> tuple[list[Run], list[str], list[str], list[str]]:
-    """Resolve run folders under `data/<folder>` by name substring, keeping those `where` matches.
-
-    Also returns the incomplete run folders, and `_varying` over the complete ones.
-    """
+    """Resolve completed run folders under `data/<folder>`, filtered by `where`."""
     directories = (
         _run_dirs(folder, "")
         if not patterns
@@ -144,13 +120,13 @@ def _resolve_runs(
         )
     complete.sort(key=lambda run: int(run[0].name.split("_")[0]))
 
-    # Labels name only what tells the selected runs apart; `load_comparisons`
-    # puts the rest in the subtitle.
-    varying, constant = _varying([config for _, config in complete])
+    all_settings = [_settings(config) for _, config in complete]
+    keys = list(all_settings[0])
+    varying = [key for key in keys if len({s[key] for s in all_settings}) > 1]
+    constant = [all_settings[0][key] for key in keys if key not in varying]
     columns = [key for key in varying if key not in (STRATEGY, SEED)]
     runs = []
-    for directory, config in complete:
-        settings = _settings(config)
+    for (directory, config), settings in zip(complete, all_settings, strict=True):
         setting = " · ".join(settings[key] for key in columns) or "all runs"
         trend = " · ".join(settings[key] for key in columns if key != GUIDES) or "all runs"
         name = f"run_{directory.name.split('_')[0]}"
@@ -161,7 +137,7 @@ def _resolve_runs(
 
 
 def _brute_baseline(run: Run) -> pl.DataFrame:
-    """Per-pair brute-force proof cost from the problem set the run was built on."""
+    """Per-pair brute-force proof cost from the problem set `run` was built on."""
     directory = REPO_ROOT / run.config["path"]
     problems = directory / "problems.json"
     if not problems.is_file():
@@ -173,8 +149,6 @@ def _brute_baseline(run: Run) -> pl.DataFrame:
     if missing:
         raise ValueError(f"{problems} is missing baseline fields: {sorted(missing)}")
 
-    # A pair that never reached the goal has no proof cost, only a censored
-    # lower bound, so it cannot serve as a baseline.
     unreached = frame.filter(~pl.col("reached").fill_null(False)).height
     if unreached:
         raise ValueError(
@@ -189,7 +163,7 @@ def _brute_baseline(run: Run) -> pl.DataFrame:
 
 
 def _unguided_baseline(run: Run) -> pl.DataFrame:
-    """Per-pair unguided results from the `baseline.py` folder the run was checked against."""
+    """Per-pair unguided results from the baseline folder `run` references."""
     directory = REPO_ROOT / run.config["baseline"]
     results = directory / "unguided.parquet"
     if not results.is_file():
@@ -200,27 +174,28 @@ def _unguided_baseline(run: Run) -> pl.DataFrame:
     return pl.read_parquet(results).with_columns(pl.lit(directory.name).alias("baseline"))
 
 
+def _load_run_table(runs: Sequence[Run], filename: str) -> pl.DataFrame:
+    """Concatenate a per-run parquet table tagged with `run`, `strategy`, and `setting`."""
+    return pl.concat(
+        pl.read_parquet(run.directory / filename).with_columns(
+            pl.lit(run.directory.name).alias("run"),
+            pl.lit(run.strategy).alias("strategy"),
+            pl.lit(run.setting).alias("setting"),
+        )
+        for run in runs
+    )
+
+
 def load_comparisons(
     patterns: Sequence[str],
     folder: str = "guided_search",
     where: Mapping[str, Any] | None = None,
 ) -> tuple[list[Run], list[str], pl.DataFrame, dict]:
-    """Stack the one-row-per-pair results of the runs `patterns` select in `data/<folder>`.
-
-    `where` keeps only runs whose `config.json` has every given value; a list
-    or tuple value allows any of its entries. A run it drops is not reported
-    as missing, and settings it pins move from the labels into the subtitle.
-
-    Joins each run's unguided and brute-force baselines. Returns the runs, the
-    incomplete run folders that were skipped, the stacked results, and the
-    chart metadata.
-    """
+    """Load and stack selected runs under `data/<folder>` with unguided and brute-force baselines."""
     runs, incomplete, varying, constant = _resolve_runs(patterns, folder, where or {})
     frames = []
     for run in runs:
         frame = pl.read_parquet(run.directory / "pairs.parquet")
-        # `guided_search.py` checked that the baseline covers every pair, so a
-        # miss here means the baseline changed since.
         frame = frame.join(
             _unguided_baseline(run), on=["start", "goal"], how="left", validate="1:1"
         )
@@ -247,7 +222,6 @@ def load_comparisons(
                 pl.lit(run.config["guides_per_attempt"]).alias("guides"),
                 pl.lit(run.directory.name).alias("run"),
                 pl.concat_str(["start", "goal"], separator="│").alias("pair"),
-                # The search stops at its first success, so its wall time is the time to it.
                 pl.when("guided_success").then("wall_time").alias("success_time"),
                 pl.when(pl.col("attempts_run") > 0).then("wall_time").alias("search_time"),
             )
@@ -258,7 +232,7 @@ def load_comparisons(
     meta = {
         "strategies": list(dict.fromkeys(run.strategy for run in runs)),
         "settings": settings,
-        # By setting, then by run, which puts a setting's seeds next to each other.
+        # Group each setting's seeds together.
         "shorts": list(
             dict.fromkeys(
                 run.short for run in sorted(runs, key=lambda run: settings.index(run.setting))
@@ -269,14 +243,13 @@ def load_comparisons(
         "subtitle": [
             s for s in (" · ".join(constant), f"{data.height} planned pair observations") if s
         ],
-        # Appended to the subtitle of every chart that pools the seeds.
         "pooled": f"seeds {seeds} pooled" if SEED in varying else None,
     }
     return runs, incomplete, data, meta
 
 
 def success_rates(frame: pl.DataFrame) -> pl.DataFrame:
-    """Guided and unguided success rates per grid cell, next to the cell's baseline."""
+    """Guided and unguided success rates per grid cell."""
     return pl.concat(
         frame.group_by(GROUP, maintain_order=True).agg(
             pl.col(f"{method}_success").sum().alias("successes"),
@@ -289,7 +262,7 @@ def success_rates(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
-    """Counts for the four paired success outcomes."""
+    """Counts and shares for the four paired success outcomes."""
     return (
         frame.with_columns(
             pl.when(pl.col("guided_success") & pl.col("unguided_success"))
@@ -307,7 +280,6 @@ def outcome_counts(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-# Display names of an attempt's `stop_reason`, keyed by egg's variant name; unknown ones are "other".
 STOP_LABELS = {
     "unknown": "unknown",
     "NodeLimit": "node limit",
@@ -325,11 +297,7 @@ STOP_LABELS = {
 
 
 def _stop_category(reason: pl.Expr) -> pl.Expr:
-    """Collapse detailed egg stop strings into stable analysis categories.
-
-    egg's limits render with their value, e.g. `TimeLimit(300.08)`, so only the
-    variant name before the parenthesis is looked up.
-    """
+    """Map egg stop strings (e.g. `TimeLimit(300.08)`) to display categories."""
     return (
         reason.fill_null("unknown")
         .str.extract(r"^(\w+)")
@@ -337,7 +305,6 @@ def _stop_category(reason: pl.Expr) -> pl.Expr:
     )
 
 
-# Display names of `search_stop_reason`; `reached` and unknown reasons pass through.
 SEARCH_LABELS = {
     "time_exhausted": "pair time budget",
     "attempt_budget_exhausted": "attempt budget",
@@ -345,36 +312,19 @@ SEARCH_LABELS = {
     "unstarted": "search never started",
 }
 
-
-# Why a pair never got a guide menu, by its non-ok `setup_status`; unknown ones pass through.
 SETUP_LABELS = {
-    # Every `sample` try, `--sampling-backoff` retries included, died at the RSS cap.
     "out_of_memory": "out of memory",
-    # The child survived the cap and still printed an empty payload: no novel
-    # root terms below the size cap, so there was nothing to draw.
     "no_novel_terms": "no novel terms",
-    # The draw succeeded but returned no samples, or every sample it returned
-    # had already been attempted on this pair.
     "empty_pool": "empty pool",
-    # The `sample` process died of an uncaught panic.
     "binary_panic": "binary panic",
-    # Runs before `budget_exhausted` existed: the `sample` process outran
-    # `max_pair_time` plus the grace and was killed.
     "timeout": "hard timeout",
-    # The draw's tries together outran `max_pair_time` plus the grace, or took
-    # longer than the pair had left.
     "budget_exhausted": "pair time budget",
-    # The start term exceeds the kernel's per-argument limit, so `sample` was never spawned.
     "arg_too_long": "start too long for argv",
 }
 
 
 def search_outcomes(frame: pl.DataFrame) -> pl.DataFrame:
-    """How every pair's search ended, one mutually exclusive category per pair.
-
-    A missing guide menu takes precedence; its search ends `frontier_exhausted`
-    without ever running an attempt.
-    """
+    """Mutually exclusive search outcome per pair (setup failures take precedence)."""
     return (
         frame.select(
             *GROUP,
@@ -390,18 +340,11 @@ def search_outcomes(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def attempt_failures(runs: Sequence[Run]) -> pl.DataFrame:
-    """Why each run's failed attempts stopped, split by whether their pair was eventually proved."""
+    """Failed attempts by stop reason, split by whether their pair was eventually proved."""
     reached = pl.col("reached").fill_null(False)
-    attempts = pl.concat(
-        pl.read_parquet(run.directory / "attempts.parquet").with_columns(
-            pl.lit(run.directory.name).alias("run"),
-            pl.lit(run.strategy).alias("strategy"),
-            pl.lit(run.setting).alias("setting"),
-        )
-        for run in runs
-    )
     return (
-        attempts.with_columns(
+        _load_run_table(runs, "attempts.parquet")
+        .with_columns(
             pl.when(reached.any().over("run", "start", "goal"))
             .then(pl.lit(PAIR_OUTCOMES[0]))
             .otherwise(pl.lit(PAIR_OUTCOMES[1]))
@@ -422,11 +365,7 @@ def attempt_failures(runs: Sequence[Run]) -> pl.DataFrame:
 
 
 def guided_vs_brute(frame: pl.DataFrame, scope: str) -> pl.DataFrame:
-    """One `GUIDED_PEAK_SCOPES` peak against the brute-force cost of the same pair.
-
-    Conditioned on guided success only: a guided failure has no peak to
-    compare, just the budget it exhausted.
-    """
+    """Guided peak RSS against brute-force proof cost for successful pairs."""
     column = GUIDED_PEAK_SCOPES[scope]
     return frame.filter(pl.col("guided_success")).with_columns(
         pl.lit(scope).alias("guided_peak_scope"),
@@ -437,11 +376,7 @@ def guided_vs_brute(frame: pl.DataFrame, scope: str) -> pl.DataFrame:
 
 
 def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
-    """Brute-force proof cost of every planned pair, binned and split by guided outcome.
-
-    Brute force is the brute force measurement taken from `problems.json`, with
-    no memory limit at all.
-    """
+    """Log-binned brute-force proof cost per grid cell, split by guided outcome."""
     data = frame.select(
         *GROUP,
         pl.when(pl.col("guided_success"))
@@ -456,15 +391,9 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
     ).row(0, named=True)
     low = span["low"]
     width = (span["high"] - low) / bins
-    # Share of a bin's width the bars may fill. Without the gap left at each
-    # bucket's trailing edge, neighbouring buckets touch and read as one group.
-    usable = 1 - 0.14
+    usable = 0.86  # Leave a gap between adjacent log bins.
     slots = len(BRUTE_COST_OUTCOMES)
-    # The slot is the fixed position in `BRUTE_COST_OUTCOMES` rather than a rank
-    # among the outcomes present in the bucket, so bars stay aligned across bins
-    # where one outcome is empty.
     slot = pl.col("outcome").replace_strict({name: i for i, name in enumerate(BRUTE_COST_OUTCOMES)})
-    groups = data.group_by(*GROUP, "outcome", maintain_order=True).agg(pl.len().alias("group_n"))
     return (
         data.with_columns(
             ((pl.col("brute_peak_mib").log10() - low) / width)
@@ -475,7 +404,6 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
         )
         .group_by(*GROUP, "outcome", "bin", maintain_order=True)
         .agg(pl.len().alias("count"))
-        .join(groups, on=[*GROUP, "outcome"], how="left")
         .with_columns(
             (10 ** (low + pl.col("bin") * width)).alias("bin_start_mib"),
             (10 ** (low + (pl.col("bin") + 1) * width)).alias("bin_end_mib"),
@@ -483,7 +411,7 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
             (10 ** (low + (pl.col("bin") + usable * (slot + 1) / slots) * width)).alias(
                 "slot_end_mib"
             ),
-            (pl.col("count") / pl.col("group_n")).alias("share"),
+            (pl.col("count") / pl.col("count").sum().over(*GROUP, "outcome")).alias("share"),
             pl.col("count").sum().over(*GROUP, "bin").alias("bucket_n"),
         )
         .with_columns((pl.col("count") / pl.col("bucket_n")).alias("bucket_share"))
@@ -491,10 +419,7 @@ def brute_cost_by_outcome(frame: pl.DataFrame, bins: int = 14) -> pl.DataFrame:
 
 
 def pairwise_solved_diff(frame: pl.DataFrame) -> pl.DataFrame:
-    """Per ordered mode pair, how many problems the row solves and the column does not.
-
-    Every run plans the same problems. The diagonal is dropped.
-    """
+    """Per ordered mode pair (excluding diagonal), solved-set differences and unions."""
     wide = frame.select("pair", "mode", pl.col("guided_success").alias("solved")).pivot(
         on="mode", index="pair", values="solved"
     )
@@ -530,36 +455,20 @@ def pairwise_solved_diff(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def pow2_bucket_label(bucket: int) -> str:
-    """Value range of a power-of-two bucket: 1, 2, 3–4, 5–8, …"""
+    """Display range of a power-of-two bucket: 1, 2, 3–4, 5–8, …"""
     if bucket < 2:
         return str(bucket + 1)
     return f"{2 ** (bucket - 1) + 1}–{2**bucket}"
 
 
-def _pow2_bucket(value: str, top: int) -> pl.Expr:
-    """Power-of-two bucket of positive `value` up to `top`: `k` holds (2^(k-1), 2^k]."""
-    # The number of powers of two below n is ceil(log2 n), without float rounding.
-    return pl.sum_horizontal(pl.col(value) > 2**j for j in range(top.bit_length())).cast(pl.Int64)
-
-
-def measure_counts(frame: pl.DataFrame, value: str, log_buckets: bool = False) -> pl.DataFrame:
-    """Pairs per grid cell, `MEASURES[value]` measure and positive value, or its power-of-two bucket.
-
-    Bucket `k` holds the values in (2^(k-1), 2^k], labelled in `range`.
-    """
-    measures = MEASURES[value]
-    values = (
-        frame.unpivot(index=GROUP, on=list(measures), variable_name="measure", value_name=value)
-        .filter(pl.col(value) > 0)
-        .with_columns(pl.col("measure").replace_strict(measures))
-    )
-    if not log_buckets:
-        return values.group_by(*GROUP, "measure", value, maintain_order=True).len("count")
-    top = int(values[value].max() or 1)  # ty: ignore[invalid-argument-type]
+def _pow2_counts(frame: pl.DataFrame, value: str, group_cols: Sequence[str]) -> pl.DataFrame:
+    """Count positive rows of `value` in power-of-two buckets (2^(k-1), 2^k]."""
+    positive = frame.filter(pl.col(value) > 0)
+    top = int(positive[value].max() or 1)  # ty: ignore[invalid-argument-type]
+    # Exact ceil(log2 n) without float rounding.
+    bucket = pl.sum_horizontal(pl.col(value) > 2**j for j in range(top.bit_length())).cast(pl.Int64)
     return (
-        values.group_by(
-            *GROUP, "measure", _pow2_bucket(value, top).alias("bucket"), maintain_order=True
-        )
+        positive.group_by(*group_cols, bucket.alias("bucket"), maintain_order=True)
         .len("count")
         .with_columns(
             pl.col("bucket").map_elements(pow2_bucket_label, return_dtype=pl.String).alias("range")
@@ -567,45 +476,27 @@ def measure_counts(frame: pl.DataFrame, value: str, log_buckets: bool = False) -
     )
 
 
-def load_expansions(runs: Sequence[Run]) -> pl.DataFrame:
-    """The `sample` draws of every run, one row per draw a pair paid for.
+def measure_counts(frame: pl.DataFrame, value: str) -> pl.DataFrame:
+    """Pairs per grid cell, `MEASURES[value]` measure, and power-of-two bucket."""
+    measures = MEASURES[value]
+    values = frame.unpivot(
+        index=GROUP, on=list(measures), variable_name="measure", value_name=value
+    ).with_columns(pl.col("measure").replace_strict(measures))
+    return _pow2_counts(values, value, (*GROUP, "measure"))
 
-    Draws a pair replayed from its own cache cost it nothing and are dropped; a
-    pool another pair drew counts for each pair, as their budgets do.
-    """
-    return pl.concat(
-        pl.read_parquet(run.directory / "expansions.parquet")
-        .filter(~pl.col("cached"))
-        .with_columns(
-            pl.lit(run.directory.name).alias("run"),
-            pl.lit(run.strategy).alias("strategy"),
-            pl.lit(run.setting).alias("setting"),
-        )
-        for run in runs
-    )
+
+def load_expansions(runs: Sequence[Run]) -> pl.DataFrame:
+    """Non-cached `sample` draws across runs."""
+    return _load_run_table(runs, "expansions.parquet").filter(~pl.col("cached"))
 
 
 def sample_tries(expansions: pl.DataFrame) -> pl.DataFrame:
-    """Draws per grid cell and power-of-two bucket of `sample` tries, labelled in `range`."""
-    tries = expansions.filter(pl.col("sample_tries") > 0)
-    top = int(tries["sample_tries"].max() or 1)  # ty: ignore[invalid-argument-type]
-    return (
-        tries.group_by(
-            *GROUP,
-            pl.lit("draws").alias("measure"),
-            _pow2_bucket("sample_tries", top).alias("bucket"),
-            maintain_order=True,
-        )
-        .len("count")
-        .with_columns(
-            pl.col("bucket").map_elements(pow2_bucket_label, return_dtype=pl.String).alias("range"),
-            (pl.col("count") / pl.col("count").sum().over(GROUP)).alias("share"),
-        )
-    )
+    """Draws per grid cell and power-of-two bucket of `sample` tries."""
+    return _pow2_counts(expansions, "sample_tries", GROUP)
 
 
 def killed_time(expansions: pl.DataFrame) -> pl.DataFrame:
-    """Per grid cell, the `sample` wall time spent in tries killed at the RSS cap."""
+    """Per grid cell, `sample` wall time spent in tries killed at the RSS cap."""
     return (
         expansions.group_by(GROUP, maintain_order=True)
         .agg(
@@ -619,12 +510,7 @@ def killed_time(expansions: pl.DataFrame) -> pl.DataFrame:
 
 
 def guides_trend(frame: pl.DataFrame) -> pl.DataFrame:
-    """Per strategy, remaining setting and guides per attempt: what the guides change.
-
-    The guided success rate next to the unguided one over every planned pair, and
-    over the pairs that ran an attempt, the mean number of attempts (the median
-    is almost always one) and the median of each pair's largest attempt peak.
-    """
+    """Success rate, mean attempts, and median max attempt peak by guides per attempt."""
     ran = pl.col("attempts_run") > 0
     return frame.group_by(STRATEGY, "trend", "guides", maintain_order=True).agg(
         pl.len().alias("n"),
@@ -638,20 +524,16 @@ def guides_trend(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def success_summary(frame: pl.DataFrame) -> pl.DataFrame:
-    """One compact success row per grid cell, next to its baseline's unguided rate.
-
-    Also the median ratio of guided to brute-force peak over the cell's
-    successes, per `GUIDED_PEAK_SCOPES` scope.
-    """
-    rates = success_rates(frame)
-    values = ["successes", "n", "success_rate"]
-    guided = rates.filter(pl.col("method") == "guided").select(
-        *GROUP, "baseline", *(pl.col(v).alias(f"guided_{v}") for v in values)
+    """Compact success and median peak-ratio summary per grid cell."""
+    summary = frame.group_by(GROUP, maintain_order=True).agg(
+        pl.first("baseline"),
+        pl.col("guided_success").sum().alias("guided_successes"),
+        pl.len().alias("guided_n"),
+        pl.col("guided_success").mean().alias("guided_success_rate"),
+        pl.col("unguided_success").sum().alias("unguided_successes"),
+        pl.len().alias("unguided_n"),
+        pl.col("unguided_success").mean().alias("unguided_success_rate"),
     )
-    unguided = rates.filter(pl.col("method") == "unguided").select(
-        *GROUP, *(pl.col(v).alias(f"unguided_{v}") for v in values)
-    )
-    summary = guided.join(unguided, on=GROUP, how="left")
     for scope in GUIDED_PEAK_SCOPES:
         ratio = (
             guided_vs_brute(frame, scope)

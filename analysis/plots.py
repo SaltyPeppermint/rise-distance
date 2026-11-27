@@ -7,7 +7,7 @@ from typing import Literal
 import altair as alt
 import polars as pl
 
-from helpers import BRUTE_COST_OUTCOMES, PAIR_OUTCOMES, pow2_bucket_label
+from helpers import BRUTE_COST_OUTCOMES, MEASURES, PAIR_OUTCOMES, pow2_bucket_label
 
 PALETTE = (
     "#2a78d6",
@@ -21,9 +21,6 @@ PALETTE = (
     "#7f6d5f",
     "#5e9ed6",
 )
-# Peak RSS is the only memory metric reported; it names every memory axis.
-MEMORY_LABEL = "peak RSS"
-# Success green, failure orange, and neutral gray
 SUCCESS_COLOR = "#4c9f70"
 FAILURE_COLOR = "#c1503f"
 NEUTRAL_COLOR = "#b8b8b4"
@@ -35,21 +32,11 @@ METHOD_ORDER = ("guided", "unguided")
 METHOD_COLORS = (GUIDED_COLOR, UNGUIDED_COLOR)
 OUTCOME_ORDER = ("both", "guided only", "unguided only", "neither")
 OUTCOME_COLORS = (PALETTE[2], GUIDED_COLOR, UNGUIDED_COLOR, NEUTRAL_COLOR)
-# In `BRUTE_COST_OUTCOMES` order.
 BRUTE_COST_COLORS = (FAILURE_COLOR, SUCCESS_COLOR)
-DEPTH_ORDER = ("first success", "deepest attempt")
-DEPTH_COLORS = (SUCCESS_COLOR, NEUTRAL_COLOR)
-ATTEMPT_ORDER = ("first success", "attempts run")
-ATTEMPT_COLORS = DEPTH_COLORS
-TIME_ORDER = ("first success", "time spent")
-TIME_COLORS = DEPTH_COLORS
-TRIES_ORDER = ("draws",)
-TRIES_COLORS = (NEUTRAL_COLOR,)
-# In `PAIR_OUTCOMES` order.
+MEASURE_COLORS = (SUCCESS_COLOR, NEUTRAL_COLOR)
 PAIR_OUTCOME_COLORS = (NEUTRAL_COLOR, FAILURE_COLOR)
 
 # Size of one small multiple in the strategy × setting grid.
-# Used as the multiple baseline for all others
 CELL_WIDTH = 150
 CELL_HEIGHT = 90
 
@@ -64,7 +51,6 @@ THEME: alt.theme.ThemeConfig = {
             "domainColor": "#c9c9c6",
             "tickColor": "#c9c9c6",
         },
-        # Category labels name themselves.
         "axisYDiscrete": {"title": None, "labelLimit": 0},
         "axisYQuantitative": {"tickCount": 3},
         "legend": {"orient": "top", "titleFontSize": 11, "labelFontSize": 11, "labelLimit": 0},
@@ -84,12 +70,12 @@ def _title(text: str, meta: dict, pooled: bool = True) -> alt.TitleParams:
 
 
 def _pairs(meta: dict) -> str:
-    """Unit of a pair count: pooled seeds count every pair once per seed."""
+    """Unit for pair counts (`pairs × seeds` when seeds are pooled)."""
     return "pairs × seeds" if meta.get("pooled") else "pairs"
 
 
 def _ordered_color(field: str, order: Sequence[str], colors: Sequence[str]) -> alt.Color:
-    """Color `field` with `colors`, in `order` for both the scale and the untitled legend."""
+    """Color `field` with `colors` in `order`, without a legend title."""
     return alt.Color(
         field,
         sort=list(order),
@@ -98,27 +84,39 @@ def _ordered_color(field: str, order: Sequence[str], colors: Sequence[str]) -> a
     )
 
 
-def _strategy_row(meta: dict, field: str = "strategy") -> alt.Row:
+def _strategy_row(meta: dict) -> alt.Row:
     """One facet row per search strategy, labelled on the left like a y-axis."""
     return alt.Row(
-        f"{field}:N",
-        sort=list(meta["strategies"]),
+        "strategy:N",
+        sort=meta["strategies"],
         # Right-aligned header labels reserve twice their width, hence left.
         header=alt.Header(labelAngle=0, labelAlign="left", labelOrient="left"),
     )
 
 
 def _grid(meta: dict) -> dict:
-    """Row and column channels laying a chart out as a strategy × setting grid."""
+    """Row and column channels for the strategy × setting grid."""
     return {
         "row": _strategy_row(meta),
-        # One line per setting part, as a full label outgrows its cell.
+        # Split setting parts across lines so labels fit their cell width.
         "column": alt.Column(
             "setting:N",
-            sort=list(meta["settings"]),
+            sort=meta["settings"],
             header=alt.Header(labelExpr="split(datum.label, ' · ')"),
         ),
     }
+
+
+def _pow2_x(counts: pl.DataFrame, title: str) -> alt.X:
+    """Ordinal x-axis over power-of-two bucket labels."""
+    first = int(counts["bucket"].min() or 0)  # ty: ignore[invalid-argument-type]
+    last = int(counts["bucket"].max() or 0)  # ty: ignore[invalid-argument-type]
+    return alt.X(
+        "range:O",
+        title=title,
+        scale=alt.Scale(domain=[pow2_bucket_label(b) for b in range(first, last + 1)]),
+        axis=alt.Axis(labelAngle=-45, grid=False),
+    )
 
 
 def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
@@ -128,7 +126,7 @@ def success_rates(rates: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_point(filled=True, size=75)
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("success_rate:Q", title="success rate", axis=alt.Axis(format="%")),
-            y=alt.Y("setting:N", sort=list(meta["settings"])),
+            y=alt.Y("setting:N", sort=meta["settings"]),
             color=_ordered_color("method:N", METHOD_ORDER, METHOD_COLORS),
             row=_strategy_row(meta),
             tooltip=[
@@ -152,9 +150,8 @@ def success_outcomes(outcomes: pl.DataFrame, meta: dict) -> alt.Chart:
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("share:Q", title="share of planned pairs", axis=alt.Axis(format="%")),
-            y=alt.Y("setting:N", sort=list(meta["settings"])),
+            y=alt.Y("setting:N", sort=meta["settings"]),
             color=_ordered_color("outcome:N", OUTCOME_ORDER, OUTCOME_COLORS),
-            # Stacked in legend order rather than alphabetically.
             order=alt.Order("outcome_rank:Q", sort="ascending"),
             row=_strategy_row(meta),
             tooltip=[*GRID_TOOLTIP, "outcome:N", "count:Q", alt.Tooltip("share:Q", format=".1%")],
@@ -207,8 +204,6 @@ def attempt_failures(failures: pl.DataFrame, meta: dict) -> alt.Chart:
                 alt.Tooltip("share:Q", format=".1%", title="share of the pair group's failures"),
             ],
         )
-        # Sized per bar rather than per stop reason, so the pair of bars stays as
-        # thin as the single bars of "How the search ended".
         .properties(title=_title("Failed attempts", meta), width=CELL_WIDTH, height=CELL_HEIGHT)
     )
 
@@ -216,12 +211,11 @@ def attempt_failures(failures: pl.DataFrame, meta: dict) -> alt.Chart:
 def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.FacetChart:
     """Guided peaks vs. brute-force memory cost."""
     guided_scope = comparison["guided_peak_scope"][0]
-    title = f"{guided_scope.title()} vs brute-force proof {MEMORY_LABEL}"
+    title = f"{guided_scope.title()} vs brute-force proof peak RSS"
     points = (
         alt.Chart()
         .mark_circle(size=30, opacity=0.5, color=GUIDED_COLOR)
         .encode(  # ty: ignore[unresolved-attribute]
-            # The title names the metric; a grid cell is too narrow to repeat it.
             x=alt.X("brute_peak_mib:Q", title="brute force (MiB)"),
             y=alt.Y("guided_peak_mib:Q", title=f"{guided_scope} (MiB)"),
             tooltip=[
@@ -239,7 +233,7 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.FacetChart:
         pl.min_horizontal("guided_peak_mib", "brute_peak_mib").min().alias("lo"),
         pl.max_horizontal("guided_peak_mib", "brute_peak_mib").max().alias("hi"),
     ).row(0, named=True)
-    # Its own data, so every cell draws it once instead of once per point.
+    # Separate data so each cell draws the diagonal once rather than once per point.
     diagonal = (
         alt.Chart(pl.DataFrame({"x": [bounds["lo"], bounds["hi"]]}))
         .mark_line(strokeDash=[5, 4], color="#777")
@@ -254,22 +248,20 @@ def peak_scatter(comparison: pl.DataFrame, meta: dict) -> alt.FacetChart:
 
 
 def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Success comparison for every pair, bucketed by brute force memory cost"""
+    """Brute-force proof cost per pair, binned and split by guided outcome."""
     return (
         alt.Chart(binned)
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X(
                 "slot_start_mib:Q",
-                # The title names the metric; a grid cell is too narrow to repeat it.
                 title="brute force (MiB, log)",
                 scale=alt.Scale(type="log", nice=False),
                 axis=alt.Axis(grid=False, tickCount=3),
             ),
             x2="slot_end_mib:Q",
             y=alt.Y("count:Q", title=_pairs(meta)),
-            # A bar given both x and x2 spans a range rather than resting on the
-            # axis, so the baseline has to be named.
+            # Range bars (x + x2) need an explicit baseline.
             y2=alt.datum(0),
             **_grid(meta),
             color=_ordered_color("outcome:N", BRUTE_COST_OUTCOMES, BRUTE_COST_COLORS),
@@ -285,7 +277,7 @@ def brute_cost_hist(binned: pl.DataFrame, meta: dict) -> alt.Chart:
             ],
         )
         .properties(
-            title=_title(f"Brute-force proof {MEMORY_LABEL} by guided outcome", meta),
+            title=_title("Brute-force proof peak RSS by guided outcome", meta),
             width=CELL_WIDTH,
             height=CELL_HEIGHT,
         )
@@ -302,17 +294,11 @@ def _pairwise_matrix(
     title: str,
     share_field: str,
     lower_triangle: bool = False,
-    lower_triangle: bool = False,
 ) -> alt.VConcatChart:
-    """Square strategy-block heatmap over `pairwise_solved_diff`, coloured by `field`.
-
-    One block per strategy pair, built by hand rather than faceted: a facet with
-    per-block axes repeats every label nine times and mis-orders its headers.
-    """
-    strategies, order = list(meta["strategies"]), list(meta["shorts"])
+    """Strategy-block heatmap over `pairwise_solved_diff`, built manually to avoid repeated facet axes."""
+    strategies, order = meta["strategies"], meta["shorts"]
     short_rank = {short: i for i, short in enumerate(order)}
     peak = int(diff[field].max())  # ty: ignore[invalid-argument-type]
-    # Half the range keeps the light end of the scheme readable under dark text.
     cutoff = peak / 2
     axis = {"labelLimit": 0, "labelFontSize": 9, "grid": False, "ticks": False, "domain": False}
     tooltip = [
@@ -335,8 +321,6 @@ def _pairwise_matrix(
     )
 
     def block(row: int, col: int) -> alt.LayerChart:
-        # Labels only on the outer edges: settings left and below, strategies
-        # as the axis titles there and as the top row's titles.
         first_col, last_row = col == 0, row == len(strategies) - 1
         y_axis = (
             alt.Axis(title=strategies[row], titleFontWeight="normal", **axis)  # ty: ignore[invalid-argument-type]
@@ -406,7 +390,6 @@ def pairwise_solved(diff: pl.DataFrame, meta: dict) -> alt.HConcatChart:
                 title="combined: either row or column solves",
                 share_field="share_combined",
                 lower_triangle=True,
-                lower_triangle=True,
             ),
             spacing=24,
         )
@@ -415,70 +398,25 @@ def pairwise_solved(diff: pl.DataFrame, meta: dict) -> alt.HConcatChart:
     )
 
 
-def _sparse_ordinal(field: str, title: str, last: int, every: int = 5) -> alt.X:
-    """Ordinal x over 1..`last`, labelled at 1 and every `every`th value to fit a grid cell.
-
-    Every value gets a column, so one nothing landed on shows as a gap.
-    """
-    return alt.X(
-        field,
-        title=title,
-        scale=alt.Scale(domain=list(range(1, last + 1))),
-        axis=alt.Axis(
-            labelAngle=0,
-            grid=False,
-            values=[1, *range(every, last + 1, every)],
-        ),
-    )
-
-
 def _measure_bars(
-    counts: pl.DataFrame,
-    value: str,
-    axis_title: str,
-    order: Sequence[str],
-    colors: Sequence[str],
-    title: str,
-    meta: dict,
-    every: int,
-    unit: str | None = None,
-    log_count: bool = False,
+    counts: pl.DataFrame, measure: str, axis_title: str, title: str, meta: dict
 ) -> alt.Chart:
-    """Pairs per `value` and measure, or per power-of-two bucket if `counts` has them.
-
-    `unit` names what is counted instead of pairs; `log_count` puts the counts
-    on a symlog scale, for a first bucket that dwarfs the rest.
-    """
-    unit = unit or _pairs(meta)
-    if "bucket" in counts.columns:
-        first = int(counts["bucket"].min() or 0)  # ty: ignore[invalid-argument-type]
-        last = int(counts["bucket"].max() or 0)  # ty: ignore[invalid-argument-type]
-        field = "range:O"
-        x = alt.X(
-            field,
-            title=axis_title,
-            scale=alt.Scale(domain=[pow2_bucket_label(b) for b in range(first, last + 1)]),
-            axis=alt.Axis(labelAngle=-45, grid=False),
-        )
-    else:
-        last = int(counts[value].max() or 0)  # ty: ignore[invalid-argument-type]
-        field = f"{value}:O"
-        x = _sparse_ordinal(field, axis_title, last, every)
+    """Pairs per power-of-two bucket and measure."""
+    order = list(MEASURES[measure].values())
+    unit = _pairs(meta)
     return (
         alt.Chart(counts)
         .mark_bar()
         .encode(  # ty: ignore[unresolved-attribute]
-            x=x,
+            x=_pow2_x(counts, axis_title),
             xOffset=alt.XOffset("measure:N", sort=order),
-            y=alt.Y(
-                "count:Q", title=unit, scale=alt.Scale(type="symlog" if log_count else "linear")
-            ),
-            color=_ordered_color("measure:N", order, colors),
+            y=alt.Y("count:Q", title=unit),
+            color=_ordered_color("measure:N", order, MEASURE_COLORS),
             **_grid(meta),
             tooltip=[
                 *GRID_TOOLTIP,
                 "measure:N",
-                alt.Tooltip(field, title=axis_title),
+                alt.Tooltip("range:O", title=axis_title),
                 alt.Tooltip("count:Q", title=unit),
             ],
         )
@@ -487,57 +425,47 @@ def _measure_bars(
 
 
 def search_attempts(attempts: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Pairs per attempt of the first success and per number of attempts run."""
-    return _measure_bars(
-        attempts, "attempts", "attempts", ATTEMPT_ORDER, ATTEMPT_COLORS, "Attempts", meta, every=10
-    )
+    """Pairs by attempt of first success and by attempts run."""
+    return _measure_bars(attempts, "attempts", "attempts", "Attempts", meta)
 
 
 def search_depth(depths: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Pairs per depth of the first success and of the deepest attempt."""
-    return _measure_bars(
-        depths,
-        "depth",
-        "search-tree depth",
-        DEPTH_ORDER,
-        DEPTH_COLORS,
-        "Search depth",
-        meta,
-        every=5,
-    )
+    """Pairs by depth of first success and of deepest attempt."""
+    return _measure_bars(depths, "depth", "search-tree depth", "Search depth", meta)
 
 
 def search_time(times: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Pairs per wall time to the first success and per wall time the search spent."""
-    return _measure_bars(
-        times, "time", "wall time (s)", TIME_ORDER, TIME_COLORS, "Wall time", meta, every=10
-    )
+    """Pairs by wall time to first success and total wall time."""
+    return _measure_bars(times, "time", "wall time (s)", "Wall time", meta)
 
 
 def sample_tries(tries: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Draws per power-of-two bucket of `sample` tries; past 1, the RSS cap killed a try."""
-    return _measure_bars(
-        tries,
-        "tries",
-        "sample tries per draw",
-        TRIES_ORDER,
-        TRIES_COLORS,
-        "Sample tries",
-        meta,
-        every=1,
-        unit="draws",
-        log_count=True,
+    """Draws per power-of-two bucket of `sample` tries."""
+    return (
+        alt.Chart(tries)
+        .mark_bar(color=NEUTRAL_COLOR)
+        .encode(  # ty: ignore[unresolved-attribute]
+            x=_pow2_x(tries, "sample tries per draw"),
+            y=alt.Y("count:Q", title="draws", scale=alt.Scale(type="symlog")),
+            **_grid(meta),
+            tooltip=[
+                *GRID_TOOLTIP,
+                alt.Tooltip("range:O", title="sample tries per draw"),
+                alt.Tooltip("count:Q", title="draws"),
+            ],
+        )
+        .properties(title=_title("Sample tries", meta), width=CELL_WIDTH, height=CELL_HEIGHT)
     )
 
 
 def killed_time(killed: pl.DataFrame, meta: dict) -> alt.Chart:
-    """Share of each grid cell's `sample` wall time spent in tries killed at the RSS cap."""
+    """Share of `sample` wall time spent in tries killed at the RSS cap."""
     return (
         alt.Chart(killed)
         .mark_bar(color=FAILURE_COLOR)
         .encode(  # ty: ignore[unresolved-attribute]
             x=alt.X("killed_share:Q", title="share of sample time", axis=alt.Axis(format="%")),
-            y=alt.Y("setting:N", sort=list(meta["settings"])),
+            y=alt.Y("setting:N", sort=meta["settings"]),
             row=_strategy_row(meta),
             tooltip=[
                 *GRID_TOOLTIP,
@@ -555,10 +483,7 @@ def killed_time(killed: pl.DataFrame, meta: dict) -> alt.Chart:
 def _trend_panel(
     trend: pl.DataFrame, meta: dict, field: str, title: str, fmt: str, header: bool = False
 ) -> alt.FacetChart:
-    """One measure of `guides_trend` against the guides per attempt, a line per setting.
-
-    Titled per panel rather than per y-axis, which every strategy row would repeat.
-    """
+    """One `guides_trend` metric plotted against guides per attempt."""
     line = (
         alt.Chart()
         .mark_line(point=alt.OverlayMarkDef(filled=True, size=40))
@@ -566,11 +491,11 @@ def _trend_panel(
             x=alt.X(
                 "guides:O",
                 title="guides per attempt",
-                scale=alt.Scale(domain=list(meta["guides"])),
+                scale=alt.Scale(domain=meta["guides"]),
                 axis=alt.Axis(labelAngle=0, grid=False),
             ),
             y=alt.Y(f"{field}:Q", title=None, axis=alt.Axis(format=fmt)),
-            color=alt.Color("trend:N", sort=list(meta["trends"]), legend=alt.Legend(title=None)),
+            color=alt.Color("trend:N", sort=meta["trends"], legend=alt.Legend(title=None)),
             tooltip=[
                 "strategy:N",
                 alt.Tooltip("trend:N", title="setting"),
@@ -587,7 +512,6 @@ def _trend_panel(
     )
     layers = [line]
     if field == "success_rate":
-        # Every run plans the same pairs, so a strategy's unguided rate is one line.
         layers.insert(
             0,
             alt.Chart()
@@ -597,7 +521,7 @@ def _trend_panel(
     row = (
         _strategy_row(meta)
         if header
-        else alt.Row("strategy:N", sort=list(meta["strategies"]), header=alt.Header(labels=False))
+        else alt.Row("strategy:N", sort=meta["strategies"], header=alt.Header(labels=False))
     )
     return (
         alt.layer(*layers, data=trend)
@@ -608,15 +532,12 @@ def _trend_panel(
 
 
 def guides_trend(trend: pl.DataFrame, meta: dict) -> alt.HConcatChart:
-    """Success, attempts and attempt peak against the guides unioned per eqsat."""
+    """Success, attempts, and attempt peak against guides per attempt."""
     return alt.hconcat(
-        # Only the first panel labels the strategy rows; the others line up beside it.
         _trend_panel(
             trend, meta, "success_rate", "success rate (dashed: unguided)", "%", header=True
         ),
         _trend_panel(trend, meta, "mean_attempts", "mean attempts run", "~s"),
-        _trend_panel(
-            trend, meta, "median_peak_mib", f"median largest attempt {MEMORY_LABEL} (MiB)", "~s"
-        ),
+        _trend_panel(trend, meta, "median_peak_mib", "median largest attempt peak RSS (MiB)", "~s"),
         spacing=24,
     ).properties(title=_title("Guides per attempt", meta))
